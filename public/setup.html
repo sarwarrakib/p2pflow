@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>P2PFlow Setup</title>
+  <link rel="stylesheet" href="/setup.css" />
+</head>
+<body>
+  <main class="setup-shell">
+    <header class="setup-header">
+      <div class="brand-mark">P2P</div>
+      <div>
+        <span class="eyebrow">Secure first-run installation</span>
+        <h1>P2PFlow</h1>
+        <p>Connect MariaDB/MySQL or PostgreSQL and create the Owner account from your browser. No terminal command is required.</p>
+      </div>
+    </header>
+
+    <div id="statusBanner" class="banner hidden"></div>
+
+    <nav class="steps" aria-label="Installation steps">
+      <button type="button" class="step active" data-step="1"><span>1</span>Access</button>
+      <button type="button" class="step" data-step="2"><span>2</span>Database</button>
+      <button type="button" class="step" data-step="3"><span>3</span>Owner</button>
+      <button type="button" class="step" data-step="4"><span>4</span>Email</button>
+      <button type="button" class="step" data-step="5"><span>5</span>Review</button>
+    </nav>
+
+    <form id="setupForm" novalidate>
+      <section class="panel active" data-panel="1">
+        <h2>Installation access</h2>
+        <p class="muted">After the Node app starts, open <strong id="setupCodeFile">P2PFLOW_SETUP_CODE.txt</strong> from the Application Root in the hosting File Manager and paste the code below.</p>
+        <label>Installation code
+          <input id="setupCode" name="setupCode" type="password" autocomplete="off" placeholder="Paste the setup code" required />
+        </label>
+        <div class="notice">The setup code is removed automatically after the database starts successfully.</div>
+      </section>
+
+      <section class="panel" data-panel="2">
+        <h2>Database</h2>
+        <p class="muted">Create a MariaDB/MySQL or PostgreSQL database and user from your hosting control panel first, then enter those details here.</p>
+        <div class="grid two">
+          <label>Database type
+            <select id="databaseProvider" name="databaseProvider">
+              <option value="mysql">MariaDB 10.5 / MySQL-compatible</option>
+              <option value="postgres">PostgreSQL</option>
+            </select>
+          </label>
+        </div>
+        <label class="full">Full database URL <small>Optional — use this only when your hosting provider gives one complete URL.</small>
+          <input id="databaseUrl" name="databaseUrl" type="password" placeholder="mysql://user:password@host:3306/database" />
+        </label>
+        <div class="divider"><span>or enter individual fields</span></div>
+        <div class="grid two">
+          <label>Database host<input id="databaseHost" name="databaseHost" value="127.0.0.1" required /></label>
+          <label>Port<input id="databasePort" name="databasePort" type="number" value="3306" min="1" max="65535" required /></label>
+          <label>Database name<input id="databaseName" name="databaseName" required /></label>
+          <label>Database username<input id="databaseUser" name="databaseUser" required /></label>
+          <label class="full">Database password<input id="databasePassword" name="databasePassword" type="password" autocomplete="new-password" required /></label>
+          <label>Application table<input id="databaseTable" name="databaseTable" value="p2pflow_state" /></label>
+          <label>SSL
+            <select id="databaseSsl" name="databaseSsl">
+              <option value="false">Disabled / local hosting database</option>
+              <option value="true">Required / remote managed database</option>
+            </select>
+          </label>
+        </div>
+        <label class="check"><input id="databaseSslRejectUnauthorized" type="checkbox" checked /> Verify database SSL certificate</label>
+        <label class="full">Permanent Application Key <small>Leave blank for a new installation. Existing or imported data requires the exact previous key.</small>
+          <input id="appKey" name="appKey" type="password" autocomplete="off" placeholder="Auto-generated for a new database" />
+        </label>
+        <label class="check import-option"><input id="importLegacy" type="checkbox" /> Import old file-based data into this empty database</label>
+        <div id="legacyHelp" class="notice hidden">
+          From the hosting File Manager, upload the old <strong>app.db.enc</strong> file to <strong>legacy-import/app.db.enc</strong>. If the old installation used proof or chat files, also copy them into <strong>legacy-import/proofs</strong> and <strong>legacy-import/chat-media</strong>. Enter the exact old Application Key above. The Owner credentials entered in the next step will replace the imported Owner login; business data and history remain unchanged.
+          <div id="legacyFileStatus" class="muted"></div>
+        </div>
+        <div class="actions left"><button type="button" id="testDatabaseBtn" class="secondary">Test database connection</button></div>
+        <div id="databaseResult" class="result hidden"></div>
+      </section>
+
+      <section class="panel" data-panel="3">
+        <h2>Owner account</h2>
+        <p id="ownerHelp" class="muted">These values create the first Owner account. Existing P2PFlow data keeps its current Owner login.</p>
+        <div id="ownerFields" class="grid two">
+          <label>Owner username<input id="ownerUsername" name="ownerUsername" value="owner" required /></label>
+          <label>Owner name<input id="ownerName" name="ownerName" value="Owner" required /></label>
+          <label class="full">Owner email<input id="ownerEmail" name="ownerEmail" type="email" autocomplete="email" required /></label>
+          <label>Owner password<input id="ownerPassword" name="ownerPassword" type="password" autocomplete="new-password" minlength="12" required /></label>
+          <label>Confirm password<input id="ownerPasswordConfirm" name="ownerPasswordConfirm" type="password" autocomplete="new-password" minlength="12" required /></label>
+          <label class="full">6-digit secret<input id="ownerSecretCode" name="ownerSecretCode" type="password" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" placeholder="Use a private non-sequential code" required /></label>
+        </div>
+      </section>
+
+      <section class="panel" data-panel="4">
+        <h2>Email delivery</h2>
+        <p class="muted">P2PFlow sends an email OTP during login. Local hosting mail is selected by default; SMTP can be configured now or later from Settings.</p>
+        <div class="grid two">
+          <label>Mail method
+            <select id="mailDriver" name="mailDriver">
+              <option value="local">Hosting mail / automatic</option>
+              <option value="smtp">SMTP</option>
+              <option value="php">PHP mail</option>
+              <option value="sendmail">Sendmail</option>
+            </select>
+          </label>
+          <label>From email<input id="mailFrom" name="mailFrom" type="email" placeholder="no-reply@yourdomain.com" /></label>
+        </div>
+        <div id="smtpFields" class="grid two hidden">
+          <label>SMTP host<input id="smtpHost" name="smtpHost" /></label>
+          <label>SMTP port<input id="smtpPort" name="smtpPort" type="number" value="587" /></label>
+          <label>SMTP username<input id="smtpUser" name="smtpUser" /></label>
+          <label>SMTP password<input id="smtpPass" name="smtpPass" type="password" /></label>
+          <label class="check"><input id="smtpSecure" type="checkbox" /> Direct TLS / SSL</label>
+          <label class="check"><input id="smtpStarttls" type="checkbox" checked /> STARTTLS</label>
+        </div>
+        <label class="full">Public website URL<input id="publicBaseUrl" name="publicBaseUrl" placeholder="https://panel.example.com" /></label>
+        <div class="notice">After installation, a one-time Owner access link is shown. Use it to log in once and test Email Delivery before the next login.</div>
+      </section>
+
+      <section class="panel" data-panel="5">
+        <h2>Review and install</h2>
+        <div id="reviewBox" class="review"></div>
+        <label class="check confirm"><input id="confirmInstall" type="checkbox" /> I have created the database and saved the credentials securely.</label>
+        <button type="submit" id="installBtn" class="primary install">Install P2PFlow</button>
+      </section>
+
+      <footer class="form-nav">
+        <button type="button" id="backBtn" class="secondary hidden">Back</button>
+        <button type="button" id="nextBtn" class="primary">Continue</button>
+      </footer>
+    </form>
+
+    <section id="completePanel" class="complete hidden">
+      <div class="success-icon">✓</div>
+      <h2>Configuration saved</h2>
+      <p>P2PFlow is restarting and creating the encrypted database structure.</p>
+      <div id="completeDetails" class="review"></div>
+      <a id="claimOwnerLink" class="primary link-button hidden" href="#">Open Owner account</a>
+      <button id="checkRestartBtn" class="secondary">Check application</button>
+      <p class="muted">If the page does not reopen automatically, click <strong>Restart</strong> once from the hosting Node application panel.</p>
+    </section>
+  </main>
+  <script src="/setup.js"></script>
+</body>
+</html>

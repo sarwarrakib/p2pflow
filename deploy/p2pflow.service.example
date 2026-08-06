@@ -1,0 +1,24 @@
+[Unit]
+Description=P2PFlow managed launcher
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=p2pflow
+Group=p2pflow
+WorkingDirectory=/opt/p2pflow
+Environment=P2PFLOW_INSTALL_ROOT=/opt/p2pflow
+Environment=P2PFLOW_ENV_FILE=/opt/p2pflow/shared/.env
+ExecStartPre=/usr/bin/node /opt/p2pflow/current/scripts/production-doctor.js --root /opt/p2pflow --env /opt/p2pflow/shared/.env --quiet
+ExecStart=/usr/bin/node /opt/p2pflow/launcher.js
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/p2pflow
+
+[Install]
+WantedBy=multi-user.target

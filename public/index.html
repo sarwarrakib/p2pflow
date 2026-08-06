@@ -1,0 +1,233 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>P2PFlow | Responsive Operations Panel</title>
+  <link rel="stylesheet" href="/style.css?v=1.0.167" />
+</head>
+<body>
+  <div id="login" class="login-wrap hidden">
+    <div class="login-ambient login-ambient-left" aria-hidden="true"></div>
+    <div class="login-ambient login-ambient-right" aria-hidden="true"></div>
+    <div class="login-dot-field login-dot-field-left" aria-hidden="true"></div>
+    <div class="login-dot-field login-dot-field-right" aria-hidden="true"></div>
+
+    <section class="login-card" aria-labelledby="loginTitle">
+      <div class="login-card-glow" aria-hidden="true"></div>
+
+      <div class="language-switch login-lang" aria-label="Language selector">
+        <span>EN</span>
+        <button id="loginLangToggle" class="lang-toggle" type="button" role="switch" aria-checked="false" aria-label="Switch between English and Bangla"><span class="lang-toggle-thumb" aria-hidden="true"></span></button>
+        <span>BN</span>
+      </div>
+
+      <header class="login-brand">
+        <div class="login-brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 48 48" role="img">
+            <path d="M24 4 39 10v12c0 10-6.4 18.4-15 22-8.6-3.6-15-12-15-22V10L24 4Z" fill="none" stroke="currentColor" stroke-width="4" stroke-linejoin="round"/>
+            <rect x="18" y="21" width="12" height="11" rx="2.5" fill="none" stroke="currentColor" stroke-width="3"/>
+            <path d="M20.5 21v-3a3.5 3.5 0 0 1 7 0v3" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"/>
+            <path d="M24 25v3" stroke="currentColor" stroke-width="3" stroke-linecap="round"/>
+          </svg>
+        </div>
+        <div class="login-brand-copy">
+          <span class="login-eyebrow">Secure operations access</span>
+          <h1 id="loginTitle">P2PFlow</h1>
+          <p>Secure manual operations panel for P2P orders, split payment, account statement and live dashboard.</p>
+        </div>
+      </header>
+
+      <div class="login-step-line" aria-live="polite">
+        <div class="login-step login-step-active" id="credentialStepIndicator">
+          <span>1</span>
+          <b>Account</b>
+        </div>
+        <div class="login-step-connector" aria-hidden="true"></div>
+        <div class="login-step" id="verificationStepIndicator">
+          <span>2</span>
+          <b>Verification</b>
+        </div>
+      </div>
+
+      <form id="loginForm" class="login-form" novalidate>
+        <section id="credentialPanel" class="login-credential-panel">
+          <div class="credential-heading-row">
+            <div>
+              <h2>Sign in to continue</h2>
+              <p>Enter your username or Gmail and password first.</p>
+            </div>
+            <button type="button" id="changeCredentialsBtn" class="login-change-btn hidden">Change</button>
+          </div>
+
+          <label for="loginIdentity">User or Gmail</label>
+          <div class="login-input-shell">
+            <span class="login-input-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="M4 6.5h16v11H4zM4 7l8 6 8-6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </span>
+            <input id="loginIdentity" name="username" type="text" autocomplete="username" autocapitalize="none" spellcheck="false" maxlength="80" placeholder="username or name@gmail.com" required />
+          </div>
+
+          <label for="loginPassword">Password</label>
+          <div class="login-input-shell">
+            <span class="login-input-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><rect x="5" y="10" width="14" height="10" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M8 10V7a4 4 0 0 1 8 0v3M12 14v2" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+            </span>
+            <input id="loginPassword" name="password" type="password" autocomplete="current-password" placeholder="Enter your password" required />
+            <button type="button" class="login-visibility-btn" data-visibility-target="loginPassword" aria-label="Show password" aria-pressed="false">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.3-5 9.5-5 9.5 5 9.5 5-3.3 5-9.5 5-9.5-5-9.5-5Z" fill="none" stroke="currentColor" stroke-width="1.7"/><circle cx="12" cy="12" r="2.5" fill="none" stroke="currentColor" stroke-width="1.7"/></svg>
+            </button>
+          </div>
+          <div id="credentialVerifiedNote" class="credential-verified-note hidden">
+            <span aria-hidden="true">✓</span>
+            <div><b>Account password verified</b><small>Complete the email and secret verification below.</small></div>
+          </div>
+        </section>
+
+        <section id="otpPanel" class="otp-panel login-verification-panel hidden" aria-labelledby="verificationTitle">
+          <div id="otpHelp" class="login-alert login-alert-info" role="status">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 10v6M12 7h.01" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+            <span>Check your email and enter the OTP.</span>
+          </div>
+
+          <div class="verification-heading">
+            <div>
+              <h2 id="verificationTitle">Email verification code</h2>
+              <p>Enter the 6-digit code sent to your registered email.</p>
+            </div>
+            <span class="secure-chip">Secure</span>
+          </div>
+
+          <div id="emailOtpDigits" class="otp-digit-grid" role="group" aria-label="Email verification code">
+            <input class="otp-digit" inputmode="numeric" pattern="[0-9]*" maxlength="1" aria-label="OTP digit 1" autocomplete="one-time-code" />
+            <input class="otp-digit" inputmode="numeric" pattern="[0-9]*" maxlength="1" aria-label="OTP digit 2" />
+            <input class="otp-digit" inputmode="numeric" pattern="[0-9]*" maxlength="1" aria-label="OTP digit 3" />
+            <input class="otp-digit" inputmode="numeric" pattern="[0-9]*" maxlength="1" aria-label="OTP digit 4" />
+            <input class="otp-digit" inputmode="numeric" pattern="[0-9]*" maxlength="1" aria-label="OTP digit 5" />
+            <input class="otp-digit" inputmode="numeric" pattern="[0-9]*" maxlength="1" aria-label="OTP digit 6" />
+          </div>
+          <input id="emailOtpInput" name="emailOtp" type="hidden" autocomplete="one-time-code" />
+
+          <label for="loginSecretCode">Security PIN / Secret</label>
+          <div class="login-input-shell login-secret-shell">
+            <span class="login-input-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="M12 3 5 6v5c0 4.8 2.9 8.7 7 10 4.1-1.3 7-5.2 7-10V6l-7-3Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M9.5 12h5M12 9.5v5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+            </span>
+            <input id="loginSecretCode" name="secretCode" type="password" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" placeholder="Enter your private 6-digit secret" />
+            <button type="button" class="login-visibility-btn" data-visibility-target="loginSecretCode" aria-label="Show secret code" aria-pressed="false">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.3-5 9.5-5 9.5 5 9.5 5-3.3 5-9.5 5-9.5-5-9.5-5Z" fill="none" stroke="currentColor" stroke-width="1.7"/><circle cx="12" cy="12" r="2.5" fill="none" stroke="currentColor" stroke-width="1.7"/></svg>
+            </button>
+          </div>
+
+          <div class="otp-resend-row">
+            <span id="otpTimerText">A new code can be requested shortly.</span>
+            <button type="button" id="resendOtpBtn" class="login-resend-btn">Resend OTP</button>
+          </div>
+        </section>
+
+        <button type="submit" id="loginBtn" class="login-submit-btn">
+          <span class="login-submit-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><path d="M12 3 5 6v5c0 4.8 2.9 8.7 7 10 4.1-1.3 7-5.2 7-10V6l-7-3Z" fill="none" stroke="currentColor" stroke-width="1.9"/><path d="m9.5 12 1.7 1.8 3.5-3.7" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </span>
+          <span id="loginBtnText">Continue securely</span>
+          <span class="login-button-spinner" aria-hidden="true"></span>
+        </button>
+      </form>
+
+      <div id="loginError" class="login-error" role="alert" aria-live="assertive"></div>
+
+      <footer class="login-footer-note">
+        <span class="login-footer-shield" aria-hidden="true">
+          <svg viewBox="0 0 24 24"><path d="M12 3 6 5.7v5.1c0 4.1 2.5 7.4 6 8.7 3.5-1.3 6-4.6 6-8.7V5.7L12 3Z" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="m9.5 11.5 1.6 1.6 3.4-3.5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </span>
+        <span>Protected access</span>
+        <i aria-hidden="true"></i>
+        <span>Encrypted secure session</span>
+      </footer>
+    </section>
+  </div>
+
+  <div id="app" class="app hidden">
+    <aside id="sidebar" class="sidebar" aria-label="Primary navigation">
+      <div class="brand">
+        <div class="logo">P2P</div>
+        <div class="brand-copy">
+          <h2>P2PFlow</h2>
+          <span id="userBadge"></span>
+        </div>
+        <button id="mobileMenuClose" class="mobile-menu-close" type="button" aria-label="Close menu" title="Close menu">&times;</button>
+      </div>
+      <nav id="nav"></nav>
+      <button id="logoutBtn" class="ghost full">Logout</button>
+    </aside>
+    <div id="sidebarBackdrop" class="sidebar-backdrop" aria-hidden="true"></div>
+
+    <main class="main">
+      <header class="topbar">
+        <div class="topbar-main">
+          <button id="mobileMenuBtn" class="mobile-menu-btn" type="button" aria-controls="sidebar" aria-expanded="false" aria-label="Open menu" title="Open menu">
+            <span class="hamburger-bars" aria-hidden="true"></span>
+          </button>
+          <div class="topbar-copy">
+            <h1 id="pageTitle">Dashboard</h1>
+            <p id="pageSubtitle">Live liquidity, orders and audit controls.</p>
+          </div>
+        </div>
+        <div class="top-actions">
+          <div class="language-switch" aria-label="Language selector">
+            <span>EN</span>
+            <button id="langToggle" class="lang-toggle" type="button" role="switch" aria-checked="false" aria-label="Switch between English and Bangla"><span class="lang-toggle-thumb" aria-hidden="true"></span></button>
+            <span>BN</span>
+          </div>
+          <div class="status-pill hidden" id="liveStatus">Offline</div>
+          <div class="notification-center" id="notificationCenter">
+            <button id="notificationBtn" class="notification-btn" type="button" aria-label="Notifications" aria-expanded="false" aria-controls="notificationPanel">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"/></svg>
+              <span id="notificationBadge" class="notification-badge hidden">0</span>
+            </button>
+            <div id="notificationPanel" class="notification-panel hidden" role="dialog" aria-label="Notifications"></div>
+          </div>
+        </div>
+      </header>
+      <section id="content" tabindex="-1"></section>
+    </main>
+    <nav id="mobileBottomNav" class="mobile-bottom-nav" aria-label="Persistent mobile navigation"></nav>
+  </div>
+
+  <template id="modalTemplate">
+    <div class="modal-backdrop">
+      <div class="modal">
+        <div class="modal-head">
+          <h3></h3>
+          <button class="icon close-modal">x</button>
+        </div>
+        <div class="modal-body"></div>
+      </div>
+    </div>
+  </template>
+
+  <script src="/js/pages/dashboard.js?v=1.0.167"></script>
+  <script src="/js/pages/p2p-market.js?v=1.0.167"></script>
+  <script src="/js/pages/orders.js?v=1.0.167"></script>
+  <script src="/js/pages/chat.js?v=1.0.167"></script>
+  <script src="/js/pages/ads.js?v=1.0.167"></script>
+  <script src="/js/pages/approvals.js?v=1.0.167"></script>
+  <script src="/js/pages/accounts.js?v=1.0.167"></script>
+  <script src="/js/pages/ledger.js?v=1.0.167"></script>
+  <script src="/js/pages/users.js?v=1.0.167"></script>
+  <script src="/js/pages/user-roles.js?v=1.0.167"></script>
+  <script src="/js/pages/routing.js?v=1.0.167"></script>
+  <script src="/js/pages/reports.js?v=1.0.167"></script>
+  <script src="/js/pages/accounting.js?v=1.0.167"></script>
+  <script src="/js/pages/activity.js?v=1.0.167"></script>
+  <script src="/js/pages/credentials.js?v=1.0.167"></script>
+  <script src="/js/pages/health.js?v=1.0.167"></script>
+  <script src="/js/pages/settings.js?v=1.0.167"></script>
+  <script src="/js/pages/system-update.js?v=1.0.167"></script>
+  <script src="/js/pages/p2p-extension.js?v=1.0.167"></script>
+  <script src="/js/pages/security.js?v=1.0.167"></script>
+  <script src="/js/pages/notifications.js?v=1.0.167"></script>
+  <script src="/js/pages/audit.js?v=1.0.167"></script>
+  <script src="/app.js?v=1.0.167"></script>
+</body>
+</html>

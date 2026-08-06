@@ -1,0 +1,33 @@
+{
+  "name": "p2pflow",
+  "version": "1.0.167",
+  "description": "P2PFlow with encrypted MariaDB/MySQL and PostgreSQL storage, browser-based hosting setup, durable state history and manually approved signed private-GitHub updates.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js",
+    "build": "node scripts/hosting-build.js",
+    "test": "node scripts/release-self-test.js && node scripts/hosting-setup-self-test.js && node scripts/production-preflight-self-test.js && node scripts/postgres-state-crypto-self-test.js && node scripts/mysql-state-crypto-self-test.js && node scripts/update-manager-self-test.js && node scripts/launcher-self-test.js && node scripts/pending-activation-self-test.js && node server.js --accounting-self-test",
+    "check": "node scripts/release-self-test.js",
+    "install:production": "node scripts/install-production.js",
+    "migrate:postgres": "node scripts/migrate-file-to-postgres.js",
+    "build:release": "node scripts/hosting-build.js",
+    "preflight:production": "node scripts/production-doctor.js",
+    "setup:owner": "node scripts/setup-owner.js",
+    "activate:production": "node scripts/activate-production.js",
+    "release:package": "node scripts/build-release.js",
+    "version:patch": "node scripts/set-version.js patch",
+    "version:set": "node scripts/set-version.js",
+    "package:hosting": "node scripts/build-hosting-package.js"
+  },
+  "license": "UNLICENSED",
+  "dependencies": {
+    "mysql2": "^3.23.2",
+    "pg": "^8.13.1",
+    "ws": "^8.21.1"
+  },
+  "private": true,
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
