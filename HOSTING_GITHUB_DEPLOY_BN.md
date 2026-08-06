@@ -1,4 +1,4 @@
-# P2PFlow v1.0.167 Hosting Deploy
+# P2PFlow v1.1.0 Hosting Deploy
 
 ## Hosting panel values
 
@@ -7,9 +7,9 @@
 - Start command: `npm start`
 - Startup file (যদি field থাকে): `server.js`
 
-`npm run build:release` পুরোনো hosting configuration থাকলে v1.0.167-এ compatibility alias হিসেবে কাজ করবে, কিন্তু নতুন configuration-এ `npm run build` ব্যবহার করুন। Signed GitHub update asset শুধু GitHub Actions-এ `npm run release:package` দিয়ে তৈরি হবে।
+`npm run build:release` পুরোনো hosting configuration থাকলে v1.1.0-এ compatibility alias হিসেবে কাজ করবে, কিন্তু নতুন configuration-এ `npm run build` ব্যবহার করুন। Signed GitHub update asset শুধু GitHub Actions-এ `npm run release:package` দিয়ে তৈরি হবে।
 
-# P2PFlow v1.0.167 — GitHub থেকে Hosting Deploy
+# P2PFlow v1.1.0 — GitHub থেকে Hosting Deploy
 
 ## Repository root
 

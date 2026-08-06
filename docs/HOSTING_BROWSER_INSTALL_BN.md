@@ -8,5 +8,5 @@
 - Setup complete হওয়ার পরে `/setup` redirect হয়; update সেখানে হয় না।
 - Update শুধু Owner login থেকে Control Panel → System Update-এ হয়।
 - MariaDB 10.5 / MySQL-compatible default database provider।
-- Stable launcher `releases/` থেকে versioned code চালায় এবং `shared/current-release.json` দিয়ে active release track করে।
+- Stable same-process hosting entry `releases/` থেকে versioned code চালায় এবং `shared/current-release.json` দিয়ে active release track করে। Web server child process-এ যায় না।
 - Code rollback database/transactions rollback করে না।

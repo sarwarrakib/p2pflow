@@ -95,9 +95,9 @@ for (const relative of versionedAssetFiles) {
 const updateUiSource = fs.readFileSync(path.join(root, 'public', 'js', 'pages', 'system-update.js'), 'utf8');
 if (/provided v\d+\.\d+\.\d+ Hosting Migration package/.test(updateUiSource)) throw new Error('System Update UI contains a hard-coded migration version.');
 const versionToolSource = fs.readFileSync(path.join(root, 'scripts', 'set-version.js'), 'utf8');
-for (const marker of ['replaceVersionPair(', 'oldFollowing', 'newFollowing', 'package-lock.json']) if (!versionToolSource.includes(marker)) throw new Error(`Version tool is missing serial-safety marker: ${marker}`);
+for (const marker of ['nextMinor(', 'nextHotfix(', 'minor | hotfix', 'package-lock.json']) if (!versionToolSource.includes(marker)) throw new Error(`Version tool is missing serial-safety marker: ${marker}`);
 const guideSource = fs.readFileSync(path.join(root, 'GITHUB_DESKTOP_UPDATE_GUIDE_BN.md'), 'utf8');
-if (!guideSource.includes(`P2PFlow_v${pkg.version}_GITHUB_SOURCE.zip`) || !guideSource.includes(`P2PFlow_v${pkg.version}_HOSTING_MIGRATION.zip`)) throw new Error('GitHub Desktop guide does not match the current package version.');
+if (!guideSource.includes(`P2PFlow_v${pkg.version}_GITHUB_SOURCE.zip`) || !guideSource.includes(`P2PFlow_v${pkg.version}_HOSTING_READY.zip`)) throw new Error('GitHub Desktop guide does not match the current package version.');
 const lockRaw = fs.readFileSync(path.join(root, 'package-lock.json'), 'utf8');
 const lock = JSON.parse(lockRaw);
 if (String(pkg.version) !== String(lock.version) || String(pkg.version) !== String(lock.packages?.['']?.version)) throw new Error('package.json and package-lock.json versions do not match.');
@@ -126,7 +126,7 @@ for (const marker of ['treeSha256', 'treeFiles', 'treeBytes', 'dataCompatibility
 const installerSource = fs.readFileSync(path.join(root, 'scripts', 'install-production.js'), 'utf8');
 for (const marker of ['Production install root is required', '.install-', 'computeReleaseTreeSha256(', 'The current running release has not been changed', 'activate-production.js', 'Refusing to copy symbolic link']) if (!installerSource.includes(marker)) throw new Error(`Production installer is missing safety marker: ${marker}`);
 const hostingBuilderSource = fs.readFileSync(path.join(root, 'scripts', 'build-hosting-package.js'), 'utf8');
-for (const marker of ['HOSTING_MIGRATION.zip', 'computeReleaseTreeSha256(', 'Refusing symbolic link', 'Refusing to package sensitive runtime file', "require('./launcher.js')", 'localInstall: true']) if (!hostingBuilderSource.includes(marker)) throw new Error(`Hosting migration builder is missing safety marker: ${marker}`);
+for (const marker of ['HOSTING_READY.zip', 'computeReleaseTreeSha256(', 'Refusing symbolic link', 'Refusing to package sensitive runtime file', "require('./hosting-entry.js')", 'p2pflow-hosting-entry.js', 'localInstall: true', "bootstrapMode: 'critical-files'", 'bootstrapFiles']) if (!hostingBuilderSource.includes(marker)) throw new Error(`Hosting-ready builder is missing safety marker: ${marker}`);
 const activationSource = fs.readFileSync(path.join(root, 'scripts', 'activate-production.js'), 'utf8');
 for (const marker of ['runProductionPreflight(', 'Activation was blocked', 'computeReleaseTreeSha256(', 'atomicSwitch()']) if (!activationSource.includes(marker)) throw new Error(`Production activation is missing safety marker: ${marker}`);
 const preflightSource = fs.readFileSync(path.join(root, 'lib', 'productionPreflight.js'), 'utf8');
@@ -137,6 +137,9 @@ if (!serverSource.includes("pathname === '/setup/claim'") || !serverSource.inclu
 
 const launcherSource = fs.readFileSync(path.join(root, 'scripts', 'p2pflow-launcher.js'), 'utf8');
 for (const marker of ['releaseTreeSha256(', 'CURRENT_POINTER', 'bootstrapCurrentRelease(', 'migratePersistentHostingFiles(', 'Target release files do not match the integrity manifest', 'installLauncherForNextRestart(', 'pending activation', 'ACTIVATION_ROLLED_BACK']) if (!launcherSource.includes(marker)) throw new Error(`Production launcher is missing safety marker: ${marker}`);
+
+const hostingEntrySource = fs.readFileSync(path.join(root, 'scripts', 'p2pflow-hosting-entry.js'), 'utf8');
+for (const marker of ['hosting startup process', 'releaseTreeSha256(', 'CURRENT_POINTER', 'PENDING_ACTIVATION_FILE', 'rollbackPendingActivation(', 'Target release files do not match the integrity manifest', 'validateBootstrapFiles(', 'shutdown-for-switch', 'startFailureServer(']) if (!hostingEntrySource.includes(marker)) throw new Error(`Shared-hosting entry is missing safety marker: ${marker}`);
 
 console.log(JSON.stringify({
   ok: true,

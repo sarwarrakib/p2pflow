@@ -25,7 +25,7 @@ System Update → Generate Signing Key। Private key একবার দেখ�
 
 ## Release process
 
-GitHub source package repository-তে push করুন। নতুন application version `package.json`-এ বাড়িয়ে নতুন package version push করুন, যেমন `1.0.168`। Included Action নিজে matching `v1.0.168` tag ও signed GitHub Release publish করবে।
+GitHub source package repository-তে push করুন। নতুন application version `package.json`-এ বাড়িয়ে নতুন package version push করুন, যেমন `1.0.172`। Included Action নিজে matching `v1.0.172` tag ও signed GitHub Release publish করবে।
 
 Server নিজে install করবে না। Owner Check Now, Prepare Update এবং Install Update চাপলে তবেই update হবে।
 

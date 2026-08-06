@@ -119,7 +119,7 @@ function bootstrapCurrentRelease() {
   const candidates = fs.readdirSync(RELEASES_DIR, { withFileTypes: true })
     .filter(entry => entry.isDirectory() && !entry.name.startsWith('.'))
     .map(entry => path.join(RELEASES_DIR, entry.name))
-    .filter(directory => fs.existsSync(path.join(directory, 'package.json')) && fs.existsSync(path.join(directory, '.release-manifest.json')))
+    .filter(directory => fs.existsSync(path.join(directory, 'package.json')) && (fs.existsSync(path.join(directory, '.release-manifest.json')) || fs.existsSync(path.join(directory, 'release-manifest.json'))))
     .sort((a, b) => compareVersion(releaseVersionFromDirectory(b), releaseVersionFromDirectory(a)));
   if (!candidates.length) throw new Error('No P2PFlow release is available in the releases directory.');
   return atomicSwitch(candidates[0]);
@@ -154,7 +154,7 @@ function migratePersistentHostingFiles() {
   copyTreeIfMissing(path.join(ROOT, '.p2pflow'), SETUP_DIR);
 }
 
-const RELEASE_METADATA_FILES = new Set(['.release-manifest.json', '.release-manifest.sig']);
+const RELEASE_METADATA_FILES = new Set(['.release-manifest.json', '.release-manifest.sig', 'release-manifest.json', 'release-manifest.sig']);
 function hashFileSync(filePath) {
   const hash = crypto.createHash('sha256');
   const fd = fs.openSync(filePath, 'r');
@@ -208,7 +208,9 @@ function validateReleaseDir(directory, expectedVersion = '') {
   const releaseStat = fs.lstatSync(requested);
   if (releaseStat.isSymbolicLink() || !fs.statSync(target).isDirectory()) throw new Error('Target release must be a real directory, not a symbolic link.');
   const packagePath = path.join(target, 'package.json');
-  const manifestPath = path.join(target, '.release-manifest.json');
+  const hiddenManifestPath = path.join(target, '.release-manifest.json');
+  const visibleManifestPath = path.join(target, 'release-manifest.json');
+  const manifestPath = fs.existsSync(hiddenManifestPath) ? hiddenManifestPath : visibleManifestPath;
   if (!fs.existsSync(path.join(target, 'server.js')) || !fs.existsSync(packagePath) || !fs.existsSync(manifestPath)) throw new Error('Target release is incomplete or has no integrity manifest.');
   const pkg = JSON.parse(fs.readFileSync(packagePath, 'utf8'));
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));

@@ -32,7 +32,15 @@ const DATABASE_TABLE = cleanEnv(process.env.P2PFLOW_DATABASE_TABLE || process.en
 const APP_KEY = String(process.env.P2PFLOW_APP_KEY || process.env.CRM_APP_KEY || '');
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const ENV_FILE = resolveEnvFile(__dirname, process.env);
-const INSTALL_ROOT = path.resolve(process.env.P2PFLOW_INSTALL_ROOT || process.env.CRM_INSTALL_ROOT || path.join(__dirname, '..'));
+function defaultInstallRoot(appDirectory) {
+  const appRoot = path.resolve(appDirectory);
+  const parent = path.dirname(appRoot);
+  // Managed releases live in <installRoot>/releases/<version>. A normal
+  // shared-hosting deployment runs directly from the application root.
+  if (path.basename(parent).toLowerCase() === 'releases') return path.dirname(parent);
+  return appRoot;
+}
+const INSTALL_ROOT = path.resolve(process.env.P2PFLOW_INSTALL_ROOT || process.env.CRM_INSTALL_ROOT || defaultInstallRoot(__dirname));
 const HOSTING_SETUP_PATHS = setupPaths(__dirname, ENV_FILE, process.env);
 const RELEASES_DIR = path.resolve(process.env.P2PFLOW_RELEASES_DIR || process.env.CRM_RELEASES_DIR || path.join(INSTALL_ROOT, 'releases'));
 const SHARED_DIR = path.resolve(process.env.P2PFLOW_SHARED_DIR || process.env.CRM_SHARED_DIR || path.join(INSTALL_ROOT, 'shared'));

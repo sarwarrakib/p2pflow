@@ -1,17 +1,10 @@
-// Owner-only signed release management. First-run setup is never used for software updates.
+// P2PFlow System Update - compact owner workflow.
 
-function systemUpdateSecurityRows(config = {}) {
-  const rows = [
-    ['Private GitHub repository', config.repositoryConfigured],
-    ['Repository read token', config.tokenConfigured],
-    ['Signed release verification', !config.signatureRequired || config.publicKeyConfigured]
-  ];
-  return rows.map(([label, ok]) => `<div class="summary-row"><span>${escapeHtml(label)}</span>${badge(ok ? 'Ready' : 'Required', ok ? 'ok' : 'warn')}</div>`).join('');
-}
-
-function systemUpdateEngineRow(config = {}) {
-  const ready = Boolean(config.automaticInstallReady);
-  return `<div class="summary-row"><span>Automatic update engine</span>${badge(ready ? 'Ready' : 'One-time migration', ready ? 'ok' : 'warn')}</div>`;
+function systemVersionLabel(value) {
+  const text = String(value || '').trim().replace(/^v/i, '');
+  const match = text.match(/^(\d+)\.(\d+)\.(\d+)(.*)$/);
+  if (!match) return text || '-';
+  return Number(match[3]) === 0 && !match[4] ? `${match[1]}.${match[2]}` : `${match[1]}.${match[2]}.${match[3]}${match[4]}`;
 }
 
 function systemUpdateDate(value) {
@@ -20,7 +13,8 @@ function systemUpdateDate(value) {
 }
 
 function systemUpdateRestartWait(version) {
-  $('#content').innerHTML = `<div class="card"><div class="update-restart-state"><div class="spinner"></div><h3>Restarting P2PFlow</h3><p>Version ${escapeHtml(version || '')} is being activated. Database data and transactions are not rolled back.</p><small id="updateRestartMessage">Waiting for the service...</small></div></div>`;
+  const label = systemVersionLabel(version);
+  $('#content').innerHTML = `<div class="card"><div class="update-restart-state"><div class="spinner"></div><h3>Installing version ${escapeHtml(label)}</h3><p>Database backup is complete. P2PFlow is restarting with the verified code.</p><small id="updateRestartMessage">Waiting for the service...</small></div></div>`;
   let attempts = 0;
   const poll = async () => {
     attempts += 1;
@@ -28,7 +22,7 @@ function systemUpdateRestartWait(version) {
       const response = await fetch('/ready', { cache:'no-store', credentials:'include' });
       const data = await response.json().catch(() => ({}));
       if (response.ok && data.ok) {
-        $('#updateRestartMessage').textContent = `Version ${data.version || version} is online. Reloading...`;
+        $('#updateRestartMessage').textContent = `Version ${systemVersionLabel(data.version || version)} is online. Reloading...`;
         setTimeout(() => window.location.reload(), 700);
         return;
       }
@@ -67,7 +61,8 @@ function ownerAuthorizationModal(title, buttonText, callback, notice = '') {
 }
 
 function openSystemUpdateAuthorization(action, version) {
-  const title = action === 'rollback' ? `Roll back code to ${version}` : `Install ${version}`;
+  const label = systemVersionLabel(version);
+  const title = action === 'rollback' ? `Roll back to ${label}` : `Install ${label}`;
   const actionText = action === 'rollback' ? 'Roll Back Code' : 'Install Update';
   ownerAuthorizationModal(title, actionText, async auth => {
     const result = await api(`/api/system-update/${action === 'rollback' ? 'rollback' : 'apply'}`, {
@@ -77,8 +72,8 @@ function openSystemUpdateAuthorization(action, version) {
     closeModal();
     systemUpdateRestartWait(result.version || version);
   }, action === 'rollback'
-    ? 'Only application code changes. The current database, orders, transactions and histories remain unchanged.'
-    : 'P2PFlow will finish active writes, create a database backup, switch the verified release and restart.');
+    ? 'Only application code changes. Current orders, ledger, accounting and database records remain unchanged.'
+    : 'P2PFlow will finish active writes, create a database backup, activate the verified release and restart.');
 }
 
 function githubRepositoryValue() { return ($('#githubRepository')?.value || '').trim(); }
@@ -86,156 +81,209 @@ function githubTokenValue() { return ($('#githubToken')?.value || '').trim(); }
 
 async function testGithubConnection() {
   const button = $('#testGithubConnectionBtn');
-  button.disabled = true; button.textContent = 'Testing...';
+  button.disabled = true;
+  button.textContent = 'Testing...';
   try {
     const result = await api('/api/system-update/config/test', {
       method:'POST',
       body: JSON.stringify({ repository: githubRepositoryValue(), token: githubTokenValue(), requireSignature: true })
     });
     const repo = result.repository || {};
-    const privacy = repo.private ? 'Private repository verified.' : 'Warning: this repository is public.';
     const release = result.latestRelease?.version
-      ? ` Latest published release: ${result.latestRelease.version}.`
-      : ` ${result.releaseMessage || 'Repository connected. No published production release exists yet.'}`;
+      ? `Latest release: ${systemVersionLabel(result.latestRelease.version)}`
+      : (result.releaseMessage || 'Connected. No release published yet.');
     $('#githubConnectionResult').className = `notice ${repo.private ? 'okbox' : 'warn'}`;
-    $('#githubConnectionResult').textContent = `${privacy}${release}`;
-    notify('GitHub connection verified.', repo.private ? 'ok' : 'warn');
+    $('#githubConnectionResult').textContent = `${repo.private ? 'Private repository verified.' : 'Repository is public.'} ${release}`;
   } finally {
-    button.disabled = false; button.textContent = 'Test Connection';
+    button.disabled = false;
+    button.textContent = 'Test';
   }
 }
 
 function saveGithubConnection() {
   const repository = githubRepositoryValue();
   const token = githubTokenValue();
-  ownerAuthorizationModal('Save GitHub Connection', 'Save Connection', async auth => {
+  ownerAuthorizationModal('Save GitHub Connection', 'Save', async auth => {
     await api('/api/system-update/config', {
       method:'POST',
       body: JSON.stringify({ repository, token, requireSignature: true, ...auth })
     });
     closeModal();
-    notify('Private GitHub connection saved securely.', 'ok');
+    notify('GitHub connection saved.', 'ok');
     await renderSystemUpdate();
-  }, 'The fine-grained read-only token is encrypted inside the application database. It is never placed in source code or shown again.');
+  }, 'The read-only token is encrypted inside the application database.');
+}
+
+function openGithubConnectionSettings(config = {}) {
+  modal('GitHub Connection', `<div class="form-grid update-connection-modal">
+    <div class="full-row"><label>Private Repository</label><input id="githubRepository" value="${escapeAttr(config.repository || '')}" placeholder="owner/repository" autocomplete="off" /></div>
+    <div class="full-row"><label>Read-only Token</label><input id="githubToken" type="password" placeholder="${config.tokenConfigured ? 'Saved - leave blank to keep it' : 'github_pat_...'}" autocomplete="new-password" /></div>
+    <div id="githubConnectionResult" class="notice hidden"></div>
+    <div class="full-row actions"><button id="testGithubConnectionBtn" type="button" class="secondary">Test</button><button id="saveGithubConnectionBtn" type="button">Save Connection</button><button type="button" class="secondary close-github-modal">Cancel</button></div>
+  </div>`);
+  $('#testGithubConnectionBtn').onclick = testGithubConnection;
+  $('#saveGithubConnectionBtn').onclick = saveGithubConnection;
+  $('.close-github-modal').onclick = closeModal;
 }
 
 function generateReleaseSigningKey() {
-  ownerAuthorizationModal('Generate Release Signing Key', 'Generate Key', async auth => {
+  ownerAuthorizationModal('Generate Signing Key', 'Generate Key', async auth => {
     const result = await api('/api/system-update/config/generate-signing-key', {
       method:'POST', body: JSON.stringify(auth)
     });
-    const repository = githubRepositoryValue() || state.systemUpdateRepository || '';
+    const repository = state.systemUpdateRepository || '';
     const secretUrl = repository && repository.includes('/') ? `https://github.com/${repository}/settings/secrets/actions/new` : 'https://github.com/settings/personal-access-tokens';
-    modal('Signing Key Created - Copy Once', `<div class="notice warn"><b>Copy this private key now.</b> P2PFlow saved only the public verification key and cannot display this private key again.</div>
+    modal('Copy Signing Key Once', `<div class="notice warn"><b>Copy the private key now.</b> P2PFlow stores only the public verification key.</div>
       <div class="form-grid">
-        <div class="full-row"><label>GitHub Actions Secret Name</label><input value="${escapeAttr(result.githubSecretName || 'UPDATE_SIGNING_PRIVATE_KEY')}" readonly /></div>
-        <div class="full-row"><label>Private Signing Key</label><textarea id="generatedSigningPrivateKey" rows="10" readonly>${escapeHtml(result.privateKey || '')}</textarea></div>
-        <div class="full-row notice"><b>One GitHub step:</b> Repository - Settings - Secrets and variables - Actions - New repository secret. Use the name above and paste the complete private key.</div>
-        <div class="full-row actions"><button id="copySigningPrivateKeyBtn" type="button">Copy Private Key</button><a class="button secondary" href="${escapeAttr(secretUrl)}" target="_blank" rel="noopener">Open GitHub Secret Page</a><button class="secondary close-signing-key-modal" type="button">Done</button></div>
+        <div class="full-row"><label>GitHub Secret Name</label><input value="${escapeAttr(result.githubSecretName || 'UPDATE_SIGNING_PRIVATE_KEY')}" readonly /></div>
+        <div class="full-row"><label>Private Signing Key</label><textarea id="generatedSigningPrivateKey" rows="9" readonly>${escapeHtml(result.privateKey || '')}</textarea></div>
+        <div class="full-row actions"><button id="copySigningPrivateKeyBtn" type="button">Copy Key</button><a class="button secondary" href="${escapeAttr(secretUrl)}" target="_blank" rel="noopener">Open GitHub Secret</a><button class="secondary close-signing-key-modal" type="button">Done</button></div>
       </div>`);
     $('#copySigningPrivateKeyBtn').onclick = async () => {
       await navigator.clipboard.writeText(result.privateKey || '');
       notify('Private signing key copied.', 'ok');
     };
     $('.close-signing-key-modal').onclick = async () => { closeModal(); await renderSystemUpdate(); };
-  }, 'The Ed25519 signing key proves that an update was built by your private GitHub workflow.');
+  }, 'This key signs every production release created by GitHub Actions.');
+}
+
+async function installAvailableUpdate(version) {
+  const button = $('#installSystemUpdateBtn');
+  if (button) { button.disabled = true; button.textContent = 'Verifying...'; }
+  try {
+    const result = await api('/api/system-update/stage', { method:'POST', body:'{}' });
+    if (!result.staged && result.reason === 'no_release') {
+      notify('No published release exists yet.', 'warn');
+      await renderSystemUpdate();
+      return;
+    }
+    if (!result.staged && result.reason === 'already_current') {
+      notify('P2PFlow is already up to date.', 'ok');
+      await renderSystemUpdate();
+      return;
+    }
+    openSystemUpdateAuthorization('apply', version || result.release?.version);
+  } catch (error) {
+    if (button) { button.disabled = false; button.textContent = 'Update Now'; }
+  }
+}
+
+function updateStatusPill(label, ok, waitingLabel = 'Required') {
+  return `<div class="update-mini-status"><span>${escapeHtml(label)}</span>${badge(ok ? 'Ready' : waitingLabel, ok ? 'ok' : 'warn')}</div>`;
 }
 
 async function renderSystemUpdate() {
-  setTitle('System Update', 'Owner-only private GitHub connection, signed releases and safe code rollback.');
+  setTitle('System Update', 'Private GitHub release check and safe installation.');
   const status = await api('/api/system-update');
   const release = status.availableRelease;
   const updateAvailable = Boolean(status.availableVersion && release);
   const config = status.config || {};
-  const lastResult = status.lastResult || null;
-  const databaseLabel = status.storageProvider === 'postgres' ? 'PostgreSQL' : 'MariaDB / MySQL';
   const connectionReady = Boolean(config.connectionReady || (config.repositoryConfigured && config.tokenConfigured));
   const securityReady = Boolean(config.releaseSecurityReady || (!config.signatureRequired || config.publicKeyConfigured));
   const automaticInstallReady = Boolean(config.automaticInstallReady || config.ready);
-  const updateLabel = updateAvailable ? escapeHtml(status.availableVersion) : (status.lastCheckMessage?.includes('No published') ? 'No release yet' : 'Up to date');
+  const staged = Boolean((status.installedReleases || []).some(item => item.version === status.availableVersion));
+  const latestBackup = (status.backups || [])[0] || null;
+  const currentLabel = systemVersionLabel(status.currentVersion);
+  const availableLabel = systemVersionLabel(status.availableVersion);
   state.systemUpdateRepository = config.repository || '';
 
+  const headline = updateAvailable ? `Version ${availableLabel} is ready` : 'Your system is up to date';
+  const headlineNote = updateAvailable
+    ? (release?.name || 'A verified GitHub release is available.')
+    : (status.lastCheckMessage || 'Push the next version to GitHub, then press Check Now.');
+
   $('#content').innerHTML = `
-    <div class="notice okbox"><b>Simple update flow:</b> connect the private repository once, add the signing secret once, then every future version pushed from GitHub Desktop is published automatically. P2PFlow checks and verifies it here.</div>
+    <div class="system-update-page">
+      <main class="system-update-main">
+        <section class="update-hero-card ${updateAvailable ? 'has-update' : ''}">
+          <div class="update-hero-copy">
+            <span class="update-eyebrow">P2PFlow ${escapeHtml(currentLabel)}</span>
+            <h2>${escapeHtml(headline)}</h2>
+            <p>${escapeHtml(headlineNote)}</p>
+          </div>
+          <div class="update-hero-actions">
+            <button id="checkSystemUpdateBtn" class="secondary" ${!connectionReady ? 'disabled' : ''}>Check Now</button>
+            ${updateAvailable ? `<button id="installSystemUpdateBtn" class="success" ${!automaticInstallReady || !securityReady ? 'disabled' : ''}>${staged ? 'Install Now' : 'Update Now'}</button>` : ''}
+          </div>
+        </section>
 
-    <div class="stats-grid update-stats">
-      <div class="stat"><span>Current Version</span><b>${escapeHtml(status.currentVersion || '-')}</b><small>Schema ${escapeHtml(status.schemaVersion)} - Data epoch ${escapeHtml(status.dataCompatibilityEpoch || '-')}</small></div>
-      <div class="stat"><span>Database</span><b>${escapeHtml(databaseLabel)}</b><small>Revision ${escapeHtml(status.databaseRevision || 0)}</small></div>
-      <div class="stat"><span>Release Status</span><b>${updateLabel}</b><small>${status.lastCheckedAt ? `Checked ${escapeHtml(systemUpdateDate(status.lastCheckedAt))}` : 'Not checked yet'}</small></div>
-      <div class="stat"><span>Update Engine</span><b>${automaticInstallReady ? 'Automatic' : 'Direct hosting'}</b><small>${automaticInstallReady ? 'Prepare, install and rollback enabled' : 'Connection and release check are enabled'}</small></div>
-    </div>
+        ${status.lastCheckError ? `<div class="error update-page-message">${escapeHtml(status.lastCheckError)}</div>` : ''}
+        ${status.lastResult?.error ? `<div class="error update-page-message">${escapeHtml(status.lastResult.error)}</div>` : ''}
 
-    ${status.lastCheckError ? `<div class="error">${escapeHtml(status.lastCheckError)}</div>` : ''}
-    ${status.lastCheckMessage && !status.lastCheckError ? `<div class="notice okbox">${escapeHtml(status.lastCheckMessage)}</div>` : ''}
-    ${lastResult ? `<div class="notice ${lastResult.status === 'rolled_back' ? 'warn' : 'okbox'}"><b>Last release result:</b> ${escapeHtml(lastResult.status || '')}${lastResult.version ? ` - ${escapeHtml(lastResult.version)}` : ''}${lastResult.error ? `<br/>${escapeHtml(lastResult.error)}` : ''}</div>` : ''}
+        <section class="update-overview-grid">
+          <div class="update-overview-card"><span>Current version</span><b>${escapeHtml(currentLabel)}</b><small>Schema ${escapeHtml(status.schemaVersion)}</small></div>
+          <div class="update-overview-card"><span>GitHub</span><b>${connectionReady ? 'Connected' : 'Not connected'}</b><small>${escapeHtml(config.repository || 'Connection required')}</small></div>
+          <div class="update-overview-card"><span>Last backup</span><b>${latestBackup ? 'Ready' : 'Not created'}</b><small>${latestBackup ? escapeHtml(systemUpdateDate(latestBackup.created_at)) : 'Created before installation'}</small></div>
+        </section>
 
-    <div class="two-col update-layout">
-      <div class="card">
-        <div class="section-head"><div><h3>Private GitHub Connection</h3><p>One private repository and one fine-grained read-only token.</p></div>${badge(connectionReady ? 'Connected' : 'Not connected', connectionReady ? 'ok' : 'warn')}</div>
-        <div class="form-grid">
-          <div class="full-row"><label>Private Repository Link or owner/repository</label><input id="githubRepository" value="${escapeAttr(config.repository || '')}" placeholder="https://github.com/YOUR_USERNAME/p2pflow-private" autocomplete="off" /></div>
-          <div class="full-row"><label>Fine-grained Personal Access Token</label><input id="githubToken" type="password" placeholder="${config.tokenConfigured ? 'Saved token - leave blank to keep it' : 'github_pat_...'}" autocomplete="new-password" /></div>
-          <div class="full-row notice"><b>Minimum token access:</b> Only select this repository; Repository permissions - Contents: Read-only. The token must start with <code>github_pat_</code>.</div>
-          <div id="githubConnectionResult" class="notice hidden"></div>
-          <div class="full-row actions"><button id="testGithubConnectionBtn" type="button" class="secondary">Test Connection</button><button id="saveGithubConnectionBtn" type="button">Save Connection</button><a class="button secondary" href="https://github.com/new" target="_blank" rel="noopener">Create Private Repository</a><a class="button secondary" href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener">Create Fine-grained Token</a></div>
+        ${updateAvailable ? `<section class="update-release-card">
+          <div class="section-head"><div><h3>${escapeHtml(release.name || `P2PFlow ${availableLabel}`)}</h3><p>${release.publishedAt ? `Published ${escapeHtml(systemUpdateDate(release.publishedAt))}` : 'Verified release from your private repository'}</p></div>${badge(staged ? 'Verified' : 'New', staged ? 'ok' : 'warn')}</div>
+          ${release.body ? `<div class="update-release-summary">${escapeHtml(String(release.body).split(/\r?\n/).filter(Boolean).slice(0, 4).join(' '))}</div>` : ''}
+          <div class="update-safe-line"><b>No data loss:</b> active writes finish first, then a database backup is created before code activation.</div>
+        </section>` : `<section class="update-release-card update-empty-state"><b>No new release</b><span>Upload the next source version to GitHub and press Check Now.</span></section>`}
+
+        <section class="update-settings-card">
+          <div class="update-settings-row">
+            <div><span>Repository</span><b>${escapeHtml(config.repository || 'Not connected')}</b></div>
+            <button id="openGithubConnectionBtn" class="secondary small">${connectionReady ? 'Connection Settings' : 'Connect GitHub'}</button>
+          </div>
+          <div class="update-settings-row">
+            <div><span>Release signature</span><b>${securityReady ? 'Ed25519 verification ready' : 'Signing key required'}</b></div>
+            <button id="generateSigningKeyBtn" class="secondary small">${config.publicKeyConfigured ? 'Replace Key' : 'Generate Key'}</button>
+          </div>
+        </section>
+
+        <details class="update-details-card">
+          <summary>Installed versions <span>${(status.installedReleases || []).length}</span></summary>
+          <div class="table-wrap"><table><thead><tr><th>Version</th><th>Installed</th><th>Status</th><th>Action</th></tr></thead><tbody>
+            ${(status.installedReleases || []).map(item => `<tr><td><b>${escapeHtml(systemVersionLabel(item.version))}</b></td><td>${escapeHtml(systemUpdateDate(item.installedAt))}</td><td>${item.current ? badge('Current','ok') : badge('Ready','muted')}</td><td>${item.current ? '-' : (compareVersionText(item.version, status.currentVersion) < 0 ? `<button class="danger small" data-rollback-version="${escapeAttr(item.version)}" ${!automaticInstallReady ? 'disabled' : ''}>Roll Back</button>` : `<button class="success small" data-install-version="${escapeAttr(item.version)}" ${!automaticInstallReady ? 'disabled' : ''}>Install</button>`)}</td></tr>`).join('') || '<tr><td colspan="4" class="empty">No version history yet.</td></tr>'}
+          </tbody></table></div>
+        </details>
+
+        <details class="update-details-card">
+          <summary>Database backups <span>${(status.backups || []).length}</span></summary>
+          <div class="table-wrap"><table><thead><tr><th>Label</th><th>Revision</th><th>Version</th><th>Created</th></tr></thead><tbody>
+            ${(status.backups || []).map(item => `<tr><td>${escapeHtml(item.label)}</td><td>${escapeHtml(item.source_revision)}</td><td>${escapeHtml(systemVersionLabel(item.app_version || '-'))}</td><td>${escapeHtml(systemUpdateDate(item.created_at))}</td></tr>`).join('') || '<tr><td colspan="4" class="empty">A backup will be created before the first installation.</td></tr>'}
+          </tbody></table></div>
+        </details>
+      </main>
+
+      <aside class="update-note-panel">
+        <div class="update-note-pin">NOTE</div>
+        <h3>Update guide</h3>
+        <ol>
+          <li>Copy the new source files into your GitHub Desktop repository.</li>
+          <li>Commit and Push origin.</li>
+          <li>Wait for the GitHub Release workflow to finish.</li>
+          <li>Open this page and press Check Now.</li>
+          <li>Press Update Now.</li>
+          <li>Confirm Owner password and secret code.</li>
+        </ol>
+        <div class="update-note-statuses">
+          ${updateStatusPill('GitHub connection', connectionReady, 'Connect')}
+          ${updateStatusPill('Signed release', securityReady, 'Key needed')}
+          ${updateStatusPill('Automatic install', automaticInstallReady, 'Hosting setup')}
         </div>
-      </div>
-      <div class="card">
-        <div class="section-head"><div><h3>Release Security</h3><p>Every production package must pass tests, hashes and Ed25519 signature verification.</p></div>${badge(securityReady ? 'Ready' : 'Key required', securityReady ? 'ok' : 'warn')}</div>
-        <div class="summary-list">${systemUpdateSecurityRows(config)}${systemUpdateEngineRow(config)}</div>
-        <div class="actions mt-sm"><button id="generateSigningKeyBtn" type="button" class="secondary">${config.publicKeyConfigured ? 'Replace Signing Key' : 'Generate Signing Key'}</button></div>
-        ${automaticInstallReady
-          ? '<div class="notice okbox mt-sm"><b>Automatic update engine is ready.</b> Prepare, Install and Roll Back can safely switch versioned releases.</div>'
-          : `<div class="notice warn mt-sm"><b>One-time hosting migration needed for automatic installation.</b> GitHub connection and Check Now work already. Deploy the provided v${escapeHtml(status.currentVersion || '')} Hosting Migration package once; after restart this engine becomes Ready. This is not a GitHub or signing error.</div>`}
-      </div>
-    </div>
-
-    <div class="card">
-      <div class="section-head"><div><h3>${updateAvailable ? `Version ${escapeHtml(status.availableVersion)} available` : 'Release Check'}</h3><p>${release?.publishedAt ? `Published ${escapeHtml(systemUpdateDate(release.publishedAt))}` : 'A repository with no release is a valid first-time state and no longer causes a 404 error.'}</p></div><button id="checkSystemUpdateBtn" class="secondary" ${!connectionReady ? 'disabled' : ''}>Check Now</button></div>
-      ${updateAvailable ? `<div class="release-notes"><h4>${escapeHtml(release.name || release.version)}</h4><pre>${escapeHtml(release.body || 'No release notes provided.')}</pre></div>
-        <div class="actions"><button id="stageSystemUpdateBtn" ${!config.ready ? 'disabled' : ''}>Prepare Update</button><button id="applySystemUpdateBtn" class="success" ${!(status.installedReleases || []).some(item => item.version === status.availableVersion) || !config.ready ? 'disabled' : ''}>Install Update</button></div>
-        ${!automaticInstallReady ? '<div class="notice warn mt-sm">The release can be checked, but automatic Prepare/Install is disabled until the one-time Hosting Migration package is deployed.</div>' : ''}`
-        : '<div class="empty">No newer published production release is currently available.</div>'}
-    </div>
-
-    <div class="card">
-      <div class="section-head"><div><h3>Installed Releases</h3><p>Rollback changes application code only. Current database records and transactions remain in place.</p></div></div>
-      <div class="table-wrap"><table><thead><tr><th>Version</th><th>Compatibility</th><th>Installed</th><th>Status</th><th>Action</th></tr></thead><tbody>
-        ${(status.installedReleases || []).map(item => `<tr><td><b>${escapeHtml(item.version)}</b></td><td>Schema ${escapeHtml(item.schema?.min ?? '-')} - ${escapeHtml(item.schema?.max ?? '-')}<br/><small>Data epoch ${escapeHtml(item.dataCompatibilityEpoch || '-')}</small></td><td>${escapeHtml(systemUpdateDate(item.installedAt))}</td><td>${item.current ? badge('Current','ok') : badge('Available','muted')}</td><td>${item.current ? '-' : (compareVersionText(item.version, status.currentVersion) < 0 ? `<button class="danger small" data-rollback-version="${escapeAttr(item.version)}" ${!config.ready ? 'disabled' : ''}>Roll Back</button>` : `<button class="success small" data-install-version="${escapeAttr(item.version)}" ${!config.ready ? 'disabled' : ''}>Install</button>`)}</td></tr>`).join('') || '<tr><td colspan="5" class="empty">No managed release is available.</td></tr>'}
-      </tbody></table></div>
-    </div>
-
-    <div class="card">
-      <div class="section-head"><div><h3>Database Backups</h3><p>A database backup is created before every code switch. Code rollback does not delete later transactions.</p></div></div>
-      <div class="table-wrap"><table><thead><tr><th>ID</th><th>Label</th><th>Source Revision</th><th>Application</th><th>Created</th></tr></thead><tbody>
-        ${(status.backups || []).map(item => `<tr><td>${escapeHtml(item.id)}</td><td>${escapeHtml(item.label)}</td><td>${escapeHtml(item.source_revision)}</td><td>${escapeHtml(item.app_version || '-')}</td><td>${escapeHtml(systemUpdateDate(item.created_at))}</td></tr>`).join('') || '<tr><td colspan="5" class="empty">No update backup has been created yet.</td></tr>'}
-      </tbody></table></div>
+        <div class="update-note-safety"><b>Data safety</b><span>Orders, ledger, accounting, users and settings stay in the database. Code rollback never deletes later transactions.</span></div>
+      </aside>
     </div>`;
 
-  $('#testGithubConnectionBtn').onclick = testGithubConnection;
-  $('#saveGithubConnectionBtn').onclick = saveGithubConnection;
+  $('#openGithubConnectionBtn').onclick = () => openGithubConnectionSettings(config);
   $('#generateSigningKeyBtn').onclick = generateReleaseSigningKey;
   $('#checkSystemUpdateBtn').onclick = async () => {
-    const button = $('#checkSystemUpdateBtn'); button.disabled = true; button.textContent = 'Checking...';
+    const button = $('#checkSystemUpdateBtn');
+    button.disabled = true;
+    button.textContent = 'Checking...';
     try {
       const result = await api('/api/system-update/check', { method:'POST', body:'{}' });
-      notify(result.release?.version ? 'Release check completed.' : 'GitHub connected; no published release yet.', 'ok');
+      notify(result.release?.version ? 'Release check complete.' : 'No new release found.', 'ok');
       await renderSystemUpdate();
     } catch {
-      button.disabled = false; button.textContent = 'Check Now';
+      button.disabled = false;
+      button.textContent = 'Check Now';
     }
   };
-  if ($('#stageSystemUpdateBtn')) $('#stageSystemUpdateBtn').onclick = async () => {
-    const button = $('#stageSystemUpdateBtn'); button.disabled = true; button.textContent = 'Verifying...';
-    try {
-      const result = await api('/api/system-update/stage', { method:'POST', body:'{}' });
-      notify(result.reason === 'no_release' ? 'No published release exists yet.' : 'Verified release prepared.', result.reason === 'no_release' ? 'warn' : 'ok');
-      await renderSystemUpdate();
-    } catch {
-      button.disabled = false; button.textContent = 'Prepare Update';
-    }
-  };
-  if ($('#applySystemUpdateBtn')) $('#applySystemUpdateBtn').onclick = () => openSystemUpdateAuthorization('apply', status.availableVersion);
+  if ($('#installSystemUpdateBtn')) $('#installSystemUpdateBtn').onclick = () => installAvailableUpdate(status.availableVersion);
   $$('[data-rollback-version]').forEach(button => button.onclick = () => openSystemUpdateAuthorization('rollback', button.dataset.rollbackVersion));
   $$('[data-install-version]').forEach(button => button.onclick = () => openSystemUpdateAuthorization('apply', button.dataset.installVersion));
 }

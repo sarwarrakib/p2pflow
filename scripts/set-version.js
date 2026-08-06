@@ -11,9 +11,10 @@ const pkg = JSON.parse(fs.readFileSync(packagePath, 'utf8'));
 const current = String(pkg.version || '');
 
 function parse(value) {
-  const match = String(value || '').trim().replace(/^v/i, '').match(/^(\d+)\.(\d+)\.(\d+)$/);
+  const normalized = String(value || '').trim().replace(/^v/i, '');
+  const match = normalized.match(/^(\d+)\.(\d+)(?:\.(\d+))?$/);
   if (!match) return null;
-  const result = { major: Number(match[1]), minor: Number(match[2]), patch: Number(match[3]) };
+  const result = { major: Number(match[1]), minor: Number(match[2]), patch: Number(match[3] || 0) };
   result.text = `${result.major}.${result.minor}.${result.patch}`;
   return result;
 }
@@ -23,31 +24,35 @@ function compare(a, b) {
   return 0;
 }
 
-function incrementPatch(version) {
-  return { ...version, patch: version.patch + 1, text: `${version.major}.${version.minor}.${version.patch + 1}` };
+function nextMinor(version) {
+  return { major: version.major, minor: version.minor + 1, patch: 0, text: `${version.major}.${version.minor + 1}.0` };
 }
 
-function replaceVersionPair(text, oldCurrent, oldFollowing, newCurrent, newFollowing) {
-  // Update both the active version and examples that mention the following
-  // release. Placeholders prevent 1.0.167 -> 1.0.168 -> 1.0.169 cascades.
-  const currentMarker = '__P2PFLOW_CURRENT_VERSION__';
-  const followingMarker = '__P2PFLOW_FOLLOWING_VERSION__';
+function nextHotfix(version) {
+  return { major: version.major, minor: version.minor, patch: version.patch + 1, text: `${version.major}.${version.minor}.${version.patch + 1}` };
+}
+
+function display(version) {
+  return version.patch === 0 ? `${version.major}.${version.minor}` : version.text;
+}
+
+function replaceExactVersion(text, oldVersion, newVersion) {
   return String(text)
-    .split(oldFollowing).join(followingMarker)
-    .split(oldCurrent).join(currentMarker)
-    .split(currentMarker).join(newCurrent)
-    .split(followingMarker).join(newFollowing);
+    .split(`v${oldVersion}`).join(`v${newVersion}`)
+    .split(oldVersion).join(newVersion);
 }
 
 const currentParsed = parse(current);
-if (!currentParsed) throw new Error(`package.json has an invalid version: ${current}`);
-const requested = String(process.argv[2] || '').trim();
-const next = requested === 'patch' || !requested ? incrementPatch(currentParsed) : parse(requested);
-if (!next) throw new Error('Use: node scripts/set-version.js patch OR node scripts/set-version.js 1.0.168');
-if (compare(next, currentParsed) <= 0) throw new Error(`New version ${next.text} must be greater than current version ${current}.`);
+if (!currentParsed || !/^\d+\.\d+\.\d+$/.test(current)) throw new Error(`package.json has an invalid version: ${current}`);
 
-const oldFollowing = incrementPatch(currentParsed);
-const newFollowing = incrementPatch(next);
+const requested = String(process.argv[2] || 'minor').trim().toLowerCase();
+let next;
+if (['minor', 'feature', 'update'].includes(requested)) next = nextMinor(currentParsed);
+else if (['hotfix', 'patch', 'fix'].includes(requested)) next = nextHotfix(currentParsed);
+else next = parse(requested);
+
+if (!next) throw new Error('Use: node scripts/set-version.js minor | hotfix | 1.2 | 1.2.1');
+if (compare(next, currentParsed) <= 0) throw new Error(`New version ${next.text} must be greater than current version ${current}.`);
 
 pkg.version = next.text;
 fs.writeFileSync(packagePath, JSON.stringify(pkg, null, 2) + '\n');
@@ -79,10 +84,11 @@ for (const relative of replacements) {
   const file = path.join(root, relative);
   if (!fs.existsSync(file)) continue;
   const before = fs.readFileSync(file, 'utf8');
-  const after = replaceVersionPair(before, current, oldFollowing.text, next.text, newFollowing.text);
-  fs.writeFileSync(file, after);
+  fs.writeFileSync(file, replaceExactVersion(before, current, next.text));
 }
 
-console.log(`P2PFlow version updated: ${current} -> ${next.text}`);
-console.log(`The next-version examples were updated to ${newFollowing.text}.`);
-console.log('Next: review files in GitHub Desktop, commit, and Push origin. The GitHub workflow will publish the signed release automatically.');
+console.log(`P2PFlow version updated: ${display(currentParsed)} -> ${display(next)} (${next.text})`);
+console.log(requested === 'hotfix' || requested === 'patch' || requested === 'fix'
+  ? 'Hotfix version prepared.'
+  : 'Feature/update version prepared.');
+console.log('Next: review Changes in GitHub Desktop, Commit to main, then Push origin. GitHub Actions will publish the signed release automatically.');

@@ -30,7 +30,9 @@ function validateRelease() {
   if (!fs.existsSync(target) || !fs.statSync(target).isDirectory()) throw new Error(`Release directory is missing: ${target}`);
   if (!isInside(path.join(root, 'releases'), target)) throw new Error('Release directory must be inside the managed releases directory.');
   const packageFile = path.join(target, 'package.json');
-  const manifestFile = path.join(target, '.release-manifest.json');
+  const hiddenManifestFile = path.join(target, '.release-manifest.json');
+  const visibleManifestFile = path.join(target, 'release-manifest.json');
+  const manifestFile = fs.existsSync(hiddenManifestFile) ? hiddenManifestFile : visibleManifestFile;
   if (!fs.existsSync(packageFile) || !fs.existsSync(manifestFile) || !fs.existsSync(path.join(target, 'server.js'))) throw new Error('Release is incomplete.');
   const pkg = JSON.parse(fs.readFileSync(packageFile, 'utf8'));
   const manifest = JSON.parse(fs.readFileSync(manifestFile, 'utf8'));

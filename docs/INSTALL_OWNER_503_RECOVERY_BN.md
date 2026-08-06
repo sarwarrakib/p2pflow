@@ -1,4 +1,4 @@
-# P2PFlow v1.0.167 — Shared Hosting Install ও 503 Recovery
+# P2PFlow v1.1.0 — Shared Hosting Install ও 503 Recovery
 
 সাধারণ shared-hosting installation-এর জন্য terminal command প্রয়োজন নেই। পূর্ণ নির্দেশনা:
 
