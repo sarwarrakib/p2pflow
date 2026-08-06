@@ -1,4 +1,4 @@
-// P2PFlow v1.1.0
+// P2PFlow v1.2.0
 // Restored FULL advertisement update payload with no-updateMode compatibility retry.
 
 const ADS_COUNTRY_CODES = ["BD","US","GB","IN","PK","AE","SA","TR","NG","KE","GH","ZA","MY","SG","ID","PH","TH","VN","AU","CA","DE","FR","IT","ES","NL","BE","PT","JP","KR","CN","HK","TW","BR","MX","AR","CO","PE","CL","EG","MA","DZ","TN","QA","KW","BH","OM","LK","NP","AW","AF","AO","AI","AX","AL","AD","AM","AS","AQ","TF","AG","AT","AZ","BI","BJ","BQ","BF","BG","BS","BA","BL","BY","BZ","BM","BO","BB","BN","BT","BV","BW","CF","CC","CH","CI","CM","CD","CG","CK","KM","CV","CR","CU","CW","CX","KY","CY","CZ","DJ","DM","DK","DO","EC","ER","EH","EE","ET","FI","FJ","FK","FO","FM","GA","GE","GG","GI","GN","GP","GM","GW","GQ","GR","GD","GL","GT","GF","GU","GY","HM","HN","HR","HT","HU","IM","IO","IE","IR","IQ","IS","IL","JM","JE","JO","KZ","KG","KH","KI","KN","LA","LB","LR","LY","LC","LI","LS","LT","LU","LV","MO","MF","MC","MD","MG","MV","MH","MK","ML","MT","MM","ME","MN","MP","MZ","MR","MS","MQ","MU","MW","YT","NA","NC","NE","NF","NI","NU","NO","NR","NZ","PA","PN","PW","PG","PL","PR","KP","PY","PS","PF","RE","RO","RU","RW","SD","SN","GS","SH","SJ","SB","SL","SV","SM","SO","PM","RS","SS","ST","SR","SK","SI","SE","SZ","SX","SC","SY","TC","TD","TG","TJ","TK","TM","TL","TO","TT","TV","TZ","UG","UA","UM","UY","UZ","VA","VC","VE","VG","VI","VU","WF","WS","YE","ZM","ZW"];
@@ -59,11 +59,11 @@ function adCapabilityNotice(capability = {}) {
     const managerText = managers.map(m => `${m.name || m.username || 'Manager'} (${m.status || 'online'})`).join(', ');
     return `<div class="ads-access-banner blocked">
       <div class="ads-access-icon">🔒</div>
-      <div><b>Manager is active — আপনি এই ফাংশনগুলো ব্যবহার করতে পারবেন না।</b><p>Advertisement dashboard দেখা যাবে, কিন্তু create, edit, activate, pause এবং close করা যাবে না.${managerText ? ` Active: ${escapeHtml(managerText)}.` : ''}</p></div>
+      <div><b>Manager is active; advertisement controls are locked.</b><p>View only; create and edit are locked.${managerText ? ` Active: ${escapeHtml(managerText)}.` : ''}</p></div>
     </div>`;
   }
   if (state.user?.role === 'agent' && capability.canManage) {
-    return `<div class="ads-access-banner available"><div class="ads-access-icon">✓</div><div><b>Advertisement controls are available.</b><p>কোনো Manager active নেই। Manager active হলে controls স্বয়ংক্রিয়ভাবে lock হবে।</p></div></div>`;
+    return `<div class="ads-access-banner available"><div class="ads-access-icon">✓</div><div><b>Advertisement controls are ready.</b><p>No Manager is active.</p></div></div>`;
   }
   if (!capability.canManage) {
     return `<div class="ads-access-banner blocked"><div class="ads-access-icon">ℹ</div><div><b>Read-only advertisement access.</b><p>${escapeHtml(capability.reason || 'Your role does not have advertisement management permission.')}</p></div></div>`;
@@ -690,7 +690,7 @@ function openAdvertisementEditor(ad = null, data = {}) {
     </section>
 
     <section class="ads-field-section">
-      <label class="ads-label">Counterparty Conditions</label><p class="sub">Adding counterparty requirements will reduce the exposure of your Ad.</p>
+      <label class="ads-label">Counterparty Conditions</label><p class="sub">Conditions may reduce ad visibility.</p>
       <div class="ads-condition-list screenshot-conditions">
         <label><input type="checkbox" name="registeredRequired" ${Number(ad?.buyerRegDaysLimit || 0) > 0 ? 'checked' : ''}><span>Registered</span><input name="buyerRegDaysLimit" type="number" min="0" value="${escapeAttr(ad?.buyerRegDaysLimit || 0)}"><small>Day(s) ago</small></label>
         <label><input type="checkbox" name="holdingRequired" ${Number(ad?.buyerBtcPositionLimit || 0) > 0 ? 'checked' : ''}><span>Holdings more than</span><input name="buyerBtcPositionLimit" type="number" min="0" step="0.00000001" value="${escapeAttr(ad?.buyerBtcPositionLimit || 0)}"><small>BTC</small></label>

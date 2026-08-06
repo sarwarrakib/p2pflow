@@ -23,7 +23,7 @@ function activityUserLabel(row={}) {
 }
 
 async function renderActivityMonitor(options={}) {
-  setTitle('Activity Monitor', 'Live presence without reload, login duration, app-open time, engagement, idle/background time, page usage and audited work actions.');
+  setTitle('Activity Monitor');
   const filter = state.activityFilter || { period:'daily', start:'', end:'', userId:'' };
   const qs = new URLSearchParams({ period: filter.period || 'daily' });
   if (filter.start) qs.set('start', filter.start);

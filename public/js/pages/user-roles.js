@@ -2,7 +2,7 @@
 // Page module: user-roles. Edit this file for the user-roles page UI.
 
 async function renderUserRoles() {
-  setTitle('User Roles', 'Create role templates and assign permission rules to users.');
+  setTitle('User Roles');
   const data = await api('/api/user-roles');
   state.bootstrap.userRoles = data.items;
   $('#content').innerHTML = `

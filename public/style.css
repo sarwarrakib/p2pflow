@@ -3415,3 +3415,44 @@ nav .accounting-nav-group.active>.nav-group-toggle{color:#fff;border-color:rgba(
 @media(max-width:1020px){.system-update-page{grid-template-columns:1fr}.update-note-panel{position:static}.update-note-panel ol{grid-template-columns:repeat(2,minmax(0,1fr))}.update-note-statuses{grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}.update-mini-status{display:grid;justify-items:start}}
 @media(max-width:720px){.update-hero-card{align-items:flex-start;flex-direction:column;padding:22px}.update-hero-copy h2{font-size:24px}.update-hero-actions{width:100%;justify-content:stretch}.update-hero-actions button{flex:1}.update-overview-grid{grid-template-columns:1fr}.update-settings-row{align-items:flex-start;flex-direction:column}.update-settings-row button{width:100%}.update-note-panel ol{grid-template-columns:1fr}.update-note-statuses{grid-template-columns:1fr}.update-mini-status{display:flex}.update-details-card .table-wrap{overflow-x:auto}}
 @media(max-width:440px){.update-hero-actions{display:grid;grid-template-columns:1fr}.update-empty-state{align-items:flex-start;flex-direction:column}.update-note-panel{padding:18px 16px}.update-overview-card{padding:15px}}
+
+/* v1.2 compact copy + complete Bangla UI */
+.lang-bn,
+.lang-bn input,
+.lang-bn select,
+.lang-bn textarea,
+.lang-bn button {
+  font-family: "Noto Sans Bengali", "Hind Siliguri", "SolaimanLipi", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  letter-spacing: 0;
+}
+.compact-copy .topbar-copy p,
+.compact-copy .section-head p {
+  display: none !important;
+}
+.compact-copy .settings-section-head span {
+  display: -webkit-box;
+  -webkit-line-clamp: 1;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.compact-copy .notice {
+  padding: 9px 11px;
+  margin: 9px 0;
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+.compact-copy .card > .muted,
+.compact-copy .panel > .muted {
+  margin-bottom: 12px;
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+.compact-copy .topbar {
+  min-height: 62px;
+}
+.compact-copy .section-head {
+  margin-bottom: 10px;
+}
+.compact-copy .section-head h3 {
+  line-height: 1.25;
+}

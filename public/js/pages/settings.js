@@ -2,7 +2,7 @@
 // Page module: settings. Mail credentials are saved inside the encrypted database.
 
 async function renderSettings() {
-  setTitle('Settings', 'Approval, login verification, local mail, SMTP fallback, notification sound and activity controls.');
+  setTitle('Settings');
   const data = await api('/api/settings');
   const s = data.settings;
   const smtpSecurity = s.smtpSecure ? 'ssl' : (s.smtpStarttls ? 'starttls' : 'none');
@@ -48,13 +48,13 @@ async function renderSettings() {
     <div><label>SMTP Password</label><input name="smtpPassword" type="password" value="" placeholder="${s.smtpPasswordConfigured ? 'Saved — leave blank to keep' : 'Enter SMTP password'}" autocomplete="new-password" /></div>
     <div><label>SMTP HELO Domain</label><input name="smtpHelo" value="${escapeAttr(s.smtpHelo || 'localhost')}" placeholder="your-domain.com" /></div>
     <div><label class="check"><input type="checkbox" name="clearSmtpPassword" /> Clear saved SMTP password</label></div>
-    <div class="full-row"><div class="notice small">The SMTP password is never returned to the browser or written to audit logs. It is stored only inside the encrypted database. In Local mode, SMTP remains the final automatic fallback when PHP mail/sendmail is unavailable.</div></div>
+    <div class="full-row"><div class="notice small">SMTP password is stored encrypted.</div></div>
 
     ${typeof notificationSoundSettingsHtml === 'function' ? notificationSoundSettingsHtml() : ''}
     <div><label class="check"><input type="checkbox" name="requireProofForFinalAction" ${s.requireProofForFinalAction?'checked':''}/> Require proof for final action</label></div>
     <div><label class="check"><input type="checkbox" name="allowAgentFinalAction" ${s.allowAgentFinalAction?'checked':''}/> Allow lead user final action</label></div>
     <div class="full-row actions"><button type="submit">Save Settings</button><button type="button" class="secondary" id="settingsTestMailBtn">Send Test Email</button></div>
-  </form><div id="settingsMailResult"></div><div class="notice">API Mode live হলে approved final action সরাসরি Binance C2C SAPI call করবে. API credential, payId এবং release auth code সঠিক না হলে action fail হবে; secret কখনো UI/audit-এ দেখানো হবে না.</div></div>`;
+  </form><div id="settingsMailResult"></div><div class="notice">Live API actions require valid Binance credentials.</div></div>`;
 
   $('#settingsForm').onsubmit = async e => {
     e.preventDefault();

@@ -1,9 +1,14 @@
-P2PFlow 1.1
+P2PFlow 1.2
 
-1. HOSTING_READY ZIP-এর content Node Application Root-এ extract করুন।
+GitHub update:
+1. GITHUB_SOURCE ZIP extract করুন।
+2. Repository root-এ content copy করুন।
+3. Commit + Push origin দিন।
+4. System Update -> Check Now -> Update Now।
+
+Manual hosting:
+1. HOSTING_READY ZIP content Node Application Root-এ extract করুন।
 2. Existing .env, .p2pflow, shared/ এবং database মুছবেন না।
 3. npm ci --omit=dev --ignore-scripts
 4. npm run build
 5. Startup: server.js / Start: npm start
-6. Restart করে /ready-তে 1.1.0 নিশ্চিত করুন।
-7. ভবিষ্যৎ update: GitHub Desktop Push -> System Update -> Check Now -> Update Now.

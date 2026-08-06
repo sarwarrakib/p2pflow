@@ -1,4 +1,4 @@
-// P2PFlow v1.1.0
+// P2PFlow v1.2.0
 // Payment accounts: centrally managed, agent-scoped access, compact box-based bulk add.
 
 
@@ -21,12 +21,7 @@ async function renderAccounts() {
   const canManage = ['admin','manager'].includes(state.user.role) && hasPerm('accounts.manage');
   const canAdjust = ['admin','manager'].includes(state.user.role) && hasPerm('ledger.adjust');
   const canViewStatement = ['admin','manager','auditor'].includes(state.user.role) && hasPerm('accounts.view');
-  setTitle(
-    'Payment Accounts',
-    isAgent
-      ? 'Only payment accounts assigned to you are shown. You can use them in chat and Payment Split when accounts.use is enabled.'
-      : 'Admin and Manager can use every account. Agents only see and use accounts explicitly granted to them.'
-  );
+  setTitle('Payment Accounts');
   const data = await api('/api/payment-accounts');
   window.lastAccounts = data.items || [];
   const actionHeader = (canManage || canViewStatement) ? ['Action'] : [];

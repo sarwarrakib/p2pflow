@@ -1,38 +1,29 @@
-# P2PFlow 1.1 - GitHub Desktop Update Guide
+# P2PFlow 1.2 - GitHub Desktop Update Guide
 
-## প্রথমবার source upload
+## GitHub-এ 1.2 আপলোড
 
-1. `P2PFlow_v1.1.0_GITHUB_SOURCE.zip` extract করুন।
-2. GitHub Desktop-এ আপনার private repository খুলুন।
-3. ZIP-এর ভেতরের সব file/folder repository root-এ copy করুন। ZIP file নিজে upload করবেন না।
-4. `.git` folder মুছবেন না। `.github` folder copy হয়েছে নিশ্চিত করুন।
-5. Summary লিখুন: `P2PFlow 1.1`
+1. `P2PFlow_v1.2.0_GITHUB_SOURCE.zip` আলাদা folder-এ extract করুন।
+2. GitHub Desktop থেকে আপনার private repository folder খুলুন।
+3. Extract করা সব file/folder repository root-এ copy/overwrite করুন। ZIP file repository-তে দেবেন না।
+4. `.git` মুছবেন না এবং `.github` folder copy হয়েছে নিশ্চিত করুন।
+5. Summary লিখুন: `P2PFlow 1.2 Bangla UI update`
 6. `Commit to main` চাপুন।
 7. `Push origin` চাপুন।
-8. GitHub Actions-এর `Publish signed P2PFlow release` সফল হওয়া পর্যন্ত অপেক্ষা করুন।
+8. GitHub Actions release সফল হলে P2PFlow-এ `System Update -> Check Now -> Update Now` চাপুন।
 
-## একবার Hosting Ready deploy
+## Hosting package কখন ব্যবহার করবেন
 
-বর্তমান direct-hosting version থেকে automatic install engine চালু করতে `P2PFlow_v1.1.0_HOSTING_READY.zip` একবার Node Application Root-এ extract করে restart করুন। Existing `.env`, `.p2pflow`, `shared/` এবং database মুছবেন না। এর পরের versionগুলো GitHub থেকে System Update page দিয়েই install হবে।
+শুধু clean/manual deploy বা update engine না চললে `P2PFlow_v1.2.0_HOSTING_READY.zip` ব্যবহার করুন। Existing `.env`, `.p2pflow`, `shared/` এবং database মুছবেন না।
 
-## পরবর্তী normal update
+## পরের version
 
-1. নতুন source package repository root-এ copy/overwrite করুন।
-2. GitHub Desktop-এ Changes review করুন।
-3. Commit এবং Push origin করুন।
-4. P2PFlow -> System Update -> `Check Now` -> `Update Now`।
+`SET_NEXT_VERSION.bat`:
 
-## নিজে code edit করলে version
+- Normal feature update: `1.2 -> 1.3`
+- Hotfix: `1.2 -> 1.2.1`
 
-`SET_NEXT_VERSION.bat` চালান:
+## নিরাপত্তা
 
-- Option 1: normal feature update, যেমন `1.1 -> 1.2`
-- Option 2: hotfix, যেমন `1.1 -> 1.1.1`
-
-Internal package version SemVer অনুযায়ী `1.1.0`; UI-তে এটি `1.1` দেখাবে।
-
-## গুরুত্বপূর্ণ
-
-- GitHub repository-তে extracted source দিন, ZIP নয়।
-- `.env`, Application Key, database password বা signing private key কখনও commit করবেন না।
-- Update install-এর আগে P2PFlow স্বয়ংক্রিয় database backup তৈরি করে।
+- `.env`, Application Key, database password এবং signing private key GitHub-এ commit করবেন না।
+- Install-এর আগে P2PFlow database backup তৈরি করে।
+- Code rollback business data delete করে না।

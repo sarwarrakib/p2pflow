@@ -1,5 +1,5 @@
 async function renderP2pExtensionAdmin() {
-  setTitle('Extension Bridge', 'Token, URL, pending tasks and locally collected P2P data');
+  setTitle('Extension Bridge');
   const data = await api('/api/p2p-extension/admin/list');
   const copyBtn = (id, label) => `<button class="secondary mini-action" data-copy="${escapeAttr(id)}">${escapeHtml(label)}</button>`;
   const tokenId = 'p2pExtTokenValue';
@@ -24,7 +24,7 @@ async function renderP2pExtensionAdmin() {
           ${metric('Tasks', escapeHtml(tasks.length), 'Pending/claimed/completed')}
           ${metric('Stored Users', escapeHtml(cache.length), 'Shared for all users')}
         </div>
-        <div class="notice mt-sm">Collected local data is shared by userNo for everyone who can view/manage orders. Old cache is purged daily at 11:59 PM server time.</div>
+        <div class="notice mt-sm">Data is shared by user number and old cache clears daily.</div>
       </div>
     </div>
     <div class="card mt-lg">

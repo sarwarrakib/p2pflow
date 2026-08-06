@@ -1,4 +1,4 @@
-// P2PFlow v1.1.0
+// P2PFlow v1.2.0
 // Live Binance-style P2P market advertisement browser.
 
 function p2pMarketFmt(value, decimals = 2) {
@@ -777,7 +777,7 @@ function bindP2pMarketPullToRefresh() {
 
 async function renderP2pMarket() {
   ensureP2pMarketState();
-  setTitle('P2P Market', 'Live Binance P2P advertisements.');
+  setTitle('P2P Market');
   const f = state.p2pMarketFilters;
   f.page = 1;
   f.rows = 20;

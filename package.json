@@ -1,13 +1,13 @@
 {
   "name": "p2pflow",
-  "version": "1.1.0",
-  "description": "P2PFlow private-GitHub signed updates with compact owner UI and data-safe same-process hosting activation.",
+  "version": "1.2.0",
+  "description": "P2PFlow Bangla-first compact operations UI with encrypted data and signed private-GitHub updates.",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
     "dev": "node server.js",
     "build": "node --check server.js && node --check lib/updateManager.js && node --check lib/hostingSetup.js",
-    "test": "node scripts/release-self-test.js && node scripts/hosting-setup-self-test.js && node scripts/production-preflight-self-test.js && node scripts/postgres-state-crypto-self-test.js && node scripts/mysql-state-crypto-self-test.js && node scripts/update-manager-self-test.js && node scripts/launcher-self-test.js && node scripts/hosting-entry-self-test.js && node scripts/pending-activation-self-test.js && node server.js --accounting-self-test",
+    "test": "node scripts/release-self-test.js && node scripts/ui-localization-self-test.js && node scripts/hosting-setup-self-test.js && node scripts/production-preflight-self-test.js && node scripts/postgres-state-crypto-self-test.js && node scripts/mysql-state-crypto-self-test.js && node scripts/update-manager-self-test.js && node scripts/launcher-self-test.js && node scripts/hosting-entry-self-test.js && node scripts/pending-activation-self-test.js && node server.js --accounting-self-test",
     "check": "node scripts/release-self-test.js",
     "install:production": "node scripts/install-production.js",
     "migrate:postgres": "node scripts/migrate-file-to-postgres.js",

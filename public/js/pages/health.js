@@ -2,7 +2,7 @@
 // Page module: health. Edit this file for the health page UI.
 
 async function renderHealth() {
-  setTitle('Health Check', 'Server connectivity, local mail, storage, session and Binance diagnostics without terminal access.');
+  setTitle('Health Check');
   $('#content').innerHTML = '<div class="card skeleton">Running health checks...</div>';
   let data;
   try { data = await api('/api/health'); }
@@ -37,7 +37,7 @@ async function renderHealth() {
     ${healthCard('Binance Network', binance.ok, table(['Step','Status','Target','Time/Status','Detail'], stepRows(binance.steps)))}
     ${healthCard('Email Delivery', mail.ok, table(['Step','Status','Target','Time/Status','Detail'], stepRows(mail.steps)))}
     ${healthCard('Storage', storage.ok, table(['Step','Status','Target','Time/Status','Detail'], stepRows(storage.steps)))}
-    <div class="notice">If DNS is OK but HTTPS/fetch fails, send this health-check detail to hosting support. No API secret or OTP is shown here.</div>`;
+    <div class="notice">Send this result to hosting support if the connection fails.</div>`;
   $('#rerunHealthBtn').onclick = () => renderHealth();
   $('#binanceOnlyHealthBtn').onclick = async () => {
     $('#content').insertAdjacentHTML('afterbegin', '<div class="notice" id="healthMiniRun">Running Binance network check...</div>');

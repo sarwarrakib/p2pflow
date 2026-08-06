@@ -1,4 +1,4 @@
-// P2PFlow v1.1.0
+// P2PFlow v1.2.0
 // Binance-style mobile P2P profile, feedback and security workspace.
 
 function profileMetricValue(value, suffix = '') {
@@ -247,7 +247,7 @@ function profileSecurityModalHtml(data = {}) {
       <div><label>Email</label><input name="email" type="email" value="${escapeAttr(data.email || '')}"></div>
       <div><label>New 6 Digit Secret Code</label><input name="secretCode" inputmode="numeric" maxlength="6" placeholder="optional"></div>
       <div><label>Security Verification OTP</label><input name="securityOtp" inputmode="numeric" maxlength="6" placeholder="sent after first submit"></div>
-      <div class="full-row"><div class="notice small">Password, email and secret changes require verification through your current email.</div></div>
+      <div class="full-row"><div class="notice small">Email verification is required for security changes.</div></div>
       <div class="full-row" id="securityMessage"></div>
       <div class="full-row"><button type="submit">Update Security</button></div>
     </form>
@@ -255,7 +255,7 @@ function profileSecurityModalHtml(data = {}) {
 }
 
 async function renderSecurity() {
-  setTitle('Profile', 'Binance API owner P2P information, feedback and login security.');
+  setTitle('Profile');
   state.mobileProfileView = state.mobileProfileView || 'main';
   state.mobileProfileTab = state.mobileProfileTab || 'trade';
   state.mobileProfileFeedbackTab = state.mobileProfileFeedbackTab || 'all';

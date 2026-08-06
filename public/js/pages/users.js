@@ -2,7 +2,7 @@
 // Page module: users. Edit this file for the users page UI.
 
 async function renderUsers() {
-  setTitle('Users & Permissions', 'Employees, managers, auditors and exact permission rules in one admin panel.');
+  setTitle('Users & Permissions');
   const agents = await api('/api/agents');
   const accounts = await api('/api/payment-accounts');
   state.bootstrap.agents = agents.items;

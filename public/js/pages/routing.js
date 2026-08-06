@@ -2,15 +2,15 @@
 // Page module: routing. Edit this file for the routing page UI.
 
 async function renderRouting() {
-  setTitle('Payment Method Routing', 'Decide which user receives orders for each payment method using priority, amount range and capacity guard.');
+  setTitle('Payment Method Routing');
   const data = await api('/api/routing');
-  $('#content').innerHTML = `<div class="toolbar"><div class="actions"><button id="addRouteBtn">Add Route</button></div><div class="sub">Priority 1 is tried first, then Priority 2. If priority is same, the user with fewer active orders is selected first.</div></div>
+  $('#content').innerHTML = `<div class="toolbar"><div class="actions"><button id="addRouteBtn">Add Route</button></div><div class="sub">Lower priority number is checked first.</div></div>
     <div class="grid three mt-sm">
-      <div class="card info-card"><h3>1. Method match</h3><p>For a bKash order, only bKash routing rules are checked. Nagad rules will not receive bKash orders.</p></div>
+      <div class="card info-card"><h3>1. Method match</h3><p>Only matching payment-method rules are used.</p></div>
       <div class="card info-card"><h3>2. Priority</h3><p><b>Priority 1</b> is tried first. If User A = 1 and User B = 2, User A is checked first.</p></div>
-      <div class="card info-card"><h3>3. Guard rules</h3><p>The user is assigned only when amount range, max active orders and capacity guard match. Otherwise the next route is tried.</p></div>
+      <div class="card info-card"><h3>3. Guard rules</h3><p>Limits and capacity are checked before assignment.</p></div>
     </div>
-    <div class="card mt"><h3>Routing Example</h3><div class="route-flow"><span>New bKash order ৳60,000</span><b>→</b><span>bKash rules only</span><b>→</b><span>Priority 1 user</span><b>→</b><span>Capacity/limit ok?</span><b>→</b><span>Assign</span></div><div class="notice">When Capacity Guard is ON, the system checks active account capacity. When OFF, assignment uses only method + priority; balance/limit is checked later on the split selection screen.</div></div>
+    <div class="card mt"><h3>Routing Example</h3><div class="route-flow"><span>New bKash order ৳60,000</span><b>→</b><span>bKash rules only</span><b>→</b><span>Priority 1 user</span><b>→</b><span>Capacity/limit ok?</span><b>→</b><span>Assign</span></div><div class="notice">Capacity Guard checks active account limits.</div></div>
     <div class="card mt">${table(['Method','User','Priority','Amount Range','Capacity Guard','Max Active','Enabled','Note','Action'], data.items.map(r => [
       r.method?.name || '',
       r.agent?.name || '',

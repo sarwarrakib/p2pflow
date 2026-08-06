@@ -3,7 +3,7 @@
 
 async function renderLedger() {
   const q = state.ledgerAccountId ? ('?accountId=' + state.ledgerAccountId) : '';
-  setTitle('Account Statement', 'Every balance movement shows source, before/after balance, order reference and note.');
+  setTitle('Account Statement');
   const data = await api('/api/ledgers' + q);
   const accounts = await api('/api/payment-accounts').catch(() => ({items:[]}));
   const selected = accounts.items.find(a => Number(a.id) === Number(state.ledgerAccountId));
@@ -21,8 +21,8 @@ async function renderLedger() {
       ${metric('Total Out', money(totalOut), 'send/cashout/expense')}
     </div>
     <div class="grid two mt">
-      <div class="card info-card"><h3>How statements work</h3><p>Account balance is not edited directly. Every transaction creates a statement entry. Formula: <b>Opening + Receive/Topup - Send/Cashout/Expense ± Correction = Current Balance</b>.</p></div>
-      <div class="card info-card"><h3>Live statement rule</h3><p>Binance BUY paid mark reduces selected account balance through split actual entries. Binance SELL release increases selected account balance through received entries. Offline business entries are recorded separately.</p></div>
+      <div class="card info-card"><h3>How statements work</h3><p>Every transaction creates a statement entry. Formula: <b>Opening + Receive/Topup - Send/Cashout/Expense ± Correction = Current Balance</b>.</p></div>
+      <div class="card info-card"><h3>Live statement rule</h3><p>BUY deducts; SELL adds received balance.</p></div>
     </div>
     <div class="card mt">${table(['Time','Account','User','Source Type','Direction','Amount','Before → After','Order/Ref','Note'], data.items.map(l => [fmt(l.createdAt), escapeHtml(l.account?.accountNumber || ('#'+l.paymentAccountId)), escapeHtml(l.agent?.name || ''), badge(l.type || '', ledgerBadgeClass(l)), escapeHtml(l.direction || ''), money(l.amount), `${money(l.balanceBefore)} → ${money(l.balanceAfter)}`, l.order ? `<button data-open-order="${l.order.id}" class="secondary">${escapeHtml(l.order.orderNo)}</button>` : escapeHtml(l.reference || '-'), escapeHtml(l.note || '')]))}</div>`;
   $('#allLedgerBtn').onclick = () => setRoute('ledger');

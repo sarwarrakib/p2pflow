@@ -2,7 +2,7 @@
 // Page module: approvals. Edit this file for the approvals page UI.
 
 async function renderApprovals() {
-  setTitle('Approvals', 'Manager approval queue for high amount, mismatch and missing proof final actions.');
+  setTitle('Approvals');
   const data = await api('/api/approvals?status=pending');
   const rows = data.items.map(a => {
     const issues = (a.issues || []).map(i => badge(i.code, i.code === 'high_amount' ? 'warn' : i.code === 'proof_missing' ? 'danger' : 'blue')).join(' ');
@@ -20,7 +20,7 @@ async function renderApprovals() {
       <div class="section-head"><h3>Approval Queue</h3><span>${data.items.length}</span></div>
       ${table(['Order','Amount','Issues','Requested By','Actions'], rows)}
     </div>
-    <div class="notice mt">Approval allows the selected final action. In Live API mode, the approved action will call Binance markOrderAsPaid or releaseCoin.</div>`;
+    <div class="notice mt">Approval permits the selected final action.</div>`;
   $('#refreshApprovals').onclick = () => renderApprovals();
   $$('[data-open-order]').forEach(b => b.onclick = () => setRoute('orders', { orderId: Number(b.dataset.openOrder) }));
   $$('[data-approve]').forEach(b => b.onclick = () => openApprovalDecisionModal(Number(b.dataset.approve), 'approved'));

@@ -173,7 +173,7 @@ function updateStatusPill(label, ok, waitingLabel = 'Required') {
 }
 
 async function renderSystemUpdate() {
-  setTitle('System Update', 'Private GitHub release check and safe installation.');
+  setTitle('System Update');
   const status = await api('/api/system-update');
   const release = status.availableRelease;
   const updateAvailable = Boolean(status.availableVersion && release);

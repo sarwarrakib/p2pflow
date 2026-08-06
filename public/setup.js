@@ -10,7 +10,7 @@ function checked(id) { return Boolean($(id)?.checked); }
 function show(el, visible = true) { if (el) el.classList.toggle('hidden', !visible); }
 function setBusy(button, busy, label) {
   if (!button) return;
-  if (busy) { button.dataset.label = button.textContent; button.textContent = label || 'Please wait…'; button.disabled = true; button.classList.add('spinner'); }
+  if (busy) { button.dataset.label = button.textContent; button.textContent = label || 'অপেক্ষা করুন…'; button.disabled = true; button.classList.add('spinner'); }
   else { button.textContent = button.dataset.label || button.textContent; button.disabled = false; button.classList.remove('spinner'); }
 }
 function message(text, type = '') {
@@ -48,44 +48,44 @@ function payload() {
 async function api(path, body) {
   const response = await fetch(path, { method: body ? 'POST' : 'GET', headers: body ? { 'Content-Type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined, cache: 'no-store' });
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.error || `Request failed (${response.status})`);
+  if (!response.ok) throw new Error(data.error || `রিকোয়েস্ট ব্যর্থ (${response.status})`);
   return data;
 }
 function validateStep() {
   message('');
-  if (state.step === 1 && value('setupCode').length < 12) throw new Error('Enter the installation code from the hosting File Manager.');
+  if (state.step === 1 && value('setupCode').length < 12) throw new Error('Hosting File Manager-এর সেটআপ কোড দিন।');
   if (state.step === 2) {
     if (!value('databaseUrl')) {
-      for (const id of ['databaseHost', 'databasePort', 'databaseName', 'databaseUser']) if (!value(id)) throw new Error('Complete all database fields or provide the full database URL.');
-      if (!$('databasePassword').value) throw new Error('Database password is required.');
+      for (const id of ['databaseHost', 'databasePort', 'databaseName', 'databaseUser']) if (!value(id)) throw new Error('ডাটাবেসের সব তথ্য বা সম্পূর্ণ URL দিন।');
+      if (!$('databasePassword').value) throw new Error('ডাটাবেস পাসওয়ার্ড দিন।');
     }
-    if (checked('importLegacy') && $('appKey').value.trim().length < 32 && !state.savedApplicationKeyAvailable) throw new Error('Old file-based data import requires the exact permanent Application Key from the previous installation. A key already saved on this server is reused automatically.');
+    if (checked('importLegacy') && $('appKey').value.trim().length < 32 && !state.savedApplicationKeyAvailable) throw new Error('পুরোনো ডাটার জন্য আগের Permanent Application Key দিন।');
   }
   if (state.step === 3 && !state.existingState) {
-    if (!value('ownerUsername') || !value('ownerName') || !value('ownerEmail')) throw new Error('Complete the Owner username, name and email.');
-    if ($('ownerPassword').value.length < 12) throw new Error('Owner password must contain at least 12 characters.');
-    if ($('ownerPassword').value !== $('ownerPasswordConfirm').value) throw new Error('Owner password confirmation does not match.');
-    if (!/^\d{6}$/.test($('ownerSecretCode').value) || /^(\d)\1{5}$/.test($('ownerSecretCode').value) || ['123456','654321','012345','543210'].includes($('ownerSecretCode').value)) throw new Error('Use a private non-repeating, non-sequential 6-digit secret.');
+    if (!value('ownerUsername') || !value('ownerName') || !value('ownerEmail')) throw new Error('Owner-এর ইউজারনেম, নাম ও ইমেইল দিন।');
+    if ($('ownerPassword').value.length < 12) throw new Error('Owner পাসওয়ার্ড কমপক্ষে ১২ অক্ষরের হতে হবে।');
+    if ($('ownerPassword').value !== $('ownerPasswordConfirm').value) throw new Error('দুইটি পাসওয়ার্ড মিলছে না।');
+    if (!/^\d{6}$/.test($('ownerSecretCode').value) || /^(\d)\1{5}$/.test($('ownerSecretCode').value) || ['123456','654321','012345','543210'].includes($('ownerSecretCode').value)) throw new Error('ব্যক্তিগত ও ধারাবাহিক নয় এমন ৬ ডিজিট সিক্রেট দিন।');
   }
 }
 function renderReview() {
   const p = payload();
   $('reviewBox').innerHTML = `<dl>
-    <dt>Database type</dt><dd>${p.databaseProvider === 'postgres' ? 'PostgreSQL' : 'MariaDB / MySQL'}</dd>
-    <dt>Database</dt><dd>${p.databaseUrl ? 'Connection URL provided' : `${p.databaseHost}:${p.databasePort}/${p.databaseName}`}</dd>
-    <dt>Database table</dt><dd>${p.databaseTable || 'p2pflow_state'}</dd>
-    <dt>Data mode</dt><dd>${p.importLegacy ? 'Import old file-based data into the selected database' : (state.existingState ? 'Use existing database data' : 'Create a new encrypted database')}</dd>
-    <dt>Owner</dt><dd>${state.existingState && !p.importLegacy ? 'Preserved from the database' : `${p.ownerUsername} / ${p.ownerEmail}`}</dd>
-    <dt>Email method</dt><dd>${p.mailDriver || 'local'}</dd>
-    <dt>Public URL</dt><dd>${p.publicBaseUrl || 'Detected automatically'}</dd>
+    <dt>ডাটাবেস ধরন</dt><dd>${p.databaseProvider === 'postgres' ? 'PostgreSQL' : 'MariaDB / MySQL'}</dd>
+    <dt>ডাটাবেস</dt><dd>${p.databaseUrl ? 'Database URL দেওয়া হয়েছে' : `${p.databaseHost}:${p.databasePort}/${p.databaseName}`}</dd>
+    <dt>ডাটাবেস টেবিল</dt><dd>${p.databaseTable || 'p2pflow_state'}</dd>
+    <dt>ডাটা মোড</dt><dd>${p.importLegacy ? 'পুরোনো ডাটা import' : (state.existingState ? 'বর্তমান ডাটা ব্যবহার' : 'নতুন encrypted database')}</dd>
+    <dt>Owner</dt><dd>${state.existingState && !p.importLegacy ? 'ডাটাবেস থেকে রাখা হবে' : `${p.ownerUsername} / ${p.ownerEmail}`}</dd>
+    <dt>ইমেইল মেথড</dt><dd>${p.mailDriver || 'local'}</dd>
+    <dt>ওয়েবসাইট URL</dt><dd>${p.publicBaseUrl || 'নিজে শনাক্ত হবে'}</dd>
   </dl>`;
 }
 async function testDatabase() {
   validateStep();
   const button = $('testDatabaseBtn');
   const box = $('databaseResult');
-  setBusy(button, true, 'Testing…');
-  show(box, true); box.className = 'result'; box.textContent = `Connecting to ${value('databaseProvider') === 'postgres' ? 'PostgreSQL' : 'MariaDB / MySQL'}…`;
+  setBusy(button, true, 'পরীক্ষা হচ্ছে…');
+  show(box, true); box.className = 'result'; box.textContent = `${value('databaseProvider') === 'postgres' ? 'PostgreSQL' : 'MariaDB / MySQL'}-এ সংযোগ হচ্ছে…`;
   try {
     const data = await api('/setup/api/test-database', payload());
     state.databaseChecked = true;
@@ -94,14 +94,14 @@ async function testDatabase() {
     if (data.database.table) $('databaseTable').value = data.database.table;
     box.className = 'result success';
     box.textContent = data.legacy
-      ? `Connected. Old data is ready to import: ${data.legacy.users} users, ${data.legacy.orders} orders, ${data.legacy.ledgers} ledger records, ${data.legacy.proofFiles} proofs and ${data.legacy.chatMedia} chat files.`
+      ? `সংযোগ হয়েছে। Import প্রস্তুত: ${data.legacy.users} ইউজার, ${data.legacy.orders} অর্ডার, ${data.legacy.ledgers} লেজার।`
       : (state.existingState
-        ? `Connected. Existing P2PFlow data found in ${data.database.table} (version ${data.database.storedVersion || 'unknown'}, revision ${data.database.storedRevision || 0}). The permanent Application Key saved on this server was verified automatically.`
-        : `Connected to ${data.database.databaseName} as ${data.database.databaseUser}. The database is ready for a new installation.`);
+        ? `সংযোগ হয়েছে। ${data.database.table}-এ বর্তমান P2PFlow ডাটা পাওয়া গেছে।`
+        : `${data.database.databaseName} ডাটাবেস প্রস্তুত।`);
     show($('ownerFields'), !state.existingState || checked('importLegacy'));
     $('ownerHelp').textContent = checked('importLegacy')
-      ? 'Set the Owner username, email, password and secret that will replace the imported Owner login. All imported business data and history will remain.'
-      : (state.existingState ? 'Existing application data was found. The current Owner account will be preserved.' : 'These values create the first Owner account.');
+      ? 'Import-এর জন্য নতুন Owner তথ্য দিন। ব্যবসার ডাটা থাকবে।'
+      : (state.existingState ? 'বর্তমান ডাটা পাওয়া গেছে। Owner অ্যাকাউন্ট থাকবে।' : 'প্রথম Owner-এর তথ্য দিন।');
   } catch (error) {
     state.databaseChecked = false;
     box.className = 'result error'; box.textContent = error.message;
@@ -110,24 +110,24 @@ async function testDatabase() {
 async function loadStatus() {
   try {
     const data = await api('/setup/api/status');
-    $('setupCodeFile').textContent = data.setupCodeFile || 'the setup token configured in the hosting panel';
+    $('setupCodeFile').textContent = data.setupCodeFile || 'Hosting panel-এর setup token';
     state.legacyAvailable = Boolean(data.legacyImport?.available);
     state.savedApplicationKeyAvailable = Boolean(data.savedApplicationKeyAvailable);
     $('legacyFileStatus').textContent = state.legacyAvailable
-      ? 'Old encrypted database file detected and ready to verify.'
-      : 'No legacy-import/app.db.enc file is detected yet. Upload it with File Manager, then reload this page.';
+      ? 'পুরোনো encrypted database file পাওয়া গেছে।'
+      : 'legacy-import/app.db.enc পাওয়া যায়নি। File Manager দিয়ে upload করে reload করুন।';
     const defaults = data.defaults || {};
     for (const [key, val] of Object.entries(defaults)) if ($(key) && (!$(key).value || key === 'databaseProvider')) $(key).value = val;
     syncDatabaseProviderUi(false);
-    if (data.startupFailure) message(`Previous startup could not complete: ${data.startupFailure.message || data.startupFailure.detail || data.startupFailure.code}`, 'error');
+    if (data.startupFailure) message(`আগের startup সম্পন্ন হয়নি: ${data.startupFailure.message || data.startupFailure.detail || data.startupFailure.code}`, 'error');
   } catch (error) { message(error.message, 'error'); }
 }
 async function install(event) {
   event.preventDefault();
   try { validateStep(); } catch (error) { return message(error.message, 'error'); }
-  if (!checked('confirmInstall')) return message('Confirm that the database was created and the credentials were saved securely.', 'error');
+  if (!checked('confirmInstall')) return message('ডাটাবেস তৈরি ও তথ্য নিরাপদে সেভ করার বিষয়টি নিশ্চিত করুন।', 'error');
   const button = $('installBtn');
-  setBusy(button, true, 'Installing P2PFlow…');
+  setBusy(button, true, 'P2PFlow ইনস্টল হচ্ছে…');
   try {
     const data = await api('/setup/api/save', payload());
     state.claimUrl = data.claimUrl || '';
@@ -135,9 +135,9 @@ async function install(event) {
     document.querySelector('.steps').classList.add('hidden');
     show($('completePanel'), true);
     const applicationKeyRow = data.applicationKey
-      ? `<dt>Permanent Application Key</dt><dd><code class="key-value">${data.applicationKey}</code><br><strong>Save this key now in a password manager and an offline backup. It is required to recover encrypted data.</strong></dd>`
+      ? `<dt>Permanent Application Key</dt><dd><code class="key-value">${data.applicationKey}</code><br><strong>কীটি password manager ও offline backup-এ সেভ করুন।</strong></dd>`
       : '';
-    $('completeDetails').innerHTML = `<dl><dt>Database type</dt><dd>${data.database.provider === 'postgres' ? 'PostgreSQL' : 'MariaDB / MySQL'}</dd><dt>Database</dt><dd>${data.database.name}</dd><dt>Database user</dt><dd>${data.database.user}</dd><dt>Table</dt><dd>${data.database.table}</dd><dt>Data mode</dt><dd>${data.importedLegacy ? 'Old file-based data imported' : (data.existingState ? 'Existing database data preserved; saved Application Key reused' : 'New Owner and database')}</dd>${applicationKeyRow}</dl>`;
+    $('completeDetails').innerHTML = `<dl><dt>ডাটাবেস ধরন</dt><dd>${data.database.provider === 'postgres' ? 'PostgreSQL' : 'MariaDB / MySQL'}</dd><dt>ডাটাবেস</dt><dd>${data.database.name}</dd><dt>ডাটাবেস ইউজার</dt><dd>${data.database.user}</dd><dt>টেবিল</dt><dd>${data.database.table}</dd><dt>ডাটা মোড</dt><dd>${data.importedLegacy ? 'পুরোনো ডাটা import হয়েছে' : (data.existingState ? 'বর্তমান ডাটা রাখা হয়েছে' : 'নতুন Owner ও ডাটাবেস')}</dd>${applicationKeyRow}</dl>`;
     if (state.claimUrl) { $('claimOwnerLink').href = state.claimUrl; show($('claimOwnerLink'), true); }
     waitForRestart();
   } catch (error) {
@@ -183,8 +183,8 @@ $('importLegacy').addEventListener('change', () => {
   state.existingState = false;
   show($('ownerFields'), true);
   $('ownerHelp').textContent = checked('importLegacy')
-    ? 'Set the Owner username, email, password and secret that will replace the imported Owner login. All imported business data and history will remain.'
-    : 'These values create the first Owner account. Existing P2PFlow data keeps its current Owner login.';
+    ? 'Import-এর জন্য নতুন Owner তথ্য দিন। ব্যবসার ডাটা থাকবে।'
+    : 'প্রথম Owner-এর তথ্য দিন। বর্তমান ডাটা থাকলে আগের Owner থাকবে।';
 });
 $('databaseProvider').addEventListener('change', () => syncDatabaseProviderUi(true));
 $('mailDriver').addEventListener('change', () => show($('smtpFields'), value('mailDriver') === 'smtp'));

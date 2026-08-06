@@ -1,4 +1,4 @@
-# P2PFlow v1.1.0 — একবার Setup, এরপর Owner-only Update
+# P2PFlow v1.2.0 — একবার Setup, এরপর Owner-only Update
 
 এই সংস্করণে `/setup` শুধু প্রথমবার database এবং Owner account তৈরি করার জন্য। একবার setup সফল হলে software update-এর সময় setup code বা permanent Application Key আর দিতে হবে না।
 
@@ -6,7 +6,7 @@
 
 Hosting File Manager থেকে বর্তমান Application Root এবং database-এর backup নিন। বর্তমান database, `.env`, `.p2pflow`, `legacy-import`, proof/chat file অথবা অন্য runtime data মুছবেন না।
 
-`P2PFlow_v1.1.0_HOSTING_READY.zip`-এর ভেতরের সব content সরাসরি বর্তমান Node Application Root-এ extract/copy করে code file overwrite করুন। অতিরিক্ত `P2PFlow` parent folder রাখবেন না। এই package নতুন `.env` বা database data দেয় না, তাই saved key এবং database configuration overwrite হবে না।
+`P2PFlow_v1.2.0_HOSTING_READY.zip`-এর ভেতরের সব content সরাসরি বর্তমান Node Application Root-এ extract/copy করে code file overwrite করুন। অতিরিক্ত `P2PFlow` parent folder রাখবেন না। এই package নতুন `.env` বা database data দেয় না, তাই saved key এবং database configuration overwrite হবে না।
 
 তারপর Node Application panel থেকে:
 
@@ -64,14 +64,14 @@ Setup সফল হওয়ার পরে:
 
 আগের সংস্করণে partial setup-এর পরে database state তৈরি হলেও setup page saved Application Key নিজে ব্যবহার করত না। ফলে নতুন code দিলে key error এবং আগের code দিলে installation-code error দেখা যেত।
 
-v1.1.0-এ:
+v1.2.0-এ:
 
 - `shared/.env` বা পুরোনো `.env`-এ valid permanent Application Key থাকলে setup page সেটি নিজে reuse করবে;
 - Application Key field আবার লিখতে হবে না;
 - setup code release folder বদলালে বদলাবে না;
 - সত্যিই saved key না থাকলে এবং encrypted existing data থাকলেই শুধু পুরোনো exact key একবার restore করতে বলবে। Encryption-এর কারণে সেই key ছাড়া পুরোনো data decrypt করা প্রযুক্তিগতভাবে সম্ভব নয়।
 
-পুরোনো setup code one-time code; নতুন server instance অন্য code তৈরি করলে পুরোনোটি গ্রহণ না করা স্বাভাবিক। v1.1.0-এ code stable Application Root-এ থাকে এবং setup সফল হওয়ার পরে আর প্রয়োজন হয় না।
+পুরোনো setup code one-time code; নতুন server instance অন্য code তৈরি করলে পুরোনোটি গ্রহণ না করা স্বাভাবিক। v1.2.0-এ code stable Application Root-এ থাকে এবং setup সফল হওয়ার পরে আর প্রয়োজন হয় না।
 
 ## ৫. Update কোথা থেকে করবেন
 
@@ -109,14 +109,14 @@ P2PFlow-এর database-এ token encrypted state-এর মধ্যে থা�
 
 ## ৭. GitHub source কীভাবে ব্যবহার করবেন
 
-`P2PFlow_v1.1.0_GITHUB_SOURCE.zip` extract করে তার content private repository-তে upload/push করুন। Included workflow `.github/workflows/release.yml` main/master-এ নতুন version push হলে স্বয়ংক্রিয়ভাবে:
+`P2PFlow_v1.2.0_GITHUB_SOURCE.zip` extract করে তার content private repository-তে upload/push করুন। Included workflow `.github/workflows/release.yml` main/master-এ নতুন version push হলে স্বয়ংক্রিয়ভাবে:
 
 - dependency install ও test চালাবে;
 - package version/tag মিলাবে;
 - signed update package তৈরি করবে;
 - GitHub Release publish করবে।
 
-Current server 1.1.0 হলে 1.1.0 release update হিসেবে দেখাবে না। পরবর্তী source package 1.0.172 GitHub Desktop থেকে push করলেই workflow নিজে `v1.0.172` tag ও signed release publish করবে; তারপর Control Panel-এ update দেখাবে।
+Current server 1.2.0 হলে 1.2.0 release update হিসেবে দেখাবে না। পরবর্তী source package 1.0.172 GitHub Desktop থেকে push করলেই workflow নিজে `v1.0.172` tag ও signed release publish করবে; তারপর Control Panel-এ update দেখাবে।
 
 ## ৮. Update ও rollback-এ data safety
 
@@ -131,7 +131,7 @@ Update install-এর আগে P2PFlow:
 
 New release ready না হলে stable same-process hosting entry পরের restart-এ আগের code release-এ ফিরে যায়। Database পুরোনো snapshot দিয়ে replace করা হয় না, তাই update-এর পরে commit হওয়া transaction code rollback-এর কারণে কাটা যায় না। Rollback শুধু compatible managed code release-এর মধ্যে অনুমোদিত।
 
-v1.1.0 থেকে managed release history শুরু হয়। ভবিষ্যতে 1.1.0 install করলে 1.1.0-এ code rollback করা যাবে। Buggy v1.0.163-এ automatic rollback ইচ্ছাকৃতভাবে দেওয়া হয়নি।
+v1.2.0 থেকে managed release history শুরু হয়। ভবিষ্যতে 1.2.0 install করলে 1.2.0-এ code rollback করা যাবে। Buggy v1.0.163-এ automatic rollback ইচ্ছাকৃতভাবে দেওয়া হয়নি।
 
 ## ৯. Hosting requirement
 

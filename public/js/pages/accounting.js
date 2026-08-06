@@ -1,4 +1,4 @@
-// P2PFlow v1.1.0
+// P2PFlow v1.2.0
 // Business Accounting is separated into Overview, Expenses, Income, Capital and Daily Closing pages.
 
 const ACCOUNTING_EXPENSE_CATEGORIES = [
@@ -235,7 +235,7 @@ async function renderAccounting(options={}) {
   state.accountingLoading = true;
   const restoreY = options.background ? window.scrollY : 0;
   try {
-    setTitle('Accounting Overview', 'Owner cash-flow profit and User/Agent performance — expenses, income, capital and closing are in separate subpages.');
+    setTitle('Accounting Overview');
     const data = await accountingLoadSummary(pageId, options);
     window.lastAccountingData = data;
     const s = data.summary || {};
@@ -362,7 +362,7 @@ async function renderAccountingExpenses(options={}) {
   state.accountingLoading = true;
   const restoreY = options.background ? window.scrollY : 0;
   try {
-    setTitle('Expense', 'Expense totals, categories and transaction history.');
+    setTitle('Expense');
     const [data, costs, categoryData] = await Promise.all([accountingLoadSummary(pageId, options), accountingLoadCosts(pageId, options), accountingLoadExpenseCategories(options)]);
     const s = data.summary || {};
     const p = data.permissions || {};
@@ -412,7 +412,7 @@ async function renderAccountingIncome(options={}) {
   state.accountingLoading = true;
   const restoreY = options.background ? window.scrollY : 0;
   try {
-    setTitle('Business Income', 'Other business income categories and complete transaction history.');
+    setTitle('Business Income');
     const [data, entries] = await Promise.all([accountingLoadSummary(pageId, options), accountingLoadEntries(pageId, 'income', options)]);
     const p = data.permissions || {};
     const totals = entries.totals || {};
@@ -453,7 +453,7 @@ async function renderAccountingCapital(options={}) {
   state.accountingLoading = true;
   const restoreY = options.background ? window.scrollY : 0;
   try {
-    setTitle('Capital', 'Capital add, owner withdrawal/family expense and complete capital transaction history.');
+    setTitle('Capital');
     const [data, entries] = await Promise.all([accountingLoadSummary(pageId, options), accountingLoadEntries(pageId, 'capital_in,capital_out', options)]);
     const s = data.summary || {};
     const p = data.permissions || {};
@@ -527,7 +527,7 @@ async function renderAccountingClosing(options={}) {
   state.accountingLoading = true;
   const restoreY = options.background ? window.scrollY : 0;
   try {
-    setTitle('Daily Closing', 'Automatic 23:59:59 snapshots, manual close controls and closing history.');
+    setTitle('Daily Closing');
     const data = await accountingLoadSummary(pageId, options);
     const s = data.summary || {};
     const p = data.permissions || {};
@@ -737,7 +737,7 @@ function openAccountingSettingsModal(data={}) {
   modal('Accounting Settings', `<form id="accountingSettingsForm" class="form-grid accounting-form">
     <div><label>Crypto Asset</label><select name="accountingCryptoAsset"><option value="USDT" ${settings.cryptoAsset==='USDT'?'selected':''}>USDT</option><option value="FDUSD" ${settings.cryptoAsset==='FDUSD'?'selected':''}>FDUSD</option><option value="USDC" ${settings.cryptoAsset==='USDC'?'selected':''}>USDC</option></select></div>
     <div><label>Universal Profit Rate (BDT)</label><input name="accountingCompanyDollarRate" type="number" min="0.0001" step="0.0001" value="${escapeAttr(settings.companyDollarRate || 118)}" required /></div>
-    <div><label>Manual P2P BUY Rate (BDT)</label><input name="accountingP2pBuyRate" type="number" min="0" step="0.0001" value="${escapeAttr(settings.configuredP2pBuyRate || settings.p2pBuyRate || 0)}" /><small>Used only to value BDT capital when no completed BUY actual yield exists.</small></div>
+    <div><label>Manual P2P BUY Rate (BDT)</label><input name="accountingP2pBuyRate" type="number" min="0" step="0.0001" value="${escapeAttr(settings.configuredP2pBuyRate || settings.p2pBuyRate || 0)}" /><small>Used only when no completed BUY rate exists.</small></div>
     <div class="check-field"><label><input name="accountingAutoP2pBuyRate" type="checkbox" ${settings.autoP2pBuyRate?'checked':''}/> Prefer the latest completed BUY actual rate</label></div>
     <div><label>Business Timezone</label><select name="accountingTimezoneOffsetMinutes"><option value="360" ${Number(settings.timezoneOffsetMinutes)===360?'selected':''}>Bangladesh · UTC+06:00</option><option value="330" ${Number(settings.timezoneOffsetMinutes)===330?'selected':''}>India · UTC+05:30</option><option value="240" ${Number(settings.timezoneOffsetMinutes)===240?'selected':''}>UAE · UTC+04:00</option><option value="0" ${Number(settings.timezoneOffsetMinutes)===0?'selected':''}>UTC</option></select></div>
     <div class="check-field"><label><input name="accountingAutoClose" type="checkbox" ${settings.autoClose?'checked':''}/> Automatic close at 23:59:59</label></div>

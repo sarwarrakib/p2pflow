@@ -2,7 +2,7 @@
 // Page module: notifications. Edit this file for the notifications page UI.
 
 async function renderNotifications() {
-  setTitle('Panel SMS / Alerts', 'Order assignment, security and system alerts.');
+  setTitle('Panel SMS / Alerts');
   const data = await api('/api/notifications');
   const rows = (data.items || []).map(n => [
     fmt(n.createdAt),

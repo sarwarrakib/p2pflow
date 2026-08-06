@@ -1,8 +1,8 @@
-// P2PFlow v1.1.0
+// P2PFlow v1.2.0
 // Page module: reports. Edit this file for the reports page UI.
 
 async function renderReports() {
-  setTitle('Digital Reports', 'Daily, monthly, yearly, lifetime and custom date range reports.');
+  setTitle('Digital Reports');
   const rf = state.reportFilter || { period: 'daily', start: '', end: '' };
   const qs = new URLSearchParams();
   qs.set('period', rf.period || 'daily');
