@@ -1,6 +1,6 @@
 {
   "name": "p2pflow",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "description": "P2PFlow unified package for fresh install, manual update, GitHub release publishing, and in-panel signed automatic updates.",
   "main": "server.js",
   "scripts": {
@@ -28,5 +28,8 @@
   "private": true,
   "engines": {
     "node": ">=20.0.0"
+  },
+  "overrides": {
+    "postgres-interval": "1.2.0"
   }
 }

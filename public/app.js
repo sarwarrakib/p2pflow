@@ -1,4 +1,4 @@
-// v1.4.0: first-run recovery reuses the saved Application Key and software updates are Owner-only from Control Panel.
+// v1.4.1: first-run recovery reuses the saved Application Key and software updates are Owner-only from Control Panel.
 // v1.0.137: Diagnose and harden Binance P2P Create Advertisement privilege flow.
 // v1.0.128: lightweight Ads UI, cached reloads and realtime Binance merchant-status sync.
 // v1.0.117: Stop order countdowns immediately after completed or cancelled status sync.

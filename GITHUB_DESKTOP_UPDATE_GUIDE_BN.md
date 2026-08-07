@@ -1,6 +1,6 @@
 # GitHub Desktop - P2PFlow Unified Update
 
-P2PFlow 1.4 থেকে **GitHub-এর জন্য আলাদা ZIP নেই**। Hosting এবং GitHub দু জায়গাতেই একই `P2PFlow_v1.4.0_UNIFIED.zip` ব্যবহার করবেন।
+P2PFlow 1.4 থেকে **GitHub-এর জন্য আলাদা ZIP নেই**। Hosting এবং GitHub দু জায়গাতেই একই `P2PFlow_v1.4.1_UNIFIED.zip` ব্যবহার করবেন।
 
 ## প্রথম upload
 
@@ -17,7 +17,7 @@ P2PFlow 1.4 থেকে **GitHub-এর জন্য আলাদা ZIP নে
 
 নিজে source edit করলে `SET_NEXT_VERSION.bat` চালান। যেমন `1.3 -> 1.4`। এরপর Commit + Push করুন।
 
-Hotfix হলে `SET_HOTFIX_VERSION.bat` চালান। যেমন `1.3 -> 1.4.0`।
+Hotfix হলে `SET_HOTFIX_VERSION.bat` চালান। যেমন `1.4.1 -> 1.4.2`।
 
 Push হওয়ার পরে GitHub Actions tests + audit + signed package build + GitHub Release publish করবে। তারপর System Update page নিজে নতুন release detect করবে।
 
