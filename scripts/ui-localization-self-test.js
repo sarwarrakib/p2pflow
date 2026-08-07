@@ -28,7 +28,7 @@ assert(/compact-copy/.test(css), 'Compact copy styles are missing.');
 const start = app.indexOf('const I18N_BN =');
 const end = app.indexOf('function languageRoot');
 assert(start >= 0 && end > start, 'Localization runtime block could not be located.');
-const source = `${app.slice(start, end)}\nthis.localizationCheck = {\n  entries: Object.keys(I18N_BN).length,\n  shortCopy: Object.entries(UI_SHORT_COPY),\n  samples: [\n    trText('Today'),\n    trText('System Update'),\n    trText('No Manager is active.'),\n    trText('Server connectivity, local mail, storage, session and Binance diagnostics without terminal access.'),\n    trText('Version 1.2')\n  ]\n};`;
+const source = `${app.slice(start, end)}\nthis.localizationCheck = {\n  entries: Object.keys(I18N_BN).length,\n  shortCopy: Object.entries(UI_SHORT_COPY),\n  samples: [\n    trText('Today'),\n    trText('System Update'),\n    trText('No Manager is active.'),\n    trText('Server connectivity, local mail, storage, session and Binance diagnostics without terminal access.'),\n    trText('Version 1.3')\n  ]\n};`;
 const context = { state: { lang: 'bn' } };
 vm.createContext(context);
 vm.runInContext(source, context);
@@ -39,7 +39,7 @@ assert(untranslatedShortCopy.length === 0, `Compact text lacks Bangla translatio
 assert(result.samples[0] === 'আজ', 'Today translation failed.');
 assert(result.samples[1] === 'সিস্টেম আপডেট', 'System Update translation failed.');
 assert(result.samples[3] === 'সার্ভার ও সংযোগ স্ট্যাটাস।', 'Compact copy translation failed.');
-assert(result.samples[4] === 'ভার্সন 1.2', 'Dynamic version translation failed.');
+assert(result.samples[4] === 'ভার্সন 1.3', 'Dynamic version translation failed.');
 
 const pageDir = path.join(root, 'public', 'js', 'pages');
 const pageFiles = fs.readdirSync(pageDir).filter(name => name.endsWith('.js'));

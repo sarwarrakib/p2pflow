@@ -38,8 +38,8 @@ if (compareSemver(wsPackage.version, '8.21.1') < 0) throw new Error(`ws ${wsPack
 fs.rmSync(dist, { recursive: true, force: true });
 fs.mkdirSync(stage, { recursive: true });
 const include = [
-  'server.js', 'package.json', 'package-lock.json', 'README.md',
-  '.env.example', '.env.local-safe.example', '.gitignore', '.npmrc', '.github', 'INSTALL_HOSTING_BN.md', 'GITHUB_DESKTOP_UPDATE_GUIDE_BN.md',
+  'server.js', 'app-server.js', 'package.json', 'package-lock.json', 'README.md',
+  '.env.example', '.env.local-safe.example', '.gitignore', '.npmrc', '.github', 'GITHUB_DESKTOP_UPDATE_GUIDE_BN.md', 'UNIFIED_INSTALL_BN.md', 'PACKAGE_TYPE.txt',
   'local-php-mail.php', 'lib', 'public', 'scripts', 'docs', 'deploy', 'node_modules'
 ];
 

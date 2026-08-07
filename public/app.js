@@ -1,4 +1,4 @@
-// v1.2.0: first-run recovery reuses the saved Application Key and software updates are Owner-only from Control Panel.
+// v1.4.0: first-run recovery reuses the saved Application Key and software updates are Owner-only from Control Panel.
 // v1.0.137: Diagnose and harden Binance P2P Create Advertisement privilege flow.
 // v1.0.128: lightweight Ads UI, cached reloads and realtime Binance merchant-status sync.
 // v1.0.117: Stop order countdowns immediately after completed or cancelled status sync.
@@ -52,7 +52,7 @@ const state = {
   adsFilters: { asset:'', fiat:'', tradeType:'', status:'', search:'' },
   adsData: null,
   adsSearchTimer: null,
-  mobileNavCounts: { orders: 0, chats: 0 },
+  mobileNavCounts: { orders: 0, chats: 0, approvals: 0 },
   mobileNavSyncTimer: null,
   mobileNavSyncBusy: false,
   chatInboxSearch: '',
@@ -127,6 +127,97 @@ const PAGE_PERMISSIONS = {
 const ACCOUNTING_PAGE_IDS = ['accounting','accounting-expenses','accounting-income','accounting-capital','accounting-closing'];
 function isAccountingPage(page=state.page) { return ACCOUNTING_PAGE_IDS.includes(page); }
 
+// v1.4: configuration-driven navigation. Visibility still comes from the existing
+// role + permission checks in visiblePages(); this layer only controls presentation.
+const NAV_MENU_GROUPS = [
+  { id:'trading', label:'P2P Trading', icon:'trade', items:[
+    ['p2p-market','P2P Market','market'], ['orders','Orders','orders'], ['chat','P2P Message','chat'],
+    ['ads','Advertisements','ads'], ['approvals','Approvals','approve']
+  ]},
+  { id:'accounting', label:'Accounting', icon:'accounting', items:[
+    ['accounting','Overview','overview'], ['accounts','Payment Accounts','wallet'], ['ledger','Account Statement','statement'],
+    ['accounting-expenses','Expense','expense'], ['accounting-income','Business Income','income'],
+    ['accounting-capital','Capital','capital'], ['accounting-closing','Daily Closing','closing']
+  ]},
+  { id:'team', label:'Team & Control', icon:'team', items:[
+    ['agents','Users','users'], ['user-roles','User Roles','roles'], ['routing','Routing','routing']
+  ]},
+  { id:'monitoring', label:'Reports & Monitoring', icon:'monitor', items:[
+    ['reports','Reports','reports'], ['activity','Activity Monitor','activity'], ['audit','Audit Logs','audit'],
+    ['notifications','SMS / Alerts','alerts']
+  ]},
+  { id:'system', label:'System', icon:'system', items:[
+    ['security','Security','security'], ['credentials','API Credentials','key'], ['p2p-extension','Extension Bridge','extension'],
+    ['health','Health Check','health'], ['settings','Settings','settings'], ['system-update','System Update','update']
+  ]}
+];
+
+const NAV_ICON_SVGS = {
+  dashboard:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h6v6h-6z"/></svg>',
+  trade:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h13m0 0-3-3m3 3-3 3M19 17H6m0 0 3 3m-3-3 3-3"/></svg>',
+  market:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 18V9m5 9V5m5 13v-6m5 6V3"/></svg>',
+  orders:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h10l2 2v16H6zM9 8h6M9 12h6M9 16h4"/></svg>',
+  chat:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v12H9l-5 4zM8 9h8M8 13h5"/></svg>',
+  ads:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 10h5l9-5v14l-9-5H4zM9 14l2 6H7l-1-6"/></svg>',
+  approve:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12l4 4L19 6"/></svg>',
+  accounting:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h14v16H5zM8 8h8M8 12h2M14 12h2M8 16h2M14 16h2"/></svg>',
+  overview:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19V9m5 10V5m5 14v-7m5 7V3"/></svg>',
+  wallet:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h15v13H4zM4 9h15M15 13h4"/></svg>',
+  statement:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h12v18H6zM9 8h6M9 12h6M9 16h4"/></svg>',
+  expense:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v16M7 9l5-5 5 5"/></svg>',
+  income:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20V4M7 15l5 5 5-5"/></svg>',
+  capital:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9h16M6 9v9m4-9v9m4-9v9m4-9v9M3 20h18M5 6l7-3 7 3z"/></svg>',
+  closing:'<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M12 8v4l3 2"/></svg>',
+  team:'<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8" r="3"/><circle cx="17" cy="9" r="2"/><path d="M3 20v-2c0-3 2-5 6-5s6 2 6 5v2M15 14c3 0 5 2 5 4v2"/></svg>',
+  users:'<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="3"/><path d="M5 20v-2c0-3 2.5-5 7-5s7 2 7 5v2"/></svg>',
+  roles:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l7 3v5c0 5-3 8-7 10-4-2-7-5-7-10V6zM9 12l2 2 4-4"/></svg>',
+  routing:'<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="6" r="2"/><circle cx="18" cy="18" r="2"/><circle cx="18" cy="6" r="2"/><path d="M8 6h8M6 8v4c0 4 3 6 8 6h2"/></svg>',
+  monitor:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 5h18v12H3zM8 21h8M12 17v4M6 13l3-3 3 2 5-5"/></svg>',
+  reports:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3h14v18H5zM8 16v-4m4 4V8m4 8v-6"/></svg>',
+  activity:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h4l2-5 4 10 2-5h6"/></svg>',
+  audit:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h12v18H6zM9 8h6M9 12h6M9 16h3"/><circle cx="17" cy="17" r="3"/></svg>',
+  alerts:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9a6 6 0 0 1 12 0v5l2 3H4l2-3zM10 20h4"/></svg>',
+  system:'<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 3v2m0 14v2M3 12h2m14 0h2M5.6 5.6 7 7m10 10 1.4 1.4M18.4 5.6 17 7M7 17l-1.4 1.4"/></svg>',
+  security:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l7 3v5c0 5-3 8-7 10-4-2-7-5-7-10V6z"/></svg>',
+  key:'<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="8" cy="12" r="4"/><path d="M12 12h9M18 12v3M15 12v2"/></svg>',
+  extension:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3h8v5h5v8h-5v5H8v-5H3V8h5z"/></svg>',
+  health:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h4l2-5 4 10 2-5h6"/></svg>',
+  settings:'<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 3v2m0 14v2M3 12h2m14 0h2M5.6 5.6 7 7m10 10 1.4 1.4M18.4 5.6 17 7M7 17l-1.4 1.4"/></svg>',
+  update:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11m0 0-4-4m4 4 4-4M5 20h14"/></svg>',
+  menu:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg>'
+};
+
+function navIcon(name) {
+  return `<span class="nav-item-icon" aria-hidden="true">${NAV_ICON_SVGS[name] || NAV_ICON_SVGS.dashboard}</span>`;
+}
+
+function compactVersionText(value='') {
+  const clean = String(value || '').replace(/^v/i,'');
+  const match = clean.match(/^(\d+)\.(\d+)\.0$/);
+  return match ? `${match[1]}.${match[2]}` : clean;
+}
+
+function navPageBadge(pageId) {
+  let value = 0;
+  if (pageId === 'orders') value = Number(state.mobileNavCounts?.orders || 0);
+  if (pageId === 'chat') value = Number(state.mobileNavCounts?.chats || 0);
+  if (pageId === 'approvals') value = Number(state.mobileNavCounts?.approvals || 0);
+  if (pageId === 'notifications') value = Number(state.notificationCenterData?.total || 0);
+  if (pageId === 'system-update' && state.bootstrap?.settings?.updateAvailable) return `<span class="nav-status-badge">${state.lang === 'bn' ? 'নতুন' : 'NEW'}</span>`;
+  if (value <= 0) return '';
+  return `<span class="nav-count-badge">${value > 99 ? '99+' : value}</span>`;
+}
+
+function renderSidebarMeta() {
+  const version = compactVersionText(state.bootstrap?.settings?.applicationVersion || '');
+  const versionEl = $('#sidebarVersion');
+  if (versionEl) versionEl.textContent = state.lang === 'bn' ? `ভার্সন ${version || '-'}` : `Version ${version || '-'}`;
+  const statusEl = $('#sidebarServerStatus');
+  if (statusEl) statusEl.textContent = navigator.onLine === false ? (state.lang === 'bn' ? 'অফলাইন' : 'Offline') : (state.lang === 'bn' ? 'সার্ভার অনলাইন' : 'Server Online');
+  const runtime = $('#sidebarRuntime');
+  if (runtime) runtime.classList.toggle('offline', navigator.onLine === false);
+}
+
 function hasPerm(permission) {
   if (!permission) return true;
   if (!state.user) return false;
@@ -171,6 +262,7 @@ function setMobileNavigation(open, options={}) {
   } else if (options.restoreFocus && mobileNavReturnFocus && typeof mobileNavReturnFocus.focus === 'function') {
     mobileNavReturnFocus.focus({ preventScroll: true });
   }
+  if (state.user && typeof renderMobileBottomNav === 'function') renderMobileBottomNav();
 }
 
 function setupResponsiveNavigation() {
@@ -1076,6 +1168,15 @@ Object.assign(I18N_BN, {
   "Save": "সেভ",
   "Current orders, ledger, accounting and database records remain unchanged.": "অর্ডার, লেজার ও হিসাব অপরিবর্তিত থাকবে।",
   "Dashboard": "ড্যাশবোর্ড",
+  "P2P Trading": "P2P ট্রেডিং",
+  "Accounting": "অ্যাকাউন্টিং",
+  "Overview": "ওভারভিউ",
+  "Team & Control": "টিম ও নিয়ন্ত্রণ",
+  "Reports & Monitoring": "রিপোর্ট ও মনিটরিং",
+  "System": "সিস্টেম",
+  "SMS / Alerts": "SMS / অ্যালার্ট",
+  "Menu": "মেনু",
+  "Server Online": "সার্ভার অনলাইন",
   "P2P Market": "P2P মার্কেট",
   "Orders": "অর্ডার",
   "P2P Message": "P2P মেসেজ",
@@ -2762,6 +2863,8 @@ function setupLanguageControls() {
       state.lang = state.lang === 'bn' ? 'en' : 'bn';
       localStorage.setItem('crmLang', state.lang);
       applyLanguage();
+      renderSidebarMeta();
+      renderMobileBottomNav();
     };
   });
   setupLanguageObserver();
@@ -2771,11 +2874,13 @@ function setupLanguageControls() {
 
 function setConnectivityStatus(isOffline = false) {
   const status = $('#liveStatus');
-  if (!status) return;
   const offline = Boolean(isOffline);
-  status.textContent = state.lang === 'bn' ? 'অফলাইন' : 'Offline';
-  status.classList.toggle('hidden', !offline);
-  status.classList.toggle('offline', offline);
+  if (status) {
+    status.textContent = state.lang === 'bn' ? 'অফলাইন' : 'Offline';
+    status.classList.toggle('hidden', !offline);
+    status.classList.toggle('offline', offline);
+  }
+  renderSidebarMeta();
 }
 
 function setupConnectivityStatus() {
@@ -2816,6 +2921,7 @@ function renderHeaderNotificationCenter(data={}) {
   const total = Math.max(0, Number(data.total || 0));
   const items = Array.isArray(data.items) ? data.items : [];
   state.notificationCenterData = { total, items };
+  if (typeof refreshNavBadges === 'function') refreshNavBadges();
   const badge = $('#notificationBadge');
   const panel = $('#notificationPanel');
   const button = $('#notificationBtn');
@@ -4021,28 +4127,26 @@ async function routeFromLocation(showLoading=true) {
 
 
 const MOBILE_BOTTOM_NAV_ICONS = {
-  p2p: '<svg viewBox="0 0 32 32" aria-hidden="true"><path d="M9 7a4 4 0 1 0 0 .1M23 7a4 4 0 1 0 0 .1M5 24v-4.2c0-3.1 2.3-5.4 5.4-5.4h2.2M27 24v-4.2c0-3.1-2.3-5.4-5.4-5.4h-2.2" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/><path d="M13 21.5h6M16 18.5v6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/><path d="M4.5 3.5h4M3.5 4.5v4M27.5 3.5h-4M28.5 4.5v4M4.5 28.5h4M3.5 27.5v-4M27.5 28.5h-4M28.5 27.5v-4" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round"/></svg>',
-  orders: '<svg viewBox="0 0 32 32" aria-hidden="true"><path d="M8 4.5h13.5v21H8z" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round"/><circle cx="22.5" cy="22.5" r="6" fill="white" stroke="currentColor" stroke-width="2.2"/><path d="M22.5 19.2v3.7l2.5 1.5" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round"/></svg>',
-  ads: '<svg viewBox="0 0 32 32" aria-hidden="true"><path d="M5 14h6l12-7v18l-12-7H5z" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linejoin="round"/><path d="M11 18l2 8H8l-1.5-8M26 12.5c1.7 1.8 1.7 5.2 0 7" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round"/></svg>',
-  chat: '<svg viewBox="0 0 32 32" aria-hidden="true"><path d="M5 6h22v15H14l-7 5v-5H5z" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round"/><path d="M9 11h14M9 15h10" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round"/></svg>',
-  profile: '<svg viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="9" r="5" fill="none" stroke="currentColor" stroke-width="2.2"/><path d="M7 28v-5c0-4.5 3.5-7.5 9-7.5s9 3 9 7.5v5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>'
+  dashboard: NAV_ICON_SVGS.dashboard,
+  p2p: NAV_ICON_SVGS.trade,
+  orders: NAV_ICON_SVGS.orders,
+  chat: NAV_ICON_SVGS.chat,
+  menu: NAV_ICON_SVGS.menu
 };
 
 function mobileBottomNavTarget(id) {
-  if (id === 'p2p') return canPage('p2p-market') ? 'p2p-market' : (canPage('dashboard') ? 'dashboard' : (canPage('orders') ? 'orders' : visiblePages()[0]?.[0]));
+  if (id === 'dashboard') return canPage('dashboard') ? 'dashboard' : visiblePages()[0]?.[0];
+  if (id === 'p2p') return canPage('p2p-market') ? 'p2p-market' : (canPage('orders') ? 'orders' : visiblePages()[0]?.[0]);
   if (id === 'orders') return canPage('orders') ? 'orders' : visiblePages()[0]?.[0];
-  if (id === 'ads') return canPage('ads') ? 'ads' : visiblePages()[0]?.[0];
   if (id === 'chat') return canPage('chat') ? 'chat' : (canPage('orders') ? 'orders' : visiblePages()[0]?.[0]);
-  if (id === 'profile') return canPage('security') ? 'security' : (canPage('settings') ? 'settings' : visiblePages()[0]?.[0]);
   return visiblePages()[0]?.[0];
 }
 
 function mobileBottomNavActive(id) {
+  if (id === 'dashboard') return state.page === 'dashboard';
   if (id === 'p2p') return state.page === 'p2p-market';
   if (id === 'orders') return state.page === 'orders' && !document.body.classList.contains('order-chat-open');
-  if (id === 'ads') return state.page === 'ads';
   if (id === 'chat') return state.page === 'chat' || (state.page === 'orders' && document.body.classList.contains('order-chat-open'));
-  if (id === 'profile') return ['security', 'settings'].includes(state.page);
   return false;
 }
 
@@ -4062,40 +4166,50 @@ function renderMobileBottomNav() {
   const nav = $('#mobileBottomNav');
   if (!nav || !state.user) return;
   const items = [
+    ['dashboard', 'Dashboard'],
     ['p2p', 'P2P'],
     ['orders', 'Orders'],
-    ['ads', 'Ads'],
-    ['chat', 'Chat'],
-    ['profile', 'Profile']
+    ['chat', 'P2P Message'],
+    ['menu', 'Menu']
   ];
   nav.innerHTML = items.map(([id, label]) => {
-    const active = mobileBottomNavActive(id);
+    const active = id === 'menu' ? document.body.classList.contains('nav-open') : mobileBottomNavActive(id);
     return `<button type="button" data-mobile-bottom-nav="${id}" class="${active ? 'active' : ''}" ${active ? 'aria-current="page"' : ''} aria-label="${label}"><span class="mobile-bottom-nav-icon">${MOBILE_BOTTOM_NAV_ICONS[id]}${mobileBottomNavBadge(id)}</span><span class="mobile-bottom-nav-label">${label}</span></button>`;
   }).join('');
   nav.querySelectorAll('[data-mobile-bottom-nav]').forEach(button => {
     button.onclick = () => {
       const id = button.dataset.mobileBottomNav;
+      if (id === 'menu') {
+        setMobileNavigation(true, { restoreFocus:false });
+        renderMobileBottomNav();
+        return;
+      }
       setMobileNavigation(false, { restoreFocus:false });
       if (id === 'chat') return openMobileChatShortcut();
       const target = mobileBottomNavTarget(id);
       if (target) setRoute(target);
     };
   });
+  applyLanguage(nav);
 }
 
 async function refreshMobileBottomNavCounts() {
   if (!state.user || state.mobileNavSyncBusy) return;
   state.mobileNavSyncBusy = true;
   try {
-    const [orders, unread] = await Promise.all([
+    const tasks = [
       api('/api/orders', { silent:true, noAutoReload:true }).catch(() => ({ items:[] })),
-      api('/api/chat-unread', { silent:true, noAutoReload:true }).catch(() => ({ total:0 }))
-    ]);
+      api('/api/chat-unread', { silent:true, noAutoReload:true }).catch(() => ({ total:0 })),
+      canPage('approvals') ? api('/api/approvals?status=pending', { silent:true, noAutoReload:true }).catch(() => ({ items:[] })) : Promise.resolve({ items:[] })
+    ];
+    const [orders, unread, approvals] = await Promise.all(tasks);
     state.mobileNavCounts = {
       orders: (orders?.items || []).filter(order => isOngoingOrder(order)).length,
-      chats: Math.max(0, Number(unread?.total || 0))
+      chats: Math.max(0, Number(unread?.total || 0)),
+      approvals: Array.isArray(approvals?.items) ? approvals.items.length : 0
     };
     renderMobileBottomNav();
+    refreshNavBadges();
   } finally {
     state.mobileNavSyncBusy = false;
   }
@@ -4115,62 +4229,113 @@ function startMobileBottomNavSync() {
   scheduleMobileBottomNavRefresh(0);
 }
 
+function refreshNavBadges() {
+  const nav = $('#nav');
+  if (!nav) return;
+  nav.querySelectorAll('[data-nav-page]').forEach(button => {
+    let slot = button.querySelector('.nav-item-badge-slot');
+    if (!slot) return;
+    slot.innerHTML = navPageBadge(button.dataset.navPage);
+  });
+}
+
 function renderNav() {
   const nav = $('#nav');
+  if (!nav) return;
   nav.innerHTML = '';
   const visible = visiblePages();
-  const accountingPages = visible.filter(([id]) => ACCOUNTING_PAGE_IDS.includes(id));
-  const accountingVisible = accountingPages.length > 0;
-  const accountingActive = isAccountingPage();
-  const accountingOpen = accountingActive || localStorage.getItem('crmAccountingMenuOpen') !== '0';
+  const visibleIds = new Set(visible.map(([id]) => id));
+  const pageLabels = new Map(visible.map(([id, label]) => [id, label]));
+  const configuredIds = new Set(NAV_MENU_GROUPS.flatMap(group => group.items.map(item => item[0])));
+  configuredIds.add('dashboard');
 
-  const appendPageButton = ([id, label], root=nav, extraClass='') => {
-    const b = document.createElement('button');
-    b.type = 'button';
-    b.textContent = label;
-    if (id === 'system-update' && state.bootstrap?.settings?.updateAvailable) {
-      const indicator = document.createElement('span');
-      indicator.className = 'nav-update-indicator';
-      indicator.textContent = 'Update';
-      b.appendChild(indicator);
-    }
-    b.className = `${id === state.page ? 'active' : ''} ${extraClass}`.trim();
-    b.dataset.navPage = id;
-    b.onclick = () => {
-      setMobileNavigation(false, { restoreFocus: false });
-      if (usesMobileNavigation()) window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
+  const createPageButton = (id, label, iconName, extraClass='') => {
+    if (!visibleIds.has(id)) return null;
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = `nav-page-button ${extraClass} ${id === state.page ? 'active' : ''}`.trim();
+    button.dataset.navPage = id;
+    if (id === state.page) button.setAttribute('aria-current', 'page');
+    button.innerHTML = `${navIcon(iconName)}<span class="nav-item-label">${escapeHtml(label || pageLabels.get(id) || id)}</span><span class="nav-item-badge-slot">${navPageBadge(id)}</span>`;
+    button.onclick = () => {
+      setMobileNavigation(false, { restoreFocus:false });
+      if (usesMobileNavigation()) window.scrollTo({ top:0, left:0, behavior:'auto' });
       setRoute(id);
     };
-    root.appendChild(b);
+    return button;
   };
 
-  visible.forEach(page => {
-    const [id] = page;
-    if (ACCOUNTING_PAGE_IDS.includes(id)) {
-      if (id !== accountingPages[0]?.[0]) return;
-      const group = document.createElement('div');
-      group.className = `nav-group accounting-nav-group ${accountingActive ? 'active' : ''}`;
-      const toggle = document.createElement('button');
-      toggle.type = 'button';
-      toggle.className = `nav-group-toggle ${accountingActive ? 'active' : ''}`;
-      toggle.setAttribute('aria-expanded', accountingOpen ? 'true' : 'false');
-      toggle.innerHTML = '<span>Business Accounting</span><span class="nav-group-caret" aria-hidden="true">⌄</span>';
-      const submenu = document.createElement('div');
-      submenu.className = `nav-submenu ${accountingOpen ? 'open' : ''}`;
-      accountingPages.forEach(item => appendPageButton(item, submenu, 'nav-submenu-button'));
-      toggle.onclick = () => {
-        const open = !submenu.classList.contains('open');
-        submenu.classList.toggle('open', open);
-        toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
-        localStorage.setItem('crmAccountingMenuOpen', open ? '1' : '0');
-      };
-      group.append(toggle, submenu);
-      nav.appendChild(group);
-      return;
-    }
-    appendPageButton(page);
+  const dashboard = createPageButton('dashboard', 'Dashboard', 'dashboard', 'nav-dashboard-button');
+  if (dashboard) nav.appendChild(dashboard);
+
+  const activeGroupId = NAV_MENU_GROUPS.find(group => group.items.some(([id]) => id === state.page))?.id || '';
+  const savedGroupId = localStorage.getItem('crmOpenNavGroup') || '';
+  const initialOpenGroupId = activeGroupId || savedGroupId;
+
+  NAV_MENU_GROUPS.forEach(groupDef => {
+    const allowedItems = groupDef.items.filter(([id]) => visibleIds.has(id));
+    if (!allowedItems.length) return;
+    const active = allowedItems.some(([id]) => id === state.page);
+    const open = groupDef.id === initialOpenGroupId;
+    const group = document.createElement('section');
+    group.className = `nav-group nav-section ${active ? 'active' : ''} ${open ? 'open' : ''}`.trim();
+    group.dataset.navGroup = groupDef.id;
+
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'nav-group-toggle';
+    toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+    toggle.innerHTML = `${navIcon(groupDef.icon)}<span class="nav-item-label">${escapeHtml(groupDef.label)}</span><span class="nav-group-caret" aria-hidden="true"><svg viewBox="0 0 20 20"><path d="m6 8 4 4 4-4"/></svg></span>`;
+
+    const submenu = document.createElement('div');
+    submenu.className = 'nav-submenu';
+    submenu.setAttribute('aria-hidden', open ? 'false' : 'true');
+    const inner = document.createElement('div');
+    inner.className = 'nav-submenu-inner';
+    allowedItems.forEach(([id, label, iconName]) => {
+      const item = createPageButton(id, label, iconName, 'nav-submenu-button');
+      if (item) inner.appendChild(item);
+    });
+    submenu.appendChild(inner);
+
+    toggle.onclick = () => {
+      const opening = !group.classList.contains('open');
+      nav.querySelectorAll('.nav-group.open').forEach(other => {
+        if (other === group) return;
+        other.classList.remove('open');
+        other.querySelector('.nav-group-toggle')?.setAttribute('aria-expanded', 'false');
+        other.querySelector('.nav-submenu')?.setAttribute('aria-hidden', 'true');
+      });
+      group.classList.toggle('open', opening);
+      toggle.setAttribute('aria-expanded', opening ? 'true' : 'false');
+      submenu.setAttribute('aria-hidden', opening ? 'false' : 'true');
+      if (opening) localStorage.setItem('crmOpenNavGroup', groupDef.id);
+      else localStorage.removeItem('crmOpenNavGroup');
+    };
+
+    group.append(toggle, submenu);
+    nav.appendChild(group);
   });
-  if (!accountingVisible) nav.querySelector('.accounting-nav-group')?.remove();
+
+  // Permission-safe fallback for any future page that has not yet been added to NAV_MENU_GROUPS.
+  const fallback = visible.filter(([id]) => !configuredIds.has(id));
+  if (fallback.length) {
+    const group = document.createElement('section');
+    group.className = 'nav-group nav-section nav-fallback-group open';
+    const inner = document.createElement('div');
+    inner.className = 'nav-submenu nav-fallback-menu';
+    const list = document.createElement('div');
+    list.className = 'nav-submenu-inner';
+    fallback.forEach(([id, label]) => {
+      const item = createPageButton(id, label, 'dashboard', 'nav-submenu-button');
+      if (item) list.appendChild(item);
+    });
+    inner.appendChild(list);
+    group.appendChild(inner);
+    nav.appendChild(group);
+  }
+
+  renderSidebarMeta();
   applyLanguage(nav);
   renderMobileBottomNav();
 }

@@ -1,4 +1,6 @@
 // P2PFlow System Update - compact owner workflow.
+let systemUpdateReleasePollTimer = null;
+let systemUpdateReleasePollCount = 0;
 
 function systemVersionLabel(value) {
   const text = String(value || '').trim().replace(/^v/i, '');
@@ -91,7 +93,9 @@ async function testGithubConnection() {
     const repo = result.repository || {};
     const release = result.latestRelease?.version
       ? `Latest release: ${systemVersionLabel(result.latestRelease.version)}`
-      : (result.releaseMessage || 'Connected. No release published yet.');
+      : (result.sourceVersion?.version
+        ? `Source ${systemVersionLabel(result.sourceVersion.version)} uploaded; signed Release pending.`
+        : (result.releaseMessage || 'Connected. No release published yet.'));
     $('#githubConnectionResult').className = `notice ${repo.private ? 'okbox' : 'warn'}`;
     $('#githubConnectionResult').textContent = `${repo.private ? 'Private repository verified.' : 'Repository is public.'} ${release}`;
   } finally {
@@ -185,12 +189,16 @@ async function renderSystemUpdate() {
   const latestBackup = (status.backups || [])[0] || null;
   const currentLabel = systemVersionLabel(status.currentVersion);
   const availableLabel = systemVersionLabel(status.availableVersion);
+  const sourceLabel = systemVersionLabel(status.repositorySourceVersion);
+  const sourcePending = Boolean(status.repositorySourceVersion && compareVersionText(status.repositorySourceVersion, status.currentVersion) > 0 && !updateAvailable);
   state.systemUpdateRepository = config.repository || '';
 
-  const headline = updateAvailable ? `Version ${availableLabel} is ready` : 'Your system is up to date';
+  const headline = updateAvailable ? `Version ${availableLabel} is ready` : (sourcePending ? `Version ${sourceLabel} is publishing` : 'Your system is up to date');
   const headlineNote = updateAvailable
     ? (release?.name || 'A verified GitHub release is available.')
-    : (status.lastCheckMessage || 'Push the next version to GitHub, then press Check Now.');
+    : (sourcePending
+      ? 'The new GitHub source is detected. P2PFlow will check automatically until the signed Release is published.'
+      : (status.lastCheckMessage || 'Push the next version to GitHub, then press Check Now.'));
 
   $('#content').innerHTML = `
     <div class="system-update-page">
@@ -267,6 +275,17 @@ async function renderSystemUpdate() {
         <div class="update-note-safety"><b>Data safety</b><span>Orders, ledger, accounting, users and settings stay in the database. Code rollback never deletes later transactions.</span></div>
       </aside>
     </div>`;
+
+  if (systemUpdateReleasePollTimer) { clearTimeout(systemUpdateReleasePollTimer); systemUpdateReleasePollTimer = null; }
+  if (sourcePending && connectionReady && systemUpdateReleasePollCount < 20) {
+    systemUpdateReleasePollCount += 1;
+    systemUpdateReleasePollTimer = setTimeout(async () => {
+      if (!$('#checkSystemUpdateBtn')) return;
+      try { await api('/api/system-update/check', { method:'POST', body:'{}' }); await renderSystemUpdate(); } catch {}
+    }, 15000);
+  } else if (!sourcePending) {
+    systemUpdateReleasePollCount = 0;
+  }
 
   $('#openGithubConnectionBtn').onclick = () => openGithubConnectionSettings(config);
   $('#generateSigningKeyBtn').onclick = generateReleaseSigningKey;

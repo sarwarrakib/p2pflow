@@ -1,29 +1,28 @@
-# P2PFlow 1.2 - GitHub Desktop Update Guide
+# GitHub Desktop - P2PFlow Unified Update
 
-## GitHub-এ 1.2 আপলোড
+P2PFlow 1.4 থেকে **GitHub-এর জন্য আলাদা ZIP নেই**। Hosting এবং GitHub দু জায়গাতেই একই `P2PFlow_v1.4.0_UNIFIED.zip` ব্যবহার করবেন।
 
-1. `P2PFlow_v1.2.0_GITHUB_SOURCE.zip` আলাদা folder-এ extract করুন।
-2. GitHub Desktop থেকে আপনার private repository folder খুলুন।
-3. Extract করা সব file/folder repository root-এ copy/overwrite করুন। ZIP file repository-তে দেবেন না।
-4. `.git` মুছবেন না এবং `.github` folder copy হয়েছে নিশ্চিত করুন।
-5. Summary লিখুন: `P2PFlow 1.2 Bangla UI update`
-6. `Commit to main` চাপুন।
-7. `Push origin` চাপুন।
-8. GitHub Actions release সফল হলে P2PFlow-এ `System Update -> Check Now -> Update Now` চাপুন।
+## প্রথম upload
 
-## Hosting package কখন ব্যবহার করবেন
+1. Unified ZIP temporary folder-এ extract করুন।
+2. GitHub Desktop-এ private repository খুলুন।
+3. Repository -> Show in Explorer.
+4. ZIP-এর extracted সব content repository root-এ copy করুন। `.git` folder অক্ষত রাখুন।
+5. নিশ্চিত করুন repository root-এ আছে: `package.json`, `server.js`, `app-server.js`, `.github/`, `lib/`, `public/`, `scripts/`।
+6. Summary: `P2PFlow 1.4`
+7. Commit to main.
+8. Push origin.
 
-শুধু clean/manual deploy বা update engine না চললে `P2PFlow_v1.2.0_HOSTING_READY.zip` ব্যবহার করুন। Existing `.env`, `.p2pflow`, `shared/` এবং database মুছবেন না।
+## পরের normal version
 
-## পরের version
+নিজে source edit করলে `SET_NEXT_VERSION.bat` চালান। যেমন `1.3 -> 1.4`। এরপর Commit + Push করুন।
 
-`SET_NEXT_VERSION.bat`:
+Hotfix হলে `SET_HOTFIX_VERSION.bat` চালান। যেমন `1.3 -> 1.4.0`।
 
-- Normal feature update: `1.2 -> 1.3`
-- Hotfix: `1.2 -> 1.2.1`
+Push হওয়ার পরে GitHub Actions tests + audit + signed package build + GitHub Release publish করবে। তারপর System Update page নিজে নতুন release detect করবে।
 
-## নিরাপত্তা
+## খুব গুরুত্বপূর্ণ
 
-- `.env`, Application Key, database password এবং signing private key GitHub-এ commit করবেন না।
-- Install-এর আগে P2PFlow database backup তৈরি করে।
-- Code rollback business data delete করে না।
+- `.env`, `.p2pflow`, `shared/`, database dump/key/token GitHub-এ দেবেন না।
+- `UPDATE_SIGNING_PRIVATE_KEY` শুধু GitHub Actions repository secret-এ থাকবে।
+- `github_pat_...` read token P2PFlow-এর encrypted database setting-এ থাকবে; source code-এ নয়।

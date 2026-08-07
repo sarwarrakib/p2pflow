@@ -11,84 +11,53 @@ const pkg = JSON.parse(fs.readFileSync(packagePath, 'utf8'));
 const current = String(pkg.version || '');
 
 function parse(value) {
-  const normalized = String(value || '').trim().replace(/^v/i, '');
-  const match = normalized.match(/^(\d+)\.(\d+)(?:\.(\d+))?$/);
+  const match = String(value || '').trim().replace(/^v/i, '').match(/^(\d+)\.(\d+)\.(\d+)$/);
   if (!match) return null;
-  const result = { major: Number(match[1]), minor: Number(match[2]), patch: Number(match[3] || 0) };
+  const result = { major:Number(match[1]), minor:Number(match[2]), patch:Number(match[3]) };
   result.text = `${result.major}.${result.minor}.${result.patch}`;
   return result;
 }
-
-function compare(a, b) {
-  for (const key of ['major', 'minor', 'patch']) if (a[key] !== b[key]) return a[key] - b[key];
+function compare(a,b) {
+  for (const key of ['major','minor','patch']) if (a[key] !== b[key]) return a[key] - b[key];
   return 0;
 }
-
-function nextMinor(version) {
-  return { major: version.major, minor: version.minor + 1, patch: 0, text: `${version.major}.${version.minor + 1}.0` };
-}
-
-function nextHotfix(version) {
-  return { major: version.major, minor: version.minor, patch: version.patch + 1, text: `${version.major}.${version.minor}.${version.patch + 1}` };
-}
-
-function display(version) {
-  return version.patch === 0 ? `${version.major}.${version.minor}` : version.text;
-}
-
-function replaceExactVersion(text, oldVersion, newVersion) {
-  return String(text)
-    .split(`v${oldVersion}`).join(`v${newVersion}`)
-    .split(oldVersion).join(newVersion);
-}
+function nextPatch(v) { return { ...v, patch:v.patch+1, text:`${v.major}.${v.minor}.${v.patch+1}` }; }
+function nextMinor(v) { return { major:v.major, minor:v.minor+1, patch:0, text:`${v.major}.${v.minor+1}.0` }; }
+function nextMajor(v) { return { major:v.major+1, minor:0, patch:0, text:`${v.major+1}.0.0` }; }
 
 const currentParsed = parse(current);
-if (!currentParsed || !/^\d+\.\d+\.\d+$/.test(current)) throw new Error(`package.json has an invalid version: ${current}`);
-
+if (!currentParsed) throw new Error(`package.json has an invalid version: ${current}`);
 const requested = String(process.argv[2] || 'minor').trim().toLowerCase();
 let next;
-if (['minor', 'feature', 'update'].includes(requested)) next = nextMinor(currentParsed);
-else if (['hotfix', 'patch', 'fix'].includes(requested)) next = nextHotfix(currentParsed);
+if (requested === 'minor' || requested === 'next') next = nextMinor(currentParsed);
+else if (requested === 'patch' || requested === 'hotfix') next = nextPatch(currentParsed);
+else if (requested === 'major') next = nextMajor(currentParsed);
 else next = parse(requested);
-
-if (!next) throw new Error('Use: node scripts/set-version.js minor | hotfix | 1.2 | 1.2.1');
-if (compare(next, currentParsed) <= 0) throw new Error(`New version ${next.text} must be greater than current version ${current}.`);
+if (!next) throw new Error('Use: node scripts/set-version.js minor | patch | major | 1.4.0');
+if (compare(next,currentParsed) <= 0) throw new Error(`New version ${next.text} must be greater than current version ${current}.`);
 
 pkg.version = next.text;
-fs.writeFileSync(packagePath, JSON.stringify(pkg, null, 2) + '\n');
-
-const lock = JSON.parse(fs.readFileSync(lockPath, 'utf8'));
+fs.writeFileSync(packagePath, JSON.stringify(pkg,null,2)+'\n');
+const lock = JSON.parse(fs.readFileSync(lockPath,'utf8'));
 lock.version = next.text;
 if (lock.packages && lock.packages['']) lock.packages[''].version = next.text;
-fs.writeFileSync(lockPath, JSON.stringify(lock, null, 2) + '\n');
+fs.writeFileSync(lockPath, JSON.stringify(lock,null,2)+'\n');
 
-const replacements = [
-  'public/index.html',
-  'public/app.js',
-  'public/js/pages/accounting.js',
-  'public/js/pages/accounts.js',
-  'public/js/pages/ads.js',
-  'public/js/pages/p2p-market.js',
-  'public/js/pages/reports.js',
-  'public/js/pages/security.js',
-  'README.md',
-  'INSTALL_HOSTING_BN.md',
-  'HOSTING_GITHUB_DEPLOY_BN.md',
-  'docs/HOSTING_BROWSER_INSTALL_BN.md',
-  'docs/INSTALL_OWNER_503_RECOVERY_BN.md',
-  'docs/PRODUCTION_GITHUB_UPDATE_SETUP_BN.md',
-  'GITHUB_DESKTOP_UPDATE_GUIDE_BN.md'
+const textFiles = [
+  'public/index.html','public/setup.html','public/app.js',
+  'public/js/pages/accounting.js','public/js/pages/accounts.js','public/js/pages/ads.js',
+  'public/js/pages/p2p-market.js','public/js/pages/reports.js','public/js/pages/security.js',
+  'public/js/pages/system-update.js','README.md','UNIFIED_INSTALL_BN.md',
+  'docs/PRODUCTION_GITHUB_UPDATE_SETUP_BN.md','GITHUB_DESKTOP_UPDATE_GUIDE_BN.md','PACKAGE_TYPE.txt'
 ];
-
-for (const relative of replacements) {
-  const file = path.join(root, relative);
+for (const relative of textFiles) {
+  const file = path.join(root,relative);
   if (!fs.existsSync(file)) continue;
-  const before = fs.readFileSync(file, 'utf8');
-  fs.writeFileSync(file, replaceExactVersion(before, current, next.text));
+  const before = fs.readFileSync(file,'utf8');
+  fs.writeFileSync(file,before.split(current).join(next.text));
 }
-
-console.log(`P2PFlow version updated: ${display(currentParsed)} -> ${display(next)} (${next.text})`);
-console.log(requested === 'hotfix' || requested === 'patch' || requested === 'fix'
+console.log(`P2PFlow version updated: ${current} -> ${next.text}`);
+console.log(requested === 'patch' || requested === 'hotfix'
   ? 'Hotfix version prepared.'
-  : 'Feature/update version prepared.');
-console.log('Next: review Changes in GitHub Desktop, Commit to main, then Push origin. GitHub Actions will publish the signed release automatically.');
+  : 'Next normal version prepared. UI will hide the trailing .0.');
+console.log('Next: GitHub Desktop -> Commit -> Push origin. The release workflow publishes the signed update automatically.');

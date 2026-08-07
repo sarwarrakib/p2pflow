@@ -1,3 +1,10 @@
-P2PFlow 1.2 GITHUB SOURCE
-Internal version: 1.2.0
-UI version: 1.2
+P2PFlow UNIFIED PACKAGE
+Version: 1.4.0
+
+ONE ZIP FOR ALL USES
+- Fresh server: extract to Node application root, npm ci, npm start.
+- Existing server: backup persistent data, extract/overwrite application files, npm ci, restart.
+- GitHub: extract the same ZIP into the repository root, commit and push.
+- Future updates: System Update checks signed GitHub Releases and installs them without replacing database records.
+
+Never copy runtime .env/.p2pflow/shared/database files into GitHub.

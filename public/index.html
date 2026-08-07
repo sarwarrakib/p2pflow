@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>P2PFlow | অপারেশন প্যানেল</title>
-  <link rel="stylesheet" href="/style.css?v=1.2.0" />
+  <link rel="stylesheet" href="/style.css?v=1.4.0" />
 </head>
 <body>
   <div id="login" class="login-wrap hidden">
@@ -156,7 +156,14 @@
         <button id="mobileMenuClose" class="mobile-menu-close" type="button" aria-label="Close menu" title="Close menu">&times;</button>
       </div>
       <nav id="nav"></nav>
-      <button id="logoutBtn" class="ghost full">Logout</button>
+      <div class="sidebar-footer">
+        <div id="sidebarRuntime" class="sidebar-runtime">
+          <span class="sidebar-status-dot" aria-hidden="true"></span>
+          <span id="sidebarServerStatus">Server Online</span>
+          <small id="sidebarVersion">Version</small>
+        </div>
+        <button id="logoutBtn" class="sidebar-logout full" type="button"><span class="sidebar-logout-icon" aria-hidden="true">↪</span><span>Logout</span></button>
+      </div>
     </aside>
     <div id="sidebarBackdrop" class="sidebar-backdrop" aria-hidden="true"></div>
 
@@ -204,28 +211,28 @@
     </div>
   </template>
 
-  <script src="/js/pages/dashboard.js?v=1.2.0"></script>
-  <script src="/js/pages/p2p-market.js?v=1.2.0"></script>
-  <script src="/js/pages/orders.js?v=1.2.0"></script>
-  <script src="/js/pages/chat.js?v=1.2.0"></script>
-  <script src="/js/pages/ads.js?v=1.2.0"></script>
-  <script src="/js/pages/approvals.js?v=1.2.0"></script>
-  <script src="/js/pages/accounts.js?v=1.2.0"></script>
-  <script src="/js/pages/ledger.js?v=1.2.0"></script>
-  <script src="/js/pages/users.js?v=1.2.0"></script>
-  <script src="/js/pages/user-roles.js?v=1.2.0"></script>
-  <script src="/js/pages/routing.js?v=1.2.0"></script>
-  <script src="/js/pages/reports.js?v=1.2.0"></script>
-  <script src="/js/pages/accounting.js?v=1.2.0"></script>
-  <script src="/js/pages/activity.js?v=1.2.0"></script>
-  <script src="/js/pages/credentials.js?v=1.2.0"></script>
-  <script src="/js/pages/health.js?v=1.2.0"></script>
-  <script src="/js/pages/settings.js?v=1.2.0"></script>
-  <script src="/js/pages/system-update.js?v=1.2.0"></script>
-  <script src="/js/pages/p2p-extension.js?v=1.2.0"></script>
-  <script src="/js/pages/security.js?v=1.2.0"></script>
-  <script src="/js/pages/notifications.js?v=1.2.0"></script>
-  <script src="/js/pages/audit.js?v=1.2.0"></script>
-  <script src="/app.js?v=1.2.0"></script>
+  <script src="/js/pages/dashboard.js?v=1.4.0"></script>
+  <script src="/js/pages/p2p-market.js?v=1.4.0"></script>
+  <script src="/js/pages/orders.js?v=1.4.0"></script>
+  <script src="/js/pages/chat.js?v=1.4.0"></script>
+  <script src="/js/pages/ads.js?v=1.4.0"></script>
+  <script src="/js/pages/approvals.js?v=1.4.0"></script>
+  <script src="/js/pages/accounts.js?v=1.4.0"></script>
+  <script src="/js/pages/ledger.js?v=1.4.0"></script>
+  <script src="/js/pages/users.js?v=1.4.0"></script>
+  <script src="/js/pages/user-roles.js?v=1.4.0"></script>
+  <script src="/js/pages/routing.js?v=1.4.0"></script>
+  <script src="/js/pages/reports.js?v=1.4.0"></script>
+  <script src="/js/pages/accounting.js?v=1.4.0"></script>
+  <script src="/js/pages/activity.js?v=1.4.0"></script>
+  <script src="/js/pages/credentials.js?v=1.4.0"></script>
+  <script src="/js/pages/health.js?v=1.4.0"></script>
+  <script src="/js/pages/settings.js?v=1.4.0"></script>
+  <script src="/js/pages/system-update.js?v=1.4.0"></script>
+  <script src="/js/pages/p2p-extension.js?v=1.4.0"></script>
+  <script src="/js/pages/security.js?v=1.4.0"></script>
+  <script src="/js/pages/notifications.js?v=1.4.0"></script>
+  <script src="/js/pages/audit.js?v=1.4.0"></script>
+  <script src="/app.js?v=1.4.0"></script>
 </body>
 </html>

@@ -24,17 +24,31 @@ try {
     installRoot: temp, releasesDir: releases, sharedDir: shared, currentLink: current,
     repository: 'owner/private-repository', token: 'test-token', publicKey: publicPem, requireSignature: true
   });
-  manager.githubFetch = async () => ({ json: async () => [] });
+  manager.githubFetch = async url => {
+    if (String(url).includes('/contents/package.json')) return { json: async () => ({ encoding: 'base64', content: Buffer.from(JSON.stringify({ version: '1.0.168' })).toString('base64'), sha: 'abc' }) };
+    return { json: async () => [] };
+  };
+  const sourceVersion = await manager.repositorySourceVersion();
+  if (!sourceVersion || sourceVersion.version !== '1.0.168' || sourceVersion.updateAvailable !== true) throw new Error('Repository source version detection failed.');
   const noRelease = await manager.latestRelease();
   if (noRelease !== null) throw new Error('An empty GitHub release list must be treated as a valid no-release state.');
   manager.githubFetch = async () => ({ json: async () => [{
-    id: 167,
-    tag_name: 'v1.0.167',
-    name: 'v1.0.167',
-    body: 'test',
+    id: 165,
+    tag_name: 'v1.0.165',
+    name: 'v1.0.165',
+    body: 'older but returned first',
     draft: false,
     prerelease: false,
     published_at: new Date().toISOString(),
+    assets: []
+  }, {
+    id: 167,
+    tag_name: 'v1.0.167',
+    name: 'v1.0.167',
+    body: 'newest semantic version',
+    draft: false,
+    prerelease: false,
+    published_at: new Date(Date.now() - 1000).toISOString(),
     assets: []
   }] });
   const discovered = await manager.latestRelease();
@@ -111,6 +125,8 @@ try {
     manifestRequiredForRollback: true,
     noReleaseIsValid: true,
     publishedReleaseDiscovery: true,
+    highestSemanticReleaseSelected: true,
+    repositorySourceVersionDetection: true,
     installedReleases: installed.map(item => item.version)
   }, null, 2));
 } finally {

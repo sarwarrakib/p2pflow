@@ -1,0 +1,64 @@
+#!/usr/bin/env node
+'use strict';
+
+const fs = require('fs');
+const path = require('path');
+const crypto = require('crypto');
+const { spawnSync } = require('child_process');
+
+const root = path.resolve(__dirname, '..');
+const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+const outDir = path.resolve(process.env.P2PFLOW_PACKAGE_OUT || path.join(root, 'dist-unified'));
+const stage = path.join(outDir, `stage-${pkg.version}`);
+const zipPath = path.join(outDir, `P2PFlow_v${pkg.version}_UNIFIED.zip`);
+
+const topLevelExcludes = new Set([
+  '.git','node_modules','releases','shared','dist','dist-unified','data','legacy-import','.p2pflow',
+  '.env','.env.local','P2PFLOW_SETUP_CODE.txt'
+]);
+const sensitiveNames = new Set([
+  '.env','.env.local','P2PFLOW_SETUP_CODE.txt','startup-failure.json','current-release.json',
+  'pending-activation.json','app.db.enc','master.key','private.key','id_rsa'
+]);
+
+function isSensitive(relative) {
+  const parts = relative.split('/');
+  return parts.some(part => sensitiveNames.has(part)) || parts.includes('shared') || parts.includes('releases') || parts.includes('.p2pflow');
+}
+function copySafe(src, dst, relative = '') {
+  const stat = fs.lstatSync(src);
+  if (stat.isSymbolicLink()) throw new Error(`Refusing symbolic link in unified package: ${relative || src}`);
+  if (isSensitive(relative)) throw new Error(`Refusing to package sensitive runtime file: ${relative}`);
+  if (stat.isDirectory()) {
+    fs.mkdirSync(dst, { recursive:true });
+    for (const name of fs.readdirSync(src)) {
+      if (!relative && topLevelExcludes.has(name)) continue;
+      const childRelative = relative ? `${relative}/${name}` : name;
+      copySafe(path.join(src, name), path.join(dst, name), childRelative);
+    }
+    return;
+  }
+  if (!stat.isFile()) throw new Error(`Unsupported filesystem object: ${relative}`);
+  fs.mkdirSync(path.dirname(dst), { recursive:true });
+  fs.copyFileSync(src, dst);
+}
+
+fs.rmSync(outDir, { recursive:true, force:true });
+fs.mkdirSync(stage, { recursive:true });
+for (const name of fs.readdirSync(root)) {
+  if (topLevelExcludes.has(name)) continue;
+  if (name === path.basename(outDir)) continue;
+  copySafe(path.join(root, name), path.join(stage, name), name);
+}
+
+const packageType = `P2PFlow UNIFIED PACKAGE\nVersion: ${pkg.version}\n\nONE ZIP FOR ALL USES\n- Fresh server: extract to Node application root, npm ci, npm start.\n- Existing server: backup persistent data, extract/overwrite application files, npm ci, restart.\n- GitHub: extract the same ZIP into the repository root, commit and push.\n- Future updates: System Update checks signed GitHub Releases and installs them without replacing database records.\n\nNever copy runtime .env/.p2pflow/shared/database files into GitHub.\n`;
+fs.writeFileSync(path.join(stage, 'PACKAGE_TYPE.txt'), packageType);
+
+const zip = spawnSync('zip', ['-q','-r',zipPath,'.'], { cwd:stage, stdio:'inherit' });
+if (zip.error) throw zip.error;
+if (zip.status !== 0) process.exit(zip.status || 1);
+const hash = crypto.createHash('sha256').update(fs.readFileSync(zipPath)).digest('hex');
+const shaPath = path.join(outDir, `P2PFlow_v${pkg.version}_SHA256.txt`);
+fs.writeFileSync(shaPath, `${hash}  ${path.basename(zipPath)}\n`);
+fs.rmSync(stage, { recursive:true, force:true });
+console.log(JSON.stringify({ ok:true, version:pkg.version, packageMode:'UNIFIED', zipPath, sha256:hash, shaPath }, null, 2));
