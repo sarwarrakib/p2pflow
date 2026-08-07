@@ -1,5 +1,5 @@
 P2PFlow UNIFIED PACKAGE
-Version: 1.4.1
+Version: 1.4.2
 
 ONE ZIP FOR ALL USES
 - Fresh server: extract to Node application root, npm ci, npm start.

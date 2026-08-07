@@ -27,7 +27,7 @@ Updater code এবং database আলাদা রাখে। Update install-�
 
 ## Version
 
-Internal SemVer: `1.4.1`  
+Internal SemVer: `1.4.2`  
 UI: `1.4`
 
 Normal next version: `SET_NEXT_VERSION.bat` -> `1.5.0`  

@@ -54,7 +54,14 @@ for (const relative of textFiles) {
   const file = path.join(root,relative);
   if (!fs.existsSync(file)) continue;
   const before = fs.readFileSync(file,'utf8');
-  fs.writeFileSync(file,before.split(current).join(next.text));
+  let after = before.split(current).join(next.text);
+  if (relative === 'public/index.html' || relative === 'public/setup.html') {
+    after = after.replace(/\?v=\d+\.\d+\.\d+/g, `?v=${next.text}`);
+  }
+  if (relative === 'UNIFIED_INSTALL_BN.md' || relative === 'GITHUB_DESKTOP_UPDATE_GUIDE_BN.md') {
+    after = after.replace(/P2PFlow_v\d+\.\d+\.\d+_UNIFIED\.zip/g, `P2PFlow_v${next.text}_UNIFIED.zip`);
+  }
+  fs.writeFileSync(file,after);
 }
 console.log(`P2PFlow version updated: ${current} -> ${next.text}`);
 console.log(requested === 'patch' || requested === 'hotfix'
