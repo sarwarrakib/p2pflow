@@ -1,4 +1,4 @@
-// v1.4.5: first-run recovery reuses the saved Application Key and software updates are Owner-only from Control Panel.
+// v1.4.6: first-run recovery reuses the saved Application Key and software updates are Owner-only from Control Panel.
 // v1.0.137: Diagnose and harden Binance P2P Create Advertisement privilege flow.
 // v1.0.128: lightweight Ads UI, cached reloads and realtime Binance merchant-status sync.
 // v1.0.117: Stop order countdowns immediately after completed or cancelled status sync.
@@ -291,6 +291,61 @@ function setupResponsiveNavigation() {
   }
   setMobileNavigation(false, { restoreFocus: false });
 }
+function scrollSidebarNavBy(delta) {
+  const nav = $('#nav');
+  if (!nav || nav.scrollHeight <= nav.clientHeight + 1) return false;
+  const amount = Number(delta || 0);
+  if (!Number.isFinite(amount) || amount === 0) return false;
+  const maxScroll = Math.max(0, nav.scrollHeight - nav.clientHeight);
+  const before = nav.scrollTop;
+  nav.scrollTop = Math.max(0, Math.min(maxScroll, before + amount));
+  return Math.abs(nav.scrollTop - before) > 0.5;
+}
+
+function revealSidebarNavElement(element, behavior='smooth') {
+  const nav = $('#nav');
+  if (!nav || !element || nav.scrollHeight <= nav.clientHeight + 1) return;
+  const navRect = nav.getBoundingClientRect();
+  const itemRect = element.getBoundingClientRect();
+  const pad = 10;
+  let delta = 0;
+  if (itemRect.top < navRect.top + pad) delta = itemRect.top - navRect.top - pad;
+  else if (itemRect.bottom > navRect.bottom - pad) delta = itemRect.bottom - navRect.bottom + pad;
+  if (!delta) return;
+  if (typeof nav.scrollBy === 'function') nav.scrollBy({ top:delta, left:0, behavior });
+  else nav.scrollTop += delta;
+}
+
+function setupSidebarScrollableNavigation() {
+  const sidebar = $('#sidebar');
+  const nav = $('#nav');
+  if (!sidebar || !nav || sidebar.dataset.scrollNavigationReady === '1') return;
+  sidebar.dataset.scrollNavigationReady = '1';
+
+  // Route mouse-wheel/trackpad movement to the menu even when the pointer is
+  // over the brand or footer. This also works around hosting/browser layouts
+  // where a fixed sidebar would otherwise swallow the wheel gesture.
+  sidebar.addEventListener('wheel', event => {
+    if (!event.deltaY || event.ctrlKey) return;
+    if (scrollSidebarNavBy(event.deltaY)) event.preventDefault();
+  }, { passive:false });
+
+  // Keyboard access for long menus while focus remains on a menu button.
+  sidebar.addEventListener('keydown', event => {
+    if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey) return;
+    const page = Math.max(120, Math.floor(nav.clientHeight * 0.82));
+    if (event.key === 'PageDown' && scrollSidebarNavBy(page)) event.preventDefault();
+    else if (event.key === 'PageUp' && scrollSidebarNavBy(-page)) event.preventDefault();
+    else if (event.key === 'Home' && nav.scrollTop > 0) {
+      nav.scrollTop = 0;
+      event.preventDefault();
+    } else if (event.key === 'End' && nav.scrollTop < nav.scrollHeight - nav.clientHeight - 1) {
+      nav.scrollTop = Math.max(0, nav.scrollHeight - nav.clientHeight);
+      event.preventDefault();
+    }
+  });
+}
+
 function chatLocaleText(en='', bn='') {
   return state.lang === 'bn' ? (bn || en) : en;
 }
@@ -3668,6 +3723,7 @@ async function init() {
   setupLanguageControls();
   setupNotificationSoundControls();
   setupResponsiveNavigation();
+  setupSidebarScrollableNavigation();
   setupGlobalPullToRefresh();
   setupConnectivityStatus();
   setupEmailOtpInputs();
@@ -4246,7 +4302,7 @@ function renderNav() {
   // legacy flat menu while this marker is absent, the browser/proxy is serving
   // stale frontend JavaScript rather than the active release.
   nav.dataset.navigationModel = 'grouped-control-center';
-  nav.dataset.uiRelease = '1.4.5';
+  nav.dataset.uiRelease = '1.4.6';
   nav.innerHTML = '';
   const visible = visiblePages();
   const visibleIds = new Set(visible.map(([id]) => id));
@@ -4314,8 +4370,13 @@ function renderNav() {
       group.classList.toggle('open', opening);
       toggle.setAttribute('aria-expanded', opening ? 'true' : 'false');
       submenu.setAttribute('aria-hidden', opening ? 'false' : 'true');
-      if (opening) localStorage.setItem('crmOpenNavGroup', groupDef.id);
-      else localStorage.removeItem('crmOpenNavGroup');
+      if (opening) {
+        localStorage.setItem('crmOpenNavGroup', groupDef.id);
+        window.setTimeout(() => {
+          const target = group.querySelector('.nav-page-button.active') || group;
+          revealSidebarNavElement(target, 'smooth');
+        }, 260);
+      } else localStorage.removeItem('crmOpenNavGroup');
     };
 
     group.append(toggle, submenu);
@@ -4343,6 +4404,10 @@ function renderNav() {
   renderSidebarMeta();
   applyLanguage(nav);
   renderMobileBottomNav();
+  window.requestAnimationFrame(() => {
+    const activeItem = nav.querySelector('.nav-page-button.active');
+    if (activeItem) revealSidebarNavElement(activeItem, 'auto');
+  });
 
   // Fail visibly instead of silently falling back to the pre-v1.4 flat menu.
   // This assertion is intentionally presentation-only; it does not change any
