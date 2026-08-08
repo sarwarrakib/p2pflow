@@ -80,6 +80,10 @@ for (const marker of ['nextMinor(', 'nextPatch(', "requested === 'minor'", 'pack
 }
 const index = fs.readFileSync(path.join(root, 'public', 'index.html'), 'utf8');
 if (!index.includes('/js/pages/system-update.js?v=' + pkg.version)) throw new Error('System Update asset version does not match package version.');
+const style = fs.readFileSync(path.join(root, 'public', 'style.css'), 'utf8');
+for (const marker of ['premium control-center navigation visual refresh', '.nav-group[data-nav-group=\"accounting\"]', '#mobileBottomNav.mobile-bottom-nav']) {
+  if (!style.includes(marker)) throw new Error(`Navigation visual refresh is missing marker: ${marker}`);
+}
 
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'p2pflow-integrity-'));
 try {

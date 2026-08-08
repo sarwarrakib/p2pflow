@@ -61,6 +61,12 @@ for (const relative of textFiles) {
   if (relative === 'UNIFIED_INSTALL_BN.md' || relative === 'GITHUB_DESKTOP_UPDATE_GUIDE_BN.md') {
     after = after.replace(/P2PFlow_v\d+\.\d+\.\d+_UNIFIED\.zip/g, `P2PFlow_v${next.text}_UNIFIED.zip`);
   }
+  if (relative === 'README.md') {
+    const futureMinor = nextMinor(next).text;
+    const futurePatch = nextPatch(next).text;
+    after = after.replace(/Normal next version: `SET_NEXT_VERSION\.bat` -> `\d+\.\d+\.\d+`/, `Normal next version: \`SET_NEXT_VERSION.bat\` -> \`${futureMinor}\``);
+    after = after.replace(/Hotfix: `SET_HOTFIX_VERSION\.bat` -> `\d+\.\d+\.\d+`/, `Hotfix: \`SET_HOTFIX_VERSION.bat\` -> \`${futurePatch}\``);
+  }
   fs.writeFileSync(file,after);
 }
 console.log(`P2PFlow version updated: ${current} -> ${next.text}`);

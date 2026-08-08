@@ -48,3 +48,6 @@ Safety
 - No runtime .env, shared/, releases/, database, application key, or other sensitive persistent files are included in the unified ZIP.
 - Existing database records are not replaced by signed code updates.
 - A database backup is still created immediately before the release switch.
+- Unified ZIP extracted npm run build: PASS
+- Unified ZIP extracted npm test: PASS
+- Unified ZIP sensitive runtime path scan (.env/.p2pflow/shared/releases): PASS (none packaged)
