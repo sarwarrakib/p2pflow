@@ -1,6 +1,7 @@
 // P2PFlow System Update - compact owner workflow.
 let systemUpdateReleasePollTimer = null;
 let systemUpdateReleasePollCount = 0;
+let systemUpdateStagePollGeneration = 0;
 
 function systemVersionLabel(value) {
   const text = String(value || '').trim().replace(/^v/i, '');
@@ -151,22 +152,67 @@ function generateReleaseSigningKey() {
   }, 'This key signs every production release created by GitHub Actions.');
 }
 
+function systemUpdateDelay(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
+
+async function systemUpdateStageStatusRequest(timeoutMs = 8000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch('/api/system-update/stage-status', { credentials:'include', cache:'no-store', signal:controller.signal, headers:{ Accept:'application/json' } });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || data.message || `Stage status failed (${response.status})`);
+    return data.job || {};
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function waitForSystemUpdateStage(version, options = {}) {
+  const generation = ++systemUpdateStagePollGeneration;
+  const openAuthorization = options.openAuthorization !== false;
+  for (let attempt = 0; attempt < 180 && generation === systemUpdateStagePollGeneration; attempt += 1) {
+    let job;
+    try { job = await systemUpdateStageStatusRequest(); }
+    catch { await systemUpdateDelay(2200); continue; }
+    if (job.status === 'failed') {
+      notify(job.error || 'Release verification failed. Open System Update for the saved error details.', 'danger', 9000);
+      await renderSystemUpdate();
+      return;
+    }
+    if (job.status === 'ready' || job.status === 'done') {
+      const result = job.result || {};
+      if (!result.staged && result.reason === 'no_release') {
+        notify('No published release exists yet.', 'warn');
+        await renderSystemUpdate();
+        return;
+      }
+      if (!result.staged && result.reason === 'already_current') {
+        notify('P2PFlow is already up to date.', 'ok');
+        await renderSystemUpdate();
+        return;
+      }
+      if (result.staged) {
+        if (openAuthorization) openSystemUpdateAuthorization('apply', version || job.version || result.release?.version);
+        else await renderSystemUpdate();
+        return;
+      }
+    }
+    await systemUpdateDelay(2200);
+  }
+  if (generation === systemUpdateStagePollGeneration) {
+    notify('Release verification is still running in the background. You can leave this page and return later.', 'warn', 8000);
+    await renderSystemUpdate();
+  }
+}
+
 async function installAvailableUpdate(version) {
   const button = $('#installSystemUpdateBtn');
   if (button) { button.disabled = true; button.textContent = 'Verifying...'; }
   try {
     const result = await api('/api/system-update/stage', { method:'POST', body:'{}' });
-    if (!result.staged && result.reason === 'no_release') {
-      notify('No published release exists yet.', 'warn');
-      await renderSystemUpdate();
-      return;
-    }
-    if (!result.staged && result.reason === 'already_current') {
-      notify('P2PFlow is already up to date.', 'ok');
-      await renderSystemUpdate();
-      return;
-    }
-    openSystemUpdateAuthorization('apply', version || result.release?.version);
+    const job = result.job || {};
+    if (job.status === 'failed') throw new Error(job.error || 'Release verification failed.');
+    await waitForSystemUpdateStage(version || job.version, { openAuthorization:true });
   } catch (error) {
     if (button) { button.disabled = false; button.textContent = 'Update Now'; }
   }
@@ -182,6 +228,8 @@ async function renderSystemUpdate() {
   const release = status.availableRelease;
   const updateAvailable = Boolean(status.availableVersion && release);
   const config = status.config || {};
+  const stageJob = status.stageJob || {};
+  const stageRunning = stageJob.status === 'verifying';
   const connectionReady = Boolean(config.connectionReady || (config.repositoryConfigured && config.tokenConfigured));
   const securityReady = Boolean(config.releaseSecurityReady || (!config.signatureRequired || config.publicKeyConfigured));
   const automaticInstallReady = Boolean(config.automaticInstallReady || config.ready);
@@ -211,12 +259,13 @@ async function renderSystemUpdate() {
           </div>
           <div class="update-hero-actions">
             <button id="checkSystemUpdateBtn" class="secondary" ${!connectionReady ? 'disabled' : ''}>Check Now</button>
-            ${updateAvailable ? `<button id="installSystemUpdateBtn" class="success" ${!automaticInstallReady || !securityReady ? 'disabled' : ''}>${staged ? 'Install Now' : 'Update Now'}</button>` : ''}
+            ${updateAvailable ? `<button id="installSystemUpdateBtn" class="success" ${!automaticInstallReady || !securityReady || stageRunning ? 'disabled' : ''}>${stageRunning ? 'Verifying...' : (staged ? 'Install Now' : 'Update Now')}</button>` : ''}
           </div>
         </section>
 
         ${status.lastCheckError ? `<div class="error update-page-message">${escapeHtml(status.lastCheckError)}</div>` : ''}
         ${status.lastResult?.error ? `<div class="error update-page-message">${escapeHtml(status.lastResult.error)}</div>` : ''}
+        ${stageJob.status === 'failed' && stageJob.error ? `<div class="error update-page-message"><b>Update verification failed:</b> ${escapeHtml(stageJob.error)}</div>` : ''}
 
         <section class="update-overview-grid">
           <div class="update-overview-card"><span>Current version</span><b>${escapeHtml(currentLabel)}</b><small>Schema ${escapeHtml(status.schemaVersion)}</small></div>
@@ -285,6 +334,15 @@ async function renderSystemUpdate() {
     }, 15000);
   } else if (!sourcePending) {
     systemUpdateReleasePollCount = 0;
+  }
+  if (stageRunning) {
+    setTimeout(async () => {
+      if (!$('#installSystemUpdateBtn')) return;
+      try {
+        const job = await systemUpdateStageStatusRequest(6000);
+        if (job.status !== 'verifying') await renderSystemUpdate();
+      } catch {}
+    }, 3000);
   }
 
   $('#openGithubConnectionBtn').onclick = () => openGithubConnectionSettings(config);

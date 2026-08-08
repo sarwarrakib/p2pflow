@@ -44,7 +44,7 @@ for (const marker of ['main-thread-restart', 'ensureRootSnapshot(', 'CURRENT_POI
   if (!supervisor.includes(marker)) throw new Error(`Unified supervisor is missing marker: ${marker}`);
 }
 const app = fs.readFileSync(path.join(root, 'app-server.js'), 'utf8');
-for (const marker of ['createStateStore({', 'createDatabaseBackup(', 'startSystemUpdateCheckLoop(', 'repositorySourceVersion()', 'hasSupervisorChannel()', 'supervisorSend(']) {
+for (const marker of ['createStateStore({', 'createDatabaseBackup(', 'startSystemUpdateCheckLoop(', 'repositorySourceVersion()', 'hasSupervisorChannel()', 'supervisorSend(', 'beginSystemUpdateStage(', "action === 'stage-status'"]) {
   if (!app.includes(marker)) throw new Error(`Application server is missing marker: ${marker}`);
 }
 for (const forbidden of ['CRM_DB_PROVIDER=file','CRM_DB_FILE','0.0032']) {
@@ -58,10 +58,18 @@ const workflow = fs.readFileSync(path.join(root, '.github', 'workflows', 'releas
 for (const marker of ['UPDATE_SIGNING_PRIVATE_KEY','contents: write','gh release create','Version $VERSION was already used','npm test']) {
   if (!workflow.includes(marker)) throw new Error(`Release workflow is missing marker: ${marker}`);
 }
+const updateUi = fs.readFileSync(path.join(root, 'public', 'js', 'pages', 'system-update.js'), 'utf8');
+for (const marker of ['systemUpdateStageStatusRequest(', 'waitForSystemUpdateStage(', "'/api/system-update/stage-status'", 'Verifying...']) {
+  if (!updateUi.includes(marker)) throw new Error(`System Update UI is missing background staging marker: ${marker}`);
+}
 const builder = fs.readFileSync(path.join(root, 'scripts', 'build-release.js'), 'utf8');
-for (const marker of ["'app-server.js'", 'treeSha256', 'packageBytes', 'UPDATE_SIGNING_PRIVATE_KEY']) {
+for (const marker of ["'app-server.js'", 'treeSha256', 'packageBytes', 'UPDATE_SIGNING_PRIVATE_KEY', "verificationProfile: 'signed-ci-runtime'", 'dependenciesBundled: false', "'SET_NEXT_VERSION.bat'", "'SET_HOTFIX_VERSION.bat'"]) {
   if (!builder.includes(marker)) throw new Error(`Release builder is missing marker: ${marker}`);
 }
+if (/['"]node_modules['"]/.test(builder.match(/const include = \[[\s\S]*?\];/)?.[0] || '')) {
+  throw new Error('Signed update package must not bundle node_modules; shared hosting uses the already-installed root dependencies.');
+}
+if (!updater.includes("manifest.verificationProfile === 'signed-ci-runtime'")) throw new Error('Update manager is missing the shared-hosting fast verification profile.');
 const unifiedBuilder = fs.readFileSync(path.join(root, 'scripts', 'build-unified-package.js'), 'utf8');
 for (const marker of ['UNIFIED.zip','sensitive','shared','releases']) {
   if (!unifiedBuilder.includes(marker)) throw new Error(`Unified package builder is missing marker: ${marker}`);

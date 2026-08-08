@@ -234,6 +234,7 @@ const pendingSecurityChanges = new Map();
 let db = null;
 let stateStore = null;
 let updateManager = null;
+let systemUpdateStageJob = { status: 'idle', jobId: '', version: '', startedAt: null, completedAt: null, error: '', result: null };
 let activeMutatingRequests = 0;
 let maintenanceMode = { enabled: false, reason: '', startedAt: null };
 let gracefulShutdownStarted = false;
@@ -10970,6 +10971,72 @@ function sanitizedRelease(release) {
   };
 }
 
+function systemUpdateStageJobView() {
+  const job = systemUpdateStageJob || {};
+  return {
+    status: cleanStr(job.status || 'idle', 30),
+    jobId: cleanStr(job.jobId || '', 80),
+    version: cleanStr(job.version || '', 40),
+    startedAt: job.startedAt || null,
+    completedAt: job.completedAt || null,
+    error: cleanStr(job.error || '', 500),
+    result: job.result ? {
+      staged: Boolean(job.result.staged),
+      reused: Boolean(job.result.reused),
+      reason: cleanStr(job.result.reason || '', 60),
+      release: sanitizedRelease(job.result.release)
+    } : null
+  };
+}
+
+function beginSystemUpdateStage(user) {
+  if (!updateManager) throw new Error('Update manager is not initialized.');
+  if (systemUpdateStageJob?.status === 'verifying') return systemUpdateStageJobView();
+  const manager = updateManager;
+  const jobId = crypto.randomBytes(12).toString('hex');
+  systemUpdateStageJob = {
+    status: 'verifying',
+    jobId,
+    version: cleanStr(db.settings.updateAvailableVersion || '', 40),
+    startedAt: nowIso(),
+    completedAt: null,
+    error: '',
+    result: null
+  };
+  setImmediate(async () => {
+    try {
+      const result = await manager.stageLatest();
+      if (systemUpdateStageJob.jobId !== jobId) return;
+      const version = result.release?.version || result.manifest?.version || systemUpdateStageJob.version || '';
+      const stageMessage = result.reused
+        ? 'The verified release was already prepared.'
+        : (result.reason === 'already_current'
+          ? 'The application is already current.'
+          : (result.reason === 'no_release' ? 'No published production release exists yet.' : 'The verified release was prepared.'));
+      systemUpdateStageJob = {
+        ...systemUpdateStageJob,
+        status: result.staged ? 'ready' : 'done',
+        version: cleanStr(version, 40),
+        completedAt: nowIso(),
+        error: '',
+        result: { staged: Boolean(result.staged), reused: Boolean(result.reused), reason: result.reason || '', release: result.release || null }
+      };
+      systemUpdateEvent(result.staged ? 'release_staged' : 'stage_skipped', version, stageMessage, { actorUserId: user?.id || null });
+      if (result.staged) db.systemUpdates.push({ id: nextId(), mode: 'update', fromVersion: APP_VERSION, toVersion: version, status: 'staged', stagedAt: nowIso(), stagedBy: user?.id || null });
+      logAudit(user, 'system_release_staged', 'system', 0, { version, staged: result.staged, reused: result.reused || false, background: true });
+      await saveDb({ reason: 'system_release_staged' });
+    } catch (error) {
+      if (systemUpdateStageJob.jobId !== jobId) return;
+      const message = cleanStr(error.message || error, 500);
+      systemUpdateStageJob = { ...systemUpdateStageJob, status: 'failed', completedAt: nowIso(), error: message, result: null };
+      systemUpdateEvent('stage_failed', systemUpdateStageJob.version || '', message, { actorUserId: user?.id || null });
+      logAudit(user, 'system_release_stage_failed', 'system', 0, { version: systemUpdateStageJob.version || '', error: message, background: true });
+      try { await saveDb({ reason: 'system_release_stage_failed' }); } catch {}
+    }
+  });
+  return systemUpdateStageJobView();
+}
+
 async function checkForSystemUpdate({ actor = null, notify = true, reason = 'manual' } = {}) {
   if (!updateManager) throw new Error('Update manager is not initialized.');
   let sourceInfo = null;
@@ -11097,6 +11164,7 @@ async function systemUpdateStatus() {
     availableVersion: db.settings.updateAvailableVersion || '',
     availableRelease: db.settings.updateAvailableRelease || null,
     lastResult: db.settings.updateLastResult || null,
+    stageJob: systemUpdateStageJobView(),
     installedReleases: updateManager ? updateManager.listInstalledReleases().map(item => ({ version: item.version, current: item.current, schema: item.manifest.schema || {}, dataCompatibilityEpoch: Number(item.manifest.dataCompatibilityEpoch || 0), installedAt: item.manifest.installedAt || item.manifest.createdAt || null })) : [],
     updates: (db.systemUpdates || []).slice(-30).reverse().map(item => ({ ...item, targetDirectory: undefined })),
     events: (db.systemUpdateEvents || []).slice(-50).reverse(),
@@ -11235,20 +11303,13 @@ async function handleSystemUpdate(req, res, url) {
       throw error;
     }
   }
+  if (req.method === 'GET' && action === 'stage-status') {
+    return sendJson(res, 200, { ok: true, job: systemUpdateStageJobView() }, {}, req);
+  }
   if (req.method === 'POST' && action === 'stage') {
     if (maintenanceMode.enabled) return sendJson(res, 409, { error: 'A maintenance operation is already in progress.' }, {}, req);
-    const result = await updateManager.stageLatest();
-    const version = result.release?.version || result.manifest?.version || '';
-    const stageMessage = result.reused
-      ? 'The verified release was already prepared.'
-      : (result.reason === 'already_current'
-        ? 'The application is already current.'
-        : (result.reason === 'no_release' ? 'No published production release exists yet.' : 'The verified release was prepared.'));
-    systemUpdateEvent(result.staged ? 'release_staged' : 'stage_skipped', version, stageMessage, { actorUserId: user.id });
-    if (result.staged) db.systemUpdates.push({ id: nextId(), mode: 'update', fromVersion: APP_VERSION, toVersion: version, status: 'staged', stagedAt: nowIso(), stagedBy: user.id });
-    logAudit(user, 'system_release_staged', 'system', 0, { version, staged: result.staged, reused: result.reused || false });
-    saveDb({ reason: 'system_release_staged' });
-    return sendJson(res, 200, { ok: true, staged: result.staged, reused: result.reused || false, reason: result.reason || '', release: sanitizedRelease(result.release), status: await systemUpdateStatus() }, {}, req);
+    const job = beginSystemUpdateStage(user);
+    return sendJson(res, 202, { ok: true, status: job.status, job }, {}, req);
   }
   if (req.method === 'POST' && (action === 'apply' || action === 'rollback')) {
     const body = await readBody(req);

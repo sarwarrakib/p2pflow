@@ -1,0 +1,50 @@
+P2PFlow v1.4.3 Hotfix - Verification Report
+============================================================
+Purpose
+-------
+Fix System Update staging that could remain on "Verifying..." until the shared-hosting HTTP request timed out and then return to the previous UI state.
+
+Verified changes
+----------------
+1. Version synchronization
+   - package.json: 1.4.3
+   - package-lock.json root: 1.4.3
+   - browser asset cache-busting normalized by set-version.js
+
+2. Lightweight signed update release
+   - Signed release tarball excludes node_modules.
+   - Manifest dependenciesBundled = false.
+   - Manifest verificationProfile = signed-ci-runtime.
+   - Locally generated signed test release size: 503,283 bytes.
+   - Release tree: 75 files / 2,239,658 bytes.
+   - No node_modules path is present in the tarball.
+
+3. Backward staging compatibility
+   - v1.4.2 UpdateManager validateTarEntries accepted the v1.4.3 package.
+   - v1.4.2 UpdateManager validateReleaseDirectory accepted the extracted v1.4.3 tree when production dependencies were available from installRoot/node_modules.
+   - Local validation timing in this environment: archive listing ~32 ms; release directory validation ~1.36 s.
+
+4. Timeout-resistant future staging
+   - /api/system-update/stage starts a background verification job and returns HTTP 202 quickly.
+   - /api/system-update/stage-status exposes the current stage state.
+   - System Update UI polls stage status with bounded request timeouts.
+   - Stage errors are persisted in the runtime stage state and displayed on the page.
+
+5. Build and self-tests
+   - npm run build: PASS
+   - npm test: PASS
+   - JavaScript syntax checks: PASS
+   - update-manager self-test: PASS
+   - supervisor self-tests: PASS
+   - accounting self-test: PASS
+
+6. Package / workflow consistency
+   - npm ci --package-lock-only --ignore-scripts --offline: PASS
+   - package.json / package-lock.json JSON parse: PASS
+   - release.yml / ci.yml YAML parse: PASS
+
+Safety
+------
+- No runtime .env, shared/, releases/, database, application key, or other sensitive persistent files are included in the unified ZIP.
+- Existing database records are not replaced by signed code updates.
+- A database backup is still created immediately before the release switch.

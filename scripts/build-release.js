@@ -39,8 +39,8 @@ fs.rmSync(dist, { recursive: true, force: true });
 fs.mkdirSync(stage, { recursive: true });
 const include = [
   'server.js', 'app-server.js', 'package.json', 'package-lock.json', 'README.md',
-  '.env.example', '.env.local-safe.example', '.gitignore', '.npmrc', '.github', 'GITHUB_DESKTOP_UPDATE_GUIDE_BN.md', 'UNIFIED_INSTALL_BN.md', 'PACKAGE_TYPE.txt',
-  'local-php-mail.php', 'lib', 'public', 'scripts', 'docs', 'deploy', 'node_modules'
+  '.env.example', '.env.local-safe.example', '.gitignore', '.npmrc', '.github', 'GITHUB_DESKTOP_UPDATE_GUIDE_BN.md', 'UNIFIED_INSTALL_BN.md', 'PACKAGE_TYPE.txt', 'SET_NEXT_VERSION.bat', 'SET_HOTFIX_VERSION.bat',
+  'local-php-mail.php', 'lib', 'public', 'scripts', 'docs', 'deploy'
 ];
 
 function copySafe(src, dst) {
@@ -82,7 +82,8 @@ const manifest = {
   treeBytes: tree.totalBytes,
   node: '>=20.0.0',
   schema: { min: 25, max: 2147483647 },
-  dependenciesBundled: true,
+  dependenciesBundled: false,
+  verificationProfile: 'signed-ci-runtime',
   createdAt: new Date().toISOString()
 };
 const manifestPath = path.join(dist, 'p2pflow-update-manifest.json');
