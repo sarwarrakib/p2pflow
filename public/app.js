@@ -1,4 +1,4 @@
-// v1.4.4: first-run recovery reuses the saved Application Key and software updates are Owner-only from Control Panel.
+// v1.4.5: first-run recovery reuses the saved Application Key and software updates are Owner-only from Control Panel.
 // v1.0.137: Diagnose and harden Binance P2P Create Advertisement privilege flow.
 // v1.0.128: lightweight Ads UI, cached reloads and realtime Binance merchant-status sync.
 // v1.0.117: Stop order countdowns immediately after completed or cancelled status sync.
@@ -4242,6 +4242,11 @@ function refreshNavBadges() {
 function renderNav() {
   const nav = $('#nav');
   if (!nav) return;
+  // Runtime fingerprint for support/debugging. If a screenshot ever shows the
+  // legacy flat menu while this marker is absent, the browser/proxy is serving
+  // stale frontend JavaScript rather than the active release.
+  nav.dataset.navigationModel = 'grouped-control-center';
+  nav.dataset.uiRelease = '1.4.5';
   nav.innerHTML = '';
   const visible = visiblePages();
   const visibleIds = new Set(visible.map(([id]) => id));
@@ -4338,6 +4343,17 @@ function renderNav() {
   renderSidebarMeta();
   applyLanguage(nav);
   renderMobileBottomNav();
+
+  // Fail visibly instead of silently falling back to the pre-v1.4 flat menu.
+  // This assertion is intentionally presentation-only; it does not change any
+  // page permission or routing rule.
+  const expectedGroups = NAV_MENU_GROUPS.filter(groupDef =>
+    groupDef.items.some(([id]) => visibleIds.has(id))
+  ).length;
+  const renderedGroups = nav.querySelectorAll('.nav-group').length;
+  if (renderedGroups !== expectedGroups) {
+    console.error('P2PFlow grouped navigation render mismatch', { expectedGroups, renderedGroups });
+  }
 }
 
 function setTitle(title, subtitle='') {

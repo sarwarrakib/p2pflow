@@ -10,6 +10,7 @@
 const fs = require('fs');
 const path = require('path');
 const { computeReleaseTreeSha256 } = require('./lib/releaseIntegrity');
+const { syncPublicMirror } = require('./lib/publicAssetMirror');
 
 const ROOT = path.resolve(__dirname);
 const RELEASES_DIR = path.join(ROOT, 'releases');
@@ -169,6 +170,11 @@ function ensureRootSnapshot() {
 function switchPointer(target) {
   const valid = validateReleaseDir(target);
   const version = releaseVersion(valid);
+  // Some shared-hosting stacks serve files under <application-root>/public
+  // directly through Apache/LiteSpeed before the Node process sees the request.
+  // Keep that public mirror synchronized with the selected managed release so
+  // server/API version and browser UI can never drift apart after an update.
+  syncPublicMirror(valid, ROOT);
   atomicJson(CURRENT_POINTER, {
     format:3,
     version,

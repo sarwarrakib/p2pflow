@@ -14,6 +14,7 @@ const { isMainThread, parentPort, workerData } = require('worker_threads');
 const packageInfo = require('./package.json');
 const { createStateStore, normalizeDatabaseProvider, databaseProviderLabel } = require('./lib/databaseProvider');
 const { UpdateManager, compareSemver } = require('./lib/updateManager');
+const { syncPublicMirror } = require('./lib/publicAssetMirror');
 const { classifyStartupError } = require('./lib/productionPreflight');
 const { applyP2PFlowEnvAliases, resolveEnvFile, setupPaths, isSetupComplete, setupRequired, startHostingSetupServer, markSetupComplete, sanitizeFreshOwnerSecrets, beginBootstrapClaim, finishBootstrapClaim, restoreBootstrapClaim } = require('./lib/hostingSetup');
 const { callSignedSapi, callSignedSapiPath, ENDPOINTS } = require('./lib/binanceAdapter');
@@ -64,6 +65,11 @@ const RELEASES_DIR = path.resolve(process.env.P2PFLOW_RELEASES_DIR || process.en
 const SHARED_DIR = path.resolve(process.env.P2PFLOW_SHARED_DIR || process.env.CRM_SHARED_DIR || path.join(INSTALL_ROOT, 'shared'));
 const CURRENT_LINK = path.resolve(process.env.P2PFLOW_CURRENT_LINK || process.env.CRM_CURRENT_LINK || path.join(INSTALL_ROOT, 'current'));
 const CURRENT_POINTER = path.resolve(process.env.P2PFLOW_CURRENT_POINTER || process.env.CRM_CURRENT_POINTER || path.join(SHARED_DIR, 'current-release.json'));
+
+function syncManagedPublicMirrorFrom(releaseDirectory = __dirname) {
+  return syncPublicMirror(releaseDirectory, INSTALL_ROOT);
+}
+
 const SESSION_TTL_MS = Number(process.env.CRM_SESSION_TTL_MINUTES || 120) * 60 * 1000;
 const SESSION_PERSIST_EVERY_MS = Number(process.env.CRM_SESSION_PERSIST_EVERY_MINUTES || 5) * 60 * 1000;
 const SESSION_COOKIE_SAMESITE = cleanEnv(process.env.CRM_SESSION_COOKIE_SAMESITE || 'Lax', 'Lax');
@@ -7944,17 +7950,21 @@ function serveStatic(req, res) {
     '.mp4':'video/mp4', '.webm':'video/webm', '.mov':'video/quicktime'
   };
   const type = mimeTypes[ext] || 'application/octet-stream';
-  const isVersionedAsset = Boolean(requestUrl.searchParams.get('v')) && ['.js','.css'].includes(ext);
-  const cache = ext === '.html'
-    ? 'no-cache, must-revalidate'
-    : (isVersionedAsset ? 'public, max-age=31536000, immutable' : (['.png','.jpg','.jpeg','.webp','.svg'].includes(ext) ? 'public, max-age=86400' : 'public, max-age=300, must-revalidate'));
+  // Frontend application code must never be held as an immutable browser asset.
+  // P2PFlow can activate a new signed release without changing the domain, so an
+  // intermediary/browser cache that keeps an older app.js/style.css would leave
+  // the UI on the previous navigation even though the server version is newer.
+  const appCodeAsset = ['.html','.js','.css'].includes(ext);
+  const cache = appCodeAsset
+    ? 'no-store, no-cache, must-revalidate, max-age=0'
+    : (['.png','.jpg','.jpeg','.webp','.svg'].includes(ext) ? 'public, max-age=86400' : 'public, max-age=300, must-revalidate');
   const isVideo = ['.mp4','.webm','.mov'].includes(ext);
   const isCompressible = ['.html','.js','.css','.json','.svg'].includes(ext);
   fs.stat(filePath, (statErr, stat) => {
     if (statErr || !stat.isFile()) return sendText(res, 404, 'Not found', 'text/plain; charset=utf-8', req);
     const etag = `W/\"${stat.size.toString(16)}-${Math.floor(stat.mtimeMs).toString(16)}\"`;
-    if (String(req.headers['if-none-match'] || '') === etag) {
-      res.writeHead(304, secureHeaders({ 'Cache-Control': cache, 'ETag': etag }, req));
+    if (!appCodeAsset && String(req.headers['if-none-match'] || '') === etag) {
+      res.writeHead(304, secureHeaders({ 'Cache-Control': cache, 'ETag': etag, 'X-P2PFlow-Version': APP_VERSION }, req));
       return res.end();
     }
     const range = isVideo ? String(req.headers.range || '') : '';
@@ -7981,7 +7991,7 @@ function serveStatic(req, res) {
     }
     fs.readFile(filePath, (err, data) => {
       if (err) return sendText(res, 404, 'Not found', 'text/plain; charset=utf-8', req);
-      const baseHeaders = { 'Content-Type': type, 'Cache-Control': cache, 'ETag': etag };
+      const baseHeaders = { 'Content-Type': type, 'Cache-Control': cache, 'ETag': etag, 'X-P2PFlow-Version': APP_VERSION };
       if (isVideo) baseHeaders['Accept-Ranges'] = 'bytes';
       if (req.method === 'HEAD') {
         baseHeaders['Content-Length'] = String(data.length);
@@ -11134,6 +11144,10 @@ async function prepareReleaseSwitch(user, target, mode) {
     logAudit(user, mode === 'rollback' ? 'system_release_rollback_requested' : 'system_release_update_requested', 'systemUpdate', record.id, { fromVersion: APP_VERSION, toVersion: target.version, backupId: backup.id });
     await saveDb({ reason: `system_${mode}_requested` });
     await flushDatabaseSave();
+    if (mode === 'rollback') {
+      const rollbackMirror = syncManagedPublicMirrorFrom(target.directory);
+      if (rollbackMirror.synced) console.log(`Rollback public UI mirror prepared for ${target.version} (${rollbackMirror.files} files).`);
+    }
     const acknowledgement = await requestLauncherSwitch(target, mode);
     return { record, backup, acknowledgement };
   } catch (error) {
@@ -15548,6 +15562,8 @@ async function startServer() {
   db = await initDb();
   updateManager = createUpdateManager();
   restorePersistentSessions();
+  const publicMirror = syncManagedPublicMirrorFrom(__dirname);
+  if (publicMirror.synced) console.log(`P2PFlow ${APP_VERSION} public UI mirror synchronized (${publicMirror.files} files).`);
   server.listen(PORT, () => {
     console.log(`P2PFlow ${APP_VERSION} running on http://localhost:${PORT}`);
     console.log(`Storage provider: ${databaseProviderLabel(DATABASE_PROVIDER)} / table ${DATABASE_TABLE}`);

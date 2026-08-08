@@ -31,8 +31,8 @@ for (const file of files) {
 
 const required = [
   'server.js','app-server.js','package.json','package-lock.json','public/index.html','public/js/pages/system-update.js',
-  'lib/updateManager.js','lib/releaseIntegrity.js','lib/databaseProvider.js','lib/hostingSetup.js','lib/mysqlStateStore.js','lib/postgresStateStore.js',
-  'scripts/build-release.js','scripts/build-unified-package.js','scripts/set-version.js','scripts/unified-supervisor-self-test.js',
+  'lib/updateManager.js','lib/releaseIntegrity.js','lib/publicAssetMirror.js','lib/databaseProvider.js','lib/hostingSetup.js','lib/mysqlStateStore.js','lib/postgresStateStore.js',
+  'scripts/build-release.js','scripts/build-unified-package.js','scripts/set-version.js','scripts/public-asset-mirror-self-test.js','scripts/unified-supervisor-self-test.js',
   '.github/workflows/release.yml','.github/workflows/ci.yml','SET_NEXT_VERSION.bat','SET_HOTFIX_VERSION.bat'
 ];
 for (const relative of required) if (!fs.existsSync(path.join(root, relative))) throw new Error(`Missing unified release file: ${relative}`);
@@ -44,8 +44,12 @@ for (const marker of ['main-thread-restart', 'ensureRootSnapshot(', 'CURRENT_POI
   if (!supervisor.includes(marker)) throw new Error(`Unified supervisor is missing marker: ${marker}`);
 }
 const app = fs.readFileSync(path.join(root, 'app-server.js'), 'utf8');
-for (const marker of ['createStateStore({', 'createDatabaseBackup(', 'startSystemUpdateCheckLoop(', 'repositorySourceVersion()', 'hasSupervisorChannel()', 'supervisorSend(', 'beginSystemUpdateStage(', "action === 'stage-status'"]) {
+for (const marker of ['createStateStore({', 'createDatabaseBackup(', 'startSystemUpdateCheckLoop(', 'repositorySourceVersion()', 'hasSupervisorChannel()', 'supervisorSend(', 'beginSystemUpdateStage(', "action === 'stage-status'", 'syncManagedPublicMirrorFrom(__dirname)']) {
   if (!app.includes(marker)) throw new Error(`Application server is missing marker: ${marker}`);
+}
+if (app.includes('max-age=31536000, immutable')) throw new Error('Frontend application assets must not use immutable one-year caching.');
+for (const marker of ["const appCodeAsset = ['.html','.js','.css'].includes(ext)", "'no-store, no-cache, must-revalidate, max-age=0'", "'X-P2PFlow-Version': APP_VERSION"]) {
+  if (!app.includes(marker)) throw new Error(`Frontend cache-safety marker is missing: ${marker}`);
 }
 for (const forbidden of ['CRM_DB_PROVIDER=file','CRM_DB_FILE','0.0032']) {
   if (app.includes(forbidden)) throw new Error(`Application server contains forbidden legacy marker: ${forbidden}`);
@@ -80,6 +84,10 @@ for (const marker of ['nextMinor(', 'nextPatch(', "requested === 'minor'", 'pack
 }
 const index = fs.readFileSync(path.join(root, 'public', 'index.html'), 'utf8');
 if (!index.includes('/js/pages/system-update.js?v=' + pkg.version)) throw new Error('System Update asset version does not match package version.');
+const browserApp = fs.readFileSync(path.join(root, 'public', 'app.js'), 'utf8');
+for (const marker of ["nav.dataset.navigationModel = 'grouped-control-center'", `nav.dataset.uiRelease = '${pkg.version}'`, "NAV_MENU_GROUPS"]) {
+  if (!browserApp.includes(marker)) throw new Error(`Grouped navigation runtime marker is missing: ${marker}`);
+}
 const style = fs.readFileSync(path.join(root, 'public', 'style.css'), 'utf8');
 for (const marker of ['premium control-center navigation visual refresh', '.nav-group[data-nav-group=\"accounting\"]', '#mobileBottomNav.mobile-bottom-nav']) {
   if (!style.includes(marker)) throw new Error(`Navigation visual refresh is missing marker: ${marker}`);

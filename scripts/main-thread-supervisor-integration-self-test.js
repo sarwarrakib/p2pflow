@@ -16,6 +16,7 @@ fs.mkdirSync(path.join(testRoot, 'lib'), { recursive:true });
 fs.mkdirSync(path.join(testRoot, 'public'), { recursive:true });
 fs.copyFileSync(path.join(sourceRoot, 'server.js'), path.join(testRoot, 'server.js'));
 fs.copyFileSync(path.join(sourceRoot, 'lib', 'releaseIntegrity.js'), path.join(testRoot, 'lib', 'releaseIntegrity.js'));
+fs.copyFileSync(path.join(sourceRoot, 'lib', 'publicAssetMirror.js'), path.join(testRoot, 'lib', 'publicAssetMirror.js'));
 
 const fakeApp = `'use strict';\nconst http=require('http');\nconst path=require('path');\nconst pkg=require('./package.json');\nconst sup=global.__P2PFLOW_SUPERVISOR__;\nif(!sup) throw new Error('inline supervisor missing');\nconst fail=Boolean(pkg.failStartup);\nlet server=null;\nsup.register(message=>{\n  if(message&&message.type==='launcher-ack'&&global.__pendingResponse){const res=global.__pendingResponse;global.__pendingResponse=null;res.writeHead(message.accepted?202:500,{'Content-Type':'application/json'});res.end(JSON.stringify(message));}\n  if(message&&message.type==='shutdown-for-switch'&&server){server.close(()=>process.exit(0));}\n});\nif(fail){sup.send({type:'app-startup-failed',code:'TEST_FAIL',message:'test startup failure',detail:'forced integration failure',version:pkg.version});setTimeout(()=>process.exit(1),80);}\nelse {\n  server=http.createServer((req,res)=>{\n    const u=new URL(req.url,'http://localhost');\n    if(u.pathname==='/ready'){res.writeHead(200,{'Content-Type':'application/json'});return res.end(JSON.stringify({ok:true,version:pkg.version}));}\n    if(u.pathname==='/switch'){global.__pendingResponse=res;sup.send({type:'apply-release',requestId:'req-'+Date.now(),version:u.searchParams.get('version'),targetDir:u.searchParams.get('dir'),mode:u.searchParams.get('mode')||'update'});return;}\n    res.writeHead(200,{'Content-Type':'text/plain'});res.end(pkg.version);\n  });\n  server.listen(Number(process.env.PORT),()=>sup.send({type:'app-ready',version:pkg.version,schemaVersion:26}));\n}\n`;
 
@@ -74,6 +75,7 @@ function waitExit(child, timeout=10000) {
     let response=await fetch(`http://127.0.0.1:${port}/switch?version=1.4.0&dir=${encodeURIComponent(r140)}`);
     if(response.status!==202) throw new Error(`1.4 switch was not accepted: ${response.status} ${await response.text()}`);
     await waitExit(child);
+    if(fs.readFileSync(path.join(testRoot,'public','index.html'),'utf8')!=='1.4.0') throw new Error('root public mirror did not switch to 1.4.0');
 
     child=start(port); await waitReady(port,'1.4.0');
     const pointer140=JSON.parse(fs.readFileSync(path.join(testRoot,'shared','current-release.json'),'utf8'));
@@ -86,12 +88,13 @@ function waitExit(child, timeout=10000) {
     child=start(port); await waitExit(child);
     const pointerRecovered=JSON.parse(fs.readFileSync(path.join(testRoot,'shared','current-release.json'),'utf8'));
     if(pointerRecovered.version!=='1.4.0') throw new Error(`failed release did not restore previous pointer: ${pointerRecovered.version}`);
+    if(fs.readFileSync(path.join(testRoot,'public','index.html'),'utf8')!=='1.4.0') throw new Error('root public mirror did not roll back with the release pointer');
 
     child=start(port); await waitReady(port,'1.4.0');
     child.kill('SIGTERM'); await waitExit(child).catch(()=>{});
     if(fs.existsSync(path.join(testRoot,'shared','pending-activation.json'))) throw new Error('pending activation was not cleared after rollback recovery');
 
-    console.log(JSON.stringify({ok:true,mainThreadStart:true,releaseRestartSwitch:true,failedReleasePointerRollback:true,finalVersion:'1.4.0'},null,2));
+    console.log(JSON.stringify({ok:true,mainThreadStart:true,releaseRestartSwitch:true,rootPublicMirrorSwitch:true,failedReleasePointerRollback:true,rootPublicMirrorRollback:true,finalVersion:'1.4.0'},null,2));
   } finally {
     fs.rmSync(temp,{recursive:true,force:true});
   }
