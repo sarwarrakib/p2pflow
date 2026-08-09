@@ -1,4 +1,4 @@
-// P2PFlow v1.4.8
+// P2PFlow v1.4.10
 // Dedicated Binance-style P2P Profile workspace. Login security is kept on the separate Security page.
 
 function profileMetricValue(value, suffix = '') {
@@ -208,8 +208,11 @@ function profileDetailRow(label, value, sub = '') {
 function mobileProfileDetailsHtml(data = {}, result = {}) {
   const profile = result.profile || {};
   const stats = profile.stats || {};
+  const nickname = profile.nickname || data.user?.name || data.user?.username || 'My P2P Account';
+  const allTrades = hasMetric(stats.allTrades) ? stats.allTrades : stats.totalTradeCount;
+  const registeredDays = hasMetric(stats.registeredDays) ? stats.registeredDays : stats.registerDays;
   return `<section class="mobile-profile-subpage stats-page">
-    <header class="mobile-profile-subpage-head"><button type="button" id="mobileProfileSubBackBtn" class="mobile-profile-icon-btn">${profileIcon('back')}</button><h1>Statistics</h1><span></span></header>
+    <header class="mobile-profile-subpage-head"><button type="button" id="mobileProfileSubBackBtn" class="mobile-profile-icon-btn">${profileIcon('back')}</button><h1>${escapeHtml(nickname)}</h1><span></span></header>
     <div class="mobile-profile-detail-list compact-stats">
       ${profileDetailRow('30d Trades', hasMetric(stats.thirtyDayTradeCount) ? `${profileNumber(stats.thirtyDayTradeCount)} Time(s)` : '-')}
       ${profileDetailRow('30d Completion Rate', profilePercent(stats.thirtyDayCompletionRate))}
@@ -218,13 +221,12 @@ function mobileProfileDetailsHtml(data = {}, result = {}) {
       ${profileDetailRow('Positive Feedback', hasMetric(stats.feedbackRate) ? profilePercent(stats.feedbackRate) : (hasMetric(stats.positiveFeedbackRate) ? profilePercent(stats.positiveFeedbackRate) : '-'))}
       ${profileDetailRow('Positive', profileNumber(stats.positiveFeedback))}
       ${profileDetailRow('Negative', profileNumber(stats.negativeFeedback))}
-      ${profileDetailRow('Total', hasMetric(stats.feedbackTotalCount) ? `${profileNumber(stats.feedbackTotalCount)} Time(s)` : '-')}
-      ${profileDetailRow('Registered', hasMetric(stats.registeredDays) ? `${profileNumber(stats.registeredDays)} Day(s) ago` : (hasMetric(stats.registerDays) ? `${profileNumber(stats.registerDays)} Day(s) ago` : (profile.joinedOn || '-')))}
+      ${profileDetailRow('Registered', hasMetric(registeredDays) ? `${profileNumber(registeredDays)} Day(s) ago` : (profile.joinedOn || '-'))}
       ${profileDetailRow('First Trade', hasMetric(stats.firstTradeDays) ? `${profileNumber(stats.firstTradeDays)} Day(s) ago` : '-')}
-      ${profileDetailRow('Trading Parties', hasMetric(stats.tradingCounterparties) ? `${profileNumber(stats.tradingCounterparties)} Party(ies)` : '-')}
-      ${profileDetailRow('All Trades', hasMetric(stats.allTrades) ? `${profileNumber(stats.allTrades)} Time(s)` : (hasMetric(stats.totalTradeCount) ? `${profileNumber(stats.totalTradeCount)} Time(s)` : '-'))}
+      ${profileDetailRow('Trading Counterparties', profileNumber(stats.tradingCounterparties))}
+      ${profileDetailRow('All Trades', hasMetric(allTrades) ? `${profileNumber(allTrades)} Time(s)` : '-', (hasMetric(stats.buyTrades) || hasMetric(stats.sellTrades)) ? `Buy ${profileNumber(stats.buyTrades)} | Sell ${profileNumber(stats.sellTrades)}` : '')}
       ${profileDetailRow('Approx. 30d Volume', profileBtcValue(stats.thirtyDayVolumeBtc))}
-      ${profileDetailRow('Approx. Total Volume', profileBtcValue(stats.totalVolumeBtc))}
+      ${profileDetailRow('Approx. Total Volume', profileBtcValue(stats.totalVolumeBtc), (hasMetric(stats.buyVolumeBtc) || hasMetric(stats.sellVolumeBtc)) ? `Buy ${profileBtcValue(stats.buyVolumeBtc).replace(/ BTC$/, '')} | Sell ${profileBtcValue(stats.sellVolumeBtc).replace(/ BTC$/, '')}` : '')}
     </div>
   </section>`;
 }
@@ -243,11 +245,122 @@ function profilePaymentMethodTone(row = {}) {
   if (name.includes('bkash')) return 'bkash';
   if (name.includes('nagad')) return 'nagad';
   if (name.includes('rocket')) return 'rocket';
+  if (name.includes('bank')) return 'bank';
   return 'generic';
 }
 
 function profilePaymentMethodNote(row = {}) {
-  return String(row.note || row.payBank || row.paySubBank || row.identifier || row.payType || '').trim();
+  return String(row.note || row.payBank || row.paySubBank || '').trim();
+}
+
+function profilePaymentMethodFields(row = {}) {
+  const fields = Array.isArray(row.fieldList) ? row.fieldList.filter(field => field && field.isDisplay !== false) : [];
+  const normalized = fields.map((field, index) => ({
+    fieldId: String(field.fieldId || field.id || field.fieldName || `field_${index}`),
+    fieldName: String(field.fieldName || field.fieldTitle || field.name || `Field ${index + 1}`),
+    fieldTitle: String(field.fieldTitle || field.fieldName || field.name || `Field ${index + 1}`),
+    fieldContentType: String(field.fieldContentType || field.type || 'single_text').toLowerCase(),
+    fieldValue: String(field.fieldValue ?? field.value ?? ''),
+    hintWord: String(field.hintWord || field.placeholder || ''),
+    isRequired: field.isRequired === true || Number(field.isRequired) === 1 || String(field.isRequired).toLowerCase() === 'true',
+    lengthLimit: Math.max(0, Number(field.lengthLimit || 0) || 0),
+    restrictionType: Math.max(0, Number(field.restrictionType || 0) || 0),
+    sequence: Number(field.sequence ?? index) || index
+  })).sort((a, b) => a.sequence - b.sequence);
+  if (normalized.length) return normalized;
+  const fallback = [];
+  if (row.payee) fallback.push({ fieldId:'payee', fieldName:'Account Holder Name', fieldTitle:'Account Holder Name', fieldContentType:'payee', fieldValue:String(row.payee), hintWord:'', isRequired:false, lengthLimit:220, restrictionType:0, sequence:1 });
+  if (row.payAccount) fallback.push({ fieldId:'payAccount', fieldName:'Account / Wallet Number', fieldTitle:'Account / Wallet Number', fieldContentType:'pay_account', fieldValue:String(row.payAccount), hintWord:'', isRequired:true, lengthLimit:220, restrictionType:0, sequence:2 });
+  if (row.payBank) fallback.push({ fieldId:'payBank', fieldName:'Bank', fieldTitle:'Bank', fieldContentType:'bank', fieldValue:String(row.payBank), hintWord:'', isRequired:false, lengthLimit:220, restrictionType:0, sequence:3 });
+  if (row.paySubBank) fallback.push({ fieldId:'paySubBank', fieldName:'Branch', fieldTitle:'Branch', fieldContentType:'sub_bank', fieldValue:String(row.paySubBank), hintWord:'', isRequired:false, lengthLimit:220, restrictionType:0, sequence:4 });
+  if (row.note) fallback.push({ fieldId:'note', fieldName:'Remarks(Optional)', fieldTitle:'Remarks(Optional)', fieldContentType:'multi_text', fieldValue:String(row.note), hintWord:'Additional Remarks', isRequired:false, lengthLimit:220, restrictionType:0, sequence:5 });
+  return fallback;
+}
+
+function profilePaymentFieldDisplayRows(row = {}) {
+  const fields = profilePaymentMethodFields(row).filter(field => String(field.fieldValue || '').trim());
+  if (fields.length) return fields;
+  const fallback = [];
+  if (row.payAccount) fallback.push({ fieldTitle:'', fieldValue:row.payAccount, fieldContentType:'pay_account' });
+  if (row.payBank) fallback.push({ fieldTitle:'', fieldValue:row.payBank, fieldContentType:'bank' });
+  if (row.paySubBank) fallback.push({ fieldTitle:'', fieldValue:row.paySubBank, fieldContentType:'sub_bank' });
+  if (row.note) fallback.push({ fieldTitle:'', fieldValue:row.note, fieldContentType:'multi_text' });
+  return fallback;
+}
+
+function profilePaymentCatalog(result = {}) {
+  const catalog = result?.profile?.paymentCatalog || result?.paymentCatalog || {};
+  return {
+    currencies: Array.isArray(catalog.currencies) ? catalog.currencies : [],
+    methods: Array.isArray(catalog.methods) ? catalog.methods : []
+  };
+}
+
+function profilePaymentCurrencies(result = {}) {
+  const catalog = profilePaymentCatalog(result);
+  const rows = [...catalog.currencies];
+  const seen = new Set(rows.map(item => String(item.code || '').toUpperCase()).filter(Boolean));
+  for (const method of result?.profile?.paymentMethods || []) {
+    const code = profilePaymentMethodCurrency(method);
+    if (!seen.has(code)) {
+      seen.add(code);
+      rows.push({ code, name:code, symbol:'', countryCode:'', iconUrl:'' });
+    }
+  }
+  if (!rows.length) rows.push({ code:'BDT', name:'BDT', symbol:'৳', countryCode:'BD', iconUrl:'' });
+  return rows;
+}
+
+function profilePaymentDefinitions(result = {}) {
+  const catalog = profilePaymentCatalog(result);
+  const rows = [...catalog.methods];
+  const keys = new Set(rows.map(row => String(row.identifier || row.payType || row.tradeMethodName || '').toLowerCase()).filter(Boolean));
+  for (const current of result?.profile?.paymentMethods || []) {
+    const key = String(current.identifier || current.payType || current.tradeMethodName || '').toLowerCase();
+    if (!key || keys.has(key)) continue;
+    keys.add(key);
+    rows.push({
+      identifier: current.identifier || current.payType || current.tradeMethodName || '',
+      payType: current.payType || current.identifier || '',
+      tradeMethodName: current.tradeMethodName || current.tradeMethodShortName || current.payType || current.identifier || 'Payment Method',
+      tradeMethodShortName: current.tradeMethodShortName || '',
+      fieldList: profilePaymentMethodFields(current),
+      currencies: [profilePaymentMethodCurrency(current)],
+      isRecommended: Boolean(current.isRecommended),
+      bgColor: current.bgColor || '',
+      iconUrlColor: current.iconUrlColor || ''
+    });
+  }
+  return rows;
+}
+
+function profilePaymentDefinitionKey(method = {}) {
+  return String(method.identifier || method.payType || method.tradeMethodName || method.tradeMethodShortName || '').trim();
+}
+
+function profilePaymentEditorFieldDefs(editor = {}) {
+  if (Array.isArray(editor.fieldDefs) && editor.fieldDefs.length) return editor.fieldDefs;
+  return [{ fieldId:'payAccount', fieldName:'Account / Wallet Number', fieldTitle:'Account / Wallet Number', fieldContentType:'pay_account', fieldValue:'', hintWord:'Enter account / wallet number', isRequired:true, lengthLimit:220, restrictionType:0, sequence:1 }, { fieldId:'note', fieldName:'Remarks(Optional)', fieldTitle:'Remarks(Optional)', fieldContentType:'multi_text', fieldValue:'', hintWord:'Additional Remarks', isRequired:false, lengthLimit:220, restrictionType:0, sequence:2 }];
+}
+
+function profilePaymentEditorValid(editor = {}) {
+  if (!editor.methodKey || !editor.currency) return false;
+  const fields = profilePaymentEditorFieldDefs(editor);
+  return fields.every(field => !field.isRequired || String(editor.fieldValues?.[field.fieldId] ?? field.fieldValue ?? '').trim());
+}
+
+function profilePaymentFieldInputHtml(field = {}, editor = {}) {
+  const id = String(field.fieldId || field.fieldName || 'field');
+  const value = String(editor.fieldValues?.[id] ?? field.fieldValue ?? '');
+  const title = field.fieldTitle || field.fieldName || 'Payment detail';
+  const placeholder = field.hintWord || title;
+  const max = Number(field.lengthLimit || 0) > 0 ? ` maxlength="${Number(field.lengthLimit)}"` : '';
+  const inputMode = Number(field.restrictionType || 0) === 1 ? ' inputmode="numeric"' : '';
+  const required = field.isRequired ? '<b>*</b>' : '';
+  if (String(field.fieldContentType || '').toLowerCase() === 'multi_text') {
+    return `<label class="p2p-payment-editor-field"><span>${escapeHtml(title)}${required}</span><textarea data-payment-field="${escapeAttr(id)}" placeholder="${escapeAttr(placeholder)}"${max}>${escapeHtml(value)}</textarea></label>`;
+  }
+  return `<label class="p2p-payment-editor-field"><span>${escapeHtml(title)}${required}</span><input data-payment-field="${escapeAttr(id)}" value="${escapeAttr(value)}" placeholder="${escapeAttr(placeholder)}"${max}${inputMode}></label>`;
 }
 
 function mobileProfilePaymentMethodsHtml(data = {}, result = {}) {
@@ -258,22 +371,54 @@ function mobileProfilePaymentMethodsHtml(data = {}, result = {}) {
     <header class="mobile-profile-subpage-head payment"><button type="button" id="mobileProfileSubBackBtn" class="mobile-profile-icon-btn">${profileIcon('back')}</button><h1>P2P Payment Method(s)</h1><span></span></header>
     <div class="mobile-profile-payment-list binance-style">${rows.length ? rows.map(row => {
       const methodName = escapeHtml(row.tradeMethodName || row.tradeMethodShortName || row.payType || row.identifier || 'Payment Method');
-      const account = escapeHtml(row.payAccount || '-');
-      const note = profilePaymentMethodNote(row);
       const currency = escapeHtml(profilePaymentMethodCurrency(row));
       const tone = profilePaymentMethodTone(row);
+      const values = profilePaymentFieldDisplayRows(row);
       return `<article class="mobile-profile-payment-card ${tone}">
         <div class="mobile-profile-payment-card-top">
           <div class="mobile-profile-payment-brand"><i></i><strong>${methodName}</strong><small>${currency}</small></div>
           <button type="button" class="mobile-profile-payment-edit-icon" data-mobile-payment-edit="${escapeAttr(row.sourceKey)}" aria-label="Edit payment method">${profileIcon('edit')}</button>
         </div>
-        <div class="mobile-profile-payment-number">${account}</div>
-        ${note ? `<div class="mobile-profile-payment-note">${escapeHtml(note)}</div>` : '<div class="mobile-profile-payment-note empty"></div>'}
+        <div class="mobile-profile-payment-values">${values.length ? values.map((field, index) => `<div class="mobile-profile-payment-value ${index === 0 ? 'primary' : ''}">${field.fieldTitle && values.length > 2 ? `<small>${escapeHtml(field.fieldTitle)}</small>` : ''}<span>${escapeHtml(field.fieldValue || '-')}</span></div>`).join('') : '<div class="mobile-profile-payment-value primary"><span>-</span></div>'}</div>
       </article>`;
     }).join('') : `<div class="mobile-profile-feedback-empty">No configured Binance P2P payment method was returned for ${escapeHtml(nickname)}.</div>`}</div>
     <div class="mobile-profile-payment-sticky"><button type="button" id="mobileProfileAddPaymentBtn">Add a payment method</button></div>
   </section>`;
 }
+
+function mobileProfilePaymentEditorHtml(data = {}, result = {}) {
+  const editor = state.mobileProfilePaymentEditor || {};
+  const definitions = profilePaymentDefinitions(result);
+  const selectedMethod = definitions.find(item => profilePaymentDefinitionKey(item) === editor.methodKey) || editor.method || {};
+  const name = selectedMethod.tradeMethodName || selectedMethod.tradeMethodShortName || selectedMethod.payType || selectedMethod.identifier || (editor.mode === 'edit' ? 'Payment Method' : 'Payment Method');
+  const title = `${editor.mode === 'edit' ? 'Edit' : 'Add'} ${escapeHtml(name)}`;
+  const currency = editor.currency || 'BDT';
+  const valid = profilePaymentEditorValid(editor);
+  return `<section class="mobile-profile-subpage payment-editor-page">
+    <header class="mobile-profile-subpage-head editor"><button type="button" id="mobileProfilePaymentEditorBack" class="mobile-profile-icon-btn">${profileIcon('back')}</button><h1>${title}</h1><span></span></header>
+    <div class="p2p-payment-editor-body">
+      <label class="p2p-payment-selector-label"><span>Select Currency</span><button type="button" id="mobileProfileCurrencyPicker" class="p2p-payment-selector"><b>${escapeHtml(currency)}</b><i>⌄</i></button></label>
+      ${editor.mode === 'add' ? `<label class="p2p-payment-selector-label"><span>Select Payment Method</span><button type="button" id="mobileProfileMethodPicker" class="p2p-payment-selector"><b>${escapeHtml(name)}</b><i>⌄</i></button></label>` : ''}
+      <div class="p2p-payment-editor-fields">${profilePaymentEditorFieldDefs(editor).map(field => profilePaymentFieldInputHtml(field, editor)).join('')}</div>
+      ${editor.mode === 'add' ? '<div class="p2p-payment-editor-warning">ⓘ Please ensure the payment details added are <b>correct and the name matches your KYC info on Binance.</b> Using a third party account might result in order cancellation and/or account suspension.</div>' : ''}
+    </div>
+    <div class="p2p-payment-editor-save"><button type="button" id="mobileProfilePaymentEditorSave" class="${valid ? '' : 'inactive'}" ${valid ? '' : 'disabled'}>${editor.mode === 'edit' ? 'Save' : 'Confirm'}</button></div>
+    ${editor.picker ? mobileProfilePaymentPickerHtml(result, editor) : ''}
+  </section>`;
+}
+
+function mobileProfilePaymentPickerHtml(result = {}, editor = {}) {
+  if (editor.picker === 'currency') {
+    const currencies = profilePaymentCurrencies(result);
+    return `<div class="p2p-payment-picker-overlay"><button type="button" class="p2p-payment-picker-dismiss" id="mobileProfilePaymentPickerDismiss" aria-label="Close"></button><section class="p2p-payment-picker-sheet"><i class="p2p-payment-picker-handle"></i><h2>Select Currency</h2><div class="p2p-payment-picker-search"><span>⌕</span><input id="mobileProfileCurrencySearch" placeholder="Search"></div><div class="p2p-payment-picker-list" id="mobileProfileCurrencyList">${currencies.map(item => `<button type="button" data-payment-currency="${escapeAttr(item.code)}"><b>${escapeHtml(item.code)}</b><span>${escapeHtml(item.name && item.name !== item.code ? item.name : '')}</span>${String(item.code).toUpperCase() === String(editor.currency).toUpperCase() ? '<strong>✓</strong>' : ''}</button>`).join('')}</div></section></div>`;
+  }
+  const methods = profilePaymentDefinitions(result).filter(item => !Array.isArray(item.currencies) || !item.currencies.length || item.currencies.map(code => String(code).toUpperCase()).includes(String(editor.currency || '').toUpperCase()));
+  const recommended = methods.filter(item => item.isRecommended);
+  const other = methods.filter(item => !item.isRecommended);
+  const row = item => `<button type="button" data-payment-method="${escapeAttr(profilePaymentDefinitionKey(item))}" data-search-name="${escapeAttr(String(item.tradeMethodName || item.identifier || '').toLowerCase())}"><i class="${profilePaymentMethodTone(item)}"></i><span>${escapeHtml(item.tradeMethodName || item.tradeMethodShortName || item.identifier || item.payType || 'Payment Method')}</span>${item.isRecommended ? '<small>Recommended</small>' : ''}${profilePaymentDefinitionKey(item) === editor.methodKey ? '<strong>✓</strong>' : ''}</button>`;
+  return `<div class="p2p-payment-picker-overlay"><button type="button" class="p2p-payment-picker-dismiss" id="mobileProfilePaymentPickerDismiss" aria-label="Close"></button><section class="p2p-payment-picker-sheet method-sheet"><i class="p2p-payment-picker-handle"></i><h2>Select Payment Method</h2><div class="p2p-payment-picker-search"><span>⌕</span><input id="mobileProfileMethodSearch" placeholder="Search"></div><div class="p2p-payment-picker-list methods" id="mobileProfileMethodList">${recommended.length ? `<h3>Recommended Payment Methods</h3>${recommended.map(row).join('')}` : ''}${other.length ? `<h3>Other Payment Methods</h3>${other.map(row).join('')}` : ''}${!methods.length ? '<div class="mobile-profile-feedback-empty">No payment method is available for this currency.</div>' : ''}</div></section></div>`;
+}
+
 function profileFeedbackRow(row = {}, sentiment = 'positive') {
   const positive = sentiment === 'positive';
   const name = row.by || 'Anonymous User';
@@ -322,7 +467,9 @@ async function renderP2PProfile() {
     if (state.mobileProfileView === 'details') content.innerHTML = mobileProfileDetailsHtml(data, p2pResult);
     else if (state.mobileProfileView === 'payments') content.innerHTML = mobileProfilePaymentMethodsHtml(data, p2pResult);
     else if (state.mobileProfileView === 'feedback') content.innerHTML = mobileProfileFeedbackHtml(data, p2pResult);
+    else if (state.mobileProfileView === 'payment-editor') content.innerHTML = mobileProfilePaymentEditorHtml(data, p2pResult);
     else content.innerHTML = mobileProfileMainHtml(data, p2pResult);
+    document.body.classList.toggle('profile-payment-subpage-active', ['payments','payment-editor'].includes(state.mobileProfileView));
     bindProfileActions();
     applyLanguage(content);
   };
@@ -358,70 +505,100 @@ async function renderP2PProfile() {
 
   const currentPaymentRows = () => (Array.isArray(p2pResult?.profile?.paymentMethods) ? p2pResult.profile.paymentMethods : []).map((row, index) => ({ ...row, sourceKey: profilePaymentMethodKey(row, index) }));
 
+  const editorValuesFromFields = fields => Object.fromEntries((fields || []).map(field => [String(field.fieldId || field.fieldName || ''), String(field.fieldValue ?? '')]));
+
   const openPaymentMethodEditor = rowKey => {
     const row = currentPaymentRows().find(item => String(item.sourceKey || '') === String(rowKey || ''));
-    if (!row) {
-      notify('Payment method not found.', 'warn');
-      return;
-    }
-    modal('Edit Payment Method', `<form id="mobileProfilePaymentEditForm" class="mobile-profile-payment-edit-form">
-      <div class="form-grid compact">
-        <div class="full-row"><label>Payment Method</label><input name="tradeMethodName" value="${escapeAttr(row.tradeMethodName || row.tradeMethodShortName || row.payType || row.identifier || '')}" maxlength="160" placeholder="Payment method name"></div>
-        <div><label>Currency</label><input name="currency" value="${escapeAttr(profilePaymentMethodCurrency(row))}" maxlength="12" placeholder="BDT"></div>
-        <div><label>Number</label><input name="payAccount" value="${escapeAttr(row.payAccount || '')}" maxlength="220" placeholder="Account / wallet number"></div>
-        <div class="full-row"><label>Note</label><input name="note" value="${escapeAttr(profilePaymentMethodNote(row))}" maxlength="220" placeholder="Optional note"></div>
-        <div class="full-row form-actions"><button type="button" class="secondary" id="mobileProfilePaymentEditCancelBtn">Cancel</button><button type="submit">Save</button></div>
-        <div class="full-row"><div id="mobileProfilePaymentEditMessage" class="form-message"></div></div>
-      </div>
-    </form>`);
-    $('#mobileProfilePaymentEditCancelBtn')?.addEventListener('click', closeModal);
-    $('#mobileProfilePaymentEditForm')?.addEventListener('submit', async event => {
-      event.preventDefault();
-      const form = event.currentTarget;
-      const payload = formObj(form);
-      try {
-        const out = await api('/api/me/p2p-profile', {
-          method: 'PATCH',
-          body: JSON.stringify({
-            credentialId: Number(p2pResult.selectedCredentialId || state.mobileProfileCredentialId || 0),
-            paymentMethodEdit: {
-              sourceKey: row.sourceKey,
-              tradeMethodName: payload.tradeMethodName || row.tradeMethodName || row.tradeMethodShortName || row.payType || row.identifier || 'Payment Method',
-              currency: payload.currency || profilePaymentMethodCurrency(row),
-              payAccount: payload.payAccount || '',
-              note: payload.note || ''
-            }
-          })
-        });
-        p2pResult = out;
-        state.mobileProfileView = 'payments';
-        closeModal();
-        render();
-        notify('Payment method updated.', 'ok');
-      } catch (err) {
-        setFormMessage('#mobileProfilePaymentEditMessage', err.message || 'Payment method update failed.', 'danger');
-      }
-    });
+    if (!row) { notify('Payment method not found.', 'warn'); return; }
+    const fields = profilePaymentMethodFields(row);
+    const methodKey = String(row.identifier || row.payType || row.tradeMethodName || row.sourceKey || '');
+    state.mobileProfilePaymentEditor = {
+      mode: 'edit',
+      rowKey: row.sourceKey,
+      methodKey,
+      method: { ...row, fieldList: fields },
+      currency: profilePaymentMethodCurrency(row),
+      fieldDefs: fields,
+      fieldValues: editorValuesFromFields(fields),
+      picker: ''
+    };
+    state.mobileProfileView = 'payment-editor';
+    render();
+    window.scrollTo({ top:0, behavior:'auto' });
   };
 
-  const openPaymentMethodAddInfo = () => {
-    modal('Add a payment method', `<div class="notice">Only Binance-added payment methods are shown on this page. Add the new payment method from your Binance app or website first, then return here and sync the profile.</div>
-      <div class="form-actions" style="margin-top:14px"><button type="button" class="secondary" id="mobileProfileAddPaymentInfoClose">Close</button>${p2pResult.canSync ? '<button type="button" id="mobileProfileAddPaymentInfoSync">Sync profile</button>' : ''}</div>`);
-    $('#mobileProfileAddPaymentInfoClose')?.addEventListener('click', closeModal);
-    $('#mobileProfileAddPaymentInfoSync')?.addEventListener('click', async event => {
-      const button = event.currentTarget;
-      button.disabled = true;
-      try {
-        await syncProfile();
-        closeModal();
-        state.mobileProfileView = 'payments';
-        render();
-      } catch (err) {
-        notify(err.message || 'P2P profile sync failed.', 'danger', 5000);
-      } finally {
-        if (button?.isConnected) button.disabled = false;
-      }
-    });
+  const openPaymentMethodAdd = async () => {
+    if (!profilePaymentDefinitions(p2pResult).length && p2pResult.canSync && p2pResult.credentialAvailable) {
+      try { await syncProfile(); } catch (err) { notify(err.message || 'Could not load Binance payment methods.', 'warn', 5000); }
+    }
+    const currencies = profilePaymentCurrencies(p2pResult);
+    const currency = String(currencies[0]?.code || 'BDT').toUpperCase();
+    const methods = profilePaymentDefinitions(p2pResult).filter(item => !Array.isArray(item.currencies) || !item.currencies.length || item.currencies.map(code => String(code).toUpperCase()).includes(currency));
+    const method = methods.find(item => item.isRecommended) || methods[0] || {};
+    const methodKey = profilePaymentDefinitionKey(method);
+    const fields = Array.isArray(method.fieldList) && method.fieldList.length ? profilePaymentMethodFields({ fieldList:method.fieldList }) : profilePaymentEditorFieldDefs({});
+    state.mobileProfilePaymentEditor = { mode:'add', rowKey:'', methodKey, method, currency, fieldDefs:fields, fieldValues:editorValuesFromFields(fields), picker:'' };
+    state.mobileProfileView = 'payment-editor';
+    render();
+    window.scrollTo({ top:0, behavior:'auto' });
+  };
+
+  const updatePaymentEditorConfirmState = () => {
+    const button = $('#mobileProfilePaymentEditorSave');
+    if (!button) return;
+    const valid = profilePaymentEditorValid(state.mobileProfilePaymentEditor || {});
+    button.disabled = !valid;
+    button.classList.toggle('inactive', !valid);
+  };
+
+  const submitPaymentEditor = async () => {
+    const editor = state.mobileProfilePaymentEditor || {};
+    if (!profilePaymentEditorValid(editor)) { notify('Complete the required payment method fields first.', 'warn'); return; }
+    const definitions = profilePaymentDefinitions(p2pResult);
+    const selectedMethod = definitions.find(item => profilePaymentDefinitionKey(item) === editor.methodKey) || editor.method || {};
+    const fields = profilePaymentEditorFieldDefs(editor).map(field => ({ ...field, fieldValue:String(editor.fieldValues?.[field.fieldId] ?? field.fieldValue ?? '').trim() }));
+    const findValue = (type, regex) => fields.find(field => String(field.fieldContentType || '').toLowerCase() === type && field.fieldValue)?.fieldValue || fields.find(field => regex && regex.test(`${field.fieldTitle || ''} ${field.fieldName || ''}`) && field.fieldValue)?.fieldValue || '';
+    const direct = {
+      payAccount: findValue('pay_account', /(account|wallet|number|mobile|phone)/i),
+      payBank: findValue('bank', /bank/i),
+      paySubBank: findValue('sub_bank', /(branch|sub.?bank)/i),
+      payee: findValue('payee', /(payee|name)/i),
+      qrCodePath: findValue('qr_code', /(qr|code)/i),
+      note: findValue('multi_text', /(remark|note|instruction)/i)
+    };
+    const common = {
+      sourceKey: editor.rowKey || undefined,
+      identifier: selectedMethod.identifier || selectedMethod.payType || editor.methodKey || '',
+      payType: selectedMethod.payType || selectedMethod.identifier || '',
+      tradeMethodName: selectedMethod.tradeMethodName || selectedMethod.tradeMethodShortName || selectedMethod.identifier || editor.methodKey || 'Payment Method',
+      tradeMethodShortName: selectedMethod.tradeMethodShortName || '',
+      currency: editor.currency || 'BDT',
+      fieldList: fields,
+      bgColor: selectedMethod.bgColor || '',
+      iconUrlColor: selectedMethod.iconUrlColor || '',
+      isRecommended: Boolean(selectedMethod.isRecommended),
+      ...direct
+    };
+    const button = $('#mobileProfilePaymentEditorSave');
+    if (button) button.disabled = true;
+    try {
+      const out = await api('/api/me/p2p-profile', {
+        method: 'PATCH',
+        body: JSON.stringify({
+          credentialId: Number(p2pResult.selectedCredentialId || state.mobileProfileCredentialId || 0),
+          ...(editor.mode === 'edit' ? { paymentMethodEdit:common } : { paymentMethodAdd:common })
+        })
+      });
+      p2pResult = out;
+      state.mobileProfilePaymentEditor = null;
+      state.mobileProfileView = 'payments';
+      render();
+      window.scrollTo({ top:0, behavior:'auto' });
+      notify(editor.mode === 'edit' ? 'Payment method updated.' : 'Payment method added.', 'ok');
+    } catch (err) {
+      notify(err.message || 'Payment method save failed.', 'danger', 6000);
+      if (button?.isConnected) button.disabled = false;
+    }
   };
 
   const bindProfileActions = () => {
@@ -456,12 +633,39 @@ async function renderP2PProfile() {
     $$('[data-mobile-profile-tab]').forEach(button => button.onclick = () => { state.mobileProfileTab = button.dataset.mobileProfileTab; render(); });
     $$('[data-mobile-feedback-tab]').forEach(button => button.onclick = () => { state.mobileProfileFeedbackTab = button.dataset.mobileFeedbackTab; render(); window.scrollTo({ top: 0, behavior: 'smooth' }); });
     $$('[data-mobile-payment-edit]').forEach(button => button.onclick = () => openPaymentMethodEditor(button.dataset.mobilePaymentEdit));
-    $('#mobileProfileAddPaymentBtn')?.addEventListener('click', openPaymentMethodAddInfo);
+    $('#mobileProfileAddPaymentBtn')?.addEventListener('click', () => openPaymentMethodAdd());
+    $('#mobileProfilePaymentEditorBack')?.addEventListener('click', () => { state.mobileProfilePaymentEditor = null; state.mobileProfileView = 'payments'; render(); window.scrollTo({ top:0, behavior:'auto' }); });
+    $('#mobileProfileCurrencyPicker')?.addEventListener('click', () => { if (!state.mobileProfilePaymentEditor) return; state.mobileProfilePaymentEditor.picker = 'currency'; render(); });
+    $('#mobileProfileMethodPicker')?.addEventListener('click', () => { if (!state.mobileProfilePaymentEditor) return; state.mobileProfilePaymentEditor.picker = 'method'; render(); });
+    $('#mobileProfilePaymentPickerDismiss')?.addEventListener('click', () => { if (!state.mobileProfilePaymentEditor) return; state.mobileProfilePaymentEditor.picker = ''; render(); });
+    $$('[data-payment-field]').forEach(input => input.addEventListener('input', () => { const editor = state.mobileProfilePaymentEditor; if (!editor) return; editor.fieldValues = editor.fieldValues || {}; editor.fieldValues[input.dataset.paymentField] = input.value; updatePaymentEditorConfirmState(); }));
+    $$('[data-payment-currency]').forEach(button => button.onclick = () => {
+      const editor = state.mobileProfilePaymentEditor; if (!editor) return;
+      editor.currency = String(button.dataset.paymentCurrency || 'BDT').toUpperCase();
+      if (editor.mode === 'add') {
+        const methods = profilePaymentDefinitions(p2pResult).filter(item => !Array.isArray(item.currencies) || !item.currencies.length || item.currencies.map(code => String(code).toUpperCase()).includes(editor.currency));
+        const current = methods.find(item => profilePaymentDefinitionKey(item) === editor.methodKey) || methods.find(item => item.isRecommended) || methods[0] || {};
+        editor.method = current; editor.methodKey = profilePaymentDefinitionKey(current);
+        const fields = Array.isArray(current.fieldList) && current.fieldList.length ? profilePaymentMethodFields({ fieldList:current.fieldList }) : profilePaymentEditorFieldDefs({});
+        editor.fieldDefs = fields; editor.fieldValues = editorValuesFromFields(fields);
+      }
+      editor.picker = ''; render();
+    });
+    $$('[data-payment-method]').forEach(button => button.onclick = () => {
+      const editor = state.mobileProfilePaymentEditor; if (!editor) return;
+      const method = profilePaymentDefinitions(p2pResult).find(item => profilePaymentDefinitionKey(item) === button.dataset.paymentMethod) || {};
+      editor.method = method; editor.methodKey = profilePaymentDefinitionKey(method);
+      const fields = Array.isArray(method.fieldList) && method.fieldList.length ? profilePaymentMethodFields({ fieldList:method.fieldList }) : profilePaymentEditorFieldDefs({});
+      editor.fieldDefs = fields; editor.fieldValues = editorValuesFromFields(fields); editor.picker = ''; render();
+    });
+    $('#mobileProfileCurrencySearch')?.addEventListener('input', event => { const term = String(event.target.value || '').toLowerCase(); $$('[data-payment-currency]').forEach(button => { button.hidden = term && !button.textContent.toLowerCase().includes(term); }); });
+    $('#mobileProfileMethodSearch')?.addEventListener('input', event => { const term = String(event.target.value || '').toLowerCase(); $$('[data-payment-method]').forEach(button => { button.hidden = term && !button.textContent.toLowerCase().includes(term); }); });
+    $('#mobileProfilePaymentEditorSave')?.addEventListener('click', submitPaymentEditor);
     $$('[data-profile-action]').forEach(button => button.onclick = () => {
       const action = button.dataset.profileAction;
       if (action === 'feedback') { state.mobileProfileView = 'feedback'; state.mobileProfileFeedbackTab = 'all'; render(); window.scrollTo({ top: 0, behavior: 'smooth' }); return; }
       if (action === 'alerts') { if (canPage('notifications')) setRoute('notifications'); else showUnavailable('Custom Alerts'); return; }
-      if (action === 'payment-methods') { state.mobileProfileView = 'payments'; render(); window.scrollTo({ top:0, behavior:'smooth' }); return; }
+      if (action === 'payment-methods') { state.mobileProfileView = 'payments'; render(); window.scrollTo({ top:0, behavior:'smooth' }); if ((!profilePaymentCatalog(p2pResult).currencies.length || !profilePaymentCatalog(p2pResult).methods.length) && p2pResult.canSync && p2pResult.credentialAvailable) setTimeout(() => syncProfile().catch(() => {}), 80); return; }
       if (action === 'activities') { if (canPage('activity')) setRoute('activity'); else showUnavailable('Activities'); return; }
       if (action === 'merchant-portal') { if (canPage('ads')) setRoute('ads'); else showUnavailable('Merchant Portal'); return; }
       if (action === 'add-home') {

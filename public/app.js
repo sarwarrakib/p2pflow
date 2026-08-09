@@ -1,4 +1,4 @@
-// v1.4.9: first-run recovery reuses the saved Application Key and software updates are Owner-only from Control Panel.
+// v1.4.10: first-run recovery reuses the saved Application Key and software updates are Owner-only from Control Panel.
 // v1.0.137: Diagnose and harden Binance P2P Create Advertisement privilege flow.
 // v1.0.128: lightweight Ads UI, cached reloads and realtime Binance merchant-status sync.
 // v1.0.117: Stop order countdowns immediately after completed or cancelled status sync.
@@ -4169,6 +4169,7 @@ async function routeFromLocation(showLoading=true) {
   state.ledgerAccountId = route.ledgerAccountId;
   document.body.classList.toggle('p2p-market-active', state.page === 'p2p-market');
   document.body.classList.toggle('profile-mobile-active', state.page === 'p2p-profile');
+  if (state.page !== 'p2p-profile') document.body.classList.remove('profile-payment-subpage-active');
   document.body.classList.toggle('chat-inbox-active', state.page === 'chat');
   if (state.page !== 'chat' && typeof stopChatInboxAutoRefresh === 'function') stopChatInboxAutoRefresh();
   document.body.classList.toggle('order-detail-active', state.page === 'orders' && !!state.currentOrderId);
@@ -4301,7 +4302,7 @@ function renderNav() {
   // legacy flat menu while this marker is absent, the browser/proxy is serving
   // stale frontend JavaScript rather than the active release.
   nav.dataset.navigationModel = 'grouped-control-center';
-  nav.dataset.uiRelease = '1.4.9';
+  nav.dataset.uiRelease = '1.4.10';
   nav.innerHTML = '';
   const visible = visiblePages();
   const visibleIds = new Set(visible.map(([id]) => id));

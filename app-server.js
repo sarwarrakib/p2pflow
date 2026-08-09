@@ -2801,6 +2801,7 @@ function ownerP2pProfileBase(credentialId = 0) {
     orderSummary: current.orderSummary && typeof current.orderSummary === 'object' && !Array.isArray(current.orderSummary) ? { ...current.orderSummary } : {},
     paymentMethods: applyOwnerPaymentMethodEdits(Array.isArray(current.paymentMethods) ? current.paymentMethods.slice(0, 100) : [], current.paymentMethodEdits),
     paymentMethodEdits: Array.isArray(current.paymentMethodEdits) ? current.paymentMethodEdits.map((item, index) => normalizeOwnerPaymentMethodEdit(item, index)).slice(0, 100) : [],
+    paymentCatalog: current.paymentCatalog && typeof current.paymentCatalog === 'object' && !Array.isArray(current.paymentCatalog) ? { ...current.paymentCatalog, currencies: Array.isArray(current.paymentCatalog.currencies) ? current.paymentCatalog.currencies.slice(0, 500) : [], methods: Array.isArray(current.paymentCatalog.methods) ? current.paymentCatalog.methods.slice(0, 1000) : [] } : { currencies: [], methods: [], syncedAt: null },
     stats: { ...emptyCounterpartyStats(), ...(current.stats || {}) },
     feedbackRows: {
       positive: Array.isArray(current.feedbackRows?.positive) ? current.feedbackRows.positive.slice(0, 100) : [],
@@ -2826,6 +2827,7 @@ function saveOwnerP2pProfileForCredential(credential, profile = {}) {
     orderSummary: profile.orderSummary && typeof profile.orderSummary === 'object' && !Array.isArray(profile.orderSummary) ? { ...profile.orderSummary } : {},
     paymentMethods: applyOwnerPaymentMethodEdits(Array.isArray(profile.paymentMethods) ? profile.paymentMethods.slice(0, 100) : [], profile.paymentMethodEdits),
     paymentMethodEdits: Array.isArray(profile.paymentMethodEdits) ? profile.paymentMethodEdits.map((item, index) => normalizeOwnerPaymentMethodEdit(item, index)).slice(0, 100) : [],
+    paymentCatalog: profile.paymentCatalog && typeof profile.paymentCatalog === 'object' && !Array.isArray(profile.paymentCatalog) ? { ...profile.paymentCatalog, currencies: Array.isArray(profile.paymentCatalog.currencies) ? profile.paymentCatalog.currencies.slice(0, 500) : [], methods: Array.isArray(profile.paymentCatalog.methods) ? profile.paymentCatalog.methods.slice(0, 1000) : [] } : { currencies: [], methods: [], syncedAt: null },
     stats: { ...emptyCounterpartyStats(), ...(profile.stats || {}) },
     feedbackRows: {
       positive: Array.isArray(profile.feedbackRows?.positive) ? profile.feedbackRows.positive.slice(0, 100) : [],
@@ -3279,6 +3281,44 @@ function ownerProfileOrderSummary(orderSummary = {}) {
   };
 }
 
+function ownerProfileFieldList(raw = {}) {
+  const source = raw && typeof raw === 'object' ? raw : {};
+  const candidates = [source.fieldList, source.fields, source.tradeMethod?.fieldList, source.tradeMethod?.fields];
+  const rows = candidates.find(Array.isArray) || [];
+  return rows.map((field, index) => {
+    const item = field && typeof field === 'object' ? field : {};
+    const requiredRaw = item.isRequired;
+    const displayRaw = item.isDisplay;
+    return {
+      fieldId: cleanStr(item.fieldId || item.id || item.key || `field_${index}`, 120),
+      fieldName: cleanStr(item.fieldName || item.fieldTitle || item.name || item.label || '', 160),
+      fieldTitle: cleanStr(item.fieldTitle || item.fieldName || item.name || item.label || '', 160),
+      fieldContentType: cleanStr(item.fieldContentType || item.contentType || item.type || 'single_text', 80).toLowerCase(),
+      fieldValue: cleanStr(item.fieldValue ?? item.value ?? '', 500),
+      hintWord: cleanStr(item.hintWord || item.placeholder || item.hint || '', 240),
+      isCopyable: firstBoolLike(item, ['isCopyable'], false),
+      isRequired: requiredRaw === true || Number(requiredRaw) === 1 || String(requiredRaw).toLowerCase() === 'true',
+      isDisplay: displayRaw === undefined || displayRaw === null ? true : (displayRaw === true || Number(displayRaw) === 1 || String(displayRaw).toLowerCase() === 'true'),
+      lengthLimit: Math.max(0, Math.min(2000, Number(item.lengthLimit || item.maxLength || 0) || 0)),
+      restrictionType: Math.max(0, Math.min(9, Number(item.restrictionType || 0) || 0)),
+      sequence: Number(item.sequence ?? index) || index
+    };
+  }).sort((a, b) => Number(a.sequence || 0) - Number(b.sequence || 0));
+}
+
+function ownerProfileFieldValue(fields = [], types = [], nameRegex = null) {
+  const wanted = new Set((types || []).map(value => String(value || '').toLowerCase()));
+  for (const field of fields || []) {
+    const type = String(field.fieldContentType || '').toLowerCase();
+    const name = `${field.fieldName || ''} ${field.fieldTitle || ''}`;
+    if ((wanted.size && wanted.has(type)) || (nameRegex && nameRegex.test(name))) {
+      const value = cleanStr(field.fieldValue || '', 500);
+      if (value) return value;
+    }
+  }
+  return '';
+}
+
 function ownerProfilePaymentMethodKey(raw = {}, index = 0) {
   const source = raw && typeof raw === 'object' ? raw : {};
   const direct = cleanStr(source.sourceKey || source.key || '', 220);
@@ -3286,9 +3326,9 @@ function ownerProfilePaymentMethodKey(raw = {}, index = 0) {
   const parts = [
     cleanStr(source.id || source.payId || '', 80),
     cleanStr(source.payMethodId || '', 120),
-    cleanStr(source.identifier || source.tradeMethodIdentifier || '', 120),
+    cleanStr(source.identifier || source.tradeMethodIdentifier || source.tradeMethod?.identifier || '', 120),
     cleanStr(source.payType || '', 120),
-    cleanStr(source.tradeMethodName || source.tradeMethodShortName || source.name || '', 160)
+    cleanStr(source.tradeMethodName || source.tradeMethodShortName || source.tradeMethod?.name || source.name || '', 160)
   ].filter(Boolean);
   return parts.join('|') || 'pm_' + Number(index || 0);
 }
@@ -3302,8 +3342,11 @@ function normalizeOwnerPaymentMethodEdit(item = {}, index = 0) {
     payAccount: cleanStr(raw.payAccount || '', 220),
     payBank: cleanStr(raw.payBank || '', 220),
     paySubBank: cleanStr(raw.paySubBank || '', 220),
+    payee: cleanStr(raw.payee || '', 220),
+    qrCodePath: cleanStr(raw.qrCodePath || '', 500),
     note: cleanStr(raw.note || raw.remark || raw.label || '', 220),
-    currency: cleanStr(raw.currency || raw.fiatUnit || raw.currencyCode || 'BDT', 20).toUpperCase() || 'BDT'
+    currency: cleanStr(raw.currency || raw.fiatUnit || raw.currencyCode || 'BDT', 20).toUpperCase() || 'BDT',
+    fieldList: ownerProfileFieldList(raw)
   };
 }
 
@@ -3316,6 +3359,17 @@ function applyOwnerPaymentMethodEdits(methods = [], edits = []) {
     const sourceKey = ownerProfilePaymentMethodKey(row, index);
     const edit = map.get(sourceKey);
     if (!edit) return { ...row, sourceKey };
+    const fields = ownerProfileFieldList(row);
+    const editFieldMap = new Map((edit.fieldList || []).map(field => [String(field.fieldId || field.fieldName || '').toLowerCase(), field]));
+    const mergedFields = fields.map(field => {
+      const key = String(field.fieldId || field.fieldName || '').toLowerCase();
+      const changed = editFieldMap.get(key);
+      return changed ? { ...field, fieldValue: changed.fieldValue } : field;
+    });
+    for (const field of edit.fieldList || []) {
+      const key = String(field.fieldId || field.fieldName || '').toLowerCase();
+      if (!mergedFields.some(existing => String(existing.fieldId || existing.fieldName || '').toLowerCase() === key)) mergedFields.push(field);
+    }
     return {
       ...row,
       sourceKey,
@@ -3324,8 +3378,11 @@ function applyOwnerPaymentMethodEdits(methods = [], edits = []) {
       payAccount: edit.payAccount || row.payAccount || '',
       payBank: edit.payBank || row.payBank || '',
       paySubBank: edit.paySubBank || row.paySubBank || '',
+      payee: edit.payee || row.payee || '',
+      qrCodePath: edit.qrCodePath || row.qrCodePath || '',
       note: edit.note || row.note || '',
-      currency: edit.currency || row.currency || row.fiatUnit || 'BDT'
+      currency: edit.currency || row.currency || row.fiatUnit || 'BDT',
+      fieldList: mergedFields
     };
   }).slice(0, 100);
 }
@@ -3339,23 +3396,110 @@ function ownerProfilePaymentMethods(paymentMethods = {}) {
     const sourceKey = ownerProfilePaymentMethodKey(raw, out.length);
     if (seen.has(sourceKey)) continue;
     seen.add(sourceKey);
+    const tradeMethod = raw.tradeMethod && typeof raw.tradeMethod === 'object' ? raw.tradeMethod : {};
+    const fieldList = ownerProfileFieldList(raw);
+    const payAccount = cleanStr(raw.payAccount || ownerProfileFieldValue(fieldList, ['pay_account'], /(account|wallet|number|mobile|phone)/i), 220);
+    const payBank = cleanStr(raw.payBank || ownerProfileFieldValue(fieldList, ['bank'], /bank/i), 220);
+    const paySubBank = cleanStr(raw.paySubBank || ownerProfileFieldValue(fieldList, ['sub_bank'], /(branch|sub.?bank)/i), 220);
+    const payee = cleanStr(raw.payee || ownerProfileFieldValue(fieldList, ['payee'], /(payee|name)/i), 220);
+    const qrCodePath = cleanStr(raw.qrCodePath || ownerProfileFieldValue(fieldList, ['qr_code'], /(qr|code)/i), 500);
+    const note = cleanStr(raw.note || raw.remark || ownerProfileFieldValue(fieldList, ['multi_text'], /(remark|note|instruction)/i), 220);
     out.push({
       sourceKey,
       id: Number(raw.id || raw.payId || 0) || null,
       payMethodId: cleanStr(raw.payMethodId || '', 120),
-      identifier: cleanStr(raw.identifier || raw.tradeMethodIdentifier || '', 120),
-      payType: cleanStr(raw.payType || '', 120),
-      tradeMethodName: cleanStr(raw.tradeMethodName || raw.name || '', 160),
-      tradeMethodShortName: cleanStr(raw.tradeMethodShortName || '', 120),
-      payAccount: cleanStr(raw.payAccount || '', 220),
-      payBank: cleanStr(raw.payBank || '', 220),
-      paySubBank: cleanStr(raw.paySubBank || '', 220),
-      note: cleanStr(raw.note || raw.remark || raw.label || '', 220),
-      currency: cleanStr(raw.currency || raw.fiatUnit || raw.currencyCode || 'BDT', 20).toUpperCase() || 'BDT',
+      identifier: cleanStr(raw.identifier || raw.tradeMethodIdentifier || tradeMethod.identifier || '', 120),
+      payType: cleanStr(raw.payType || tradeMethod.typeCode || '', 120),
+      tradeMethodName: cleanStr(raw.tradeMethodName || raw.name || tradeMethod.name || '', 160),
+      tradeMethodShortName: cleanStr(raw.tradeMethodShortName || tradeMethod.shortName || '', 120),
+      payAccount,
+      payBank,
+      paySubBank,
+      payee,
+      qrCodePath,
+      note,
+      currency: cleanStr(raw.currency || raw.fiatUnit || raw.currencyCode || '', 20).toUpperCase(),
+      fieldList,
+      bgColor: cleanStr(raw.tradeMethodBgColor || tradeMethod.bgColor || '', 40),
+      iconUrlColor: cleanStr(raw.iconUrlColor || tradeMethod.iconUrlColor || '', 500),
+      isRecommended: firstBoolLike(tradeMethod, ['isRecommended'], false),
+      multiAllow: firstBoolLike(tradeMethod, ['multiAllow'], false),
+      payStatus: cleanStr(raw.payStatus || '', 40),
       advCount: firstNumberFromSources([raw], ['advCount'], null)
     });
   }
   return out.slice(0, 100);
+}
+
+function normalizeOwnerPaymentCatalog(fiatCurrencies = {}, validPaymentMethods = {}, currentMethods = []) {
+  const currencyRows = extractBinanceList(fiatCurrencies);
+  const currencies = [];
+  const currencySeen = new Set();
+  for (const raw of currencyRows) {
+    if (!raw) continue;
+    if (typeof raw === 'string') {
+      const code = cleanStr(raw, 20).toUpperCase();
+      if (!code || currencySeen.has(code)) continue;
+      currencySeen.add(code);
+      currencies.push({ code, name: code, symbol: '', countryCode: '', iconUrl: '' });
+      continue;
+    }
+    if (typeof raw !== 'object') continue;
+    const code = cleanStr(raw.currencyCode || raw.fiatUnit || raw.currency || raw.code || raw.name || '', 20).toUpperCase();
+    if (!code || currencySeen.has(code)) continue;
+    currencySeen.add(code);
+    currencies.push({
+      code,
+      name: cleanStr(raw.name || raw.currencyName || raw.fiatName || code, 120),
+      symbol: cleanStr(raw.currencySymbol || raw.symbol || '', 20),
+      countryCode: cleanStr(raw.countryCode || '', 20),
+      iconUrl: cleanStr(raw.iconUrl || '', 500)
+    });
+  }
+  const knownByIdentifier = new Map();
+  for (const item of currentMethods || []) {
+    const key = cleanStr(item.identifier || item.tradeMethodIdentifier || item.payType || item.tradeMethodName || '', 120).toLowerCase();
+    if (key) knownByIdentifier.set(key, item);
+  }
+  const methodRows = extractBinanceList(validPaymentMethods);
+  const methods = [];
+  const methodSeen = new Set();
+  for (const raw of methodRows) {
+    if (!raw || typeof raw !== 'object') continue;
+    const tradeMethod = raw.tradeMethod && typeof raw.tradeMethod === 'object' ? raw.tradeMethod : raw;
+    const identifier = cleanStr(raw.identifier || raw.tradeMethodIdentifier || tradeMethod.identifier || raw.payType || tradeMethod.typeCode || '', 120);
+    const name = cleanStr(raw.tradeMethodName || raw.name || tradeMethod.name || tradeMethod.shortName || identifier, 160);
+    const key = (identifier || name).toLowerCase();
+    if (!key || methodSeen.has(key)) continue;
+    methodSeen.add(key);
+    const existing = knownByIdentifier.get(key) || null;
+    const fieldList = ownerProfileFieldList(raw).length ? ownerProfileFieldList(raw) : ownerProfileFieldList(existing || {});
+    const fiatCandidates = [];
+    for (const value of [raw.currency, raw.currencyCode, raw.fiatUnit, tradeMethod.currency, tradeMethod.currencyCode, tradeMethod.fiatUnit]) {
+      const code = cleanStr(value || '', 20).toUpperCase();
+      if (code) fiatCandidates.push(code);
+    }
+    for (const list of [raw.currencies, raw.currencyList, raw.fiatList, tradeMethod.currencies, tradeMethod.currencyList, tradeMethod.fiatList]) {
+      if (!Array.isArray(list)) continue;
+      for (const value of list) {
+        const code = cleanStr(typeof value === 'string' ? value : (value?.currencyCode || value?.fiatUnit || value?.code || ''), 20).toUpperCase();
+        if (code) fiatCandidates.push(code);
+      }
+    }
+    methods.push({
+      identifier,
+      payType: cleanStr(raw.payType || tradeMethod.typeCode || identifier, 120),
+      tradeMethodName: name,
+      tradeMethodShortName: cleanStr(raw.tradeMethodShortName || tradeMethod.shortName || '', 120),
+      fieldList,
+      currencies: Array.from(new Set(fiatCandidates)),
+      isRecommended: firstBoolLike(raw, ['isRecommended'], firstBoolLike(tradeMethod, ['isRecommended'], false)),
+      bgColor: cleanStr(raw.tradeMethodBgColor || raw.bgColor || tradeMethod.bgColor || '', 40),
+      iconUrlColor: cleanStr(raw.iconUrlColor || tradeMethod.iconUrlColor || '', 500),
+      sequence: Number(raw.sequence ?? tradeMethod.sequence ?? methods.length) || methods.length
+    });
+  }
+  return { currencies, methods: methods.sort((a, b) => Number(b.isRecommended) - Number(a.isRecommended) || Number(a.sequence || 0) - Number(b.sequence || 0) || a.tradeMethodName.localeCompare(b.tradeMethodName)), syncedAt: nowIso() };
 }
 
 function ownerProfileVerifications(account = {}, stats = {}) {
@@ -3368,7 +3512,7 @@ function ownerProfileVerifications(account = {}, stats = {}) {
   return Array.from(new Set(out));
 }
 
-function normalizeOwnerP2pProfile({ credential = null, baseDetail = {}, orderSummary = {}, merchantDetail = {}, ownAds = {}, paymentMethods = {}, publicProfile = null, marketProfile = null, warnings = [] } = {}) {
+function normalizeOwnerP2pProfile({ credential = null, baseDetail = {}, orderSummary = {}, merchantDetail = {}, ownAds = {}, paymentMethods = {}, fiatCurrencies = {}, validPaymentMethods = {}, publicProfile = null, marketProfile = null, warnings = [] } = {}) {
   const base = ownerP2pProfileBase(credential?.id || 0);
   const publicDetail = publicProfile ? publicProfileUserDetail(publicProfile) : {};
   const publicLists = publicProfile ? publicProfileBuySellLists(publicProfile) : { buyList: [], sellList: [] };
@@ -3383,7 +3527,18 @@ function normalizeOwnerP2pProfile({ credential = null, baseDetail = {}, orderSum
   const account = { ...(base.account || {}), ...ownerProfileAccountDetails(baseDetail) };
   const summary = { ...(base.orderSummary || {}), ...ownerProfileOrderSummary(orderSummary) };
   const returnedPaymentMethods = ownerProfilePaymentMethods(paymentMethods);
-  const profilePaymentMethods = applyOwnerPaymentMethodEdits(returnedPaymentMethods.length ? returnedPaymentMethods : (base.paymentMethods || []), base.paymentMethodEdits);
+  const localPaymentMethods = (Array.isArray(base.paymentMethods) ? base.paymentMethods : []).filter(item => item && item.localOnly === true);
+  const remoteOrCachedMethods = returnedPaymentMethods.length ? returnedPaymentMethods : (base.paymentMethods || []).filter(item => !item?.localOnly);
+  const combinedPaymentMethods = [...remoteOrCachedMethods];
+  for (const localRow of localPaymentMethods) {
+    const localKey = ownerProfilePaymentMethodKey(localRow, combinedPaymentMethods.length);
+    if (!combinedPaymentMethods.some((item, index) => ownerProfilePaymentMethodKey(item, index) === localKey)) combinedPaymentMethods.push(localRow);
+  }
+  const profilePaymentMethods = applyOwnerPaymentMethodEdits(combinedPaymentMethods, base.paymentMethodEdits);
+  const paymentCatalog = normalizeOwnerPaymentCatalog(fiatCurrencies, validPaymentMethods, profilePaymentMethods);
+  if (!paymentCatalog.currencies.length && Array.isArray(base.paymentCatalog?.currencies)) paymentCatalog.currencies = base.paymentCatalog.currencies.slice(0, 500);
+  if (!paymentCatalog.methods.length && Array.isArray(base.paymentCatalog?.methods)) paymentCatalog.methods = base.paymentCatalog.methods.slice(0, 1000);
+  if (!paymentCatalog.syncedAt && base.paymentCatalog?.syncedAt) paymentCatalog.syncedAt = base.paymentCatalog.syncedAt;
   const merchantObjects = ownerMerchantDetailObjects(unwrappedMerchant);
   const primaryMerchant = merchantObjects[0] || {};
   const marketRaw = marketProfile?.rawRow || {};
@@ -3438,6 +3593,7 @@ function normalizeOwnerP2pProfile({ credential = null, baseDetail = {}, orderSum
     account,
     orderSummary: summary,
     paymentMethods: profilePaymentMethods,
+    paymentCatalog,
     verifications: ownerProfileVerifications(account, stats).length ? ownerProfileVerifications(account, stats) : (base.verifications || []),
     stats: { ...emptyCounterpartyStats(), ...stats },
     source: Array.from(new Set(sourceParts)).join(' + '),
@@ -3483,7 +3639,7 @@ async function syncOwnerP2pProfileForCredential(syncUser, credential) {
   const warnings = [];
   const previous = ownerP2pProfileBase(credential.id);
 
-  const [baseDetail, orderSummary, ownAds, paymentMethods] = await Promise.all([
+  const [baseDetail, orderSummary, ownAds, paymentMethods, fiatCurrencies, validPaymentMethods] = await Promise.all([
     callOwnerProfileSapi(credential, 'P2P base detail', [
       { endpointName: 'getUserBaseDetailOfficial', body: {}, timeoutMs: 20000 },
       { endpointName: 'getUserBaseDetail', body: {}, timeoutMs: 20000 }
@@ -3496,7 +3652,16 @@ async function syncOwnerP2pProfileForCredential(syncUser, credential) {
       { endpointName: 'listAds', body: { page: 1, rows: 50 }, timeoutMs: 20000 }
     ], warnings),
     callOwnerProfileSapi(credential, 'P2P payment methods', [
-      { endpointName: 'getPaymentMethodByUserId', query: {}, timeoutMs: 20000 }
+      { endpointName: 'getPaymentMethodByUserId', query: {}, timeoutMs: 20000 },
+      { endpointName: 'agentGetPaymentMethodByUserId', query: {}, timeoutMs: 20000 }
+    ], warnings),
+    callOwnerProfileSapi(credential, 'P2P fiat currency list', [
+      { endpointName: 'listFiatCurrencies', body: {}, timeoutMs: 20000 },
+      { endpointName: 'agentListFiatCurrencies', body: {}, timeoutMs: 20000 }
+    ], warnings),
+    callOwnerProfileSapi(credential, 'P2P valid payment methods', [
+      { endpointName: 'listAllPaymentMethods', body: {}, timeoutMs: 20000 },
+      { endpointName: 'agentListAllPaymentMethods', body: {}, timeoutMs: 20000 }
     ], warnings)
   ]);
 
@@ -3554,6 +3719,8 @@ async function syncOwnerP2pProfileForCredential(syncUser, credential) {
     merchantDetail,
     ownAds,
     paymentMethods,
+    fiatCurrencies,
+    validPaymentMethods,
     publicProfile,
     marketProfile,
     warnings
@@ -3626,25 +3793,81 @@ async function handleMyP2pProfile(req, res, url) {
     const credential = p2pCredentialById(selected.id);
     if (!credential) return sendJson(res, 404, { error: 'Binance API profile not found.' }, {}, req);
     const current = ownerP2pProfileBase(selected.id);
+    const rows = applyOwnerPaymentMethodEdits(Array.isArray(current.paymentMethods) ? current.paymentMethods.slice(0, 100) : [], current.paymentMethodEdits);
+    const edits = Array.isArray(current.paymentMethodEdits) ? current.paymentMethodEdits.map((item, rowIndex) => normalizeOwnerPaymentMethodEdit(item, rowIndex)).slice(0, 100) : [];
+
+    if (body.paymentMethodAdd && typeof body.paymentMethodAdd === 'object') {
+      const patch = body.paymentMethodAdd;
+      const sourceKey = cleanStr(patch.sourceKey || `local_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`, 220);
+      const fieldList = ownerProfileFieldList({ fieldList: Array.isArray(patch.fieldList) ? patch.fieldList : [] });
+      const added = {
+        sourceKey,
+        id: null,
+        payMethodId: '',
+        identifier: cleanStr(patch.identifier || patch.payType || patch.tradeMethodName || '', 120),
+        payType: cleanStr(patch.payType || patch.identifier || '', 120),
+        tradeMethodName: cleanStr(patch.tradeMethodName || patch.tradeMethodShortName || patch.identifier || 'Payment Method', 160),
+        tradeMethodShortName: cleanStr(patch.tradeMethodShortName || '', 120),
+        currency: cleanStr(patch.currency || 'BDT', 20).toUpperCase() || 'BDT',
+        fieldList,
+        payAccount: cleanStr(patch.payAccount || ownerProfileFieldValue(fieldList, ['pay_account'], /(account|wallet|number|mobile|phone)/i), 220),
+        payBank: cleanStr(patch.payBank || ownerProfileFieldValue(fieldList, ['bank'], /bank/i), 220),
+        paySubBank: cleanStr(patch.paySubBank || ownerProfileFieldValue(fieldList, ['sub_bank'], /(branch|sub.?bank)/i), 220),
+        payee: cleanStr(patch.payee || ownerProfileFieldValue(fieldList, ['payee'], /(payee|name)/i), 220),
+        qrCodePath: cleanStr(patch.qrCodePath || ownerProfileFieldValue(fieldList, ['qr_code'], /(qr|code)/i), 500),
+        note: cleanStr(patch.note || ownerProfileFieldValue(fieldList, ['multi_text'], /(remark|note|instruction)/i), 220),
+        bgColor: cleanStr(patch.bgColor || '', 40),
+        iconUrlColor: cleanStr(patch.iconUrlColor || '', 500),
+        isRecommended: Boolean(patch.isRecommended),
+        localOnly: true
+      };
+      rows.push(added);
+      edits.push(normalizeOwnerPaymentMethodEdit(added, rows.length - 1));
+      const saved = saveOwnerP2pProfileForCredential(credential, { ...current, paymentMethods: rows.slice(0, 100), paymentMethodEdits: edits.slice(0, 100) });
+      saveDb();
+      return sendJson(res, 200, {
+        profile: mergeOwnerP2pExtensionCache(saved),
+        credentials: options,
+        selectedCredentialId: Number(selected.id),
+        canSync: userHasPermission(user, 'p2p.profile.sync') && !!credential && !credential.disabled,
+        credentialAvailable: !!credential && !credential.disabled && !!credential.apiKey && !!credential.secretKey,
+        extensionEnabled: db.settings.p2pExtensionEnabled !== false,
+        localPaymentMethodChange: true,
+        advertiserUrl: saved.userNo ? p2pAdvertiserUrlForUserNo(saved.userNo) : ''
+      }, {}, req);
+    }
+
     const patch = body.paymentMethodEdit && typeof body.paymentMethodEdit === 'object' ? body.paymentMethodEdit : {};
     const sourceKey = cleanStr(patch.sourceKey || patch.key || '', 220);
     if (!sourceKey) return sendJson(res, 422, { error: 'Payment method key is required.' }, {}, req);
-    const rows = applyOwnerPaymentMethodEdits(Array.isArray(current.paymentMethods) ? current.paymentMethods.slice(0, 100) : [], current.paymentMethodEdits);
     const index = rows.findIndex((item, rowIndex) => ownerProfilePaymentMethodKey(item, rowIndex) === sourceKey);
     if (index < 0) return sendJson(res, 404, { error: 'Payment method not found.' }, {}, req);
+    const existingFields = ownerProfileFieldList(rows[index]);
+    const incomingFields = ownerProfileFieldList({ fieldList: Array.isArray(patch.fieldList) ? patch.fieldList : [] });
+    const incomingMap = new Map(incomingFields.map(field => [String(field.fieldId || field.fieldName || '').toLowerCase(), field]));
+    const mergedFields = existingFields.map(field => {
+      const incoming = incomingMap.get(String(field.fieldId || field.fieldName || '').toLowerCase());
+      return incoming ? { ...field, fieldValue: incoming.fieldValue } : field;
+    });
+    for (const field of incomingFields) {
+      const key = String(field.fieldId || field.fieldName || '').toLowerCase();
+      if (!mergedFields.some(item => String(item.fieldId || item.fieldName || '').toLowerCase() === key)) mergedFields.push(field);
+    }
     const updatedRow = {
       ...rows[index],
       sourceKey,
       tradeMethodName: cleanStr(patch.tradeMethodName || rows[index].tradeMethodName || rows[index].tradeMethodShortName || rows[index].payType || rows[index].identifier || 'Payment Method', 160),
       tradeMethodShortName: cleanStr(patch.tradeMethodShortName || rows[index].tradeMethodShortName || '', 120),
-      payAccount: cleanStr(patch.payAccount || '', 220),
-      payBank: cleanStr(patch.payBank || rows[index].payBank || '', 220),
-      paySubBank: cleanStr(patch.paySubBank || rows[index].paySubBank || '', 220),
-      note: cleanStr(patch.note || '', 220),
+      fieldList: mergedFields,
+      payAccount: cleanStr(patch.payAccount || ownerProfileFieldValue(mergedFields, ['pay_account'], /(account|wallet|number|mobile|phone)/i) || rows[index].payAccount || '', 220),
+      payBank: cleanStr(patch.payBank || ownerProfileFieldValue(mergedFields, ['bank'], /bank/i) || rows[index].payBank || '', 220),
+      paySubBank: cleanStr(patch.paySubBank || ownerProfileFieldValue(mergedFields, ['sub_bank'], /(branch|sub.?bank)/i) || rows[index].paySubBank || '', 220),
+      payee: cleanStr(patch.payee || ownerProfileFieldValue(mergedFields, ['payee'], /(payee|name)/i) || rows[index].payee || '', 220),
+      qrCodePath: cleanStr(patch.qrCodePath || ownerProfileFieldValue(mergedFields, ['qr_code'], /(qr|code)/i) || rows[index].qrCodePath || '', 500),
+      note: cleanStr(patch.note || ownerProfileFieldValue(mergedFields, ['multi_text'], /(remark|note|instruction)/i) || rows[index].note || '', 220),
       currency: cleanStr(patch.currency || rows[index].currency || rows[index].fiatUnit || 'BDT', 20).toUpperCase() || 'BDT'
     };
     rows[index] = updatedRow;
-    const edits = Array.isArray(current.paymentMethodEdits) ? current.paymentMethodEdits.map((item, rowIndex) => normalizeOwnerPaymentMethodEdit(item, rowIndex)).slice(0, 100) : [];
     const editIndex = edits.findIndex(item => item.sourceKey === sourceKey);
     const normalizedEdit = normalizeOwnerPaymentMethodEdit(updatedRow, index);
     if (editIndex >= 0) edits[editIndex] = normalizedEdit;
@@ -3659,6 +3882,7 @@ async function handleMyP2pProfile(req, res, url) {
       canSync: userHasPermission(user, 'p2p.profile.sync') && !!credential && !credential.disabled,
       credentialAvailable: !!credential && !credential.disabled && !!credential.apiKey && !!credential.secretKey,
       extensionEnabled: db.settings.p2pExtensionEnabled !== false,
+      localPaymentMethodChange: true,
       advertiserUrl: saved.userNo ? p2pAdvertiserUrlForUserNo(saved.userNo) : ''
     }, {}, req);
   }
@@ -4833,11 +5057,20 @@ function extractBinanceList(resp) {
     if (!value || typeof value !== 'object') return [];
     if (seen.has(value)) return [];
     seen.add(value);
-    if (Array.isArray(value)) return value;
-    for (const key of ['data','rows','list','items','records','content','result']) {
+    if (Array.isArray(value)) {
+      if (!value.length) return [];
+      const looksLikeWrapper = value.every(item => item && typeof item === 'object' && ('data' in item || 'response' in item || 'result' in item));
+      if (!looksLikeWrapper) return value;
+      for (const item of value) {
+        const found = walk(item.data ?? item.response ?? item.result ?? item);
+        if (found.length) return found;
+      }
+      return [];
+    }
+    for (const key of ['rows','list','items','records','content']) {
       if (Array.isArray(value[key])) return value[key];
     }
-    for (const key of ['data','page','result','body']) {
+    for (const key of ['data','primary','page','result','body','response','responses']) {
       const found = walk(value[key]);
       if (found.length) return found;
     }

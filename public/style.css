@@ -4119,3 +4119,62 @@ nav .accounting-nav-group.active>.nav-group-toggle{color:#fff;border-color:rgba(
   .mobile-profile-payment-note{font-size:14px}
   .mobile-profile-payment-sticky{padding:0 20px}
 }
+
+/* v1.4.10 - Binance-like dynamic P2P payment method editor */
+@media(max-width:900px){
+  body.profile-payment-subpage-active #mobileBottomNav.mobile-bottom-nav{display:none!important}
+  body.profile-payment-subpage-active #content{padding-bottom:0!important}
+}
+.mobile-profile-payment-values{display:grid;gap:10px}
+.mobile-profile-payment-value{display:grid;gap:3px;min-width:0}
+.mobile-profile-payment-value small{color:#9a9a9a;font-size:11px;line-height:1.3}
+.mobile-profile-payment-value span{color:#7b7b7b;font-size:14px;line-height:1.45;word-break:break-word}
+.mobile-profile-payment-value.primary span{font-size:18px}
+.mobile-profile-payment-card.bank .mobile-profile-payment-brand i{background:#eab308}
+.payment-editor-page{position:relative;min-height:100dvh;padding-bottom:100px;background:#fff}
+.mobile-profile-subpage-head.editor{position:sticky;top:0;background:#fff;z-index:25}
+.mobile-profile-subpage-head.editor h1{font-size:25px;font-weight:750}
+.p2p-payment-editor-body{display:grid;gap:26px;padding:28px 30px 130px}
+.p2p-payment-selector-label{display:grid;gap:10px;margin:0;color:#7a7a7a;font-size:16px;font-weight:650}
+.p2p-payment-selector{display:flex;align-items:center;justify-content:space-between;gap:12px;width:100%;min-height:62px;padding:0 18px;border:0;border-radius:17px;background:#f5f5f5;color:#111;box-shadow:none;text-align:left}
+.p2p-payment-selector b{font-size:18px;font-weight:650}
+.p2p-payment-selector i{font-style:normal;color:#555;font-size:24px;line-height:1}
+.p2p-payment-editor-fields{display:grid;gap:24px}
+.p2p-payment-editor-field{display:grid;gap:10px;margin:0}
+.p2p-payment-editor-field>span{color:#7d8797;font-size:16px;font-weight:650}
+.p2p-payment-editor-field>span b{color:#d33;margin-left:3px}
+.p2p-payment-editor-field input,.p2p-payment-editor-field textarea{width:100%;border:0;border-radius:17px;background:#f5f5f5;color:#111;padding:17px 18px;font-size:18px;line-height:1.4;box-shadow:none;outline:none}
+.p2p-payment-editor-field textarea{min-height:92px;resize:vertical}
+.p2p-payment-editor-field input::placeholder,.p2p-payment-editor-field textarea::placeholder{color:#9ca3af}
+.p2p-payment-editor-warning{margin-top:auto;padding:16px 18px;border-radius:16px;background:#f3f3f3;color:#222;font-size:13px;line-height:1.55}
+.p2p-payment-editor-save{position:fixed;left:50%;bottom:max(18px,calc(18px + env(safe-area-inset-bottom)));transform:translateX(-50%);width:min(100%,760px);padding:0 30px;z-index:30;pointer-events:none}
+.p2p-payment-editor-save button{pointer-events:auto;width:100%;height:58px;border:0;border-radius:14px;background:#f3ce27;color:#111;font-size:18px;font-weight:800;box-shadow:none}
+.p2p-payment-editor-save button.inactive,.p2p-payment-editor-save button:disabled{background:#dedede;color:#b4b4b4;cursor:not-allowed}
+.p2p-payment-picker-overlay{position:fixed;inset:0;z-index:1200;display:flex;align-items:flex-end;background:rgba(0,0,0,.5)}
+.p2p-payment-picker-dismiss{position:absolute;inset:0;width:100%;height:100%;border:0;background:transparent;box-shadow:none}
+.p2p-payment-picker-sheet{position:relative;z-index:1;width:min(100%,760px);max-height:76dvh;margin:0 auto;border-radius:24px 24px 0 0;background:#fff;padding:12px 24px calc(22px + env(safe-area-inset-bottom));overflow:hidden;box-shadow:0 -10px 34px rgba(0,0,0,.15)}
+.p2p-payment-picker-sheet.method-sheet{max-height:82dvh}
+.p2p-payment-picker-handle{display:block;width:78px;height:6px;margin:0 auto 22px;border-radius:999px;background:#d9dde3}
+.p2p-payment-picker-sheet h2{margin:0 0 20px;font-size:25px;line-height:1.2}
+.p2p-payment-picker-search{display:flex;align-items:center;gap:10px;height:56px;margin-bottom:18px;padding:0 16px;border-radius:14px;background:#f4f4f4;color:#8b8b8b}
+.p2p-payment-picker-search span{font-size:27px;line-height:1}
+.p2p-payment-picker-search input{width:100%;height:100%;border:0;background:transparent;padding:0;color:#111;font-size:17px;outline:none;box-shadow:none}
+.p2p-payment-picker-list{max-height:calc(76dvh - 155px);overflow-y:auto;-webkit-overflow-scrolling:touch;padding-bottom:10px}
+.p2p-payment-picker-list.methods{max-height:calc(82dvh - 155px)}
+.p2p-payment-picker-list h3{margin:18px 6px 8px;color:#8a8a8a;font-size:14px;font-weight:600}
+.p2p-payment-picker-list button{display:grid;grid-template-columns:auto minmax(0,1fr) auto auto;align-items:center;gap:9px;width:100%;min-height:58px;padding:10px 6px;border:0;background:#fff;color:#111;text-align:left;box-shadow:none}
+.p2p-payment-picker-list button>i{width:5px;height:18px;border-radius:999px;background:#f0b90b}
+.p2p-payment-picker-list button>i.nagad{background:#f39a2e}.p2p-payment-picker-list button>i.bkash{background:#e11d74}.p2p-payment-picker-list button>i.rocket{background:#16a34a}.p2p-payment-picker-list button>i.bank{background:#eab308}
+.p2p-payment-picker-list button>span,.p2p-payment-picker-list button>b{font-size:17px;font-weight:600;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.p2p-payment-picker-list button>small{display:inline-flex;padding:4px 7px;border-radius:5px;background:#fff9dd;color:#b18a00;font-size:10px;font-weight:700}
+.p2p-payment-picker-list button>strong{font-size:22px;font-weight:600}
+.p2p-payment-picker-list button[data-payment-currency]{grid-template-columns:minmax(0,1fr) auto auto}
+.p2p-payment-picker-list button[data-payment-currency]>span{color:#8a8a8a;font-size:13px;font-weight:500}
+@media(max-width:720px){
+  .mobile-profile-payment-list.binance-style{gap:22px;background:#fff;padding-bottom:118px}
+  .mobile-profile-payment-sticky{bottom:max(14px,calc(14px + env(safe-area-inset-bottom)));z-index:40}
+  .p2p-payment-editor-body{gap:24px;padding:24px 30px 122px}
+  .p2p-payment-selector{min-height:58px}
+  .p2p-payment-editor-save{padding:0 30px}
+  .p2p-payment-picker-sheet{padding-left:24px;padding-right:24px}
+}
