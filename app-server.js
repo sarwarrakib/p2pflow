@@ -574,7 +574,9 @@ async function initDb() {
     appVersion: APP_VERSION,
     poolMax: Number(process.env.P2PFLOW_DATABASE_POOL_MAX || process.env.P2PFLOW_MYSQL_POOL_MAX || process.env.P2PFLOW_POSTGRES_POOL_MAX || process.env.CRM_DATABASE_POOL_MAX || process.env.CRM_MYSQL_POOL_MAX || process.env.CRM_POSTGRES_POOL_MAX || 5),
     ssl: storageSslOptions(),
-    historyLimit: Number(process.env.CRM_DB_HISTORY_LIMIT || 500),
+    historyLimit: Number(process.env.CRM_DB_HISTORY_LIMIT || process.env.P2PFLOW_DB_HISTORY_LIMIT || 8),
+    historyWriteIntervalMs: Number(process.env.P2PFLOW_DB_HISTORY_INTERVAL_MS || 15 * 60 * 1000),
+    historyCleanupBatch: Number(process.env.P2PFLOW_DB_HISTORY_CLEANUP_BATCH || 3),
     instanceLockKey: cleanEnv(process.env.P2PFLOW_INSTANCE_LOCK_KEY || process.env.CRM_INSTANCE_LOCK_KEY || `${DATABASE_TABLE}:single-instance`, `${DATABASE_TABLE}:single-instance`)
   });
   await stateStore.init();

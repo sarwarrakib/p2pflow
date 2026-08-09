@@ -27,8 +27,12 @@ Updater code এবং database আলাদা রাখে। Update install-�
 
 ## Version
 
-Internal SemVer: `1.4.11`  
+Internal SemVer: `1.4.12`  
 UI: `1.4`
 
 Normal next version: `SET_NEXT_VERSION.bat` -> `1.5.0`  
-Hotfix: `SET_HOTFIX_VERSION.bat` -> `1.4.12`
+Hotfix: `SET_HOTFIX_VERSION.bat` -> `1.4.13`
+
+## Database history safety
+
+P2PFlow keeps encrypted state recovery checkpoints, but normal writes no longer duplicate the full application state into history on every save. The default is 8 retained checkpoints with a 15-minute archive interval. Old history is pruned in small background batches so a large existing `p2pflow_state_history` table does not block application startup. Existing MariaDB/MySQL tables are detected through `INFORMATION_SCHEMA`, so an already-installed database does not need `CREATE TABLE` permission just to restart.
