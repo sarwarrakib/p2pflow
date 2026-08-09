@@ -1,4 +1,4 @@
-// v1.4.7: first-run recovery reuses the saved Application Key and software updates are Owner-only from Control Panel.
+// v1.4.8: first-run recovery reuses the saved Application Key and software updates are Owner-only from Control Panel.
 // v1.0.137: Diagnose and harden Binance P2P Create Advertisement privilege flow.
 // v1.0.128: lightweight Ads UI, cached reloads and realtime Binance merchant-status sync.
 // v1.0.117: Stop order countdowns immediately after completed or cancelled status sync.
@@ -68,6 +68,7 @@ const state = {
 const pages = [
   ['dashboard', 'Dashboard', ['admin','manager','auditor']],
   ['p2p-market', 'P2P Market', ['admin','manager','agent','auditor']],
+  ['p2p-profile', 'P2P Profile', ['admin','manager','agent','auditor']],
   ['orders', 'Orders', ['admin','manager','agent','auditor']],
   ['chat', 'P2P Message', ['admin','manager','agent','auditor']],
   ['ads', 'Advertisements', ['admin','manager','agent','auditor']],
@@ -98,6 +99,7 @@ const pages = [
 const PAGE_PERMISSIONS = {
   dashboard: 'dashboard.view',
   'p2p-market': 'orders.view',
+  'p2p-profile': 'p2p.profile.view',
   orders: 'orders.view',
   chat: 'orders.view',
   ads: 'ads.view',
@@ -131,7 +133,7 @@ function isAccountingPage(page=state.page) { return ACCOUNTING_PAGE_IDS.includes
 // role + permission checks in visiblePages(); this layer only controls presentation.
 const NAV_MENU_GROUPS = [
   { id:'trading', label:'P2P Trading', icon:'trade', items:[
-    ['p2p-market','P2P Market','market'], ['orders','Orders','orders'], ['chat','P2P Message','chat'],
+    ['p2p-market','P2P Market','market'], ['p2p-profile','P2P Profile','profile'], ['orders','Orders','orders'], ['chat','P2P Message','chat'],
     ['ads','Advertisements','ads'], ['approvals','Approvals','approve']
   ]},
   { id:'accounting', label:'Accounting', icon:'accounting', items:[
@@ -156,6 +158,7 @@ const NAV_ICON_SVGS = {
   dashboard:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h6v6h-6z"/></svg>',
   trade:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h13m0 0-3-3m3 3-3 3M19 17H6m0 0 3 3m-3-3 3-3"/></svg>',
   market:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 18V9m5 9V5m5 13v-6m5 6V3"/></svg>',
+  profile:'<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="3.5"/><path d="M5 20v-2c0-3.5 2.8-6 7-6s7 2.5 7 6v2"/></svg>',
   orders:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h10l2 2v16H6zM9 8h6M9 12h6M9 16h4"/></svg>',
   chat:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v12H9l-5 4zM8 9h8M8 13h5"/></svg>',
   ads:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 10h5l9-5v14l-9-5H4zM9 14l2 6H7l-1-6"/></svg>',
@@ -4165,7 +4168,7 @@ async function routeFromLocation(showLoading=true) {
   state.currentOrderId = route.orderId;
   state.ledgerAccountId = route.ledgerAccountId;
   document.body.classList.toggle('p2p-market-active', state.page === 'p2p-market');
-  document.body.classList.toggle('profile-mobile-active', state.page === 'security');
+  document.body.classList.toggle('profile-mobile-active', state.page === 'p2p-profile');
   document.body.classList.toggle('chat-inbox-active', state.page === 'chat');
   if (state.page !== 'chat' && typeof stopChatInboxAutoRefresh === 'function') stopChatInboxAutoRefresh();
   document.body.classList.toggle('order-detail-active', state.page === 'orders' && !!state.currentOrderId);
@@ -4195,7 +4198,7 @@ function mobileBottomNavTarget(id) {
   if (id === 'orders') return canPage('orders') ? 'orders' : visiblePages()[0]?.[0];
   if (id === 'ads') return canPage('ads') ? 'ads' : visiblePages()[0]?.[0];
   if (id === 'chat') return canPage('chat') ? 'chat' : (canPage('orders') ? 'orders' : visiblePages()[0]?.[0]);
-  if (id === 'profile') return canPage('security') ? 'security' : (canPage('settings') ? 'settings' : visiblePages()[0]?.[0]);
+  if (id === 'profile') return canPage('p2p-profile') ? 'p2p-profile' : visiblePages()[0]?.[0];
   return visiblePages()[0]?.[0];
 }
 
@@ -4204,7 +4207,7 @@ function mobileBottomNavActive(id) {
   if (id === 'orders') return state.page === 'orders' && !document.body.classList.contains('order-chat-open');
   if (id === 'ads') return state.page === 'ads';
   if (id === 'chat') return state.page === 'chat' || (state.page === 'orders' && document.body.classList.contains('order-chat-open'));
-  if (id === 'profile') return ['security', 'settings'].includes(state.page);
+  if (id === 'profile') return state.page === 'p2p-profile';
   return false;
 }
 
@@ -4298,7 +4301,7 @@ function renderNav() {
   // legacy flat menu while this marker is absent, the browser/proxy is serving
   // stale frontend JavaScript rather than the active release.
   nav.dataset.navigationModel = 'grouped-control-center';
-  nav.dataset.uiRelease = '1.4.7';
+  nav.dataset.uiRelease = '1.4.8';
   nav.innerHTML = '';
   const visible = visiblePages();
   const visibleIds = new Set(visible.map(([id]) => id));
@@ -4464,6 +4467,7 @@ async function renderPage(showLoading=true) {
     else if (state.page === 'system-update') await renderSystemUpdate();
     else if (state.page === 'settings') await renderSettings();
     else if (state.page === 'p2p-extension') await renderP2pExtensionAdmin();
+    else if (state.page === 'p2p-profile') await renderP2PProfile();
     else if (state.page === 'security') await renderSecurity();
     else if (state.page === 'notifications') await renderNotifications();
     else if (state.page === 'audit') await renderAudit();

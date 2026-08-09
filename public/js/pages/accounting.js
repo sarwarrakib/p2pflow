@@ -1,4 +1,4 @@
-// P2PFlow v1.4.7
+// P2PFlow v1.4.8
 // Business Accounting is separated into Overview, Expenses, Income, Capital and Daily Closing pages.
 
 const ACCOUNTING_EXPENSE_CATEGORIES = [

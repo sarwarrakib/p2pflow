@@ -2797,6 +2797,9 @@ function ownerP2pProfileBase(credentialId = 0) {
     status: cleanStr(current.status || '', 80),
     joinedOn: cleanStr(current.joinedOn || '', 80),
     verifications: Array.isArray(current.verifications) ? current.verifications.slice(0, 20) : [],
+    account: current.account && typeof current.account === 'object' && !Array.isArray(current.account) ? { ...current.account } : {},
+    orderSummary: current.orderSummary && typeof current.orderSummary === 'object' && !Array.isArray(current.orderSummary) ? { ...current.orderSummary } : {},
+    paymentMethods: Array.isArray(current.paymentMethods) ? current.paymentMethods.slice(0, 100) : [],
     stats: { ...emptyCounterpartyStats(), ...(current.stats || {}) },
     feedbackRows: {
       positive: Array.isArray(current.feedbackRows?.positive) ? current.feedbackRows.positive.slice(0, 100) : [],
@@ -2818,6 +2821,9 @@ function saveOwnerP2pProfileForCredential(credential, profile = {}) {
     ...profile,
     credentialId: Number(credential.id),
     credentialName: cleanStr(credential.name || profile.credentialName || `API ${credential.id}`, 120),
+    account: profile.account && typeof profile.account === 'object' && !Array.isArray(profile.account) ? { ...profile.account } : {},
+    orderSummary: profile.orderSummary && typeof profile.orderSummary === 'object' && !Array.isArray(profile.orderSummary) ? { ...profile.orderSummary } : {},
+    paymentMethods: Array.isArray(profile.paymentMethods) ? profile.paymentMethods.slice(0, 100) : [],
     stats: { ...emptyCounterpartyStats(), ...(profile.stats || {}) },
     feedbackRows: {
       positive: Array.isArray(profile.feedbackRows?.positive) ? profile.feedbackRows.positive.slice(0, 100) : [],
@@ -3238,7 +3244,75 @@ async function resolveOwnerMarketplaceProfile(credential, ownAds = {}, knownNick
   return null;
 }
 
-function normalizeOwnerP2pProfile({ credential = null, baseDetail = {}, orderSummary = {}, merchantDetail = {}, ownAds = {}, publicProfile = null, marketProfile = null, warnings = [] } = {}) {
+function ownerProfileAccountDetails(baseDetail = {}) {
+  const src = unwrapBinanceData(baseDetail) || baseDetail || {};
+  const kycType = firstNumberFromSources([src], ['kycType'], null);
+  return {
+    bindMobileStatus: cleanStr(firstStringFromSources([src], ['bindMobileStatus'], ''), 40),
+    businessStatus: firstNumberFromSources([src], ['businessStatus'], null),
+    countryCode: cleanStr(firstStringFromSources([src], ['countryCode'], ''), 30),
+    existsNickname: firstBoolLike(src, ['existsNickname'], null),
+    fiatProtocolConfirm: firstBoolLike(src, ['fiatProtocolConfirm'], null),
+    isSubUser: firstBoolLike(src, ['isSubUser'], null),
+    isUserGoogle: firstBoolLike(src, ['isUserGoogle'], null),
+    isUserMobile: firstBoolLike(src, ['isUserMobile'], null),
+    kycFullName: cleanStr(firstStringFromSources([src], ['kycFullName'], ''), 160),
+    kycPassed: firstBoolLike(src, ['kycPassed'], null),
+    kycType,
+    kycTypeLabel: kycType === 1 ? 'Individual' : kycType === 2 ? 'Corporate' : '',
+    nickname: cleanStr(firstStringFromSources([src], ['nickname','nickName'], ''), 120),
+    overComplained: firstNumberFromSources([src], ['overComplained'], null),
+    registerDays: firstNumberFromSources([src], ['registerDays','registeredDays'], null),
+    userKycStatus: cleanStr(firstStringFromSources([src], ['userKycStatus'], ''), 40)
+  };
+}
+
+function ownerProfileOrderSummary(orderSummary = {}) {
+  const src = unwrapBinanceData(orderSummary) || orderSummary || {};
+  return {
+    buyerPayedCount: firstNumberFromSources([src], ['buyerPayedCount'], null),
+    inAppealCount: firstNumberFromSources([src], ['inAppealCount'], null),
+    inProcessCount: firstNumberFromSources([src], ['inProcessCount'], null),
+    tradingCount: firstNumberFromSources([src], ['tradingCount'], null)
+  };
+}
+
+function ownerProfilePaymentMethods(paymentMethods = {}) {
+  const rows = extractBinanceList(paymentMethods);
+  const out = [];
+  const seen = new Set();
+  for (const raw of rows) {
+    if (!raw || typeof raw !== 'object') continue;
+    const key = cleanStr(raw.id || raw.payId || raw.payMethodId || raw.identifier || raw.payType || raw.tradeMethodName || '', 120) || JSON.stringify(raw).slice(0, 180);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({
+      id: Number(raw.id || raw.payId || 0) || null,
+      payMethodId: cleanStr(raw.payMethodId || '', 120),
+      identifier: cleanStr(raw.identifier || raw.tradeMethodIdentifier || '', 120),
+      payType: cleanStr(raw.payType || '', 120),
+      tradeMethodName: cleanStr(raw.tradeMethodName || raw.name || '', 160),
+      tradeMethodShortName: cleanStr(raw.tradeMethodShortName || '', 120),
+      payAccount: cleanStr(raw.payAccount || '', 220),
+      payBank: cleanStr(raw.payBank || '', 220),
+      paySubBank: cleanStr(raw.paySubBank || '', 220),
+      advCount: firstNumberFromSources([raw], ['advCount'], null)
+    });
+  }
+  return out.slice(0, 100);
+}
+
+function ownerProfileVerifications(account = {}, stats = {}) {
+  const out = [];
+  if (account.kycPassed === true || /pass/i.test(String(account.userKycStatus || ''))) out.push('KYC');
+  if (account.isUserMobile === true || /^BIND/i.test(String(account.bindMobileStatus || ''))) out.push('Mobile');
+  if (account.isUserGoogle === true) out.push('Google 2FA');
+  if (account.fiatProtocolConfirm === true) out.push('P2P Agreement');
+  if (stats.verified === true) out.push('Merchant Verified');
+  return Array.from(new Set(out));
+}
+
+function normalizeOwnerP2pProfile({ credential = null, baseDetail = {}, orderSummary = {}, merchantDetail = {}, ownAds = {}, paymentMethods = {}, publicProfile = null, marketProfile = null, warnings = [] } = {}) {
   const base = ownerP2pProfileBase(credential?.id || 0);
   const publicDetail = publicProfile ? publicProfileUserDetail(publicProfile) : {};
   const publicLists = publicProfile ? publicProfileBuySellLists(publicProfile) : { buyList: [], sellList: [] };
@@ -3250,6 +3324,10 @@ function normalizeOwnerP2pProfile({ credential = null, baseDetail = {}, orderSum
   const unwrappedSummary = unwrapBinanceData(orderSummary) || {};
   const unwrappedMerchant = unwrapBinanceData(merchantDetail) || {};
   const unwrappedAds = unwrapBinanceData(ownAds) || {};
+  const account = { ...(base.account || {}), ...ownerProfileAccountDetails(baseDetail) };
+  const summary = { ...(base.orderSummary || {}), ...ownerProfileOrderSummary(orderSummary) };
+  const returnedPaymentMethods = ownerProfilePaymentMethods(paymentMethods);
+  const profilePaymentMethods = returnedPaymentMethods.length ? returnedPaymentMethods : (base.paymentMethods || []);
   const merchantObjects = ownerMerchantDetailObjects(unwrappedMerchant);
   const primaryMerchant = merchantObjects[0] || {};
   const marketRaw = marketProfile?.rawRow || {};
@@ -3279,6 +3357,10 @@ function normalizeOwnerP2pProfile({ credential = null, baseDetail = {}, orderSum
   stats.nickname = cleanStr(merchantExact.stats.nickname || identity.nickname || marketStats.nickname || stats.nickname || base.nickname || '', 120);
   if (!hasMetricServer(stats.adsCount) && (publicLists.buyList.length || publicLists.sellList.length)) stats.adsCount = publicLists.buyList.length + publicLists.sellList.length;
   if (!hasMetricServer(stats.adsCount) && ownRows.length) stats.adsCount = ownRows.length;
+  if (returnedPaymentMethods.length || (paymentMethods && typeof paymentMethods === 'object' && Object.keys(paymentMethods).length)) stats.paymentMethodsCount = returnedPaymentMethods.length;
+  if (account.registerDays !== null && account.registerDays !== undefined) { stats.registeredDays = account.registerDays; stats.registerDays = account.registerDays; }
+  if (account.kycPassed !== null && account.kycPassed !== undefined) stats.kycVerified = account.kycPassed;
+  if (account.isUserMobile !== null && account.isUserMobile !== undefined) stats.phoneVerified = account.isUserMobile;
   const riskDeposit = cleanStr(firstStringFromSources([primaryMerchant, ...merchantObjects, publicDetail, unwrappedBase], ['riskDepositMessage','riskDeposit','securityDeposit','depositAmountText'], stats.riskDepositMessage || ''), 120);
   if (riskDeposit) stats.riskDepositMessage = riskDeposit;
 
@@ -3297,7 +3379,10 @@ function normalizeOwnerP2pProfile({ credential = null, baseDetail = {}, orderSum
     nickname: stats.nickname || base.nickname || '',
     status,
     joinedOn,
-    verifications: base.verifications || [],
+    account,
+    orderSummary: summary,
+    paymentMethods: profilePaymentMethods,
+    verifications: ownerProfileVerifications(account, stats).length ? ownerProfileVerifications(account, stats) : (base.verifications || []),
     stats: { ...emptyCounterpartyStats(), ...stats },
     source: Array.from(new Set(sourceParts)).join(' + '),
     syncedAt: nowIso(),
@@ -3342,7 +3427,7 @@ async function syncOwnerP2pProfileForCredential(syncUser, credential) {
   const warnings = [];
   const previous = ownerP2pProfileBase(credential.id);
 
-  const [baseDetail, orderSummary, ownAds] = await Promise.all([
+  const [baseDetail, orderSummary, ownAds, paymentMethods] = await Promise.all([
     callOwnerProfileSapi(credential, 'P2P base detail', [
       { endpointName: 'getUserBaseDetailOfficial', body: {}, timeoutMs: 20000 },
       { endpointName: 'getUserBaseDetail', body: {}, timeoutMs: 20000 }
@@ -3352,7 +3437,10 @@ async function syncOwnerP2pProfileForCredential(syncUser, credential) {
       { endpointName: 'getUserOrderSummary', body: {}, timeoutMs: 20000 }
     ], warnings),
     callOwnerProfileSapi(credential, 'Own advertisements', [
-      { endpointName: 'listAds', body: { page: 1, rows: 20 }, timeoutMs: 20000 }
+      { endpointName: 'listAds', body: { page: 1, rows: 50 }, timeoutMs: 20000 }
+    ], warnings),
+    callOwnerProfileSapi(credential, 'P2P payment methods', [
+      { endpointName: 'getPaymentMethodByUserId', query: {}, timeoutMs: 20000 }
     ], warnings)
   ]);
 
@@ -3409,6 +3497,7 @@ async function syncOwnerP2pProfileForCredential(syncUser, credential) {
     orderSummary,
     merchantDetail,
     ownAds,
+    paymentMethods,
     publicProfile,
     marketProfile,
     warnings
@@ -3445,7 +3534,7 @@ async function handleMyP2pProfile(req, res, url) {
     const selected = resolveP2pProfileCredentialForUser(user, url.searchParams.get('credentialId'));
     if (!selected) {
       return sendJson(res, 200, {
-        profile: { credentialId: null, credentialName: '', userNo: '', merchantNo: '', nickname: '', status: '', joinedOn: '', verifications: [], stats: emptyCounterpartyStats(), feedbackRows: { positive: [], negative: [] }, source: '', syncedAt: null, lastError: '', warnings: [], extensionStatus: '', extensionTaskId: null },
+        profile: { credentialId: null, credentialName: '', userNo: '', merchantNo: '', nickname: '', status: '', joinedOn: '', verifications: [], account: {}, orderSummary: {}, paymentMethods: [], stats: emptyCounterpartyStats(), feedbackRows: { positive: [], negative: [] }, source: '', syncedAt: null, lastError: '', warnings: [], extensionStatus: '', extensionTaskId: null },
         credentials: options,
         selectedCredentialId: null,
         canSync: false,
