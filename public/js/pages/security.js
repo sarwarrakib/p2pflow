@@ -1,4 +1,4 @@
-// P2PFlow v1.4.6
+// P2PFlow v1.4.7
 // Binance-style mobile P2P profile, feedback and security workspace.
 
 function profileMetricValue(value, suffix = '') {
