@@ -4183,26 +4183,28 @@ async function routeFromLocation(showLoading=true) {
 
 
 const MOBILE_BOTTOM_NAV_ICONS = {
-  dashboard: NAV_ICON_SVGS.dashboard,
-  p2p: NAV_ICON_SVGS.trade,
-  orders: NAV_ICON_SVGS.orders,
-  chat: NAV_ICON_SVGS.chat,
-  menu: NAV_ICON_SVGS.menu
+  p2p: '<svg viewBox="0 0 32 32" aria-hidden="true"><path d="M9 7a4 4 0 1 0 0 .1M23 7a4 4 0 1 0 0 .1M5 24v-4.2c0-3.1 2.3-5.4 5.4-5.4h2.2M27 24v-4.2c0-3.1-2.3-5.4-5.4-5.4h-2.2" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/><path d="M13 21.5h6M16 18.5v6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/><path d="M4.5 3.5h4M3.5 4.5v4M27.5 3.5h-4M28.5 4.5v4M4.5 28.5h4M3.5 27.5v-4M27.5 28.5h-4M28.5 27.5v-4" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round"/></svg>',
+  orders: '<svg viewBox="0 0 32 32" aria-hidden="true"><path d="M8 4.5h13.5v21H8z" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round"/><circle cx="22.5" cy="22.5" r="6" fill="white" stroke="currentColor" stroke-width="2.2"/><path d="M22.5 19.2v3.7l2.5 1.5" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round"/></svg>',
+  ads: '<svg viewBox="0 0 32 32" aria-hidden="true"><path d="M5 14h6l12-7v18l-12-7H5z" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linejoin="round"/><path d="M11 18l2 8H8l-1.5-8M26 12.5c1.7 1.8 1.7 5.2 0 7" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round"/></svg>',
+  chat: '<svg viewBox="0 0 32 32" aria-hidden="true"><path d="M5 6h22v15H14l-7 5v-5H5z" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round"/><path d="M9 11h14M9 15h10" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round"/></svg>',
+  profile: '<svg viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="9" r="5" fill="none" stroke="currentColor" stroke-width="2.2"/><path d="M7 28v-5c0-4.5 3.5-7.5 9-7.5s9 3 9 7.5v5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>'
 };
 
 function mobileBottomNavTarget(id) {
-  if (id === 'dashboard') return canPage('dashboard') ? 'dashboard' : visiblePages()[0]?.[0];
-  if (id === 'p2p') return canPage('p2p-market') ? 'p2p-market' : (canPage('orders') ? 'orders' : visiblePages()[0]?.[0]);
+  if (id === 'p2p') return canPage('p2p-market') ? 'p2p-market' : (canPage('dashboard') ? 'dashboard' : (canPage('orders') ? 'orders' : visiblePages()[0]?.[0]));
   if (id === 'orders') return canPage('orders') ? 'orders' : visiblePages()[0]?.[0];
+  if (id === 'ads') return canPage('ads') ? 'ads' : visiblePages()[0]?.[0];
   if (id === 'chat') return canPage('chat') ? 'chat' : (canPage('orders') ? 'orders' : visiblePages()[0]?.[0]);
+  if (id === 'profile') return canPage('security') ? 'security' : (canPage('settings') ? 'settings' : visiblePages()[0]?.[0]);
   return visiblePages()[0]?.[0];
 }
 
 function mobileBottomNavActive(id) {
-  if (id === 'dashboard') return state.page === 'dashboard';
   if (id === 'p2p') return state.page === 'p2p-market';
   if (id === 'orders') return state.page === 'orders' && !document.body.classList.contains('order-chat-open');
+  if (id === 'ads') return state.page === 'ads';
   if (id === 'chat') return state.page === 'chat' || (state.page === 'orders' && document.body.classList.contains('order-chat-open'));
+  if (id === 'profile') return ['security', 'settings'].includes(state.page);
   return false;
 }
 
@@ -4222,31 +4224,25 @@ function renderMobileBottomNav() {
   const nav = $('#mobileBottomNav');
   if (!nav || !state.user) return;
   const items = [
-    ['dashboard', 'Dashboard'],
     ['p2p', 'P2P'],
     ['orders', 'Orders'],
-    ['chat', 'P2P Message'],
-    ['menu', 'Menu']
+    ['ads', 'Ads'],
+    ['chat', 'Chat'],
+    ['profile', 'Profile']
   ];
   nav.innerHTML = items.map(([id, label]) => {
-    const active = id === 'menu' ? document.body.classList.contains('nav-open') : mobileBottomNavActive(id);
+    const active = mobileBottomNavActive(id);
     return `<button type="button" data-mobile-bottom-nav="${id}" class="${active ? 'active' : ''}" ${active ? 'aria-current="page"' : ''} aria-label="${label}"><span class="mobile-bottom-nav-icon">${MOBILE_BOTTOM_NAV_ICONS[id]}${mobileBottomNavBadge(id)}</span><span class="mobile-bottom-nav-label">${label}</span></button>`;
   }).join('');
   nav.querySelectorAll('[data-mobile-bottom-nav]').forEach(button => {
     button.onclick = () => {
       const id = button.dataset.mobileBottomNav;
-      if (id === 'menu') {
-        setMobileNavigation(true, { restoreFocus:false });
-        renderMobileBottomNav();
-        return;
-      }
       setMobileNavigation(false, { restoreFocus:false });
       if (id === 'chat') return openMobileChatShortcut();
       const target = mobileBottomNavTarget(id);
       if (target) setRoute(target);
     };
   });
-  applyLanguage(nav);
 }
 
 async function refreshMobileBottomNavCounts() {
