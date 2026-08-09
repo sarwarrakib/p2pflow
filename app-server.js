@@ -3403,7 +3403,7 @@ function ownerProfilePaymentMethods(paymentMethods = {}) {
     const paySubBank = cleanStr(raw.paySubBank || ownerProfileFieldValue(fieldList, ['sub_bank'], /(branch|sub.?bank)/i), 220);
     const payee = cleanStr(raw.payee || ownerProfileFieldValue(fieldList, ['payee'], /(payee|name)/i), 220);
     const qrCodePath = cleanStr(raw.qrCodePath || ownerProfileFieldValue(fieldList, ['qr_code'], /(qr|code)/i), 500);
-    const note = cleanStr(raw.note || raw.remark || ownerProfileFieldValue(fieldList, ['multi_text'], /(remark|note|instruction)/i), 220);
+    const note = cleanStr(raw.note || raw.remark || ownerProfileFieldValue(fieldList, [], /(remark|note|instruction)/i), 220);
     out.push({
       sourceKey,
       id: Number(raw.id || raw.payId || 0) || null,
@@ -3429,6 +3429,46 @@ function ownerProfilePaymentMethods(paymentMethods = {}) {
     });
   }
   return out.slice(0, 100);
+}
+
+async function enrichOwnerPaymentMethodsById(credential, paymentMethods = {}, warnings = []) {
+  const rows = extractBinanceList(paymentMethods).filter(item => item && typeof item === 'object');
+  if (!rows.length || !credential) return paymentMethods;
+  const ids = Array.from(new Set(rows.map(item => Number(item.id || item.payId || item.payMethodId || 0)).filter(id => Number.isFinite(id) && id > 0))).slice(0, 40);
+  if (!ids.length) return paymentMethods;
+  const detailById = new Map();
+  for (let offset = 0; offset < ids.length; offset += 5) {
+    const batch = ids.slice(offset, offset + 5);
+    const results = await Promise.all(batch.map(async id => {
+      try {
+        const detailResponse = await callOwnerProfileSapi(credential, `P2P payment method ${id}`, [
+          { endpointName: 'getPaymentMethodById', query: { id }, timeoutMs: 12000 }
+        ], []);
+        const detail = unwrapBinanceData(detailResponse) || {};
+        return { id, detail: detail && typeof detail === 'object' && !Array.isArray(detail) ? detail : null };
+      } catch (error) {
+        return { id, error: cleanStr(error.message || error, 240) };
+      }
+    }));
+    for (const result of results) {
+      if (result.detail) detailById.set(result.id, result.detail);
+      else if (result.error && Array.isArray(warnings)) warnings.push(`P2P payment method detail ${result.id}: ${result.error}`);
+    }
+  }
+  if (!detailById.size) return paymentMethods;
+  return {
+    data: rows.map(raw => {
+      const id = Number(raw.id || raw.payId || raw.payMethodId || 0);
+      const detail = detailById.get(id);
+      if (!detail) return raw;
+      return {
+        ...raw,
+        ...detail,
+        tradeMethod: { ...(raw.tradeMethod || {}), ...(detail.tradeMethod || {}) },
+        fieldList: Array.isArray(detail.fieldList) && detail.fieldList.length ? detail.fieldList : raw.fieldList
+      };
+    })
+  };
 }
 
 function normalizeOwnerPaymentCatalog(fiatCurrencies = {}, validPaymentMethods = {}, currentMethods = []) {
@@ -3665,6 +3705,8 @@ async function syncOwnerP2pProfileForCredential(syncUser, credential) {
     ], warnings)
   ]);
 
+  const detailedPaymentMethods = await enrichOwnerPaymentMethodsById(credential, paymentMethods, warnings);
+
   const knownNumbers = [credential.ownerP2pMerchantNo, previous.merchantNo, credential.ownerP2pUserNo, previous.userNo].filter(Boolean);
   const firstMerchantDetail = await callOwnerMerchantDetailSapi(credential, knownNumbers, warnings);
   const firstMerchantObjects = ownerMerchantDetailObjects(firstMerchantDetail);
@@ -3718,7 +3760,7 @@ async function syncOwnerP2pProfileForCredential(syncUser, credential) {
     orderSummary,
     merchantDetail,
     ownAds,
-    paymentMethods,
+    paymentMethods: detailedPaymentMethods,
     fiatCurrencies,
     validPaymentMethods,
     publicProfile,
@@ -3765,6 +3807,8 @@ async function handleMyP2pProfile(req, res, url) {
         canSync: false,
         credentialAvailable: false,
         extensionEnabled: db.settings.p2pExtensionEnabled !== false,
+        paymentMethodWriteSupported: false,
+        paymentMethodWriteReason: 'Binance C2C API exposes payment-method configuration as read-only; add/edit is stored only in P2PFlow.',
         advertiserUrl: '',
         message: 'No Binance API profile has been assigned to this user.'
       }, {}, req);
@@ -3783,6 +3827,8 @@ async function handleMyP2pProfile(req, res, url) {
       canSync: userHasPermission(user, 'p2p.profile.sync') && !!credential && !credential.disabled,
       credentialAvailable: !!credential && !credential.disabled && !!credential.apiKey && !!credential.secretKey,
       extensionEnabled: db.settings.p2pExtensionEnabled !== false,
+        paymentMethodWriteSupported: false,
+        paymentMethodWriteReason: 'Binance C2C API exposes payment-method configuration as read-only; add/edit is stored only in P2PFlow.',
       advertiserUrl: profile.userNo ? p2pAdvertiserUrlForUserNo(profile.userNo) : ''
     }, {}, req);
   }
@@ -3815,7 +3861,7 @@ async function handleMyP2pProfile(req, res, url) {
         paySubBank: cleanStr(patch.paySubBank || ownerProfileFieldValue(fieldList, ['sub_bank'], /(branch|sub.?bank)/i), 220),
         payee: cleanStr(patch.payee || ownerProfileFieldValue(fieldList, ['payee'], /(payee|name)/i), 220),
         qrCodePath: cleanStr(patch.qrCodePath || ownerProfileFieldValue(fieldList, ['qr_code'], /(qr|code)/i), 500),
-        note: cleanStr(patch.note || ownerProfileFieldValue(fieldList, ['multi_text'], /(remark|note|instruction)/i), 220),
+        note: cleanStr(patch.note || ownerProfileFieldValue(fieldList, [], /(remark|note|instruction)/i), 220),
         bgColor: cleanStr(patch.bgColor || '', 40),
         iconUrlColor: cleanStr(patch.iconUrlColor || '', 500),
         isRecommended: Boolean(patch.isRecommended),
@@ -3832,6 +3878,8 @@ async function handleMyP2pProfile(req, res, url) {
         canSync: userHasPermission(user, 'p2p.profile.sync') && !!credential && !credential.disabled,
         credentialAvailable: !!credential && !credential.disabled && !!credential.apiKey && !!credential.secretKey,
         extensionEnabled: db.settings.p2pExtensionEnabled !== false,
+        paymentMethodWriteSupported: false,
+        paymentMethodWriteReason: 'Binance C2C API exposes payment-method configuration as read-only; add/edit is stored only in P2PFlow.',
         localPaymentMethodChange: true,
         advertiserUrl: saved.userNo ? p2pAdvertiserUrlForUserNo(saved.userNo) : ''
       }, {}, req);
@@ -3864,7 +3912,7 @@ async function handleMyP2pProfile(req, res, url) {
       paySubBank: cleanStr(patch.paySubBank || ownerProfileFieldValue(mergedFields, ['sub_bank'], /(branch|sub.?bank)/i) || rows[index].paySubBank || '', 220),
       payee: cleanStr(patch.payee || ownerProfileFieldValue(mergedFields, ['payee'], /(payee|name)/i) || rows[index].payee || '', 220),
       qrCodePath: cleanStr(patch.qrCodePath || ownerProfileFieldValue(mergedFields, ['qr_code'], /(qr|code)/i) || rows[index].qrCodePath || '', 500),
-      note: cleanStr(patch.note || ownerProfileFieldValue(mergedFields, ['multi_text'], /(remark|note|instruction)/i) || rows[index].note || '', 220),
+      note: cleanStr(patch.note || ownerProfileFieldValue(mergedFields, [], /(remark|note|instruction)/i) || rows[index].note || '', 220),
       currency: cleanStr(patch.currency || rows[index].currency || rows[index].fiatUnit || 'BDT', 20).toUpperCase() || 'BDT'
     };
     rows[index] = updatedRow;
@@ -3882,6 +3930,8 @@ async function handleMyP2pProfile(req, res, url) {
       canSync: userHasPermission(user, 'p2p.profile.sync') && !!credential && !credential.disabled,
       credentialAvailable: !!credential && !credential.disabled && !!credential.apiKey && !!credential.secretKey,
       extensionEnabled: db.settings.p2pExtensionEnabled !== false,
+        paymentMethodWriteSupported: false,
+        paymentMethodWriteReason: 'Binance C2C API exposes payment-method configuration as read-only; add/edit is stored only in P2PFlow.',
       localPaymentMethodChange: true,
       advertiserUrl: saved.userNo ? p2pAdvertiserUrlForUserNo(saved.userNo) : ''
     }, {}, req);
@@ -3901,6 +3951,8 @@ async function handleMyP2pProfile(req, res, url) {
     canSync: true,
     credentialAvailable: true,
     extensionEnabled: db.settings.p2pExtensionEnabled !== false,
+        paymentMethodWriteSupported: false,
+        paymentMethodWriteReason: 'Binance C2C API exposes payment-method configuration as read-only; add/edit is stored only in P2PFlow.',
     queuedExtension: Boolean(out.task && !out.task.cached),
     advertiserUrl: out.profile.userNo ? p2pAdvertiserUrlForUserNo(out.profile.userNo) : ''
   }, {}, req);

@@ -4178,3 +4178,14 @@ nav .accounting-nav-group.active>.nav-group-toggle{color:#fff;border-color:rgba(
   .p2p-payment-editor-save{padding:0 30px}
   .p2p-payment-picker-sheet{padding-left:24px;padding-right:24px}
 }
+
+/* v1.4.11 - reliable P2P payment picker search + stable mobile action bar */
+.p2p-payment-picker-list .payment-search-hidden,
+.p2p-payment-picker-list [hidden],
+.p2p-payment-picker-list [data-payment-method-group][hidden]{display:none!important}
+.p2p-payment-picker-empty{padding:28px 8px;text-align:center;color:#8a8a8a;font-size:14px}
+.p2p-payment-picker-list [data-payment-method-group]{display:block}
+@media(max-width:720px){
+  .mobile-profile-payment-sticky{display:block!important;visibility:visible!important;opacity:1!important;z-index:130!important;bottom:calc(10px + env(safe-area-inset-bottom))!important}
+  .payment-method-page{padding-bottom:92px}
+}

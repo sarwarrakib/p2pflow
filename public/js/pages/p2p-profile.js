@@ -1,4 +1,4 @@
-// P2PFlow v1.4.10
+// P2PFlow v1.4.11
 // Dedicated Binance-style P2P Profile workspace. Login security is kept on the separate Security page.
 
 function profileMetricValue(value, suffix = '') {
@@ -250,7 +250,9 @@ function profilePaymentMethodTone(row = {}) {
 }
 
 function profilePaymentMethodNote(row = {}) {
-  return String(row.note || row.payBank || row.paySubBank || '').trim();
+  const fields = Array.isArray(row.fieldList) ? row.fieldList : [];
+  const remarkField = fields.find(field => /remark|note|instruction/i.test(`${field?.fieldName || ''} ${field?.fieldTitle || ''}`) && String(field?.fieldValue || '').trim());
+  return String(row.note || remarkField?.fieldValue || row.payBank || row.paySubBank || '').trim();
 }
 
 function profilePaymentMethodFields(row = {}) {
@@ -410,13 +412,41 @@ function mobileProfilePaymentEditorHtml(data = {}, result = {}) {
 function mobileProfilePaymentPickerHtml(result = {}, editor = {}) {
   if (editor.picker === 'currency') {
     const currencies = profilePaymentCurrencies(result);
-    return `<div class="p2p-payment-picker-overlay"><button type="button" class="p2p-payment-picker-dismiss" id="mobileProfilePaymentPickerDismiss" aria-label="Close"></button><section class="p2p-payment-picker-sheet"><i class="p2p-payment-picker-handle"></i><h2>Select Currency</h2><div class="p2p-payment-picker-search"><span>⌕</span><input id="mobileProfileCurrencySearch" placeholder="Search"></div><div class="p2p-payment-picker-list" id="mobileProfileCurrencyList">${currencies.map(item => `<button type="button" data-payment-currency="${escapeAttr(item.code)}"><b>${escapeHtml(item.code)}</b><span>${escapeHtml(item.name && item.name !== item.code ? item.name : '')}</span>${String(item.code).toUpperCase() === String(editor.currency).toUpperCase() ? '<strong>✓</strong>' : ''}</button>`).join('')}</div></section></div>`;
+    return `<div class="p2p-payment-picker-overlay"><button type="button" class="p2p-payment-picker-dismiss" id="mobileProfilePaymentPickerDismiss" aria-label="Close"></button><section class="p2p-payment-picker-sheet"><i class="p2p-payment-picker-handle"></i><h2>Select Currency</h2><div class="p2p-payment-picker-search"><span>⌕</span><input id="mobileProfileCurrencySearch" type="search" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Search currency"></div><div class="p2p-payment-picker-list" id="mobileProfileCurrencyList">${currencies.map(item => `<button type="button" data-payment-currency="${escapeAttr(item.code)}" data-search-name="${escapeAttr(`${item.code || ''} ${item.name || ''} ${item.countryCode || ''}`.toLowerCase())}"><b>${escapeHtml(item.code)}</b><span>${escapeHtml(item.name && item.name !== item.code ? item.name : '')}</span>${String(item.code).toUpperCase() === String(editor.currency).toUpperCase() ? '<strong>✓</strong>' : ''}</button>`).join('')}<div id="mobileProfileCurrencySearchEmpty" class="p2p-payment-picker-empty" hidden>No currency found.</div></div></section></div>`;
   }
   const methods = profilePaymentDefinitions(result).filter(item => !Array.isArray(item.currencies) || !item.currencies.length || item.currencies.map(code => String(code).toUpperCase()).includes(String(editor.currency || '').toUpperCase()));
   const recommended = methods.filter(item => item.isRecommended);
   const other = methods.filter(item => !item.isRecommended);
-  const row = item => `<button type="button" data-payment-method="${escapeAttr(profilePaymentDefinitionKey(item))}" data-search-name="${escapeAttr(String(item.tradeMethodName || item.identifier || '').toLowerCase())}"><i class="${profilePaymentMethodTone(item)}"></i><span>${escapeHtml(item.tradeMethodName || item.tradeMethodShortName || item.identifier || item.payType || 'Payment Method')}</span>${item.isRecommended ? '<small>Recommended</small>' : ''}${profilePaymentDefinitionKey(item) === editor.methodKey ? '<strong>✓</strong>' : ''}</button>`;
-  return `<div class="p2p-payment-picker-overlay"><button type="button" class="p2p-payment-picker-dismiss" id="mobileProfilePaymentPickerDismiss" aria-label="Close"></button><section class="p2p-payment-picker-sheet method-sheet"><i class="p2p-payment-picker-handle"></i><h2>Select Payment Method</h2><div class="p2p-payment-picker-search"><span>⌕</span><input id="mobileProfileMethodSearch" placeholder="Search"></div><div class="p2p-payment-picker-list methods" id="mobileProfileMethodList">${recommended.length ? `<h3>Recommended Payment Methods</h3>${recommended.map(row).join('')}` : ''}${other.length ? `<h3>Other Payment Methods</h3>${other.map(row).join('')}` : ''}${!methods.length ? '<div class="mobile-profile-feedback-empty">No payment method is available for this currency.</div>' : ''}</div></section></div>`;
+  const row = item => `<button type="button" data-payment-method="${escapeAttr(profilePaymentDefinitionKey(item))}" data-search-name="${escapeAttr(`${item.tradeMethodName || ''} ${item.tradeMethodShortName || ''} ${item.identifier || ''} ${item.payType || ''}`.toLowerCase())}"><i class="${profilePaymentMethodTone(item)}"></i><span>${escapeHtml(item.tradeMethodName || item.tradeMethodShortName || item.identifier || item.payType || 'Payment Method')}</span>${item.isRecommended ? '<small>Recommended</small>' : ''}${profilePaymentDefinitionKey(item) === editor.methodKey ? '<strong>✓</strong>' : ''}</button>`;
+  return `<div class="p2p-payment-picker-overlay"><button type="button" class="p2p-payment-picker-dismiss" id="mobileProfilePaymentPickerDismiss" aria-label="Close"></button><section class="p2p-payment-picker-sheet method-sheet"><i class="p2p-payment-picker-handle"></i><h2>Select Payment Method</h2><div class="p2p-payment-picker-search"><span>⌕</span><input id="mobileProfileMethodSearch" type="search" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Search payment method"></div><div class="p2p-payment-picker-list methods" id="mobileProfileMethodList">${recommended.length ? `<section data-payment-method-group><h3>Recommended Payment Methods</h3>${recommended.map(row).join('')}</section>` : ''}${other.length ? `<section data-payment-method-group><h3>Other Payment Methods</h3>${other.map(row).join('')}</section>` : ''}${!methods.length ? '<div class="mobile-profile-feedback-empty">No payment method is available for this currency.</div>' : ''}<div id="mobileProfileMethodSearchEmpty" class="p2p-payment-picker-empty" hidden>No payment method found.</div></div></section></div>`;
+}
+
+function filterProfilePaymentPicker(kind, rawTerm = '') {
+  const term = String(rawTerm || '').trim().toLowerCase();
+  const selector = kind === 'currency' ? '[data-payment-currency]' : '[data-payment-method]';
+  const rows = Array.from(document.querySelectorAll(selector));
+  let visible = 0;
+  for (const button of rows) {
+    const haystack = String(button.dataset.searchName || button.textContent || '').toLowerCase();
+    const show = !term || haystack.includes(term);
+    button.classList.toggle('payment-search-hidden', !show);
+    button.hidden = !show;
+    button.style.display = show ? '' : 'none';
+    if (show) visible += 1;
+  }
+  if (kind === 'method') {
+    document.querySelectorAll('[data-payment-method-group]').forEach(group => {
+      const hasVisible = Array.from(group.querySelectorAll('[data-payment-method]')).some(button => !button.classList.contains('payment-search-hidden'));
+      group.classList.toggle('payment-search-hidden', !hasVisible);
+      group.hidden = !hasVisible;
+      group.style.display = hasVisible ? '' : 'none';
+    });
+  }
+  const empty = document.querySelector(kind === 'currency' ? '#mobileProfileCurrencySearchEmpty' : '#mobileProfileMethodSearchEmpty');
+  if (empty) {
+    empty.hidden = visible > 0;
+    empty.style.display = visible > 0 ? 'none' : 'block';
+  }
 }
 
 function profileFeedbackRow(row = {}, sentiment = 'positive') {
@@ -558,13 +588,14 @@ async function renderP2PProfile() {
     const selectedMethod = definitions.find(item => profilePaymentDefinitionKey(item) === editor.methodKey) || editor.method || {};
     const fields = profilePaymentEditorFieldDefs(editor).map(field => ({ ...field, fieldValue:String(editor.fieldValues?.[field.fieldId] ?? field.fieldValue ?? '').trim() }));
     const findValue = (type, regex) => fields.find(field => String(field.fieldContentType || '').toLowerCase() === type && field.fieldValue)?.fieldValue || fields.find(field => regex && regex.test(`${field.fieldTitle || ''} ${field.fieldName || ''}`) && field.fieldValue)?.fieldValue || '';
+    const findNamedValue = regex => fields.find(field => regex && regex.test(`${field.fieldTitle || ''} ${field.fieldName || ''}`) && field.fieldValue)?.fieldValue || '';
     const direct = {
       payAccount: findValue('pay_account', /(account|wallet|number|mobile|phone)/i),
       payBank: findValue('bank', /bank/i),
       paySubBank: findValue('sub_bank', /(branch|sub.?bank)/i),
       payee: findValue('payee', /(payee|name)/i),
       qrCodePath: findValue('qr_code', /(qr|code)/i),
-      note: findValue('multi_text', /(remark|note|instruction)/i)
+      note: findNamedValue(/(remark|note|instruction)/i)
     };
     const common = {
       sourceKey: editor.rowKey || undefined,
@@ -594,7 +625,11 @@ async function renderP2PProfile() {
       state.mobileProfileView = 'payments';
       render();
       window.scrollTo({ top:0, behavior:'auto' });
-      notify(editor.mode === 'edit' ? 'Payment method updated.' : 'Payment method added.', 'ok');
+      if (out.paymentMethodWriteSupported === false || out.localPaymentMethodChange) {
+        notify(editor.mode === 'edit' ? 'Saved in P2PFlow. Binance payment-method configuration is read-only through the available API, so Binance itself was not changed.' : 'Added in P2PFlow. Binance payment-method configuration is read-only through the available API, so it was not added to Binance.', 'warn', 8500);
+      } else {
+        notify(editor.mode === 'edit' ? 'Payment method updated on Binance.' : 'Payment method added on Binance.', 'ok');
+      }
     } catch (err) {
       notify(err.message || 'Payment method save failed.', 'danger', 6000);
       if (button?.isConnected) button.disabled = false;
@@ -658,8 +693,8 @@ async function renderP2PProfile() {
       const fields = Array.isArray(method.fieldList) && method.fieldList.length ? profilePaymentMethodFields({ fieldList:method.fieldList }) : profilePaymentEditorFieldDefs({});
       editor.fieldDefs = fields; editor.fieldValues = editorValuesFromFields(fields); editor.picker = ''; render();
     });
-    $('#mobileProfileCurrencySearch')?.addEventListener('input', event => { const term = String(event.target.value || '').toLowerCase(); $$('[data-payment-currency]').forEach(button => { button.hidden = term && !button.textContent.toLowerCase().includes(term); }); });
-    $('#mobileProfileMethodSearch')?.addEventListener('input', event => { const term = String(event.target.value || '').toLowerCase(); $$('[data-payment-method]').forEach(button => { button.hidden = term && !button.textContent.toLowerCase().includes(term); }); });
+    $('#mobileProfileCurrencySearch')?.addEventListener('input', event => filterProfilePaymentPicker('currency', event.target.value));
+    $('#mobileProfileMethodSearch')?.addEventListener('input', event => filterProfilePaymentPicker('method', event.target.value));
     $('#mobileProfilePaymentEditorSave')?.addEventListener('click', submitPaymentEditor);
     $$('[data-profile-action]').forEach(button => button.onclick = () => {
       const action = button.dataset.profileAction;
