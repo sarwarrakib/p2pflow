@@ -208,78 +208,72 @@ function profileDetailRow(label, value, sub = '') {
 function mobileProfileDetailsHtml(data = {}, result = {}) {
   const profile = result.profile || {};
   const stats = profile.stats || {};
-  const account = profile.account || {};
-  const summary = profile.orderSummary || {};
-  const nickname = profile.nickname || data.user?.name || data.user?.username || 'My P2P Account';
-  const totals = profileFeedbackTotals(profile);
-  const allTrades = hasMetric(stats.allTrades) ? stats.allTrades : stats.totalTradeCount;
-  const registeredDays = hasMetric(stats.registeredDays) ? stats.registeredDays : (hasMetric(stats.registerDays) ? stats.registerDays : account.registerDays);
-  const verificationText = Array.isArray(profile.verifications) && profile.verifications.length ? profile.verifications.join(', ') : '-';
-  return `<section class="mobile-profile-subpage">
-    <header class="mobile-profile-subpage-head"><button type="button" id="mobileProfileSubBackBtn" class="mobile-profile-icon-btn">${profileIcon('back')}</button><h1>${escapeHtml(nickname)}</h1><span></span></header>
-    <div class="mobile-profile-detail-list">
-      ${profileDetailRow('Nickname', nickname)}
-      ${profile.userNo ? profileDetailRow('User No', profile.userNo) : ''}
-      ${profile.merchantNo ? profileDetailRow('Merchant No', profile.merchantNo) : ''}
-      ${profileDetailRow('Merchant / Account Status', profile.status || profileMerchantLabel(profile))}
-      ${profileDetailRow('Business Status', profileBusinessStatus(account.businessStatus))}
-      ${profileDetailRow('KYC Status', account.userKycStatus || profileBoolLabel(account.kycPassed, 'Passed', 'Not Passed'), account.kycTypeLabel || '')}
-      ${account.kycFullName ? profileDetailRow('KYC Full Name', account.kycFullName) : ''}
-      ${profileDetailRow('KYC Country', account.countryCode || '-')}
-      ${profileDetailRow('Verifications', verificationText)}
-      ${profileDetailRow('Mobile Verification', profileBoolLabel(account.isUserMobile), account.bindMobileStatus || '')}
-      ${profileDetailRow('Google 2FA', profileBoolLabel(account.isUserGoogle))}
-      ${profileDetailRow('P2P Agreement Confirmed', profileBoolLabel(account.fiatProtocolConfirm))}
-      ${profileDetailRow('Sub Account', profileBoolLabel(account.isSubUser))}
-      ${profileDetailRow('Nickname Configured', profileBoolLabel(account.existsNickname))}
-      ${profileDetailRow('Complaint Limit Exceeded', hasMetric(account.overComplained) ? (Number(account.overComplained) === 1 ? 'Yes' : 'No') : '-')}
+  return `<section class="mobile-profile-subpage stats-page">
+    <header class="mobile-profile-subpage-head"><button type="button" id="mobileProfileSubBackBtn" class="mobile-profile-icon-btn">${profileIcon('back')}</button><h1>Statistics</h1><span></span></header>
+    <div class="mobile-profile-detail-list compact-stats">
       ${profileDetailRow('30d Trades', hasMetric(stats.thirtyDayTradeCount) ? `${profileNumber(stats.thirtyDayTradeCount)} Time(s)` : '-')}
       ${profileDetailRow('30d Completion Rate', profilePercent(stats.thirtyDayCompletionRate))}
       ${profileDetailRow('Avg. Release Time', hasMetric(stats.avgReleaseTimeMinutes30d) ? `${profileNumber(stats.avgReleaseTimeMinutes30d)} Minute(s)` : (stats.avgReleaseTimeLabel || '-'))}
       ${profileDetailRow('Avg. Pay Time', hasMetric(stats.avgPayTimeMinutes30d) ? `${profileNumber(stats.avgPayTimeMinutes30d)} Minute(s)` : (stats.avgPayTimeLabel || '-'))}
-      ${profileDetailRow('Positive Feedback', totals.rate === null ? '-' : profilePercent(totals.rate))}
-      ${profileDetailRow('Positive', profileNumber(totals.positive))}
-      ${profileDetailRow('Negative', profileNumber(totals.negative))}
-      ${profileDetailRow('Feedback Total', profileNumber(totals.total))}
-      ${profileDetailRow('Registered', hasMetric(registeredDays) ? `${profileNumber(registeredDays)} Day(s) ago` : (profile.joinedOn || '-'))}
+      ${profileDetailRow('Positive Feedback', hasMetric(stats.feedbackRate) ? profilePercent(stats.feedbackRate) : (hasMetric(stats.positiveFeedbackRate) ? profilePercent(stats.positiveFeedbackRate) : '-'))}
+      ${profileDetailRow('Positive', profileNumber(stats.positiveFeedback))}
+      ${profileDetailRow('Negative', profileNumber(stats.negativeFeedback))}
+      ${profileDetailRow('Total', hasMetric(stats.feedbackTotalCount) ? `${profileNumber(stats.feedbackTotalCount)} Time(s)` : '-')}
+      ${profileDetailRow('Registered', hasMetric(stats.registeredDays) ? `${profileNumber(stats.registeredDays)} Day(s) ago` : (hasMetric(stats.registerDays) ? `${profileNumber(stats.registerDays)} Day(s) ago` : (profile.joinedOn || '-')))}
       ${profileDetailRow('First Trade', hasMetric(stats.firstTradeDays) ? `${profileNumber(stats.firstTradeDays)} Day(s) ago` : '-')}
-      ${profileDetailRow('Trading Counterparties', profileNumber(stats.tradingCounterparties))}
-      ${profileDetailRow('All Trades', hasMetric(allTrades) ? `${profileNumber(allTrades)} Time(s)` : '-', (hasMetric(stats.buyTrades) || hasMetric(stats.sellTrades)) ? `Buy ${profileNumber(stats.buyTrades)} | Sell ${profileNumber(stats.sellTrades)}` : '')}
-      ${profileDetailRow('Approx. 30d Volume', profileBtcValue(stats.thirtyDayVolumeBtc), (hasMetric(stats.buyVolumeBtc30d) || hasMetric(stats.sellVolumeBtc30d)) ? `Buy ${profileBtcValue(stats.buyVolumeBtc30d)} | Sell ${profileBtcValue(stats.sellVolumeBtc30d)}` : '')}
-      ${profileDetailRow('Approx. Total Volume', profileBtcValue(stats.totalVolumeBtc), (hasMetric(stats.buyVolumeBtc) || hasMetric(stats.sellVolumeBtc)) ? `Buy ${profileBtcValue(stats.buyVolumeBtc)} | Sell ${profileBtcValue(stats.sellVolumeBtc)}` : '')}
-      ${profileDetailRow('Followers', profileNumber(stats.followersCount))}
-      ${profileDetailRow('Following', profileNumber(stats.followingCount))}
-      ${profileDetailRow('Advertisements', profileNumber(stats.adsCount))}
-      ${profileDetailRow('Payment Methods', profileNumber(stats.paymentMethodsCount))}
-      ${profileDetailRow('Paid Orders', profileNumber(summary.buyerPayedCount))}
-      ${profileDetailRow('Trading Orders', profileNumber(summary.tradingCount))}
-      ${profileDetailRow('In Process Orders', profileNumber(summary.inProcessCount))}
-      ${profileDetailRow('Appeal Orders', profileNumber(summary.inAppealCount))}
-      ${profileDetailRow('API Profile', profile.credentialName || '-')}
-      ${profileDetailRow('Extension Status', profile.extensionStatus || (result.extensionEnabled ? 'Ready' : 'Disabled'))}
-      ${profileDetailRow('Data Source', profile.source || '-')}
-      ${profileDetailRow('Last Synced', profile.syncedAt ? fmt(profile.syncedAt) : '-')}
+      ${profileDetailRow('Trading Parties', hasMetric(stats.tradingCounterparties) ? `${profileNumber(stats.tradingCounterparties)} Party(ies)` : '-')}
+      ${profileDetailRow('All Trades', hasMetric(stats.allTrades) ? `${profileNumber(stats.allTrades)} Time(s)` : (hasMetric(stats.totalTradeCount) ? `${profileNumber(stats.totalTradeCount)} Time(s)` : '-'))}
+      ${profileDetailRow('Approx. 30d Volume', profileBtcValue(stats.thirtyDayVolumeBtc))}
+      ${profileDetailRow('Approx. Total Volume', profileBtcValue(stats.totalVolumeBtc))}
     </div>
   </section>`;
+}
+
+function profilePaymentMethodKey(row = {}, index = 0) {
+  return String(row.sourceKey || row.key || [row.id, row.payMethodId, row.identifier, row.payType, row.tradeMethodName, index].filter(Boolean).join('|') || `pm-${index}`);
+}
+
+function profilePaymentMethodCurrency(row = {}) {
+  const value = String(row.currency || row.fiatUnit || row.currencyCode || 'BDT').trim().toUpperCase();
+  return value || 'BDT';
+}
+
+function profilePaymentMethodTone(row = {}) {
+  const name = String(row.tradeMethodName || row.tradeMethodShortName || row.payType || row.identifier || '').toLowerCase();
+  if (name.includes('bkash')) return 'bkash';
+  if (name.includes('nagad')) return 'nagad';
+  if (name.includes('rocket')) return 'rocket';
+  return 'generic';
+}
+
+function profilePaymentMethodNote(row = {}) {
+  return String(row.note || row.payBank || row.paySubBank || row.identifier || row.payType || '').trim();
 }
 
 function mobileProfilePaymentMethodsHtml(data = {}, result = {}) {
   const profile = result.profile || {};
   const nickname = profile.nickname || data.user?.name || data.user?.username || 'My P2P Account';
-  const rows = Array.isArray(profile.paymentMethods) ? profile.paymentMethods : [];
-  const summary = profile.orderSummary || {};
-  return `<section class="mobile-profile-subpage">
-    <header class="mobile-profile-subpage-head"><button type="button" id="mobileProfileSubBackBtn" class="mobile-profile-icon-btn">${profileIcon('back')}</button><h1>Payment Method(s)</h1><span></span></header>
-    <div class="mobile-profile-order-summary">
-      <div><strong>${profileNumber(summary.buyerPayedCount)}</strong><span>Paid orders</span></div>
-      <div><strong>${profileNumber(summary.tradingCount)}</strong><span>Trading</span></div>
-      <div><strong>${profileNumber(summary.inProcessCount)}</strong><span>In process</span></div>
-      <div><strong>${profileNumber(summary.inAppealCount)}</strong><span>Appeal</span></div>
-    </div>
-    <div class="mobile-profile-payment-list">${rows.length ? rows.map(row => `<div class="mobile-profile-payment-item"><b>${escapeHtml(row.tradeMethodName || row.tradeMethodShortName || row.payType || row.identifier || 'Payment Method')}</b>${row.payAccount ? `<span>${escapeHtml(row.payAccount)}</span>` : ''}${row.payBank ? `<small>${escapeHtml(row.payBank)}${row.paySubBank ? ` · ${escapeHtml(row.paySubBank)}` : ''}</small>` : ''}<small>${escapeHtml([row.identifier, row.payType].filter(Boolean).join(' · '))}</small></div>`).join('') : `<div class="mobile-profile-feedback-empty">No configured Binance P2P payment method was returned for ${escapeHtml(nickname)}.</div>`}</div>
+  const rows = (Array.isArray(profile.paymentMethods) ? profile.paymentMethods : []).map((row, index) => ({ ...row, sourceKey: profilePaymentMethodKey(row, index) }));
+  return `<section class="mobile-profile-subpage payment-method-page">
+    <header class="mobile-profile-subpage-head payment"><button type="button" id="mobileProfileSubBackBtn" class="mobile-profile-icon-btn">${profileIcon('back')}</button><h1>P2P Payment Method(s)</h1><span></span></header>
+    <div class="mobile-profile-payment-list binance-style">${rows.length ? rows.map(row => {
+      const methodName = escapeHtml(row.tradeMethodName || row.tradeMethodShortName || row.payType || row.identifier || 'Payment Method');
+      const account = escapeHtml(row.payAccount || '-');
+      const note = profilePaymentMethodNote(row);
+      const currency = escapeHtml(profilePaymentMethodCurrency(row));
+      const tone = profilePaymentMethodTone(row);
+      return `<article class="mobile-profile-payment-card ${tone}">
+        <div class="mobile-profile-payment-card-top">
+          <div class="mobile-profile-payment-brand"><i></i><strong>${methodName}</strong><small>${currency}</small></div>
+          <button type="button" class="mobile-profile-payment-edit-icon" data-mobile-payment-edit="${escapeAttr(row.sourceKey)}" aria-label="Edit payment method">${profileIcon('edit')}</button>
+        </div>
+        <div class="mobile-profile-payment-number">${account}</div>
+        ${note ? `<div class="mobile-profile-payment-note">${escapeHtml(note)}</div>` : '<div class="mobile-profile-payment-note empty"></div>'}
+      </article>`;
+    }).join('') : `<div class="mobile-profile-feedback-empty">No configured Binance P2P payment method was returned for ${escapeHtml(nickname)}.</div>`}</div>
+    <div class="mobile-profile-payment-sticky"><button type="button" id="mobileProfileAddPaymentBtn">Add a payment method</button></div>
   </section>`;
 }
-
 function profileFeedbackRow(row = {}, sentiment = 'positive') {
   const positive = sentiment === 'positive';
   const name = row.by || 'Anonymous User';
@@ -362,6 +356,74 @@ async function renderP2PProfile() {
 
   const showUnavailable = label => modal(label, `<div class="notice">${escapeHtml(label)} is shown in the profile interface, but the current connected Binance documented data does not expose this section in the panel yet.</div>`);
 
+  const currentPaymentRows = () => (Array.isArray(p2pResult?.profile?.paymentMethods) ? p2pResult.profile.paymentMethods : []).map((row, index) => ({ ...row, sourceKey: profilePaymentMethodKey(row, index) }));
+
+  const openPaymentMethodEditor = rowKey => {
+    const row = currentPaymentRows().find(item => String(item.sourceKey || '') === String(rowKey || ''));
+    if (!row) {
+      notify('Payment method not found.', 'warn');
+      return;
+    }
+    modal('Edit Payment Method', `<form id="mobileProfilePaymentEditForm" class="mobile-profile-payment-edit-form">
+      <div class="form-grid compact">
+        <div class="full-row"><label>Payment Method</label><input name="tradeMethodName" value="${escapeAttr(row.tradeMethodName || row.tradeMethodShortName || row.payType || row.identifier || '')}" maxlength="160" placeholder="Payment method name"></div>
+        <div><label>Currency</label><input name="currency" value="${escapeAttr(profilePaymentMethodCurrency(row))}" maxlength="12" placeholder="BDT"></div>
+        <div><label>Number</label><input name="payAccount" value="${escapeAttr(row.payAccount || '')}" maxlength="220" placeholder="Account / wallet number"></div>
+        <div class="full-row"><label>Note</label><input name="note" value="${escapeAttr(profilePaymentMethodNote(row))}" maxlength="220" placeholder="Optional note"></div>
+        <div class="full-row form-actions"><button type="button" class="secondary" id="mobileProfilePaymentEditCancelBtn">Cancel</button><button type="submit">Save</button></div>
+        <div class="full-row"><div id="mobileProfilePaymentEditMessage" class="form-message"></div></div>
+      </div>
+    </form>`);
+    $('#mobileProfilePaymentEditCancelBtn')?.addEventListener('click', closeModal);
+    $('#mobileProfilePaymentEditForm')?.addEventListener('submit', async event => {
+      event.preventDefault();
+      const form = event.currentTarget;
+      const payload = formObj(form);
+      try {
+        const out = await api('/api/me/p2p-profile', {
+          method: 'PATCH',
+          body: JSON.stringify({
+            credentialId: Number(p2pResult.selectedCredentialId || state.mobileProfileCredentialId || 0),
+            paymentMethodEdit: {
+              sourceKey: row.sourceKey,
+              tradeMethodName: payload.tradeMethodName || row.tradeMethodName || row.tradeMethodShortName || row.payType || row.identifier || 'Payment Method',
+              currency: payload.currency || profilePaymentMethodCurrency(row),
+              payAccount: payload.payAccount || '',
+              note: payload.note || ''
+            }
+          })
+        });
+        p2pResult = out;
+        state.mobileProfileView = 'payments';
+        closeModal();
+        render();
+        notify('Payment method updated.', 'ok');
+      } catch (err) {
+        setFormMessage('#mobileProfilePaymentEditMessage', err.message || 'Payment method update failed.', 'danger');
+      }
+    });
+  };
+
+  const openPaymentMethodAddInfo = () => {
+    modal('Add a payment method', `<div class="notice">Only Binance-added payment methods are shown on this page. Add the new payment method from your Binance app or website first, then return here and sync the profile.</div>
+      <div class="form-actions" style="margin-top:14px"><button type="button" class="secondary" id="mobileProfileAddPaymentInfoClose">Close</button>${p2pResult.canSync ? '<button type="button" id="mobileProfileAddPaymentInfoSync">Sync profile</button>' : ''}</div>`);
+    $('#mobileProfileAddPaymentInfoClose')?.addEventListener('click', closeModal);
+    $('#mobileProfileAddPaymentInfoSync')?.addEventListener('click', async event => {
+      const button = event.currentTarget;
+      button.disabled = true;
+      try {
+        await syncProfile();
+        closeModal();
+        state.mobileProfileView = 'payments';
+        render();
+      } catch (err) {
+        notify(err.message || 'P2P profile sync failed.', 'danger', 5000);
+      } finally {
+        if (button?.isConnected) button.disabled = false;
+      }
+    });
+  };
+
   const bindProfileActions = () => {
     $('#mobileProfileBackBtn')?.addEventListener('click', () => setRoute(canPage('p2p-market') ? 'p2p-market' : visiblePages()[0]?.[0]));
     $('#mobileProfileSubBackBtn')?.addEventListener('click', () => { state.mobileProfileView = 'main'; render(); });
@@ -393,6 +455,8 @@ async function renderP2PProfile() {
     });
     $$('[data-mobile-profile-tab]').forEach(button => button.onclick = () => { state.mobileProfileTab = button.dataset.mobileProfileTab; render(); });
     $$('[data-mobile-feedback-tab]').forEach(button => button.onclick = () => { state.mobileProfileFeedbackTab = button.dataset.mobileFeedbackTab; render(); window.scrollTo({ top: 0, behavior: 'smooth' }); });
+    $$('[data-mobile-payment-edit]').forEach(button => button.onclick = () => openPaymentMethodEditor(button.dataset.mobilePaymentEdit));
+    $('#mobileProfileAddPaymentBtn')?.addEventListener('click', openPaymentMethodAddInfo);
     $$('[data-profile-action]').forEach(button => button.onclick = () => {
       const action = button.dataset.profileAction;
       if (action === 'feedback') { state.mobileProfileView = 'feedback'; state.mobileProfileFeedbackTab = 'all'; render(); window.scrollTo({ top: 0, behavior: 'smooth' }); return; }
@@ -408,7 +472,6 @@ async function renderP2PProfile() {
       showUnavailable(labels[action] || 'Profile Section');
     });
   };
-
   render();
 
   const selectedCredentialId = Number(p2pResult.selectedCredentialId || 0);

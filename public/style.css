@@ -4086,3 +4086,36 @@ nav .accounting-nav-group.active>.nav-group-toggle{color:#fff;border-color:rgba(
 .security-page{display:grid;gap:16px;max-width:980px;margin:0 auto}.security-overview-card,.security-change-card{padding:22px}.security-overview-head{display:flex;align-items:center;gap:14px}.security-overview-head h2{margin:0 0 4px}.security-overview-head p{margin:0;color:#6b7280}.security-overview-avatar{display:grid;place-items:center;width:58px;height:58px;border-radius:50%;background:#111827;color:#fff;font-size:24px;font-weight:800;flex:0 0 auto}.security-status-row{display:flex;gap:9px;flex-wrap:wrap;margin:18px 0}.security-status-pill{display:inline-flex;align-items:center;gap:7px;padding:8px 11px;border-radius:999px;background:#f3f4f6;color:#4b5563;font-size:12px;font-weight:700}.security-status-pill.ok{background:#ecfdf5;color:#047857}.security-status-pill b{font-size:13px}.security-profile-link{width:auto;margin-top:14px}.security-change-card .section-head{margin-bottom:14px}
 .mobile-profile-account-strip{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}.mobile-profile-account-chip{display:inline-flex;align-items:center;gap:6px;padding:7px 10px;border-radius:999px;background:#f5f5f5;color:#555;font-size:12px}.mobile-profile-account-chip.ok{background:#ecfdf5;color:#047857}.mobile-profile-account-chip.warn{background:#fff7ed;color:#b45309}.mobile-profile-source-note{margin-top:12px;padding:10px 12px;border-radius:10px;background:#f8fafc;color:#667085;font-size:11px;line-height:1.45;word-break:break-word}.mobile-profile-payment-list{display:grid;padding:8px 24px 50px}.mobile-profile-payment-item{display:grid;gap:5px;padding:16px 0;border-bottom:1px solid #f0f0f0}.mobile-profile-payment-item:last-child{border-bottom:0}.mobile-profile-payment-item b{font-size:16px}.mobile-profile-payment-item span,.mobile-profile-payment-item small{color:#707070;font-size:13px;line-height:1.4}.mobile-profile-order-summary{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;padding:8px 24px 24px}.mobile-profile-order-summary>div{padding:14px;border:1px solid #ececec;border-radius:12px;background:#fff}.mobile-profile-order-summary strong{display:block;font-size:22px}.mobile-profile-order-summary span{display:block;margin-top:4px;color:#777;font-size:12px}
 @media(max-width:600px){.security-overview-card,.security-change-card{padding:16px}.mobile-profile-payment-list,.mobile-profile-order-summary{padding-left:20px;padding-right:20px}}
+
+/* v1.4.9 - P2P profile stats list cleanup and Binance-style payment methods */
+.mobile-profile-detail-list.compact-stats{padding-top:18px}
+.mobile-profile-detail-list.compact-stats .mobile-profile-detail-row:first-child{padding-top:4px}
+.mobile-profile-subpage-head.payment h1{font-size:24px}
+.mobile-profile-payment-list.binance-style{display:grid;gap:28px;padding:14px 24px 130px;background:#f6f6f6}
+.mobile-profile-payment-card{display:grid;gap:14px;padding:18px 18px 16px;border:1px solid #e8e8e8;border-radius:18px;background:#fff;box-shadow:0 1px 0 rgba(17,24,39,.03)}
+.mobile-profile-payment-card-top{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
+.mobile-profile-payment-brand{display:flex;align-items:center;gap:10px;min-width:0;flex-wrap:wrap}
+.mobile-profile-payment-brand i{width:7px;height:28px;border-radius:999px;background:#f0b90b;flex:0 0 7px}
+.mobile-profile-payment-card.nagad .mobile-profile-payment-brand i{background:#f39a2e}
+.mobile-profile-payment-card.rocket .mobile-profile-payment-brand i{background:#16a34a}
+.mobile-profile-payment-card.bkash .mobile-profile-payment-brand i{background:#e11d74}
+.mobile-profile-payment-card.generic .mobile-profile-payment-brand i{background:#f0b90b}
+.mobile-profile-payment-brand strong{font-size:17px;line-height:1.25;font-weight:700;color:#111}
+.mobile-profile-payment-brand small{display:inline-flex;align-items:center;height:22px;padding:0 8px;border-radius:6px;background:#f3f4f6;color:#555;font-size:12px;font-weight:700;letter-spacing:.02em}
+.mobile-profile-payment-number{font-size:18px;line-height:1.3;color:#7a7a7a;letter-spacing:.01em;word-break:break-word}
+.mobile-profile-payment-note{min-height:24px;font-size:15px;line-height:1.45;color:#7a7a7a;word-break:break-word}
+.mobile-profile-payment-note.empty{min-height:24px}
+.mobile-profile-payment-edit-icon{display:grid;place-items:center;width:44px;height:44px;padding:0;border:0;border-radius:12px;background:transparent;color:#111;box-shadow:none}
+.mobile-profile-payment-edit-icon svg{width:26px;height:26px}
+.mobile-profile-payment-sticky{position:fixed;left:50%;bottom:max(16px,calc(16px + env(safe-area-inset-bottom)));transform:translateX(-50%);width:min(100%,760px);padding:0 24px;pointer-events:none;z-index:20}
+.mobile-profile-payment-sticky button{pointer-events:auto;width:100%;height:56px;border:0;border-radius:14px;background:#f0cd25;color:#111;font-size:16px;font-weight:800;box-shadow:0 12px 26px rgba(17,24,39,.12)}
+.mobile-profile-payment-edit-form .form-grid.compact{gap:12px}
+.mobile-profile-payment-edit-form .full-row{grid-column:1/-1}
+@media(max-width:720px){
+  .mobile-profile-payment-list.binance-style{padding:12px 20px 126px}
+  .mobile-profile-payment-card{padding:16px 16px 15px;border-radius:16px}
+  .mobile-profile-payment-brand strong{font-size:16px}
+  .mobile-profile-payment-number{font-size:17px}
+  .mobile-profile-payment-note{font-size:14px}
+  .mobile-profile-payment-sticky{padding:0 20px}
+}
