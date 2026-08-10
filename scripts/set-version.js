@@ -44,7 +44,7 @@ if (lock.packages && lock.packages['']) lock.packages[''].version = next.text;
 fs.writeFileSync(lockPath, JSON.stringify(lock,null,2)+'\n');
 
 const textFiles = [
-  'public/index.html','public/login.html','public/login.js','public/setup.html','public/app.js',
+  'public/index.html','public/login.html','public/login.js','public/device-auth.js','public/setup.html','public/app.js',
   'public/js/pages/accounting.js','public/js/pages/accounts.js','public/js/pages/ads.js',
   'public/js/pages/p2p-market.js','public/js/pages/p2p-profile.js','public/js/pages/reports.js','public/js/pages/security.js',
   'public/js/pages/system-update.js','README.md','UNIFIED_INSTALL_BN.md',

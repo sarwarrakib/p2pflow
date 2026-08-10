@@ -158,7 +158,8 @@ async function systemUpdateStageStatusRequest(timeoutMs = 8000) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await fetch('/api/system-update/stage-status', { credentials:'include', cache:'no-store', signal:controller.signal, headers:{ Accept:'application/json' } });
+    const deviceId = String(localStorage.getItem('p2pflowTrustedDeviceId') || '').trim();
+    const response = await fetch('/api/system-update/stage-status', { credentials:'include', cache:'no-store', signal:controller.signal, headers:{ Accept:'application/json', ...(deviceId ? { 'X-P2PFlow-Device-Id': deviceId } : {}) } });
     const data = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(data.error || data.message || `Stage status failed (${response.status})`);
     return data.job || {};

@@ -1,8 +1,20 @@
-// P2PFlow v1.4.15
+// P2PFlow v1.4.16
 // Dedicated account/login security page. Binance P2P Profile lives on #/p2p-profile.
 
 function securityStatusPill(label, enabled) {
   return `<span class="security-status-pill ${enabled ? 'ok' : 'muted'}"><b>${enabled ? '✓' : '–'}</b>${escapeHtml(label)}</span>`;
+}
+
+function securityDeviceRows(devices = []) {
+  if (!devices.length) return '<div class="empty">No trusted browsers yet. Complete one full login to trust this browser.</div>';
+  return `<div class="security-device-list">${devices.map(device => `
+    <div class="security-device-row ${device.current ? 'current' : ''}">
+      <div>
+        <b>${escapeHtml(device.name || 'Trusted browser')}${device.current ? ' · This device' : ''}</b>
+        <small>Trusted until ${escapeHtml(device.expiresAt ? formatDate(device.expiresAt) : '-')} · Last seen ${escapeHtml(device.lastSeenAt ? formatDate(device.lastSeenAt) : '-')}</small>
+      </div>
+      <button type="button" class="danger ghost revoke-trusted-device" data-device-id="${escapeAttr(device.id || '')}">${device.current ? 'Remove trust' : 'Revoke'}</button>
+    </div>`).join('')}</div>`;
 }
 
 async function renderSecurity() {
@@ -16,16 +28,35 @@ async function renderSecurity() {
         <div><h2>${escapeHtml(data.user?.name || data.user?.username || 'User')}</h2><p>${escapeHtml(data.email || 'No email configured')}</p></div>
       </div>
       <div class="security-status-row">
-        ${securityStatusPill('Email OTP', data.emailOtpRequired !== false)}
+        ${securityStatusPill('Email OTP on full login', data.emailOtpRequired !== false)}
         ${securityStatusPill('6 Digit Secret', data.secretCodeRequired !== false && data.secretCodeSet)}
-        ${securityStatusPill('Protected changes', data.securityVerificationRequired !== false)}
+        ${securityStatusPill('Device-bound sessions', true)}
       </div>
-      <div class="notice small">This page controls P2PFlow login security only. Binance account profile, merchant statistics, feedback and P2P account information are available from <b>P2P Profile</b>.</div>
+      <div class="notice small">After one full login, this browser can sign in with only the 6 digit secret for up to ${escapeHtml(String(data.trustedDeviceTtlDays || 30))} days. A copied session cookie alone is not accepted for normal API access.</div>
       ${canPage('p2p-profile') ? '<button type="button" class="secondary security-profile-link" id="openP2pProfileBtn">Open P2P Profile</button>' : ''}
     </section>
 
     <section class="card security-change-card">
-      <div class="section-head"><div><h2>Security Settings</h2><p>Changing email, password or the 6 digit secret requires your current password and email verification.</p></div></div>
+      <div class="section-head"><div><h2>Trusted Devices</h2><p>Remove any browser you no longer use. Removing the current browser forces one full login again.</p></div></div>
+      ${securityDeviceRows(data.trustedDevices || [])}
+    </section>
+
+    <section class="card security-change-card">
+      <div class="section-head"><div><h2>Correct Setup Email</h2><p>If the email entered during setup was wrong, verify your username, password and secret. The recovery OTP is sent only to the new email.</p></div></div>
+      <form id="securityEmailRecoveryForm" class="form-grid">
+        <div><label>Username</label><input name="username" value="${escapeAttr(data.user?.username || '')}" autocomplete="username" required></div>
+        <div><label>Current Password</label><input name="password" type="password" autocomplete="current-password" required></div>
+        <div><label>Current 6 Digit Secret</label><input name="secretCode" type="password" inputmode="numeric" maxlength="6" required></div>
+        <div><label>Correct Gmail / Email</label><input name="newEmail" type="email" autocomplete="email" required></div>
+        <div id="securityRecoveryOtpWrap" class="hidden"><label>New Email OTP</label><input name="recoveryOtp" inputmode="numeric" maxlength="6"></div>
+        <input name="recoveryId" type="hidden">
+        <div class="full-row" id="securityRecoveryMessage"></div>
+        <div class="full-row"><button type="submit" id="securityRecoveryBtn">Send OTP to New Email</button></div>
+      </form>
+    </section>
+
+    <section class="card security-change-card">
+      <div class="section-head"><div><h2>Security Settings</h2><p>Changing email, password or the 6 digit secret requires your current password and verification through the currently saved email.</p></div></div>
       <form id="securityForm" class="form-grid">
         <div class="full-row"><label>Current Password</label><input name="currentPassword" type="password" autocomplete="current-password" required></div>
         <div><label>New Password</label><input name="newPassword" type="password" autocomplete="new-password" placeholder="optional, min 8 chars"></div>
@@ -33,7 +64,7 @@ async function renderSecurity() {
         <div><label>Email</label><input name="email" type="email" value="${escapeAttr(data.email || '')}"></div>
         <div><label>New 6 Digit Secret Code</label><input name="secretCode" inputmode="numeric" maxlength="6" placeholder="optional"></div>
         <div><label>Security Verification OTP</label><input name="securityOtp" inputmode="numeric" maxlength="6" placeholder="sent after first submit"></div>
-        <div class="full-row"><div class="notice small">Email verification is required for security changes. Revert protection window: ${escapeHtml(String(data.revertWindowHours || 24))} hours.</div></div>
+        <div class="full-row"><div class="notice small">A successful security change revokes trusted devices and existing sessions. You will complete one full login again.</div></div>
         <div class="full-row" id="securityMessage"></div>
         <div class="full-row"><button type="submit">Update Security</button></div>
       </form>
@@ -41,30 +72,66 @@ async function renderSecurity() {
   </div>`;
 
   $('#openP2pProfileBtn')?.addEventListener('click', () => setRoute('p2p-profile'));
+
+  $$('.revoke-trusted-device', content).forEach(button => button.addEventListener('click', async () => {
+    const deviceId = button.dataset.deviceId || '';
+    if (!deviceId || !confirm('Revoke this trusted browser?')) return;
+    try {
+      const result = await api(`/api/me/security/trusted-device/${encodeURIComponent(deviceId)}`, { method:'DELETE' });
+      if (result.currentDeviceRevoked) {
+        await window.P2PFlowDeviceAuth?.forget?.();
+        window.location.replace('/login');
+        return;
+      }
+      notify(result.message || 'Trusted browser revoked.', 'ok');
+      await renderSecurity();
+    } catch (err) { notify(err.message || 'Could not revoke trusted browser.', 'danger'); }
+  }));
+
+  const recoveryForm = $('#securityEmailRecoveryForm');
+  let recoveryOtpActive = false;
+  if (recoveryForm) recoveryForm.onsubmit = async event => {
+    event.preventDefault();
+    const obj = Object.fromEntries(new FormData(recoveryForm));
+    obj.secretCode = String(obj.secretCode || '').replace(/\D/g, '').slice(0, 6);
+    obj.recoveryOtp = String(obj.recoveryOtp || '').replace(/\D/g, '').slice(0, 6);
+    if (obj.secretCode.length !== 6) return setFormMessage('#securityRecoveryMessage', 'Enter your current 6 digit secret.', 'danger');
+    if (recoveryOtpActive && obj.recoveryOtp.length !== 6) return setFormMessage('#securityRecoveryMessage', 'Enter the 6 digit OTP sent to the new email.', 'danger');
+    try {
+      const result = await api('/api/login/recover-email', { method:'POST', body:JSON.stringify(obj) });
+      if (result.recoveryOtpRequired) {
+        recoveryOtpActive = true;
+        recoveryForm.elements.recoveryId.value = result.recoveryId || '';
+        $('#securityRecoveryOtpWrap')?.classList.remove('hidden');
+        $('#securityRecoveryBtn').textContent = 'Confirm Correct Email';
+        setFormMessage('#securityRecoveryMessage', result.message || 'OTP sent to the new email.', 'warn');
+        recoveryForm.elements.recoveryOtp?.focus();
+        return;
+      }
+      setFormMessage('#securityRecoveryMessage', result.message || 'Email corrected.', 'ok');
+      await window.P2PFlowDeviceAuth?.forget?.();
+      setTimeout(() => window.location.replace('/login'), 500);
+    } catch (err) { setFormMessage('#securityRecoveryMessage', err.message || 'Email recovery failed.', 'danger'); }
+  };
+
   const form = $('#securityForm');
   if (form) form.onsubmit = async event => {
     event.preventDefault();
     const obj = Object.fromEntries(new FormData(form));
-    if (obj.newPassword && obj.newPassword !== obj.confirmPassword) {
-      setFormMessage('#securityMessage', 'New password and confirm password do not match.', 'danger');
-      return;
-    }
-    if (obj.secretCode && !/^\d{6}$/.test(obj.secretCode)) {
-      setFormMessage('#securityMessage', 'Secret code must be exactly 6 digits.', 'danger');
-      return;
-    }
+    if (obj.newPassword && obj.newPassword !== obj.confirmPassword) return setFormMessage('#securityMessage', 'New password and confirm password do not match.', 'danger');
+    if (obj.secretCode && !/^\d{6}$/.test(obj.secretCode)) return setFormMessage('#securityMessage', 'Secret code must be exactly 6 digits.', 'danger');
     delete obj.confirmPassword;
     try {
       const result = await api('/api/me/security', { method:'PATCH', body:JSON.stringify(obj) });
-      if (result.securityVerificationRequired) {
-        setFormMessage('#securityMessage', result.message || 'Enter the verification OTP and submit again.', 'warn');
+      if (result.securityVerificationRequired) return setFormMessage('#securityMessage', result.message || 'Enter the verification OTP and submit again.', 'warn');
+      setFormMessage('#securityMessage', result.message || 'Security settings updated.', 'ok');
+      if (result.fullLoginRequired) {
+        await window.P2PFlowDeviceAuth?.forget?.();
+        setTimeout(() => window.location.replace('/login'), 500);
         return;
       }
-      setFormMessage('#securityMessage', result.message || 'Security settings updated.', 'ok');
       notify('Security settings updated.', 'ok');
-    } catch (err) {
-      setFormMessage('#securityMessage', err.message || 'Security update failed.', 'danger');
-    }
+    } catch (err) { setFormMessage('#securityMessage', err.message || 'Security update failed.', 'danger'); }
   };
   applyLanguage(content);
 }

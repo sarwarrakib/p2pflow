@@ -42,7 +42,7 @@ loadEnv();
 applyP2PFlowEnvAliases(process.env);
 
 const APP_VERSION = String(packageInfo.version || '0.0.0');
-const APP_SCHEMA_VERSION = 26;
+const APP_SCHEMA_VERSION = 27;
 const APP_DATA_COMPATIBILITY_EPOCH = 1;
 const PORT = Number(process.env.PORT || 3000);
 const DATABASE_URL = cleanEnv(process.env.P2PFLOW_DATABASE_URL || process.env.CRM_DATABASE_URL || process.env.DATABASE_URL || '', '');
@@ -72,7 +72,7 @@ function syncManagedPublicMirrorFrom(releaseDirectory = __dirname) {
 
 const SESSION_TTL_MS = Number(process.env.CRM_SESSION_TTL_MINUTES || 120) * 60 * 1000;
 const SESSION_PERSIST_EVERY_MS = Number(process.env.CRM_SESSION_PERSIST_EVERY_MINUTES || 5) * 60 * 1000;
-const SESSION_COOKIE_SAMESITE = cleanEnv(process.env.CRM_SESSION_COOKIE_SAMESITE || 'Lax', 'Lax');
+const SESSION_COOKIE_SAMESITE = cleanEnv(process.env.CRM_SESSION_COOKIE_SAMESITE || 'Strict', 'Strict');
 const SESSION_COOKIE_NAME = cleanEnv(process.env.CRM_SESSION_COOKIE_NAME || 'sid', 'sid');
 const MAX_BODY_BYTES = Math.max(8, Number(process.env.CRM_MAX_BODY_MB || 12) || 12) * 1024 * 1024;
 const LOGIN_WINDOW_MS = 15 * 60 * 1000;
@@ -89,6 +89,9 @@ const MAIL_REPLY_TO = cleanEnv(process.env.P2PFLOW_MAIL_REPLY_TO || process.env.
 const MAIL_ENVELOPE_FROM = cleanEnv(process.env.P2PFLOW_MAIL_ENVELOPE_FROM || process.env.CRM_MAIL_ENVELOPE_FROM || '', '');
 const MAIL_TIMEOUT_MS = Math.max(5000, Number(process.env.CRM_MAIL_TIMEOUT_MS || 20000) || 20000);
 const OTP_RESEND_COOLDOWN_MS = Math.max(10000, Number(process.env.CRM_OTP_RESEND_COOLDOWN_SECONDS || 30) * 1000 || 30000);
+const TRUSTED_DEVICE_TTL_DAYS = Math.max(1, Math.min(180, Number(process.env.P2PFLOW_TRUSTED_DEVICE_TTL_DAYS || process.env.CRM_TRUSTED_DEVICE_TTL_DAYS || 30) || 30));
+const TRUSTED_DEVICE_CHALLENGE_TTL_MS = 2 * 60 * 1000;
+const LOGIN_FAILURE_EMAIL_COOLDOWN_MS = Math.max(60 * 60 * 1000, Number(process.env.P2PFLOW_LOGIN_FAILURE_EMAIL_COOLDOWN_HOURS || 6) * 60 * 60 * 1000 || 6 * 60 * 60 * 1000);
 const PHP_BINARY = cleanEnv(process.env.CRM_PHP_BINARY || 'php', 'php');
 const PHP_BINARIES = cleanEnv(process.env.CRM_PHP_BINARIES || '', '');
 const PHP_MAIL_URL = cleanEnv(process.env.CRM_PHP_MAIL_URL || '', '');
@@ -236,6 +239,9 @@ const sseClients = new Set();
 const loginAttempts = new Map();
 const pendingOtps = new Map();
 const pendingSecurityChanges = new Map();
+const pendingDeviceChallenges = new Map();
+const pendingEmailRecoveries = new Map();
+const loginFailureMailThrottle = new Map();
 
 let db = null;
 let stateStore = null;
@@ -363,6 +369,7 @@ function defaultSettings() {
     routingStrategy: 'priority_then_load',
     requireEmailOtp: true,
     requireLoginSecretCode: true,
+    trustedDeviceTtlDays: TRUSTED_DEVICE_TTL_DAYS,
     mailDriver: MAIL_DRIVER || 'local',
     mailFrom: MAIL_FROM,
     mailFromName: MAIL_FROM_NAME,
@@ -1130,6 +1137,19 @@ function migrateDb(target) {
     u.permissions = normalizePermissions(storedPermissions === null ? (profile ? profile.permissions : permissionsFromRoleProfile(u.roleProfileId, u.role, target)) : storedPermissions, u.role);
     if (!Array.isArray(u.allowedP2pCredentialIds)) u.allowedP2pCredentialIds = [];
     u.allowedP2pCredentialIds = Array.from(new Set(u.allowedP2pCredentialIds.map(Number).filter(id => target.apiCredentials.some(c => Number(c.id) === id))));
+    if (!Array.isArray(u.trustedDevices)) u.trustedDevices = [];
+    u.trustedDevices = u.trustedDevices.filter(item => item && typeof item === 'object' && cleanStr(item.id || '', 128)).slice(-12).map(item => ({
+      id: cleanStr(item.id || '', 128),
+      name: cleanStr(item.name || 'Trusted browser', 120),
+      publicKeyJwk: item.publicKeyJwk && typeof item.publicKeyJwk === 'object' ? item.publicKeyJwk : null,
+      createdAt: item.createdAt || nowIso(),
+      lastFullAuthAt: item.lastFullAuthAt || item.createdAt || nowIso(),
+      expiresAt: item.expiresAt || addMinutesIso(item.lastFullAuthAt || item.createdAt || nowIso(), TRUSTED_DEVICE_TTL_DAYS * 24 * 60),
+      lastSeenAt: item.lastSeenAt || null,
+      lastIpPrefix: cleanStr(item.lastIpPrefix || '', 120),
+      lastUaHash: cleanStr(item.lastUaHash || '', 128),
+      revokedAt: item.revokedAt || null
+    })).filter(item => item.publicKeyJwk && item.publicKeyJwk.kty === 'EC' && item.publicKeyJwk.crv === 'P-256');
     if (!u.email && u.role === 'admin' && OWNER_EMAIL) u.email = OWNER_EMAIL;
     if (!u.loginSecretHash && u.role === 'admin') {
       const replacementSecret = ownerAdminCredentials().secretCode;
@@ -1203,6 +1223,7 @@ function makeUser(id, username, password, name, role, agentId, opts = {}) {
     enabled: true,
     permissions: defaultPermissionsForRole(role),
     allowedP2pCredentialIds: [],
+    trustedDevices: [],
     createdAt: nowIso()
   };
 }
@@ -4590,13 +4611,21 @@ async function safeSendMail(to, subject, body, context = {}) {
 }
 
 function sendLoginFailedAlert(user, reason, req) {
-  if (!user || db.settings.sendLoginFailureEmail === false) return;
+  if (!user || db.settings.sendLoginFailureEmail === false || !validEmailAddress(user.email || '')) return;
+  // Failed-login email storms can exhaust shared-hosting mail quotas. Keep the
+  // security event in Audit Logs, but send at most one alert per account during
+  // the cooldown window. High-frequency failures are still blocked by login throttling.
+  const key = String(user.id);
+  const last = Number(loginFailureMailThrottle.get(key) || 0);
+  if (Date.now() - last < LOGIN_FAILURE_EMAIL_COOLDOWN_MS) return;
+  loginFailureMailThrottle.set(key, Date.now());
   const body = `A failed login attempt was detected for your P2PFlow account.
 
 Reason: ${reason}
 IP: ${getIp(req)}
 Time: ${nowIso()}
 
+Repeated failures are rate-limited to avoid exhausting the server mail quota.
 If this was not you, change your password and secret code immediately.`;
   safeSendMail(user.email, 'Security alert: failed login attempt', body, { type: 'login_failed', userId: user.id, reason });
 }
@@ -7916,6 +7945,180 @@ function throttleLogin(req) {
 }
 function resetLoginThrottle(req) { loginAttempts.delete(getIp(req)); }
 
+function requestUserAgent(req) {
+  return cleanStr(req?.headers?.['user-agent'] || '', 600);
+}
+function requestUaHash(req) {
+  return crypto.createHash('sha256').update(requestUserAgent(req)).digest('hex');
+}
+function requestIpPrefix(req) {
+  const raw = getIp(req);
+  if (net.isIP(raw) === 4) {
+    const parts = raw.split('.');
+    return parts.length === 4 ? `${parts[0]}.${parts[1]}.${parts[2]}.0/24` : raw;
+  }
+  if (net.isIP(raw) === 6) {
+    // A /48-style prefix is stable enough for normal IPv6 privacy-address rotation
+    // while still preventing a copied cookie from being replayed from another network.
+    const normalized = raw.toLowerCase().split('%')[0];
+    const left = normalized.split('::')[0].split(':').filter(Boolean).slice(0, 3);
+    return `${left.join(':')}::/48`;
+  }
+  return cleanStr(raw || 'unknown', 120);
+}
+function requestDeviceId(req) {
+  return cleanStr(req?.headers?.['x-p2pflow-device-id'] || '', 128);
+}
+function sessionBindingHash(req, deviceId = '') {
+  const key = APP_KEY || 'p2pflow-session-binding-v1';
+  return crypto.createHmac('sha256', key)
+    .update(`${requestIpPrefix(req)}\n${requestUaHash(req)}\n${cleanStr(deviceId || '', 128)}`)
+    .digest('hex');
+}
+function isSseSessionRequest(req) {
+  try { return new URL(req.url, 'http://localhost').pathname === '/api/events'; } catch { return false; }
+}
+function trustedDeviceExpiryIso(from = Date.now()) {
+  return new Date(Number(from) + TRUSTED_DEVICE_TTL_DAYS * 24 * 60 * 60 * 1000).toISOString();
+}
+function normalizeTrustedDevicePublicJwk(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const jwk = {
+    kty: cleanStr(value.kty || '', 10),
+    crv: cleanStr(value.crv || '', 20),
+    x: cleanStr(value.x || '', 180),
+    y: cleanStr(value.y || '', 180),
+    ext: true,
+    key_ops: ['verify']
+  };
+  if (jwk.kty !== 'EC' || jwk.crv !== 'P-256') return null;
+  if (!/^[A-Za-z0-9_-]{40,100}$/.test(jwk.x) || !/^[A-Za-z0-9_-]{40,100}$/.test(jwk.y)) return null;
+  try {
+    crypto.createPublicKey({ key: jwk, format: 'jwk' });
+  } catch {
+    return null;
+  }
+  return jwk;
+}
+function activeTrustedDevice(user, deviceId) {
+  const id = cleanStr(deviceId || '', 128);
+  if (!user || !id || !Array.isArray(user.trustedDevices)) return null;
+  const device = user.trustedDevices.find(item => item && item.id === id && !item.revokedAt) || null;
+  if (!device) return null;
+  if (!device.expiresAt || Date.parse(device.expiresAt) <= Date.now()) return null;
+  return device;
+}
+function findTrustedDeviceOwner(deviceId) {
+  const id = cleanStr(deviceId || '', 128);
+  if (!id) return null;
+  for (const user of db.users || []) {
+    if (!user.enabled) continue;
+    const device = activeTrustedDevice(user, id);
+    if (device) return { user, device };
+  }
+  return null;
+}
+function trustedDeviceSafe(device, currentId = '') {
+  return {
+    id: device.id,
+    name: device.name || 'Trusted browser',
+    createdAt: device.createdAt || null,
+    lastFullAuthAt: device.lastFullAuthAt || null,
+    expiresAt: device.expiresAt || null,
+    lastSeenAt: device.lastSeenAt || null,
+    current: Boolean(currentId && device.id === currentId)
+  };
+}
+function enrollTrustedDevice(user, enrollment, req) {
+  if (!user || !enrollment || typeof enrollment !== 'object') return null;
+  const id = cleanStr(enrollment.deviceId || '', 128);
+  const publicKeyJwk = normalizeTrustedDevicePublicJwk(enrollment.publicKeyJwk);
+  if (!/^[A-Za-z0-9_-]{20,128}$/.test(id) || !publicKeyJwk) return null;
+  if (!Array.isArray(user.trustedDevices)) user.trustedDevices = [];
+  let device = user.trustedDevices.find(item => item.id === id) || null;
+  const at = nowIso();
+  if (!device) {
+    device = { id, createdAt: at };
+    user.trustedDevices.push(device);
+  }
+  device.name = cleanStr(enrollment.name || device.name || 'Trusted browser', 120);
+  device.publicKeyJwk = publicKeyJwk;
+  device.lastFullAuthAt = at;
+  device.expiresAt = trustedDeviceExpiryIso();
+  device.lastSeenAt = at;
+  device.lastIpPrefix = requestIpPrefix(req);
+  device.lastUaHash = requestUaHash(req);
+  device.revokedAt = null;
+  user.trustedDevices = user.trustedDevices
+    .filter(item => item && !item.revokedAt)
+    .sort((a, b) => (Date.parse(b.lastSeenAt || b.createdAt || '') || 0) - (Date.parse(a.lastSeenAt || a.createdAt || '') || 0))
+    .slice(0, 10);
+  return device;
+}
+function revokeTrustedDevices(user, { exceptDeviceId = '', reason = 'security_change' } = {}) {
+  if (!user || !Array.isArray(user.trustedDevices)) return 0;
+  const except = cleanStr(exceptDeviceId || '', 128);
+  let count = 0;
+  for (const device of user.trustedDevices) {
+    if (!device || device.revokedAt || (except && device.id === except)) continue;
+    device.revokedAt = nowIso();
+    device.revokeReason = cleanStr(reason, 80);
+    count += 1;
+  }
+  return count;
+}
+function invalidateUserSessions(userId, { exceptSid = '' } = {}) {
+  let count = 0;
+  for (const [sid, session] of sessions.entries()) {
+    if (Number(session.userId) !== Number(userId) || (exceptSid && sid === exceptSid)) continue;
+    closeUserActivitySession(session, 'security_device_revoked');
+    sessions.delete(sid);
+    count += 1;
+  }
+  if (count) syncPersistentSessions();
+  return count;
+}
+function base64UrlBuffer(value) {
+  const text = String(value || '').replace(/-/g, '+').replace(/_/g, '/');
+  const padded = text + '='.repeat((4 - (text.length % 4)) % 4);
+  return Buffer.from(padded, 'base64');
+}
+function verifyTrustedDeviceSignature(device, payload, signature) {
+  if (!device?.publicKeyJwk || !payload || !signature) return false;
+  try {
+    const key = crypto.createPublicKey({ key: device.publicKeyJwk, format: 'jwk' });
+    const sig = base64UrlBuffer(signature);
+    if (sig.length !== 64) return false;
+    return crypto.verify('sha256', Buffer.from(String(payload), 'utf8'), { key, dsaEncoding: 'ieee-p1363' }, sig);
+  } catch {
+    return false;
+  }
+}
+function issueTrustedDeviceChallenge(user, device, req) {
+  const challengeId = crypto.randomBytes(24).toString('base64url');
+  const nonce = crypto.randomBytes(32).toString('base64url');
+  const issuedAt = Date.now();
+  const payload = `P2PFlow trusted-device login\nv=1\ndevice=${device.id}\nchallenge=${nonce}\nissued=${issuedAt}`;
+  pendingDeviceChallenges.set(challengeId, {
+    challengeId,
+    nonce,
+    payload,
+    userId: user.id,
+    deviceId: device.id,
+    ipPrefix: requestIpPrefix(req),
+    uaHash: requestUaHash(req),
+    issuedAt,
+    expiresAt: issuedAt + TRUSTED_DEVICE_CHALLENGE_TTL_MS,
+    attempts: 0
+  });
+  if (pendingDeviceChallenges.size > 200) {
+    for (const [id, item] of pendingDeviceChallenges.entries()) {
+      if (item.expiresAt <= Date.now() || pendingDeviceChallenges.size > 160) pendingDeviceChallenges.delete(id);
+    }
+  }
+  return { challengeId, payload };
+}
+
 function maskEmail(email) {
   const s = String(email || '');
   const [name, domain] = s.split('@');
@@ -8206,7 +8409,10 @@ function sessionRecord(sid, session) {
     activityId: session.activityId || null,
     lastHeartbeatAt: session.lastHeartbeatAt || null,
     activityLastPage: session.activityLastPage || '',
-    activityLastPersistedAt: Number(session.activityLastPersistedAt || 0)
+    activityLastPersistedAt: Number(session.activityLastPersistedAt || 0),
+    deviceId: cleanStr(session.deviceId || '', 128),
+    bindingHash: cleanStr(session.bindingHash || '', 128),
+    authLevel: cleanStr(session.authLevel || 'full_login', 40)
   };
 }
 function syncPersistentSessions() {
@@ -8238,7 +8444,10 @@ function restorePersistentSessions() {
       activityId: item.activityId || null,
       lastHeartbeatAt: item.lastHeartbeatAt || null,
       activityLastPage: item.activityLastPage || '',
-      activityLastPersistedAt: Number(item.activityLastPersistedAt || 0)
+      activityLastPersistedAt: Number(item.activityLastPersistedAt || 0),
+      deviceId: cleanStr(item.deviceId || '', 128),
+      bindingHash: cleanStr(item.bindingHash || '', 128),
+      authLevel: cleanStr(item.authLevel || 'legacy', 40)
     });
   }
   syncPersistentSessions();
@@ -8262,9 +8471,21 @@ function getSession(req) {
     saveDb({ broadcast: false });
     return null;
   }
+  // v1.4.16: old cookie-only sessions are intentionally not trusted after the
+  // upgrade. A fresh login creates a network/browser-bound session instead.
+  if (!session.bindingHash || session.bindingHash !== sessionBindingHash(req, session.deviceId || '')) {
+    closeUserActivitySession(session, 'session_binding_mismatch');
+    sessions.delete(sid);
+    syncPersistentSessions();
+    saveDb({ broadcast: false });
+    return null;
+  }
+  if (session.deviceId && !isSseSessionRequest(req)) {
+    // The device id is stored outside the HttpOnly session cookie. A copied
+    // cookie by itself therefore cannot authorize normal API requests.
+    if (requestDeviceId(req) !== session.deviceId) return null;
+  }
   const now = Date.now();
-  session.expiresAt = now + SESSION_TTL_MS;
-  req._sessionRefreshSid = sid;
   const user = db.users.find(u => u.id === session.userId && u.enabled);
   if (!user) {
     closeUserActivitySession(session, 'user_disabled');
@@ -8273,10 +8494,27 @@ function getSession(req) {
     saveDb({ broadcast: false });
     return null;
   }
+  if (session.deviceId && !activeTrustedDevice(user, session.deviceId)) {
+    closeUserActivitySession(session, 'trusted_device_revoked');
+    sessions.delete(sid);
+    syncPersistentSessions();
+    saveDb({ broadcast: false });
+    return null;
+  }
+  session.expiresAt = now + SESSION_TTL_MS;
+  req._sessionRefreshSid = sid;
   user.lastActivityAt = new Date(now).toISOString();
   if (user.agentId) {
     const agent = agentById(user.agentId);
     if (agent) agent.lastActivityAt = user.lastActivityAt;
+  }
+  if (session.deviceId) {
+    const device = activeTrustedDevice(user, session.deviceId);
+    if (device) {
+      device.lastSeenAt = user.lastActivityAt;
+      device.lastIpPrefix = requestIpPrefix(req);
+      device.lastUaHash = requestUaHash(req);
+    }
   }
   if (!session.lastPersistedAt || now - Number(session.lastPersistedAt) > SESSION_PERSIST_EVERY_MS) {
     session.lastPersistedAt = now;
@@ -11775,10 +12013,14 @@ async function handleApi(req, res) {
 
     if (url.pathname === '/api/events') return handleEvents(req, res);
     if (req.method === 'GET' && url.pathname === '/api/public-health/binance') return sendJson(res, 200, await binanceNetworkHealth(), {}, req);
+    if (req.method === 'POST' && url.pathname === '/api/login/device/challenge') return await handleTrustedDeviceChallenge(req, res);
+    if (req.method === 'POST' && url.pathname === '/api/login/device') return await handleTrustedDeviceLogin(req, res);
+    if (req.method === 'POST' && url.pathname === '/api/login/recover-email') return await handleLoginEmailRecovery(req, res);
     if (req.method === 'POST' && url.pathname === '/api/login') return await handleLogin(req, res);
     if (req.method === 'POST' && url.pathname === '/api/logout') return handleLogout(req, res);
     if (req.method === 'GET' && url.pathname === '/api/me') return handleMe(req, res);
     if (url.pathname.startsWith('/api/security/revert/')) return handleSecurityRevert(req, res, parts);
+    if (url.pathname.startsWith('/api/me/security/trusted-device/')) return handleTrustedDeviceRevoke(req, res, parts);
     if (url.pathname === '/api/me/security') return handleMeSecurity(req, res);
     if (url.pathname === '/api/me/p2p-profile') return await handleMyP2pProfile(req, res, url);
     if (req.method === 'GET' && url.pathname === '/api/bootstrap') return handleBootstrap(req, res);
@@ -11836,9 +12078,10 @@ async function handleApi(req, res) {
   }
 }
 
-function createAuthenticatedSession(user, req, page = 'login') {
+function createAuthenticatedSession(user, req, page = 'login', options = {}) {
   const sid = crypto.randomBytes(32).toString('hex');
   const csrfToken = crypto.randomBytes(32).toString('hex');
+  const deviceId = cleanStr(options.deviceId || '', 128);
   const activity = startUserActivitySession(user, sid, req);
   sessions.set(sid, {
     userId: user.id,
@@ -11849,10 +12092,13 @@ function createAuthenticatedSession(user, req, page = 'login') {
     activityId: activity.id,
     lastHeartbeatAt: activity.lastHeartbeatAt,
     activityLastPage: page,
-    activityLastPersistedAt: Date.now()
+    activityLastPersistedAt: Date.now(),
+    deviceId,
+    bindingHash: sessionBindingHash(req, deviceId),
+    authLevel: cleanStr(options.authLevel || 'full_login', 40)
   });
   syncPersistentSessions();
-  return { sid, csrfToken };
+  return { sid, csrfToken, deviceId };
 }
 
 async function handleOwnerBootstrapClaim(req, res) {
@@ -11881,6 +12127,187 @@ async function handleOwnerBootstrapClaim(req, res) {
   finishBootstrapClaim(claim.claimPath);
   res.writeHead(302, secureHeaders({ 'Location': '/', 'Set-Cookie': sessionCookieHeader(session.sid, req) }, req));
   res.end();
+}
+
+async function handleTrustedDeviceChallenge(req, res) {
+  if (req.method !== 'POST') return sendJson(res, 405, { error: 'Method not allowed' }, {}, req);
+  const body = await readBody(req);
+  const deviceId = cleanStr(body.deviceId || requestDeviceId(req), 128);
+  const found = findTrustedDeviceOwner(deviceId);
+  if (!found) {
+    return sendJson(res, 200, { trustedDevice: false, fullLoginRequired: true, message: 'Full login is required on this browser.' }, {}, req);
+  }
+  const challenge = issueTrustedDeviceChallenge(found.user, found.device, req);
+  return sendJson(res, 200, {
+    trustedDevice: true,
+    challengeId: challenge.challengeId,
+    signingPayload: challenge.payload,
+    accountHint: found.user.username || maskEmail(found.user.email),
+    deviceName: found.device.name || 'Trusted browser',
+    fullLoginRequiredAfter: found.device.expiresAt || null,
+    message: 'Trusted browser recognized. Enter only your 6 digit secret code.'
+  }, {}, req);
+}
+
+async function handleTrustedDeviceLogin(req, res) {
+  if (req.method !== 'POST') return sendJson(res, 405, { error: 'Method not allowed' }, {}, req);
+  if (!throttleLogin(req)) return sendJson(res, 429, { error: 'Too many login attempts. Try again later.' }, {}, req);
+  const body = await readBody(req);
+  const deviceId = cleanStr(body.deviceId || requestDeviceId(req), 128);
+  const challengeId = cleanStr(body.challengeId || '', 160);
+  const pending = pendingDeviceChallenges.get(challengeId);
+  if (!pending || pending.expiresAt <= Date.now() || pending.deviceId !== deviceId) {
+    pendingDeviceChallenges.delete(challengeId);
+    return sendJson(res, 401, { error: 'Trusted-device challenge expired. Try again or use full login.', fullLoginRequired: false }, {}, req);
+  }
+  pending.attempts += 1;
+  if (pending.attempts > 6) {
+    pendingDeviceChallenges.delete(challengeId);
+    return sendJson(res, 429, { error: 'Too many trusted-device verification attempts. Try again later.' }, {}, req);
+  }
+  if (pending.ipPrefix !== requestIpPrefix(req) || pending.uaHash !== requestUaHash(req)) {
+    pendingDeviceChallenges.delete(challengeId);
+    return sendJson(res, 401, { error: 'Trusted-device challenge cannot be replayed from another browser or network.', fullLoginRequired: true }, {}, req);
+  }
+  const user = (db.users || []).find(item => Number(item.id) === Number(pending.userId) && item.enabled);
+  const device = activeTrustedDevice(user, deviceId);
+  if (!user || !device) {
+    pendingDeviceChallenges.delete(challengeId);
+    return sendJson(res, 401, { error: 'This trusted browser has expired or was revoked. Full login is required.', fullLoginRequired: true }, {}, req);
+  }
+  if (!verifyTrustedDeviceSignature(device, pending.payload, body.signature)) {
+    return sendJson(res, 401, { error: 'Trusted-browser proof failed. Use full login if this browser was reset.', fullLoginRequired: true }, {}, req);
+  }
+  if (!verifyPassword(String(body.secretCode || ''), user.loginSecretHash || '')) {
+    logAudit(user, 'trusted_device_login_failed', 'user', user.id, { reason: 'invalid_secret_code', deviceId, ip: getIp(req) });
+    sendLoginFailedAlert(user, 'trusted_device_invalid_secret', req);
+    return sendJson(res, 401, { error: '6 digit secret code is incorrect.' }, {}, req);
+  }
+
+  pendingDeviceChallenges.delete(challengeId);
+  resetLoginThrottle(req);
+  device.lastSeenAt = nowIso();
+  device.lastIpPrefix = requestIpPrefix(req);
+  device.lastUaHash = requestUaHash(req);
+  const session = createAuthenticatedSession(user, req, 'trusted_device_login', { deviceId, authLevel: 'trusted_device_secret' });
+  logAudit(user, 'trusted_device_login_success', 'user', user.id, { deviceId, ip: getIp(req), emailOtpSent: false, passwordEntered: false });
+  saveDb();
+  return sendJson(res, 200, {
+    user: userSafe(user),
+    csrfToken: session.csrfToken,
+    trustedDevice: true,
+    mailSent: false,
+    fullLoginRequiredAfter: device.expiresAt || null
+  }, { 'Set-Cookie': sessionCookieHeader(session.sid, req) }, req);
+}
+
+async function handleLoginEmailRecovery(req, res) {
+  if (req.method !== 'POST') return sendJson(res, 405, { error: 'Method not allowed' }, {}, req);
+  if (!throttleLogin(req)) return sendJson(res, 429, { error: 'Too many recovery attempts. Try again later.' }, {}, req);
+  const body = await readBody(req);
+  const identity = cleanStr(body.username || body.identity || '', 80);
+  const newEmail = validEmailAddress(body.newEmail || '');
+  const user = (db.users || []).find(item => item.enabled && (item.username === identity || item.email === identity));
+  const credentialsOk = user
+    && verifyPassword(String(body.password || ''), user.passwordHash)
+    && verifyPassword(String(body.secretCode || ''), user.loginSecretHash || '');
+  if (!credentialsOk) {
+    if (user) logAudit(user, 'email_recovery_failed', 'user', user.id, { reason: 'invalid_password_or_secret', ip: getIp(req) });
+    return sendJson(res, 401, { error: 'Username, password or 6 digit secret code is incorrect.' }, {}, req);
+  }
+  if (!newEmail) return sendJson(res, 422, { error: 'Enter a valid new email address.' }, {}, req);
+  if ((db.users || []).some(item => item.enabled && Number(item.id) !== Number(user.id) && String(item.email || '').toLowerCase() === newEmail.toLowerCase())) {
+    return sendJson(res, 409, { error: 'That email address is already used by another login.' }, {}, req);
+  }
+
+  const recoveryId = cleanStr(body.recoveryId || '', 160);
+  if (!body.recoveryOtp) {
+    const code = String(crypto.randomInt(0, 1000000)).padStart(6, '0');
+    const id = crypto.randomBytes(24).toString('base64url');
+    const item = {
+      id,
+      userId: user.id,
+      newEmail,
+      code,
+      sentAt: Date.now(),
+      expiresAt: Date.now() + 10 * 60 * 1000,
+      attempts: 0,
+      ipPrefix: requestIpPrefix(req),
+      uaHash: requestUaHash(req)
+    };
+    try {
+      await sendMailMessage(newEmail, 'Verify your corrected P2PFlow email', `A request was made to correct the login email for your P2PFlow account.\n\nVerification OTP: ${code}\n\nThis code expires in 10 minutes. If you did not request this, do not share the code.`);
+    } catch (err) {
+      logAudit(user, 'email_recovery_mail_failed', 'user', user.id, { newEmail: maskEmail(newEmail), error: err.message });
+      return sendJson(res, 503, { error: 'The verification email could not be sent to the new address. Check Email Delivery and try again.' }, {}, req);
+    }
+    pendingEmailRecoveries.set(id, item);
+    if (pendingEmailRecoveries.size > 50) {
+      for (const [key, value] of pendingEmailRecoveries.entries()) {
+        if (value.expiresAt <= Date.now() || pendingEmailRecoveries.size > 40) pendingEmailRecoveries.delete(key);
+      }
+    }
+    logAudit(user, 'email_recovery_verification_sent', 'user', user.id, { newEmail: maskEmail(newEmail), ip: getIp(req) });
+    return sendJson(res, 202, { recoveryOtpRequired: true, recoveryId: id, message: `Verification OTP sent to ${maskEmail(newEmail)}.` }, {}, req);
+  }
+
+  const pending = pendingEmailRecoveries.get(recoveryId);
+  if (!pending || Number(pending.userId) !== Number(user.id) || pending.newEmail.toLowerCase() !== newEmail.toLowerCase() || pending.expiresAt <= Date.now()) {
+    if (recoveryId) pendingEmailRecoveries.delete(recoveryId);
+    return sendJson(res, 422, { error: 'Email recovery verification expired. Start again.' }, {}, req);
+  }
+  if (pending.ipPrefix !== requestIpPrefix(req) || pending.uaHash !== requestUaHash(req)) {
+    pendingEmailRecoveries.delete(recoveryId);
+    return sendJson(res, 401, { error: 'Email recovery cannot be confirmed from another browser or network.' }, {}, req);
+  }
+  pending.attempts += 1;
+  if (pending.attempts > 6) {
+    pendingEmailRecoveries.delete(recoveryId);
+    return sendJson(res, 429, { error: 'Too many email recovery OTP attempts. Start again later.' }, {}, req);
+  }
+  if (String(body.recoveryOtp || '').trim() !== pending.code) {
+    return sendJson(res, 422, { error: 'Email recovery OTP is incorrect.' }, {}, req);
+  }
+
+  const oldEmail = user.email || '';
+  user.email = newEmail;
+  user.securityUpdatedAt = nowIso();
+  pendingEmailRecoveries.delete(recoveryId);
+  pendingOtps.delete(user.id);
+  const revokedDevices = revokeTrustedDevices(user, { reason: 'email_recovery' });
+  const invalidatedSessions = invalidateUserSessions(user.id);
+  logAudit(user, 'login_email_recovered', 'user', user.id, { oldEmail: maskEmail(oldEmail), newEmail: maskEmail(newEmail), revokedDevices, invalidatedSessions, ip: getIp(req) });
+  addNotification('security_email_recovered', `Login email corrected for ${user.username}. Trusted devices were reset and full login is required.`, 'warning', { userId: user.id, audience: 'manager' });
+  saveDb();
+  resetLoginThrottle(req);
+  return sendJson(res, 200, {
+    ok: true,
+    email: newEmail,
+    fullLoginRequired: true,
+    message: 'Email corrected successfully. For safety, trusted devices and old sessions were revoked. Sign in once with the new email/username, password, email OTP and secret code.'
+  }, { 'Set-Cookie': clearSessionCookieHeader(req) }, req);
+}
+
+function handleTrustedDeviceRevoke(req, res, parts) {
+  if (req.method !== 'DELETE') return sendJson(res, 405, { error: 'Method not allowed' }, {}, req);
+  const user = requireAuth(req, res); if (!user) return;
+  const deviceId = cleanStr(parts[4] || '', 128);
+  const device = Array.isArray(user.trustedDevices) ? user.trustedDevices.find(item => item.id === deviceId && !item.revokedAt) : null;
+  if (!device) return sendJson(res, 404, { error: 'Trusted device not found.' }, {}, req);
+  device.revokedAt = nowIso();
+  device.revokeReason = 'user_revoked';
+  let closedSessions = 0;
+  for (const [sid, session] of sessions.entries()) {
+    if (Number(session.userId) !== Number(user.id) || session.deviceId !== deviceId) continue;
+    closeUserActivitySession(session, 'trusted_device_revoked');
+    sessions.delete(sid);
+    closedSessions += 1;
+  }
+  syncPersistentSessions();
+  logAudit(user, 'trusted_device_revoked', 'user', user.id, { deviceId, deviceName: device.name || '', closedSessions });
+  saveDb();
+  const current = requestDeviceId(req) === deviceId;
+  return sendJson(res, 200, { ok: true, currentDeviceRevoked: current, message: current ? 'This trusted browser was revoked. Full login is required again.' : 'Trusted browser revoked.' }, current ? { 'Set-Cookie': clearSessionCookieHeader(req) } : {}, req);
 }
 
 async function handleLogin(req, res) {
@@ -11926,10 +12353,23 @@ async function handleLogin(req, res) {
 
   resetLoginThrottle(req);
   pendingOtps.delete(user.id);
-  const session = createAuthenticatedSession(user, req, 'login');
-  logAudit(user, 'login_success', 'user', user.id, { ip: getIp(req), otpVerified: needOtp, secretCodeVerified: needSecret });
+  const trustedDevice = enrollTrustedDevice(user, body.deviceEnrollment, req);
+  const session = createAuthenticatedSession(user, req, 'login', { deviceId: trustedDevice?.id || '', authLevel: 'full_login' });
+  logAudit(user, 'login_success', 'user', user.id, {
+    ip: getIp(req),
+    otpVerified: needOtp,
+    secretCodeVerified: needSecret,
+    trustedDeviceEnrolled: Boolean(trustedDevice),
+    trustedDeviceId: trustedDevice?.id || ''
+  });
   saveDb();
-  return sendJson(res, 200, { user: userSafe(user), csrfToken: session.csrfToken }, { 'Set-Cookie': sessionCookieHeader(session.sid, req) }, req);
+  return sendJson(res, 200, {
+    user: userSafe(user),
+    csrfToken: session.csrfToken,
+    trustedDeviceEnrolled: Boolean(trustedDevice),
+    trustedDevice: trustedDevice ? trustedDeviceSafe(trustedDevice, trustedDevice.id) : null,
+    fullLoginRequiredAfter: trustedDevice?.expiresAt || null
+  }, { 'Set-Cookie': sessionCookieHeader(session.sid, req) }, req);
 }
 
 function handleLogout(req, res) {
@@ -11952,6 +12392,11 @@ async function handleMeSecurity(req, res) {
       secretCodeRequired: db.settings.requireLoginSecretCode !== false,
       secretCodeSet: !!user.loginSecretHash,
       securityVerificationRequired: true,
+      emailRecoveryAvailable: true,
+      trustedDeviceTtlDays: TRUSTED_DEVICE_TTL_DAYS,
+      trustedDevices: (Array.isArray(user.trustedDevices) ? user.trustedDevices : [])
+        .filter(device => device && !device.revokedAt)
+        .map(device => trustedDeviceSafe(device, requestDeviceId(req))),
       revertWindowHours: 24
     }, {}, req);
   }
@@ -12042,8 +12487,18 @@ async function handleMeSecurity(req, res) {
     addNotification('security_settings_changed', `Security settings changed for ${user.username}. Revert link was sent by email.`, 'warning', { userId: user.id, audience: 'manager' });
     sendSecurityChangeAlert(oldEmail, user, pending.summary, revertUrl, req);
     if (user.email && user.email !== oldEmail) sendSecurityChangeAlert(user.email, user, pending.summary, revertUrl, req);
+    const revokedDevices = revokeTrustedDevices(user, { reason: 'security_settings_changed' });
+    const invalidatedSessions = invalidateUserSessions(user.id);
+    changes.revokedDevices = revokedDevices;
+    changes.invalidatedSessions = invalidatedSessions;
     saveDb();
-    return sendJson(res, 200, { ok: true, user: userSafe(user), changes, message: 'Security settings updated after email verification. Alert/revert email sent.' }, {}, req);
+    return sendJson(res, 200, {
+      ok: true,
+      user: userSafe(user),
+      changes,
+      fullLoginRequired: true,
+      message: 'Security settings updated. For safety, trusted devices and existing sessions were revoked; sign in fully once again.'
+    }, { 'Set-Cookie': clearSessionCookieHeader(req) }, req);
   }
   return sendJson(res, 405, { error: 'Method not allowed' }, {}, req);
 }
@@ -12061,6 +12516,7 @@ function handleSecurityRevert(req, res, parts) {
   user.passwordHash = item.previous.passwordHash || user.passwordHash;
   user.loginSecretHash = item.previous.loginSecretHash || user.loginSecretHash;
   user.securityRevertedAt = nowIso();
+  revokeTrustedDevices(user, { reason: 'security_revert' });
   item.usedAt = nowIso();
   item.usedIp = getIp(req);
   for (const [sid, session] of sessions.entries()) {
@@ -16184,7 +16640,7 @@ function runAccountingSelfTest() {
     // v1.0.159 audit: the startup migration must preserve Agent/Merchant account
     // types and must not destroy unknown additive fields created by a newer release.
     const migrationArrays = ['users','userRoles','apiCredentials','agents','paymentMethods','paymentAccounts','routing','orders','orderAgentAssignments','paymentSplits','ledgers','proofFiles','auditLogs','locks','notifications','chats','chatReadStates','coAgentRequests','approvalRequests','advertisements','securityRevertTokens','sessions','p2pExtensionTasks','p2pExtensionCache','userActivitySessions','businessEntries','businessDailyCloses','binanceBalanceSnapshots','chatMedia','systemUpdates','systemUpdateEvents'];
-    const migrationTarget = { meta: { nextId: 9000, schemaVersion: 26, futureOpaqueField: 'keep-me' }, settings: { ...defaultSettings(), updateAvailableVersion: APP_VERSION, updateAvailableRelease: { version: APP_VERSION } }, futureTopLevel: { keep: true } };
+    const migrationTarget = { meta: { nextId: 9000, schemaVersion: APP_SCHEMA_VERSION + 1, futureOpaqueField: 'keep-me' }, settings: { ...defaultSettings(), updateAvailableVersion: APP_VERSION, updateAvailableRelease: { version: APP_VERSION } }, futureTopLevel: { keep: true } };
     migrationArrays.forEach(key => { migrationTarget[key] = []; });
     migrationTarget.users = [
       { id: 1, username: 'owner', name: 'Owner', role: 'admin', enabled: true, passwordHash: hashPassword('SelfTestOwnerPassword!'), loginSecretHash: hashPassword('739251'), permissions: PERMISSION_CATALOG.slice() },
@@ -16198,7 +16654,7 @@ function runAccountingSelfTest() {
     ];
     migrationTarget.systemUpdates = [{ id: 50, status: 'switch_requested', fromVersion: '1.0.158', toVersion: APP_VERSION }];
     migrateDb(migrationTarget);
-    if (migrationTarget.meta.schemaVersion !== 26 || migrationTarget.meta.futureOpaqueField !== 'keep-me' || migrationTarget.futureTopLevel?.keep !== true) throw new Error('Additive rollback migration removed or downgraded newer data.');
+    if (migrationTarget.meta.schemaVersion !== APP_SCHEMA_VERSION + 1 || migrationTarget.meta.futureOpaqueField !== 'keep-me' || migrationTarget.futureTopLevel?.keep !== true) throw new Error('Additive rollback migration removed or downgraded newer data.');
     if (migrationTarget.paymentAccounts[0].accountType !== 'agent' || migrationTarget.paymentAccounts[1].accountType !== 'merchant') throw new Error('Startup migration collapsed Agent/Merchant payment account types.');
     if (!migrationTarget.paymentAccounts[0].allowedAgentIds.includes(10)) throw new Error('Startup migration did not preserve Agent account access.');
     if (migrationTarget.settings.updateAvailableVersion || migrationTarget.systemUpdates[0].status !== 'active_detected') throw new Error('Startup release-result reconciliation failed.');

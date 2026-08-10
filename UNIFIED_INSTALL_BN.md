@@ -2,7 +2,7 @@
 
 ## A. নতুন সার্ভারে ইনস্টল
 
-1. `P2PFlow_v1.4.15_UNIFIED.zip` Node Application Root-এ upload করুন।
+1. `P2PFlow_v1.4.16_UNIFIED.zip` Node Application Root-এ upload করুন।
 2. ZIP-এর **ভেতরের সব file/folder সরাসরি Application Root-এ** extract করুন। অতিরিক্ত parent folder রাখবেন না।
 3. Hosting settings:
 
@@ -22,7 +22,7 @@ Start Command: npm start
 
 1. Database এবং Application Root backup নিন।
 2. **মুছবেন না:** `.env`, `.p2pflow`, `shared/`, database credentials/data।
-3. একই `P2PFlow_v1.4.15_UNIFIED.zip` extract করে application files overwrite করুন।
+3. একই `P2PFlow_v1.4.16_UNIFIED.zip` extract করে application files overwrite করুন।
 4. `npm ci --omit=dev --ignore-scripts` চালান।
 5. Restart করুন।
 

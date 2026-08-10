@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="robots" content="noindex,nofollow" />
   <title>P2PFlow | লগইন</title>
-  <link rel="stylesheet" href="/style.css?v=1.4.15" />
+  <link rel="stylesheet" href="/style.css?v=1.4.16" />
 </head>
 <body class="login-page">
   <div id="login" class="login-wrap">
@@ -52,6 +52,25 @@
       </div>
 
       <form id="loginForm" class="login-form" novalidate>
+        <section id="trustedDevicePanel" class="login-trusted-panel hidden" aria-labelledby="trustedDeviceTitle">
+          <div class="login-alert login-alert-success">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 5 6v5c0 4.8 2.9 8.7 7 10 4.1-1.3 7-5.2 7-10V6l-7-3Z" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="m9.5 12 1.7 1.8 3.5-3.7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <span id="trustedDeviceStatus">Trusted browser recognized</span>
+          </div>
+          <div class="verification-heading">
+            <div><h2 id="trustedDeviceTitle">Secret code only</h2><p id="trustedDeviceAccountHint" class="muted"></p></div>
+            <span class="secure-chip">Device-bound</span>
+          </div>
+          <label for="trustedSecretCode">Security PIN</label>
+          <div class="login-input-shell login-secret-shell">
+            <span class="login-input-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3 5 6v5c0 4.8 2.9 8.7 7 10 4.1-1.3 7-5.2 7-10V6l-7-3Z" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M9.5 12h5M12 9.5v5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></span>
+            <input id="trustedSecretCode" type="password" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" placeholder="6-digit secret" />
+            <button type="button" class="login-visibility-btn" data-visibility-target="trustedSecretCode" aria-label="Show secret code" aria-pressed="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.3-5 9.5-5 9.5 5 9.5 5-3.3 5-9.5 5-9.5-5-9.5-5Z" fill="none" stroke="currentColor" stroke-width="1.7"/><circle cx="12" cy="12" r="2.5" fill="none" stroke="currentColor" stroke-width="1.7"/></svg></button>
+          </div>
+          <div class="notice small login-trusted-note">No password or email OTP is sent on this trusted browser. The browser must prove possession of its private device key.</div>
+          <button type="button" id="useFullLoginBtn" class="login-change-btn">Use full login</button>
+        </section>
+
         <section id="credentialPanel" class="login-credential-panel">
           <div class="credential-heading-row">
             <div>
@@ -137,6 +156,23 @@
 
       <div id="loginError" class="login-error" role="alert" aria-live="assertive"></div>
 
+      <div class="login-recovery-entry">
+        <button type="button" id="emailRecoveryToggle" class="login-recovery-toggle">Setup email is wrong? Correct it</button>
+      </div>
+      <form id="emailRecoveryForm" class="login-recovery-form hidden" novalidate>
+        <div class="verification-heading"><div><h2>Correct login email</h2><p>Uses your username, password and 6 digit secret. The OTP is sent only to the new email.</p></div><span class="secure-chip">Recovery</span></div>
+        <div class="form-grid login-recovery-grid">
+          <div><label for="recoveryIdentity">Username</label><input id="recoveryIdentity" name="username" autocomplete="username" maxlength="80" required></div>
+          <div><label for="recoveryPassword">Current Password</label><input id="recoveryPassword" name="password" type="password" autocomplete="current-password" required></div>
+          <div><label for="recoverySecret">6 Digit Secret</label><input id="recoverySecret" name="secretCode" type="password" inputmode="numeric" maxlength="6" pattern="[0-9]{6}" required></div>
+          <div><label for="recoveryNewEmail">Correct Gmail / Email</label><input id="recoveryNewEmail" name="newEmail" type="email" autocomplete="email" required></div>
+          <div id="recoveryOtpWrap" class="hidden"><label for="recoveryOtp">New Email OTP</label><input id="recoveryOtp" name="recoveryOtp" inputmode="numeric" maxlength="6" pattern="[0-9]{6}"></div>
+          <input id="recoveryId" name="recoveryId" type="hidden">
+        </div>
+        <div id="recoveryMessage" class="login-alert login-alert-info hidden" role="status"><span></span></div>
+        <div class="login-recovery-actions"><button type="submit" id="recoverySubmitBtn">Send verification OTP</button><button type="button" id="recoveryCancelBtn" class="secondary">Cancel</button></div>
+      </form>
+
       <footer class="login-footer-note">
         <span class="login-footer-shield" aria-hidden="true">
           <svg viewBox="0 0 24 24"><path d="M12 3 6 5.7v5.1c0 4.1 2.5 7.4 6 8.7 3.5-1.3 6-4.6 6-8.7V5.7L12 3Z" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="m9.5 11.5 1.6 1.6 3.4-3.5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -147,6 +183,7 @@
   </div>
 
 
-  <script src="/login.js?v=1.4.15"></script>
+  <script src="/device-auth.js?v=1.4.16"></script>
+  <script src="/login.js?v=1.4.16"></script>
 </body>
 </html>

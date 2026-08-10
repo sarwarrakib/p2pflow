@@ -1,4 +1,4 @@
-// v1.4.15: first-run recovery reuses the saved Application Key and software updates are Owner-only from Control Panel.
+// v1.4.16: first-run recovery reuses the saved Application Key and software updates are Owner-only from Control Panel.
 // v1.0.137: Diagnose and harden Binance P2P Create Advertisement privilege flow.
 // v1.0.128: lightweight Ads UI, cached reloads and realtime Binance merchant-status sync.
 // v1.0.117: Stop order countdowns immediately after completed or cancelled status sync.
@@ -3422,6 +3422,8 @@ async function api(path, opts={}, attempt=0) {
   delete fetchOpts.quiet;
   const method = (fetchOpts.method || 'GET').toUpperCase();
   const headers = { 'Accept': 'application/json', ...(fetchOpts.headers || {}) };
+  const trustedDeviceId = String(localStorage.getItem('p2pflowTrustedDeviceId') || '').trim();
+  if (trustedDeviceId) headers['X-P2PFlow-Device-Id'] = trustedDeviceId;
   if (fetchOpts.body !== undefined && !(fetchOpts.body instanceof FormData)) headers['Content-Type'] = 'application/json';
   if (method !== 'GET' && state.csrfToken) headers['X-CSRF-Token'] = state.csrfToken;
   let res;
@@ -3853,7 +3855,12 @@ async function sendActivityEnd(reason='page_hidden') {
     credentials: 'include',
     cache: 'no-store',
     keepalive: true,
-    headers: { 'Accept':'application/json', 'Content-Type':'application/json', 'X-CSRF-Token': state.csrfToken },
+    headers: {
+      'Accept':'application/json',
+      'Content-Type':'application/json',
+      'X-CSRF-Token': state.csrfToken,
+      ...(String(localStorage.getItem('p2pflowTrustedDeviceId') || '').trim() ? { 'X-P2PFlow-Device-Id': String(localStorage.getItem('p2pflowTrustedDeviceId') || '').trim() } : {})
+    },
     body: JSON.stringify(payload)
   }).catch(()=>{});
 }
@@ -4248,7 +4255,7 @@ function renderNav() {
   // legacy flat menu while this marker is absent, the browser/proxy is serving
   // stale frontend JavaScript rather than the active release.
   nav.dataset.navigationModel = 'grouped-control-center';
-  nav.dataset.uiRelease = '1.4.15';
+  nav.dataset.uiRelease = '1.4.16';
   nav.innerHTML = '';
   const visible = visiblePages();
   const visibleIds = new Set(visible.map(([id]) => id));
