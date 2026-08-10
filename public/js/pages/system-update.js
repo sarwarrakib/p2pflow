@@ -285,7 +285,7 @@ async function renderSystemUpdate() {
             <button id="openGithubConnectionBtn" class="secondary small">${connectionReady ? 'Connection Settings' : 'Connect GitHub'}</button>
           </div>
           <div class="update-settings-row">
-            <div><span>Release signature</span><b>${securityReady ? 'Ed25519 verification ready' : 'Signing key required'}</b></div>
+            <div><span>Release signature</span><b>${securityReady ? 'Ed25519 verification ready' : 'Signing key required'}</b>${config.publicKeyFingerprint ? `<small>Key ${escapeHtml(config.publicKeyFingerprint.slice(0, 23))}…</small>` : ''}</div>
             <button id="generateSigningKeyBtn" class="secondary small">${config.publicKeyConfigured ? 'Replace Key' : 'Generate Key'}</button>
           </div>
         </section>

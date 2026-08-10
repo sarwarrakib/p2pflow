@@ -54,12 +54,14 @@ try {
   const discovered = await manager.latestRelease();
   if (!discovered || discovered.version !== '1.0.167' || discovered.updateAvailable !== true) throw new Error('Published release discovery failed.');
 
+  const signerFingerprint = `sha256:${crypto.createHash('sha256').update(publicKey.export({ type: 'spki', format: 'der' })).digest('hex')}`;
   const manifest = {
     format: 1, product: 'p2pflow', dataCompatibilityEpoch: 1, version: '1.0.166', tag: 'v1.0.166',
     packageAsset: 'p2pflow-v1.0.166.tar.gz', packageBytes: 12345,
     sha256: 'a'.repeat(64), treeSha256: 'b'.repeat(64), treeFiles: 250, treeBytes: 500000,
     node: '>=20.0.0',
-    schema: { min: 25, max: 2147483647 }
+    schema: { min: 25, max: 2147483647 },
+    signingKeyFingerprint: signerFingerprint
   };
   const raw = Buffer.from(JSON.stringify(manifest));
   const signature = Buffer.from(crypto.sign(null, raw, privateKey).toString('base64'));
@@ -68,6 +70,14 @@ try {
   let rejected = false;
   try { manager.verifyManifest(raw, Buffer.from(crypto.randomBytes(64).toString('base64'))); } catch { rejected = true; }
   if (!rejected) throw new Error('Invalid release signature was accepted.');
+  rejected = false;
+  try {
+    const { privateKey: otherPrivateKey, publicKey: otherPublicKey } = crypto.generateKeyPairSync('ed25519');
+    const otherFingerprint = `sha256:${crypto.createHash('sha256').update(otherPublicKey.export({ type: 'spki', format: 'der' })).digest('hex')}`;
+    const mismatched = Buffer.from(JSON.stringify({ ...manifest, signingKeyFingerprint: otherFingerprint }));
+    manager.verifyManifest(mismatched, Buffer.from(crypto.sign(null, mismatched, otherPrivateKey).toString('base64')));
+  } catch (error) { rejected = /does not match this P2PFlow installation/i.test(String(error && error.message || error)); }
+  if (!rejected) throw new Error('Signing-key fingerprint mismatch was not diagnosed.');
   rejected = false;
   try {
     const unsafe = Buffer.from(JSON.stringify({ ...manifest, packageAsset: '../escape.tar.gz' }));
@@ -119,6 +129,7 @@ try {
     ok: true,
     signedManifest: true,
     invalidSignatureRejected: true,
+    signingKeyMismatchDiagnosed: true,
     unsafePackageRejected: true,
     treeDigestRequired: true,
     incompatibleDataEpochRejected: true,

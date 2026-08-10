@@ -68,6 +68,13 @@ if (tar.error) throw tar.error;
 if (tar.status !== 0) process.exit(tar.status || 1);
 const packageBytes = fs.statSync(packagePath).size;
 const sha256 = hashFileSync(packagePath);
+const privateKey = String(process.env.UPDATE_SIGNING_PRIVATE_KEY || '').replace(/\\n/g, '\n').trim();
+if (!privateKey) throw new Error('UPDATE_SIGNING_PRIVATE_KEY is required to build a signed production release.');
+let signingPublicKey;
+try { signingPublicKey = crypto.createPublicKey(privateKey); }
+catch { throw new Error('UPDATE_SIGNING_PRIVATE_KEY is not a valid private signing key. Generate a fresh Ed25519 key in P2PFlow and replace the GitHub Actions secret.'); }
+const signingKeyFingerprint = `sha256:${crypto.createHash('sha256').update(signingPublicKey.export({ type: 'spki', format: 'der' })).digest('hex')}`;
+
 const manifest = {
   format: 1,
   product: 'p2pflow',
@@ -84,13 +91,12 @@ const manifest = {
   schema: { min: 25, max: 2147483647 },
   dependenciesBundled: false,
   verificationProfile: 'signed-ci-runtime',
+  signingKeyFingerprint,
   createdAt: new Date().toISOString()
 };
 const manifestPath = path.join(dist, 'p2pflow-update-manifest.json');
 const manifestRaw = Buffer.from(JSON.stringify(manifest, null, 2) + '\n');
 fs.writeFileSync(manifestPath, manifestRaw);
-const privateKey = String(process.env.UPDATE_SIGNING_PRIVATE_KEY || '').replace(/\\n/g, '\n').trim();
-if (!privateKey) throw new Error('UPDATE_SIGNING_PRIVATE_KEY is required to build a signed production release.');
 const signature = crypto.sign(null, manifestRaw, privateKey).toString('base64');
 fs.writeFileSync(path.join(dist, 'p2pflow-update-manifest.sig'), signature + '\n');
 fs.rmSync(stage, { recursive: true, force: true });
