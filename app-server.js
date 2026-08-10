@@ -492,7 +492,21 @@ function runtimeMailConfig() {
     String(settings.smtpUser || '').trim() ||
     String(settings.smtpPassword || '').trim()
   );
-  const driver = cleanEnv(pickText('mailDriver', MAIL_DRIVER || 'local'), 'local').toLowerCase();
+  const envSmtpConfigured = Boolean(
+    String(SMTP_HOST || '').trim() &&
+    String(SMTP_USER || '').trim() &&
+    String(SMTP_PASS || '').trim()
+  );
+  const dbDriver = cleanEnv(pickText('mailDriver', MAIL_DRIVER || 'local'), 'local').toLowerCase();
+  const envDriver = cleanEnv(MAIL_DRIVER || '', '').toLowerCase();
+  // Fresh installs can persist the old/default `local` driver in db.settings
+  // before the just-written .env is reloaded. If .env explicitly requests SMTP
+  // and contains a complete SMTP bundle, prefer that bundle until the user saves
+  // an actual SMTP configuration in Settings. This avoids falling back to
+  // rate-limited PHP mail/sendmail after a fresh setup.
+  const driver = (!dbSmtpConfigured && envSmtpConfigured && ['smtp', 'node-smtp'].includes(envDriver))
+    ? 'smtp'
+    : dbDriver;
   const smtpHost = dbSmtpConfigured ? cleanEnv(settings.smtpHost || '', '') : SMTP_HOST;
   const smtpUser = dbSmtpConfigured ? String(settings.smtpUser || '') : String(SMTP_USER || '');
   const smtpPassword = dbSmtpConfigured ? String(settings.smtpPassword || '') : String(SMTP_PASS || '');
@@ -8221,19 +8235,41 @@ This code expires in 5 minutes. If you did not request this login, change your p
   return sendMailMessage(to, subject, body);
 }
 
+function localMailRateLimited(error) {
+  return /rate\s*overlimit|rate[ -]?limit|daily limit|quota exceeded|too many (?:messages|emails)|sender rate/i.test(String(error?.message || error || ''));
+}
+
 async function sendViaLocalServerMail(to, subject, body) {
   const errors = [];
+  let localRateLimited = false;
   try {
     const info = await sendViaPhpMail(to, subject, body);
     return { ...info, driver: info.driver === 'php-web' ? 'local/php-web' : 'local/php-cli' };
   } catch (err) {
     errors.push(`php: ${err.message}`);
+    localRateLimited = localMailRateLimited(err);
   }
-  try {
-    const info = await sendViaSendmail(to, subject, body);
-    return { ...info, driver: 'local/sendmail' };
-  } catch (err) {
-    errors.push(`sendmail: ${err.message}`);
+
+  // Shared-hosting PHP mail() and sendmail normally share the same sender quota.
+  // Once PHP reports a rate/quota limit, do not hammer additional local
+  // transports. Move straight to authenticated SMTP when it is configured.
+  if (localRateLimited && runtimeMailConfig().smtpHost) {
+    try {
+      const info = await sendViaSmtp(to, subject, body);
+      return { ...info, driver: 'local/smtp-fallback' };
+    } catch (err) {
+      errors.push(`smtp: ${err.message}`);
+      throw new Error(`Local server mail is rate-limited and SMTP fallback failed. ${errors.join(' | ')}`);
+    }
+  }
+
+  if (!localRateLimited) {
+    try {
+      const info = await sendViaSendmail(to, subject, body);
+      return { ...info, driver: 'local/sendmail' };
+    } catch (err) {
+      errors.push(`sendmail: ${err.message}`);
+    }
   }
   if (runtimeMailConfig().smtpHost) {
     try {
@@ -8288,7 +8324,9 @@ async function sendViaPhpMail(to, subject, body) {
       if (result.code === 0 && parsed?.accepted) {
         return { driver: 'php-cli', to, binary, phpVersion: parsed.phpVersion || '', sapi: parsed.sapi || '', ini: parsed.ini || '', sendmailPath: parsed.sendmailPath || '' };
       }
-      errors.push(`${binary}: ${(result.stderr || result.stdout || `exit ${result.code}`).trim().replace(/\s+/g, ' ').slice(0, 320)}`);
+      const detail = (result.stderr || result.stdout || `exit ${result.code}`).trim().replace(/\s+/g, ' ').slice(0, 320);
+      errors.push(`${binary}: ${detail}`);
+      if (/rate\s*overlimit|rate[ -]?limit|daily limit|quota exceeded|sender rate/i.test(detail)) break;
     } catch (err) {
       errors.push(`${binary}: ${err.message}`);
     }

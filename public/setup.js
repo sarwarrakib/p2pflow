@@ -117,7 +117,12 @@ async function loadStatus() {
       ? 'পুরোনো encrypted database file পাওয়া গেছে।'
       : 'legacy-import/app.db.enc পাওয়া যায়নি। File Manager দিয়ে upload করে reload করুন।';
     const defaults = data.defaults || {};
-    for (const [key, val] of Object.entries(defaults)) if ($(key) && (!$(key).value || key === 'databaseProvider')) $(key).value = val;
+    for (const [key, val] of Object.entries(defaults)) {
+      if (!$(key)) continue;
+      if (key === 'smtpSecure' || key === 'smtpStarttls') { $(key).checked = Boolean(val); continue; }
+      if (!$(key).value || key === 'databaseProvider' || key === 'mailDriver') $(key).value = val;
+    }
+    show($('smtpFields'), value('mailDriver') === 'smtp');
     syncDatabaseProviderUi(false);
     if (data.startupFailure) message(`আগের startup সম্পন্ন হয়নি: ${data.startupFailure.message || data.startupFailure.detail || data.startupFailure.code}`, 'error');
   } catch (error) { message(error.message, 'error'); }
