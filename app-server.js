@@ -2801,8 +2801,8 @@ function ownerP2pProfileBase(credentialId = 0) {
     verifications: Array.isArray(current.verifications) ? current.verifications.slice(0, 20) : [],
     account: current.account && typeof current.account === 'object' && !Array.isArray(current.account) ? { ...current.account } : {},
     orderSummary: current.orderSummary && typeof current.orderSummary === 'object' && !Array.isArray(current.orderSummary) ? { ...current.orderSummary } : {},
-    paymentMethods: applyOwnerPaymentMethodEdits(Array.isArray(current.paymentMethods) ? current.paymentMethods.slice(0, 100) : [], current.paymentMethodEdits),
-    paymentMethodEdits: Array.isArray(current.paymentMethodEdits) ? current.paymentMethodEdits.map((item, index) => normalizeOwnerPaymentMethodEdit(item, index)).slice(0, 100) : [],
+    paymentMethods: Array.isArray(current.paymentMethods) ? current.paymentMethods.filter(item => item && item.localOnly !== true).slice(0, 100) : [],
+    paymentMethodEdits: [],
     paymentCatalog: current.paymentCatalog && typeof current.paymentCatalog === 'object' && !Array.isArray(current.paymentCatalog) ? { ...current.paymentCatalog, currencies: Array.isArray(current.paymentCatalog.currencies) ? current.paymentCatalog.currencies.slice(0, 500) : [], methods: Array.isArray(current.paymentCatalog.methods) ? current.paymentCatalog.methods.slice(0, 1000) : [] } : { currencies: [], methods: [], syncedAt: null },
     stats: { ...emptyCounterpartyStats(), ...(current.stats || {}) },
     feedbackRows: {
@@ -2827,8 +2827,8 @@ function saveOwnerP2pProfileForCredential(credential, profile = {}) {
     credentialName: cleanStr(credential.name || profile.credentialName || `API ${credential.id}`, 120),
     account: profile.account && typeof profile.account === 'object' && !Array.isArray(profile.account) ? { ...profile.account } : {},
     orderSummary: profile.orderSummary && typeof profile.orderSummary === 'object' && !Array.isArray(profile.orderSummary) ? { ...profile.orderSummary } : {},
-    paymentMethods: applyOwnerPaymentMethodEdits(Array.isArray(profile.paymentMethods) ? profile.paymentMethods.slice(0, 100) : [], profile.paymentMethodEdits),
-    paymentMethodEdits: Array.isArray(profile.paymentMethodEdits) ? profile.paymentMethodEdits.map((item, index) => normalizeOwnerPaymentMethodEdit(item, index)).slice(0, 100) : [],
+    paymentMethods: Array.isArray(profile.paymentMethods) ? profile.paymentMethods.filter(item => item && item.localOnly !== true).slice(0, 100) : [],
+    paymentMethodEdits: [],
     paymentCatalog: profile.paymentCatalog && typeof profile.paymentCatalog === 'object' && !Array.isArray(profile.paymentCatalog) ? { ...profile.paymentCatalog, currencies: Array.isArray(profile.paymentCatalog.currencies) ? profile.paymentCatalog.currencies.slice(0, 500) : [], methods: Array.isArray(profile.paymentCatalog.methods) ? profile.paymentCatalog.methods.slice(0, 1000) : [] } : { currencies: [], methods: [], syncedAt: null },
     stats: { ...emptyCounterpartyStats(), ...(profile.stats || {}) },
     feedbackRows: {
@@ -3569,14 +3569,12 @@ function normalizeOwnerP2pProfile({ credential = null, baseDetail = {}, orderSum
   const account = { ...(base.account || {}), ...ownerProfileAccountDetails(baseDetail) };
   const summary = { ...(base.orderSummary || {}), ...ownerProfileOrderSummary(orderSummary) };
   const returnedPaymentMethods = ownerProfilePaymentMethods(paymentMethods);
-  const localPaymentMethods = (Array.isArray(base.paymentMethods) ? base.paymentMethods : []).filter(item => item && item.localOnly === true);
-  const remoteOrCachedMethods = returnedPaymentMethods.length ? returnedPaymentMethods : (base.paymentMethods || []).filter(item => !item?.localOnly);
-  const combinedPaymentMethods = [...remoteOrCachedMethods];
-  for (const localRow of localPaymentMethods) {
-    const localKey = ownerProfilePaymentMethodKey(localRow, combinedPaymentMethods.length);
-    if (!combinedPaymentMethods.some((item, index) => ownerProfilePaymentMethodKey(item, index) === localKey)) combinedPaymentMethods.push(localRow);
-  }
-  const profilePaymentMethods = applyOwnerPaymentMethodEdits(combinedPaymentMethods, base.paymentMethodEdits);
+  // Payment-method configuration is read-only through the available Binance API.
+  // Never overlay old P2PFlow-local edits on Binance data, otherwise a successful
+  // Binance-side change could be hidden by stale local values after sync.
+  const profilePaymentMethods = returnedPaymentMethods.length
+    ? returnedPaymentMethods
+    : (base.paymentMethods || []).filter(item => item && item.localOnly !== true);
   const paymentCatalog = normalizeOwnerPaymentCatalog(fiatCurrencies, validPaymentMethods, profilePaymentMethods);
   if (!paymentCatalog.currencies.length && Array.isArray(base.paymentCatalog?.currencies)) paymentCatalog.currencies = base.paymentCatalog.currencies.slice(0, 500);
   if (!paymentCatalog.methods.length && Array.isArray(base.paymentCatalog?.methods)) paymentCatalog.methods = base.paymentCatalog.methods.slice(0, 1000);
@@ -3769,8 +3767,9 @@ async function syncOwnerP2pProfileForCredential(syncUser, credential) {
     marketProfile,
     warnings
   });
-  profile.paymentMethodEdits = Array.isArray(previous.paymentMethodEdits) ? previous.paymentMethodEdits.map((item, index) => normalizeOwnerPaymentMethodEdit(item, index)).slice(0, 100) : [];
-  profile.paymentMethods = applyOwnerPaymentMethodEdits(profile.paymentMethods, profile.paymentMethodEdits);
+  // Deprecated local payment-method edits are intentionally discarded. Binance remains the source of truth.
+  profile.paymentMethodEdits = [];
+  profile.paymentMethods = Array.isArray(profile.paymentMethods) ? profile.paymentMethods.filter(item => item && item.localOnly !== true).slice(0, 100) : [];
   if (resolvedUserNo) profile.userNo = resolvedUserNo;
   if (resolvedIdentity.nickname) profile.nickname = resolvedIdentity.nickname;
 
@@ -3795,6 +3794,8 @@ async function syncOwnerP2pProfileForCredential(syncUser, credential) {
   return { profile: mergeOwnerP2pExtensionCache(saved), task, warnings: saved.warnings || warnings };
 }
 
+const BINANCE_P2P_PAYMENT_MANAGE_URL = 'https://p2p.binance.com/en';
+
 async function handleMyP2pProfile(req, res, url) {
   const user = requirePermission(req, res, 'p2p.profile.view');
   if (!user) return;
@@ -3810,7 +3811,8 @@ async function handleMyP2pProfile(req, res, url) {
         credentialAvailable: false,
         extensionEnabled: db.settings.p2pExtensionEnabled !== false,
         paymentMethodWriteSupported: false,
-        paymentMethodWriteReason: 'Binance C2C API exposes payment-method configuration as read-only; add/edit is stored only in P2PFlow.',
+        paymentMethodWriteReason: 'Binance C2C API exposes payment-method configuration as read-only. Add or edit it on Binance, then sync P2PFlow.',
+        paymentMethodManageUrl: BINANCE_P2P_PAYMENT_MANAGE_URL,
         advertiserUrl: '',
         message: 'No Binance API profile has been assigned to this user.'
       }, {}, req);
@@ -3830,112 +3832,16 @@ async function handleMyP2pProfile(req, res, url) {
       credentialAvailable: !!credential && !credential.disabled && !!credential.apiKey && !!credential.secretKey,
       extensionEnabled: db.settings.p2pExtensionEnabled !== false,
         paymentMethodWriteSupported: false,
-        paymentMethodWriteReason: 'Binance C2C API exposes payment-method configuration as read-only; add/edit is stored only in P2PFlow.',
+        paymentMethodWriteReason: 'Binance C2C API exposes payment-method configuration as read-only. Add or edit it on Binance, then sync P2PFlow.',
+        paymentMethodManageUrl: BINANCE_P2P_PAYMENT_MANAGE_URL,
       advertiserUrl: profile.userNo ? p2pAdvertiserUrlForUserNo(profile.userNo) : ''
     }, {}, req);
   }
   if (req.method === 'PATCH') {
-    const body = await readBody(req);
-    const selected = resolveP2pProfileCredentialForUser(user, body.credentialId || url.searchParams.get('credentialId'));
-    if (!selected) return sendJson(res, 403, { error: 'This user has no permission to update the selected Binance API profile.' }, {}, req);
-    const credential = p2pCredentialById(selected.id);
-    if (!credential) return sendJson(res, 404, { error: 'Binance API profile not found.' }, {}, req);
-    const current = ownerP2pProfileBase(selected.id);
-    const rows = applyOwnerPaymentMethodEdits(Array.isArray(current.paymentMethods) ? current.paymentMethods.slice(0, 100) : [], current.paymentMethodEdits);
-    const edits = Array.isArray(current.paymentMethodEdits) ? current.paymentMethodEdits.map((item, rowIndex) => normalizeOwnerPaymentMethodEdit(item, rowIndex)).slice(0, 100) : [];
-
-    if (body.paymentMethodAdd && typeof body.paymentMethodAdd === 'object') {
-      const patch = body.paymentMethodAdd;
-      const sourceKey = cleanStr(patch.sourceKey || `local_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`, 220);
-      const fieldList = ownerProfileFieldList({ fieldList: Array.isArray(patch.fieldList) ? patch.fieldList : [] });
-      const added = {
-        sourceKey,
-        id: null,
-        payMethodId: '',
-        identifier: cleanStr(patch.identifier || patch.payType || patch.tradeMethodName || '', 120),
-        payType: cleanStr(patch.payType || patch.identifier || '', 120),
-        tradeMethodName: cleanStr(patch.tradeMethodName || patch.tradeMethodShortName || patch.identifier || 'Payment Method', 160),
-        tradeMethodShortName: cleanStr(patch.tradeMethodShortName || '', 120),
-        currency: cleanStr(patch.currency || 'BDT', 20).toUpperCase() || 'BDT',
-        fieldList,
-        payAccount: cleanStr(patch.payAccount || ownerProfileFieldValue(fieldList, ['pay_account'], /(account|wallet|number|mobile|phone)/i), 220),
-        payBank: cleanStr(patch.payBank || ownerProfileFieldValue(fieldList, ['bank'], /bank/i), 220),
-        paySubBank: cleanStr(patch.paySubBank || ownerProfileFieldValue(fieldList, ['sub_bank'], /(branch|sub.?bank)/i), 220),
-        payee: cleanStr(patch.payee || ownerProfileFieldValue(fieldList, ['payee'], /(payee|name)/i), 220),
-        qrCodePath: cleanStr(patch.qrCodePath || ownerProfileFieldValue(fieldList, ['qr_code'], /(qr|code)/i), 500),
-        note: cleanStr(patch.note || ownerProfileFieldValue(fieldList, [], /(remark|note|instruction)/i), 220),
-        bgColor: cleanStr(patch.bgColor || '', 40),
-        iconUrlColor: cleanStr(patch.iconUrlColor || '', 500),
-        isRecommended: Boolean(patch.isRecommended),
-        localOnly: true
-      };
-      rows.push(added);
-      edits.push(normalizeOwnerPaymentMethodEdit(added, rows.length - 1));
-      const saved = saveOwnerP2pProfileForCredential(credential, { ...current, paymentMethods: rows.slice(0, 100), paymentMethodEdits: edits.slice(0, 100) });
-      saveDb();
-      return sendJson(res, 200, {
-        profile: mergeOwnerP2pExtensionCache(saved),
-        credentials: options,
-        selectedCredentialId: Number(selected.id),
-        canSync: userHasPermission(user, 'p2p.profile.sync') && !!credential && !credential.disabled,
-        credentialAvailable: !!credential && !credential.disabled && !!credential.apiKey && !!credential.secretKey,
-        extensionEnabled: db.settings.p2pExtensionEnabled !== false,
-        paymentMethodWriteSupported: false,
-        paymentMethodWriteReason: 'Binance C2C API exposes payment-method configuration as read-only; add/edit is stored only in P2PFlow.',
-        localPaymentMethodChange: true,
-        advertiserUrl: saved.userNo ? p2pAdvertiserUrlForUserNo(saved.userNo) : ''
-      }, {}, req);
-    }
-
-    const patch = body.paymentMethodEdit && typeof body.paymentMethodEdit === 'object' ? body.paymentMethodEdit : {};
-    const sourceKey = cleanStr(patch.sourceKey || patch.key || '', 220);
-    if (!sourceKey) return sendJson(res, 422, { error: 'Payment method key is required.' }, {}, req);
-    const index = rows.findIndex((item, rowIndex) => ownerProfilePaymentMethodKey(item, rowIndex) === sourceKey);
-    if (index < 0) return sendJson(res, 404, { error: 'Payment method not found.' }, {}, req);
-    const existingFields = ownerProfileFieldList(rows[index]);
-    const incomingFields = ownerProfileFieldList({ fieldList: Array.isArray(patch.fieldList) ? patch.fieldList : [] });
-    const incomingMap = new Map(incomingFields.map(field => [String(field.fieldId || field.fieldName || '').toLowerCase(), field]));
-    const mergedFields = existingFields.map(field => {
-      const incoming = incomingMap.get(String(field.fieldId || field.fieldName || '').toLowerCase());
-      return incoming ? { ...field, fieldValue: incoming.fieldValue } : field;
-    });
-    for (const field of incomingFields) {
-      const key = String(field.fieldId || field.fieldName || '').toLowerCase();
-      if (!mergedFields.some(item => String(item.fieldId || item.fieldName || '').toLowerCase() === key)) mergedFields.push(field);
-    }
-    const updatedRow = {
-      ...rows[index],
-      sourceKey,
-      tradeMethodName: cleanStr(patch.tradeMethodName || rows[index].tradeMethodName || rows[index].tradeMethodShortName || rows[index].payType || rows[index].identifier || 'Payment Method', 160),
-      tradeMethodShortName: cleanStr(patch.tradeMethodShortName || rows[index].tradeMethodShortName || '', 120),
-      fieldList: mergedFields,
-      payAccount: cleanStr(patch.payAccount || ownerProfileFieldValue(mergedFields, ['pay_account'], /(account|wallet|number|mobile|phone)/i) || rows[index].payAccount || '', 220),
-      payBank: cleanStr(patch.payBank || ownerProfileFieldValue(mergedFields, ['bank'], /bank/i) || rows[index].payBank || '', 220),
-      paySubBank: cleanStr(patch.paySubBank || ownerProfileFieldValue(mergedFields, ['sub_bank'], /(branch|sub.?bank)/i) || rows[index].paySubBank || '', 220),
-      payee: cleanStr(patch.payee || ownerProfileFieldValue(mergedFields, ['payee'], /(payee|name)/i) || rows[index].payee || '', 220),
-      qrCodePath: cleanStr(patch.qrCodePath || ownerProfileFieldValue(mergedFields, ['qr_code'], /(qr|code)/i) || rows[index].qrCodePath || '', 500),
-      note: cleanStr(patch.note || ownerProfileFieldValue(mergedFields, [], /(remark|note|instruction)/i) || rows[index].note || '', 220),
-      currency: cleanStr(patch.currency || rows[index].currency || rows[index].fiatUnit || 'BDT', 20).toUpperCase() || 'BDT'
-    };
-    rows[index] = updatedRow;
-    const editIndex = edits.findIndex(item => item.sourceKey === sourceKey);
-    const normalizedEdit = normalizeOwnerPaymentMethodEdit(updatedRow, index);
-    if (editIndex >= 0) edits[editIndex] = normalizedEdit;
-    else edits.push(normalizedEdit);
-    const saved = saveOwnerP2pProfileForCredential(credential, { ...current, paymentMethods: rows, paymentMethodEdits: edits });
-    saveDb();
-    broadcast({ type: 'p2p.owner_profile.updated', credentialId: credential.id, userNo: saved.userNo || '', extensionStatus: saved.extensionStatus || '', at: nowIso() });
-    return sendJson(res, 200, {
-      profile: mergeOwnerP2pExtensionCache(saved),
-      credentials: options,
-      selectedCredentialId: Number(selected.id),
-      canSync: userHasPermission(user, 'p2p.profile.sync') && !!credential && !credential.disabled,
-      credentialAvailable: !!credential && !credential.disabled && !!credential.apiKey && !!credential.secretKey,
-      extensionEnabled: db.settings.p2pExtensionEnabled !== false,
-        paymentMethodWriteSupported: false,
-        paymentMethodWriteReason: 'Binance C2C API exposes payment-method configuration as read-only; add/edit is stored only in P2PFlow.',
-      localPaymentMethodChange: true,
-      advertiserUrl: saved.userNo ? p2pAdvertiserUrlForUserNo(saved.userNo) : ''
+    return sendJson(res, 409, {
+      error: 'Binance payment methods cannot be added or edited through the available API. Manage them on Binance, then sync this profile.',
+      paymentMethodWriteSupported: false,
+      paymentMethodManageUrl: BINANCE_P2P_PAYMENT_MANAGE_URL
     }, {}, req);
   }
   if (req.method !== 'POST') return sendJson(res, 405, { error: 'Method not allowed' }, {}, req);
@@ -3954,7 +3860,8 @@ async function handleMyP2pProfile(req, res, url) {
     credentialAvailable: true,
     extensionEnabled: db.settings.p2pExtensionEnabled !== false,
         paymentMethodWriteSupported: false,
-        paymentMethodWriteReason: 'Binance C2C API exposes payment-method configuration as read-only; add/edit is stored only in P2PFlow.',
+        paymentMethodWriteReason: 'Binance C2C API exposes payment-method configuration as read-only. Add or edit it on Binance, then sync P2PFlow.',
+        paymentMethodManageUrl: BINANCE_P2P_PAYMENT_MANAGE_URL,
     queuedExtension: Boolean(out.task && !out.task.cached),
     advertiserUrl: out.profile.userNo ? p2pAdvertiserUrlForUserNo(out.profile.userNo) : ''
   }, {}, req);
@@ -8414,6 +8321,7 @@ function sameOriginOk(req) {
 function serveStatic(req, res) {
   const requestUrl = new URL(req.url, `http://${req.headers.host}`);
   let pathname = decodeURIComponent(requestUrl.pathname);
+  if (pathname === '/login' || pathname === '/login/') pathname = '/login.html';
   if (pathname === '/') pathname = '/index.html';
   const filePath = path.normalize(path.join(PUBLIC_DIR, pathname));
   if (!filePath.startsWith(PUBLIC_DIR)) return sendText(res, 403, 'Forbidden', 'text/plain; charset=utf-8', req);

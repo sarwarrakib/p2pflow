@@ -1,4 +1,4 @@
-// v1.4.12: first-run recovery reuses the saved Application Key and software updates are Owner-only from Control Panel.
+// v1.4.14: first-run recovery reuses the saved Application Key and software updates are Owner-only from Control Panel.
 // v1.0.137: Diagnose and harden Binance P2P Create Advertisement privilege flow.
 // v1.0.128: lightweight Ads UI, cached reloads and realtime Binance merchant-status sync.
 // v1.0.117: Stop order countdowns immediately after completed or cancelled status sync.
@@ -3405,6 +3405,16 @@ function compactApiError(path, status, data, type) {
   }
   return text.slice(0, 500) || `Request failed (${status || 'network'})`;
 }
+function currentAppReturnUrl() {
+  return `${location.pathname}${location.search}${location.hash}` || '/';
+}
+function redirectToLoginPage({ preserveRoute=true }={}) {
+  if (/^\/login(?:\.html)?\/?$/i.test(location.pathname)) return;
+  const next = preserveRoute ? currentAppReturnUrl() : '';
+  const target = next ? `/login?next=${encodeURIComponent(next)}` : '/login';
+  window.location.replace(target);
+}
+
 async function api(path, opts={}, attempt=0) {
   const silent = !!(opts.silent || opts.quiet);
   const fetchOpts = { ...opts };
@@ -3433,7 +3443,7 @@ async function api(path, opts={}, attempt=0) {
     return api(path, opts, attempt + 1);
   }
   if (!res.ok || htmlResponse) {
-    if (res.status === 401 && path !== '/api/login') showLogin();
+    if (res.status === 401 && path !== '/api/login') redirectToLoginPage();
     const msg = compactApiError(path, res.status, data, type);
     const err = new Error(msg);
     err.status = res.status;
@@ -3729,97 +3739,33 @@ async function init() {
   setupSidebarScrollableNavigation();
   setupGlobalPullToRefresh();
   setupConnectivityStatus();
-  setupEmailOtpInputs();
-  setupLoginVisibilityButtons();
-  resetLoginVerificationStep({ clear: true, focus: false });
 
-  $('#loginForm').addEventListener('submit', async (e) => {
-    e.preventDefault();
-    $('#loginError').textContent = '';
-    if (!validateLoginFormForCurrentStep()) return;
-    syncEmailOtpValue();
-    const fd = new FormData(e.target);
-    const payload = Object.fromEntries(fd);
-    setLoginButtonBusy(true);
-    try {
-      const data = await api('/api/login', { method: 'POST', body: JSON.stringify(payload), silent: true });
-      if (data.otpRequired) {
-        const message = data.message || 'Check your email and enter the OTP.';
-        const restartCooldown = !loginVerificationActive || /sent|expired/i.test(message);
-        setLoginVerificationStep(message, { restartCooldown });
-        return;
-      }
-      state.user = data.user;
-      state.csrfToken = data.csrfToken;
-      setLoginAlert(loginLocalized('Verification successful. Opening your dashboard...', 'ভেরিফিকেশন সফল। ড্যাশবোর্ড খোলা হচ্ছে...'), 'success');
-      await bootApp();
-    } catch (err) {
-      $('#loginError').textContent = err.message;
-      if (!loginVerificationActive) {
-        $('#loginPassword')?.focus({ preventScroll: true });
-        $('#loginPassword')?.select();
-      } else {
-        setLoginAlert(err.message, err.status === 429 ? 'warning' : 'danger');
-      }
-    } finally {
-      setLoginButtonBusy(false);
-    }
-  });
-
-  $('#changeCredentialsBtn').addEventListener('click', () => {
-    $('#loginError').textContent = '';
-    resetLoginVerificationStep({ clear: true, focus: true });
-  });
-
-  $('#resendOtpBtn').addEventListener('click', async () => {
-    if (!loginVerificationActive) return;
-    const form = $('#loginForm');
-    const payload = Object.fromEntries(new FormData(form));
-    payload.emailOtp = '';
-    payload.secretCode = '';
-    payload.resendOtp = true;
-    $('#loginError').textContent = '';
-    const button = $('#resendOtpBtn');
-    button.disabled = true;
-    try {
-      const data = await api('/api/login', { method: 'POST', body: JSON.stringify(payload), silent: true });
-      clearEmailOtpInputs();
-      setLoginVerificationStep(data.message || 'A new OTP was sent. Check your inbox and spam folder.', { restartCooldown: true });
-      notify(data.message || 'A new OTP was sent.', 'ok');
-    } catch (err) {
-      $('#loginError').textContent = err.message;
-      setLoginAlert(err.message, err.status === 429 ? 'warning' : 'danger');
-      const waitMatch = String(err.message || '').match(/wait\s+(\d+)\s+seconds/i);
-      if (waitMatch) startLoginResendCooldown(Number(waitMatch[1]));
-      else button.disabled = false;
-    }
-  });
   window.addEventListener('hashchange', () => { if (state.user) routeFromLocation(); });
-  $('#logoutBtn').onclick = async () => { await sendActivityEnd('logout').catch(()=>{}); await api('/api/logout', { method:'POST', body:'{}' }).catch(()=>{}); location.reload(); };
+  const logoutButton = $('#logoutBtn');
+  if (logoutButton) logoutButton.onclick = async () => {
+    await sendActivityEnd('logout').catch(()=>{});
+    await api('/api/logout', { method:'POST', body:'{}', silent:true, noAutoReload:true }).catch(()=>{});
+    window.location.replace('/login');
+  };
+
   try {
-    const me = await api('/api/me', { silent: true });
+    const me = await api('/api/me', { silent: true, noAutoReload: true });
     state.user = me.user;
     state.csrfToken = me.csrfToken;
     await bootApp();
-  } catch { showLogin(); }
+  } catch {
+    redirectToLoginPage();
+  }
 }
 
 function showLogin() {
   stopActivityTracking(false);
-  $('#app').classList.add('hidden');
-  $('#login').classList.remove('hidden');
-  resetLoginVerificationStep({ clear: true, focus: false });
-  const password = $('#loginPassword');
-  if (password) password.value = '';
-  $('#loginError').textContent = '';
-  setupLanguageControls();
-  applyLanguage();
-  window.setTimeout(() => ($('#loginIdentity') || $('#loginPassword'))?.focus({ preventScroll: true }), 60);
+  redirectToLoginPage();
 }
 
 async function bootApp() {
-  $('#login').classList.add('hidden');
-  $('#app').classList.remove('hidden');
+  $('#login')?.classList.add('hidden');
+  $('#app')?.classList.remove('hidden');
   $('#userBadge').textContent = `${state.user.name} / ${state.user.role}`;
   state.bootstrap = await api('/api/bootstrap');
   if (state.bootstrap.csrfToken) state.csrfToken = state.bootstrap.csrfToken;
@@ -4302,7 +4248,7 @@ function renderNav() {
   // legacy flat menu while this marker is absent, the browser/proxy is serving
   // stale frontend JavaScript rather than the active release.
   nav.dataset.navigationModel = 'grouped-control-center';
-  nav.dataset.uiRelease = '1.4.12';
+  nav.dataset.uiRelease = '1.4.14';
   nav.innerHTML = '';
   const visible = visiblePages();
   const visibleIds = new Set(visible.map(([id]) => id));

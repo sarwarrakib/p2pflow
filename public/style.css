@@ -4189,3 +4189,9 @@ nav .accounting-nav-group.active>.nav-group-toggle{color:#fff;border-color:rgba(
   .mobile-profile-payment-sticky{display:block!important;visibility:visible!important;opacity:1!important;z-index:130!important;bottom:calc(10px + env(safe-area-inset-bottom))!important}
   .payment-method-page{padding-bottom:92px}
 }
+
+/* v1.4.14 - Binance is the source of truth for P2P payment-method configuration */
+.mobile-profile-payment-readonly-note{margin:8px 20px 12px;padding:12px 14px;border-radius:12px;background:#f7f7f7;color:#6b7280;font-size:13px;line-height:1.45}
+.mobile-profile-payment-sticky{display:grid!important;grid-template-columns:minmax(0,.9fr) minmax(0,1.1fr);gap:10px}
+.mobile-profile-payment-sticky button.secondary{background:#f3f4f6;color:#111827;box-shadow:none;border:1px solid #e5e7eb}
+@media (max-width:520px){.mobile-profile-payment-sticky{grid-template-columns:1fr 1fr;gap:8px;padding:0 12px!important}.mobile-profile-payment-sticky button{height:52px;font-size:14px}}

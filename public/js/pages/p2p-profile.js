@@ -1,4 +1,4 @@
-// P2PFlow v1.4.12
+// P2PFlow v1.4.14
 // Dedicated Binance-style P2P Profile workspace. Login security is kept on the separate Security page.
 
 function profileMetricValue(value, suffix = '') {
@@ -371,6 +371,7 @@ function mobileProfilePaymentMethodsHtml(data = {}, result = {}) {
   const rows = (Array.isArray(profile.paymentMethods) ? profile.paymentMethods : []).map((row, index) => ({ ...row, sourceKey: profilePaymentMethodKey(row, index) }));
   return `<section class="mobile-profile-subpage payment-method-page">
     <header class="mobile-profile-subpage-head payment"><button type="button" id="mobileProfileSubBackBtn" class="mobile-profile-icon-btn">${profileIcon('back')}</button><h1>P2P Payment Method(s)</h1><span></span></header>
+    <div class="mobile-profile-payment-readonly-note">Payment methods are read from Binance. Add or edit them on Binance, then sync this page.</div>
     <div class="mobile-profile-payment-list binance-style">${rows.length ? rows.map(row => {
       const methodName = escapeHtml(row.tradeMethodName || row.tradeMethodShortName || row.payType || row.identifier || 'Payment Method');
       const currency = escapeHtml(profilePaymentMethodCurrency(row));
@@ -379,12 +380,12 @@ function mobileProfilePaymentMethodsHtml(data = {}, result = {}) {
       return `<article class="mobile-profile-payment-card ${tone}">
         <div class="mobile-profile-payment-card-top">
           <div class="mobile-profile-payment-brand"><i></i><strong>${methodName}</strong><small>${currency}</small></div>
-          <button type="button" class="mobile-profile-payment-edit-icon" data-mobile-payment-edit="${escapeAttr(row.sourceKey)}" aria-label="Edit payment method">${profileIcon('edit')}</button>
+          <button type="button" class="mobile-profile-payment-edit-icon" data-mobile-payment-edit="${escapeAttr(row.sourceKey)}" aria-label="Manage payment method on Binance" title="Manage on Binance">${profileIcon('edit')}</button>
         </div>
         <div class="mobile-profile-payment-values">${values.length ? values.map((field, index) => `<div class="mobile-profile-payment-value ${index === 0 ? 'primary' : ''}">${field.fieldTitle && values.length > 2 ? `<small>${escapeHtml(field.fieldTitle)}</small>` : ''}<span>${escapeHtml(field.fieldValue || '-')}</span></div>`).join('') : '<div class="mobile-profile-payment-value primary"><span>-</span></div>'}</div>
       </article>`;
     }).join('') : `<div class="mobile-profile-feedback-empty">No configured Binance P2P payment method was returned for ${escapeHtml(nickname)}.</div>`}</div>
-    <div class="mobile-profile-payment-sticky"><button type="button" id="mobileProfileAddPaymentBtn">Add a payment method</button></div>
+    <div class="mobile-profile-payment-sticky"><button type="button" id="mobileProfileSyncPaymentBtn" class="secondary">Sync from Binance</button><button type="button" id="mobileProfileAddPaymentBtn">Manage on Binance</button></div>
   </section>`;
 }
 
@@ -537,6 +538,13 @@ async function renderP2PProfile() {
 
   const editorValuesFromFields = fields => Object.fromEntries((fields || []).map(field => [String(field.fieldId || field.fieldName || ''), String(field.fieldValue ?? '')]));
 
+  const openBinancePaymentMethods = () => {
+    const url = String(p2pResult.paymentMethodManageUrl || 'https://p2p.binance.com/en');
+    const opened = window.open(url, '_blank', 'noopener,noreferrer');
+    if (!opened) window.location.href = url;
+    notify('Binance P2P opened. Use More → Payment Methods to add or edit, then return here and tap Sync from Binance.', 'ok', 7000);
+  };
+
   const openPaymentMethodEditor = rowKey => {
     const row = currentPaymentRows().find(item => String(item.sourceKey || '') === String(rowKey || ''));
     if (!row) { notify('Payment method not found.', 'warn'); return; }
@@ -582,58 +590,9 @@ async function renderP2PProfile() {
   };
 
   const submitPaymentEditor = async () => {
-    const editor = state.mobileProfilePaymentEditor || {};
-    if (!profilePaymentEditorValid(editor)) { notify('Complete the required payment method fields first.', 'warn'); return; }
-    const definitions = profilePaymentDefinitions(p2pResult);
-    const selectedMethod = definitions.find(item => profilePaymentDefinitionKey(item) === editor.methodKey) || editor.method || {};
-    const fields = profilePaymentEditorFieldDefs(editor).map(field => ({ ...field, fieldValue:String(editor.fieldValues?.[field.fieldId] ?? field.fieldValue ?? '').trim() }));
-    const findValue = (type, regex) => fields.find(field => String(field.fieldContentType || '').toLowerCase() === type && field.fieldValue)?.fieldValue || fields.find(field => regex && regex.test(`${field.fieldTitle || ''} ${field.fieldName || ''}`) && field.fieldValue)?.fieldValue || '';
-    const findNamedValue = regex => fields.find(field => regex && regex.test(`${field.fieldTitle || ''} ${field.fieldName || ''}`) && field.fieldValue)?.fieldValue || '';
-    const direct = {
-      payAccount: findValue('pay_account', /(account|wallet|number|mobile|phone)/i),
-      payBank: findValue('bank', /bank/i),
-      paySubBank: findValue('sub_bank', /(branch|sub.?bank)/i),
-      payee: findValue('payee', /(payee|name)/i),
-      qrCodePath: findValue('qr_code', /(qr|code)/i),
-      note: findNamedValue(/(remark|note|instruction)/i)
-    };
-    const common = {
-      sourceKey: editor.rowKey || undefined,
-      identifier: selectedMethod.identifier || selectedMethod.payType || editor.methodKey || '',
-      payType: selectedMethod.payType || selectedMethod.identifier || '',
-      tradeMethodName: selectedMethod.tradeMethodName || selectedMethod.tradeMethodShortName || selectedMethod.identifier || editor.methodKey || 'Payment Method',
-      tradeMethodShortName: selectedMethod.tradeMethodShortName || '',
-      currency: editor.currency || 'BDT',
-      fieldList: fields,
-      bgColor: selectedMethod.bgColor || '',
-      iconUrlColor: selectedMethod.iconUrlColor || '',
-      isRecommended: Boolean(selectedMethod.isRecommended),
-      ...direct
-    };
-    const button = $('#mobileProfilePaymentEditorSave');
-    if (button) button.disabled = true;
-    try {
-      const out = await api('/api/me/p2p-profile', {
-        method: 'PATCH',
-        body: JSON.stringify({
-          credentialId: Number(p2pResult.selectedCredentialId || state.mobileProfileCredentialId || 0),
-          ...(editor.mode === 'edit' ? { paymentMethodEdit:common } : { paymentMethodAdd:common })
-        })
-      });
-      p2pResult = out;
-      state.mobileProfilePaymentEditor = null;
-      state.mobileProfileView = 'payments';
-      render();
-      window.scrollTo({ top:0, behavior:'auto' });
-      if (out.paymentMethodWriteSupported === false || out.localPaymentMethodChange) {
-        notify(editor.mode === 'edit' ? 'Saved in P2PFlow. Binance payment-method configuration is read-only through the available API, so Binance itself was not changed.' : 'Added in P2PFlow. Binance payment-method configuration is read-only through the available API, so it was not added to Binance.', 'warn', 8500);
-      } else {
-        notify(editor.mode === 'edit' ? 'Payment method updated on Binance.' : 'Payment method added on Binance.', 'ok');
-      }
-    } catch (err) {
-      notify(err.message || 'Payment method save failed.', 'danger', 6000);
-      if (button?.isConnected) button.disabled = false;
-    }
+    // Binance does not expose a payment-method configuration write endpoint.
+    // Never save a local value that could be mistaken for the Binance value.
+    openBinancePaymentMethods();
   };
 
   const bindProfileActions = () => {
@@ -667,8 +626,15 @@ async function renderP2PProfile() {
     });
     $$('[data-mobile-profile-tab]').forEach(button => button.onclick = () => { state.mobileProfileTab = button.dataset.mobileProfileTab; render(); });
     $$('[data-mobile-feedback-tab]').forEach(button => button.onclick = () => { state.mobileProfileFeedbackTab = button.dataset.mobileFeedbackTab; render(); window.scrollTo({ top: 0, behavior: 'smooth' }); });
-    $$('[data-mobile-payment-edit]').forEach(button => button.onclick = () => openPaymentMethodEditor(button.dataset.mobilePaymentEdit));
-    $('#mobileProfileAddPaymentBtn')?.addEventListener('click', () => openPaymentMethodAdd());
+    $$('[data-mobile-payment-edit]').forEach(button => button.onclick = () => openBinancePaymentMethods());
+    $('#mobileProfileAddPaymentBtn')?.addEventListener('click', () => openBinancePaymentMethods());
+    $('#mobileProfileSyncPaymentBtn')?.addEventListener('click', async event => {
+      const button = event.currentTarget;
+      button.disabled = true;
+      try { await syncProfile(); notify('Payment methods synced from Binance.', 'ok'); }
+      catch (err) { notify(err.message || 'Could not sync Binance payment methods.', 'danger', 6000); }
+      finally { if (button?.isConnected) button.disabled = false; }
+    });
     $('#mobileProfilePaymentEditorBack')?.addEventListener('click', () => { state.mobileProfilePaymentEditor = null; state.mobileProfileView = 'payments'; render(); window.scrollTo({ top:0, behavior:'auto' }); });
     $('#mobileProfileCurrencyPicker')?.addEventListener('click', () => { if (!state.mobileProfilePaymentEditor) return; state.mobileProfilePaymentEditor.picker = 'currency'; render(); });
     $('#mobileProfileMethodPicker')?.addEventListener('click', () => { if (!state.mobileProfilePaymentEditor) return; state.mobileProfilePaymentEditor.picker = 'method'; render(); });
