@@ -1,4 +1,4 @@
-// P2PFlow v1.4.16
+// P2PFlow v1.4.18
 // Dedicated account/login security page. Binance P2P Profile lives on #/p2p-profile.
 
 function securityStatusPill(label, enabled) {
@@ -48,7 +48,7 @@ async function renderSecurity() {
         <div><label>Current Password</label><input name="password" type="password" autocomplete="current-password" required></div>
         <div><label>Current 6 Digit Secret</label><input name="secretCode" type="password" inputmode="numeric" maxlength="6" required></div>
         <div><label>Correct Gmail / Email</label><input name="newEmail" type="email" autocomplete="email" required></div>
-        <div id="securityRecoveryOtpWrap" class="hidden"><label>New Email OTP</label><input name="recoveryOtp" inputmode="numeric" maxlength="6"></div>
+        <div id="securityRecoveryOtpWrap" class="hidden"><label id="securityRecoveryCodeLabel">New Email OTP</label><input name="recoveryOtp" inputmode="numeric" maxlength="6" autocomplete="one-time-code"></div>
         <input name="recoveryId" type="hidden">
         <div class="full-row" id="securityRecoveryMessage"></div>
         <div class="full-row"><button type="submit" id="securityRecoveryBtn">Send OTP to New Email</button></div>
@@ -90,25 +90,52 @@ async function renderSecurity() {
 
   const recoveryForm = $('#securityEmailRecoveryForm');
   let recoveryOtpActive = false;
+  let recoveryMode = 'email';
+  const setSecurityRecoveryMode = mode => {
+    recoveryMode = mode === 'hosting' ? 'hosting' : 'email';
+    const input = recoveryForm?.elements?.recoveryOtp;
+    const label = $('#securityRecoveryCodeLabel');
+    if (!input) return;
+    if (recoveryMode === 'hosting') {
+      input.inputMode = 'text'; input.maxLength = 24; input.pattern = '[A-Za-z0-9_-]{8,24}';
+      if (label) label.textContent = 'Hosting Recovery Code';
+    } else {
+      input.inputMode = 'numeric'; input.maxLength = 6; input.pattern = '[0-9]{6}';
+      if (label) label.textContent = 'New Email OTP';
+    }
+  };
   if (recoveryForm) recoveryForm.onsubmit = async event => {
     event.preventDefault();
     const obj = Object.fromEntries(new FormData(recoveryForm));
     obj.secretCode = String(obj.secretCode || '').replace(/\D/g, '').slice(0, 6);
-    obj.recoveryOtp = String(obj.recoveryOtp || '').replace(/\D/g, '').slice(0, 6);
+    obj.recoveryOtp = recoveryMode === 'hosting' ? String(obj.recoveryOtp || '').trim().toUpperCase().slice(0, 24) : String(obj.recoveryOtp || '').replace(/\D/g, '').slice(0, 6);
+    obj.recoveryMode = recoveryMode;
+    try {
+      const device = await window.P2PFlowDeviceAuth?.ensure?.();
+      if (device) obj.deviceEnrollment = { deviceId:device.deviceId, name:device.name, publicKeyJwk:device.publicKeyJwk };
+    } catch {}
     if (obj.secretCode.length !== 6) return setFormMessage('#securityRecoveryMessage', 'Enter your current 6 digit secret.', 'danger');
-    if (recoveryOtpActive && obj.recoveryOtp.length !== 6) return setFormMessage('#securityRecoveryMessage', 'Enter the 6 digit OTP sent to the new email.', 'danger');
+    if (recoveryOtpActive) {
+      const valid = recoveryMode === 'hosting' ? /^[A-Z0-9_-]{8,24}$/i.test(obj.recoveryOtp) : /^\d{6}$/.test(obj.recoveryOtp);
+      if (!valid) return setFormMessage('#securityRecoveryMessage', recoveryMode === 'hosting' ? 'Enter the Hosting Recovery Code from shared/email-recovery-code.txt.' : 'Enter the 6 digit OTP sent to the new email.', 'danger');
+    }
     try {
       const result = await api('/api/login/recover-email', { method:'POST', body:JSON.stringify(obj) });
       if (result.recoveryOtpRequired) {
         recoveryOtpActive = true;
+        setSecurityRecoveryMode(result.recoveryMode || 'email');
         recoveryForm.elements.recoveryId.value = result.recoveryId || '';
         $('#securityRecoveryOtpWrap')?.classList.remove('hidden');
-        $('#securityRecoveryBtn').textContent = 'Confirm Correct Email';
-        setFormMessage('#securityRecoveryMessage', result.message || 'OTP sent to the new email.', 'warn');
+        $('#securityRecoveryBtn').textContent = recoveryMode === 'hosting' ? 'Confirm with Hosting Code' : 'Confirm Correct Email';
+        setFormMessage('#securityRecoveryMessage', result.message || 'Verification is required.', 'warn');
         recoveryForm.elements.recoveryOtp?.focus();
         return;
       }
       setFormMessage('#securityRecoveryMessage', result.message || 'Email corrected.', 'ok');
+      if (result.recoveredAndSignedIn) {
+        setTimeout(() => window.location.replace('/#/security'), 400);
+        return;
+      }
       await window.P2PFlowDeviceAuth?.forget?.();
       setTimeout(() => window.location.replace('/login'), 500);
     } catch (err) { setFormMessage('#securityRecoveryMessage', err.message || 'Email recovery failed.', 'danger'); }

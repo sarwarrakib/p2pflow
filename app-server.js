@@ -92,6 +92,8 @@ const OTP_RESEND_COOLDOWN_MS = Math.max(10000, Number(process.env.CRM_OTP_RESEND
 const TRUSTED_DEVICE_TTL_DAYS = Math.max(1, Math.min(180, Number(process.env.P2PFLOW_TRUSTED_DEVICE_TTL_DAYS || process.env.CRM_TRUSTED_DEVICE_TTL_DAYS || 30) || 30));
 const TRUSTED_DEVICE_CHALLENGE_TTL_MS = 2 * 60 * 1000;
 const LOGIN_FAILURE_EMAIL_COOLDOWN_MS = Math.max(60 * 60 * 1000, Number(process.env.P2PFLOW_LOGIN_FAILURE_EMAIL_COOLDOWN_HOURS || 6) * 60 * 60 * 1000 || 6 * 60 * 60 * 1000);
+const HOSTING_EMAIL_RECOVERY_TTL_MS = 15 * 60 * 1000;
+const HOSTING_EMAIL_RECOVERY_FILE = path.join(SHARED_DIR, 'email-recovery-code.txt');
 const PHP_BINARY = cleanEnv(process.env.CRM_PHP_BINARY || 'php', 'php');
 const PHP_BINARIES = cleanEnv(process.env.CRM_PHP_BINARIES || '', '');
 const PHP_MAIL_URL = cleanEnv(process.env.CRM_PHP_MAIL_URL || '', '');
@@ -102,13 +104,13 @@ const PHP_MAIL_TLS_REJECT_UNAUTHORIZED = String(process.env.CRM_PHP_MAIL_TLS_REJ
 const PHP_MAIL_CLI_SCRIPT = path.join(__dirname, 'scripts', 'php-mail-cli.php');
 const SENDMAIL_PATH = cleanEnv(process.env.CRM_SENDMAIL_PATH || '/usr/sbin/sendmail', '/usr/sbin/sendmail');
 const SENDMAIL_PATHS = cleanEnv(process.env.CRM_SENDMAIL_PATHS || '', '');
-const SMTP_HOST = cleanEnv(process.env.CRM_SMTP_HOST || '', '');
-const SMTP_PORT = Number(process.env.CRM_SMTP_PORT || 587);
-const SMTP_SECURE = String(process.env.CRM_SMTP_SECURE || 'false') === 'true';
-const SMTP_STARTTLS = String(process.env.CRM_SMTP_STARTTLS || 'true') !== 'false';
-const SMTP_USER = process.env.CRM_SMTP_USER || '';
-const SMTP_PASS = process.env.CRM_SMTP_PASS || '';
-const SMTP_HELO = process.env.CRM_SMTP_HELO || 'localhost';
+const SMTP_HOST = cleanEnv(process.env.P2PFLOW_SMTP_HOST || process.env.CRM_SMTP_HOST || '', '');
+const SMTP_PORT = Number(process.env.P2PFLOW_SMTP_PORT || process.env.CRM_SMTP_PORT || 587);
+const SMTP_SECURE = String(process.env.P2PFLOW_SMTP_SECURE || process.env.CRM_SMTP_SECURE || 'false') === 'true';
+const SMTP_STARTTLS = String(process.env.P2PFLOW_SMTP_STARTTLS || process.env.CRM_SMTP_STARTTLS || 'true') !== 'false';
+const SMTP_USER = process.env.P2PFLOW_SMTP_USER || process.env.CRM_SMTP_USER || '';
+const SMTP_PASS = process.env.P2PFLOW_SMTP_PASS || process.env.CRM_SMTP_PASS || '';
+const SMTP_HELO = process.env.P2PFLOW_SMTP_HELO || process.env.CRM_SMTP_HELO || 'localhost';
 const PUBLIC_BASE_URL = cleanEnv(process.env.P2PFLOW_PUBLIC_BASE_URL || process.env.CRM_PUBLIC_BASE_URL || '', '');
 const SMS_DRIVER = String(process.env.CRM_SMS_DRIVER || 'panel').toLowerCase();
 const SMS_WEBHOOK_URL = cleanEnv(process.env.CRM_SMS_WEBHOOK_URL || '', '');
@@ -477,23 +479,41 @@ function runtimeMailConfig() {
   const settings = db?.settings || {};
   const has = key => Object.prototype.hasOwnProperty.call(settings, key);
   const pick = (key, fallback = '') => has(key) ? settings[key] : fallback;
-  const driver = cleanEnv(pick('mailDriver', MAIL_DRIVER || 'local'), 'local').toLowerCase();
-  const port = Math.max(1, Math.min(65535, Number(pick('smtpPort', SMTP_PORT || 587)) || 587));
-  const secure = has('smtpSecure') ? Boolean(settings.smtpSecure) : Boolean(SMTP_SECURE);
-  const starttls = has('smtpStarttls') ? Boolean(settings.smtpStarttls) : Boolean(SMTP_STARTTLS);
+  const pickText = (key, fallback = '') => {
+    const value = has(key) ? String(settings[key] ?? '').trim() : '';
+    return value || fallback;
+  };
+  // Treat SMTP as one configuration bundle. A fresh install created by older
+  // builds could persist blank SMTP fields (and the default 587/false/true
+  // flags) even though P2PFLOW_SMTP_* was present in .env. In that case those
+  // blank DB defaults must not shadow the environment configuration.
+  const dbSmtpConfigured = Boolean(
+    String(settings.smtpHost || '').trim() ||
+    String(settings.smtpUser || '').trim() ||
+    String(settings.smtpPassword || '').trim()
+  );
+  const driver = cleanEnv(pickText('mailDriver', MAIL_DRIVER || 'local'), 'local').toLowerCase();
+  const smtpHost = dbSmtpConfigured ? cleanEnv(settings.smtpHost || '', '') : SMTP_HOST;
+  const smtpUser = dbSmtpConfigured ? String(settings.smtpUser || '') : String(SMTP_USER || '');
+  const smtpPassword = dbSmtpConfigured ? String(settings.smtpPassword || '') : String(SMTP_PASS || '');
+  const smtpPortRaw = dbSmtpConfigured ? settings.smtpPort : SMTP_PORT;
+  const port = Math.max(1, Math.min(65535, Number(smtpPortRaw || 587) || 587));
+  const secure = dbSmtpConfigured ? Boolean(settings.smtpSecure) : Boolean(SMTP_SECURE);
+  const starttls = dbSmtpConfigured ? Boolean(settings.smtpStarttls) : Boolean(SMTP_STARTTLS);
+  const smtpHelo = dbSmtpConfigured ? cleanEnv(settings.smtpHelo || SMTP_HELO, 'localhost') : cleanEnv(SMTP_HELO, 'localhost');
   return {
     driver,
-    from: cleanEnv(pick('mailFrom', MAIL_FROM), ''),
-    fromName: cleanEnv(pick('mailFromName', MAIL_FROM_NAME), 'P2PFlow'),
-    replyTo: cleanEnv(pick('mailReplyTo', MAIL_REPLY_TO), ''),
-    envelopeFrom: cleanEnv(pick('mailEnvelopeFrom', MAIL_ENVELOPE_FROM), ''),
-    smtpHost: cleanEnv(pick('smtpHost', SMTP_HOST), ''),
+    from: cleanEnv(pickText('mailFrom', MAIL_FROM), ''),
+    fromName: cleanEnv(pickText('mailFromName', MAIL_FROM_NAME), 'P2PFlow'),
+    replyTo: cleanEnv(pickText('mailReplyTo', MAIL_REPLY_TO), ''),
+    envelopeFrom: cleanEnv(pickText('mailEnvelopeFrom', MAIL_ENVELOPE_FROM), ''),
+    smtpHost,
     smtpPort: port,
     smtpSecure: secure,
     smtpStarttls: starttls,
-    smtpUser: String(pick('smtpUser', SMTP_USER) || ''),
-    smtpPassword: String(pick('smtpPassword', SMTP_PASS) || ''),
-    smtpHelo: cleanEnv(pick('smtpHelo', SMTP_HELO), 'localhost') || 'localhost'
+    smtpUser,
+    smtpPassword,
+    smtpHelo: smtpHelo || 'localhost'
   };
 }
 
@@ -8119,6 +8139,55 @@ function issueTrustedDeviceChallenge(user, device, req) {
   return { challengeId, payload };
 }
 
+function secureCompareText(a, b) {
+  const left = Buffer.from(String(a || ''), 'utf8');
+  const right = Buffer.from(String(b || ''), 'utf8');
+  if (left.length !== right.length || !left.length) return false;
+  try { return crypto.timingSafeEqual(left, right); } catch { return false; }
+}
+function hostingRecoveryCodeHash(code, recoveryId) {
+  return crypto.createHash('sha256').update(`${String(recoveryId || '')}\n${String(code || '').trim().toUpperCase()}`).digest('hex');
+}
+function writeHostingEmailRecoveryCode({ code, recoveryId, newEmail, expiresAt }) {
+  fs.mkdirSync(SHARED_DIR, { recursive: true, mode: 0o700 });
+  const content = [
+    'P2PFlow Owner Email Recovery Code',
+    '',
+    `Code: ${code}`,
+    `Recovery ID: ${recoveryId}`,
+    `New email: ${newEmail}`,
+    `Expires: ${new Date(expiresAt).toISOString()}`,
+    '',
+    'Use this code only in the P2PFlow login email-recovery form.',
+    'Delete this file after recovery. P2PFlow also removes it after successful use.'
+  ].join('\n');
+  fs.writeFileSync(HOSTING_EMAIL_RECOVERY_FILE, content, { encoding: 'utf8', mode: 0o600 });
+  try { fs.chmodSync(HOSTING_EMAIL_RECOVERY_FILE, 0o600); } catch {}
+}
+function removeHostingEmailRecoveryFile(recoveryId = '') {
+  try {
+    if (!fs.existsSync(HOSTING_EMAIL_RECOVERY_FILE)) return;
+    if (recoveryId) {
+      const text = fs.readFileSync(HOSTING_EMAIL_RECOVERY_FILE, 'utf8');
+      if (!text.includes(`Recovery ID: ${recoveryId}`)) return;
+    }
+    fs.unlinkSync(HOSTING_EMAIL_RECOVERY_FILE);
+  } catch {}
+}
+function sessionCookieSid(req) {
+  const cookie = req?.headers?.cookie || '';
+  const match = cookie.match(new RegExp('(?:^|;\\s*)' + SESSION_COOKIE_NAME.replace(/[.*+?^${}()|[\\]\\]/g, '\\$&') + '=([^;]+)'));
+  return match ? cleanStr(match[1], 128) : '';
+}
+function legacySessionFromCookie(req) {
+  const sid = sessionCookieSid(req);
+  if (!sid) return null;
+  const session = sessions.get(sid);
+  if (!session || session.bindingHash || Date.now() > Number(session.expiresAt || 0)) return null;
+  const user = db.users.find(u => Number(u.id) === Number(session.userId) && u.enabled);
+  return user ? { sid, session, user } : null;
+}
+
 function maskEmail(email) {
   const s = String(email || '');
   const [name, domain] = s.split('@');
@@ -8458,10 +8527,8 @@ function persistSessionsNow() {
 }
 
 function getSession(req) {
-  const cookie = req.headers.cookie || '';
-  const match = cookie.match(new RegExp('(?:^|;\\s*)' + SESSION_COOKIE_NAME.replace(/[.*+?^${}()|[\\]\\]/g, '\\$&') + '=([^;]+)'));
-  if (!match) return null;
-  const sid = match[1];
+  const sid = sessionCookieSid(req);
+  if (!sid) return null;
   const session = sessions.get(sid);
   if (!session) return null;
   if (Date.now() > session.expiresAt) {
@@ -8471,9 +8538,12 @@ function getSession(req) {
     saveDb({ broadcast: false });
     return null;
   }
-  // v1.4.16: old cookie-only sessions are intentionally not trusted after the
-  // upgrade. A fresh login creates a network/browser-bound session instead.
-  if (!session.bindingHash || session.bindingHash !== sessionBindingHash(req, session.deviceId || '')) {
+  // v1.4.17: a pre-device-auth session is never authorized by cookie alone,
+  // but it is preserved briefly so the same browser can upgrade it with the
+  // 6-digit secret + a newly generated cryptographic device key. This prevents
+  // update-triggered lockouts without weakening copied-cookie protection.
+  if (!session.bindingHash) return null;
+  if (session.bindingHash !== sessionBindingHash(req, session.deviceId || '')) {
     closeUserActivitySession(session, 'session_binding_mismatch');
     sessions.delete(sid);
     syncPersistentSessions();
@@ -12013,6 +12083,8 @@ async function handleApi(req, res) {
 
     if (url.pathname === '/api/events') return handleEvents(req, res);
     if (req.method === 'GET' && url.pathname === '/api/public-health/binance') return sendJson(res, 200, await binanceNetworkHealth(), {}, req);
+    if (req.method === 'GET' && url.pathname === '/api/login/device/legacy') return handleLegacySessionStatus(req, res);
+    if (req.method === 'POST' && url.pathname === '/api/login/device/upgrade') return await handleLegacySessionUpgrade(req, res);
     if (req.method === 'POST' && url.pathname === '/api/login/device/challenge') return await handleTrustedDeviceChallenge(req, res);
     if (req.method === 'POST' && url.pathname === '/api/login/device') return await handleTrustedDeviceLogin(req, res);
     if (req.method === 'POST' && url.pathname === '/api/login/recover-email') return await handleLoginEmailRecovery(req, res);
@@ -12201,6 +12273,36 @@ async function handleTrustedDeviceLogin(req, res) {
   }, { 'Set-Cookie': sessionCookieHeader(session.sid, req) }, req);
 }
 
+function handleLegacySessionStatus(req, res) {
+  if (req.method !== 'GET') return sendJson(res, 405, { error: 'Method not allowed' }, {}, req);
+  const legacy = legacySessionFromCookie(req);
+  if (!legacy) return sendJson(res, 200, { legacySession: false }, {}, req);
+  return sendJson(res, 200, { legacySession: true, username: legacy.user.username || '', message: 'This browser has a pre-device-auth session. Enter the 6 digit secret once to secure this browser without email.' }, {}, req);
+}
+async function handleLegacySessionUpgrade(req, res) {
+  if (req.method !== 'POST') return sendJson(res, 405, { error: 'Method not allowed' }, {}, req);
+  if (!throttleLogin(req)) return sendJson(res, 429, { error: 'Too many upgrade attempts. Try again later.' }, {}, req);
+  const legacy = legacySessionFromCookie(req);
+  if (!legacy) return sendJson(res, 401, { error: 'No upgradeable session remains. Use full login or email recovery.' }, {}, req);
+  const body = await readBody(req);
+  if (!verifyPassword(String(body.secretCode || ''), legacy.user.loginSecretHash || '')) {
+    sendLoginFailedAlert(legacy.user, 'legacy_session_upgrade_invalid_secret', req);
+    return sendJson(res, 401, { error: '6 digit secret code is incorrect.' }, {}, req);
+  }
+  const trustedDevice = enrollTrustedDevice(legacy.user, body.deviceEnrollment, req);
+  if (!trustedDevice) return sendJson(res, 422, { error: 'This browser could not create a secure device key. Use a modern browser or full login.' }, {}, req);
+  legacy.session.deviceId = trustedDevice.id;
+  legacy.session.bindingHash = sessionBindingHash(req, trustedDevice.id);
+  legacy.session.authLevel = 'legacy_session_upgraded';
+  legacy.session.expiresAt = Date.now() + SESSION_TTL_MS;
+  legacy.session.lastPersistedAt = Date.now();
+  resetLoginThrottle(req);
+  syncPersistentSessions();
+  logAudit(legacy.user, 'legacy_session_upgraded', 'user', legacy.user.id, { deviceId: trustedDevice.id, ip: getIp(req), emailOtpSent: false });
+  saveDb();
+  return sendJson(res, 200, { ok: true, user: userSafe(legacy.user), csrfToken: legacy.session.csrfToken, trustedDevice: trustedDeviceSafe(trustedDevice, trustedDevice.id), mailSent: false }, {}, req);
+}
+
 async function handleLoginEmailRecovery(req, res) {
   if (req.method !== 'POST') return sendJson(res, 405, { error: 'Method not allowed' }, {}, req);
   if (!throttleLogin(req)) return sendJson(res, 429, { error: 'Too many recovery attempts. Try again later.' }, {}, req);
@@ -12221,14 +12323,16 @@ async function handleLoginEmailRecovery(req, res) {
   }
 
   const recoveryId = cleanStr(body.recoveryId || '', 160);
-  if (!body.recoveryOtp) {
-    const code = String(crypto.randomInt(0, 1000000)).padStart(6, '0');
+  const suppliedCode = String(body.recoveryOtp || body.recoveryCode || '').trim();
+  if (!suppliedCode) {
+    const emailCode = String(crypto.randomInt(0, 1000000)).padStart(6, '0');
     const id = crypto.randomBytes(24).toString('base64url');
     const item = {
       id,
       userId: user.id,
       newEmail,
-      code,
+      code: emailCode,
+      mode: 'email',
       sentAt: Date.now(),
       expiresAt: Date.now() + 10 * 60 * 1000,
       attempts: 0,
@@ -12236,55 +12340,100 @@ async function handleLoginEmailRecovery(req, res) {
       uaHash: requestUaHash(req)
     };
     try {
-      await sendMailMessage(newEmail, 'Verify your corrected P2PFlow email', `A request was made to correct the login email for your P2PFlow account.\n\nVerification OTP: ${code}\n\nThis code expires in 10 minutes. If you did not request this, do not share the code.`);
+      await sendMailMessage(newEmail, 'Verify your corrected P2PFlow email', `A request was made to correct the login email for your P2PFlow account.\n\nVerification OTP: ${emailCode}\n\nThis code expires in 10 minutes. If you did not request this, do not share the code.`);
+      pendingEmailRecoveries.set(id, item);
+      logAudit(user, 'email_recovery_verification_sent', 'user', user.id, { newEmail: maskEmail(newEmail), mode: 'email', ip: getIp(req) });
+      return sendJson(res, 202, { recoveryOtpRequired: true, recoveryMode: 'email', recoveryId: id, message: `Verification OTP sent to ${maskEmail(newEmail)}.` }, {}, req);
     } catch (err) {
       logAudit(user, 'email_recovery_mail_failed', 'user', user.id, { newEmail: maskEmail(newEmail), error: err.message });
-      return sendJson(res, 503, { error: 'The verification email could not be sent to the new address. Check Email Delivery and try again.' }, {}, req);
-    }
-    pendingEmailRecoveries.set(id, item);
-    if (pendingEmailRecoveries.size > 50) {
-      for (const [key, value] of pendingEmailRecoveries.entries()) {
-        if (value.expiresAt <= Date.now() || pendingEmailRecoveries.size > 40) pendingEmailRecoveries.delete(key);
+      if (user.isOwner !== true) {
+        return sendJson(res, 503, { error: 'The verification email could not be sent. Ask the P2PFlow Owner to repair Email Delivery.' }, {}, req);
       }
+      // Owner lockout fallback: proof of hosting-file access replaces email only
+      // when mail delivery itself is unavailable. The code never crosses the API.
+      const hostingCode = crypto.randomBytes(12).toString('base64url').replace(/[-_]/g, 'A').slice(0, 16).toUpperCase();
+      item.mode = 'hosting';
+      item.code = '';
+      item.codeHash = hostingRecoveryCodeHash(hostingCode, id);
+      item.expiresAt = Date.now() + HOSTING_EMAIL_RECOVERY_TTL_MS;
+      pendingEmailRecoveries.set(id, item);
+      try {
+        writeHostingEmailRecoveryCode({ code: hostingCode, recoveryId: id, newEmail, expiresAt: item.expiresAt });
+      } catch (fileErr) {
+        pendingEmailRecoveries.delete(id);
+        return sendJson(res, 503, { error: `Email delivery failed and the secure hosting recovery file could not be created: ${cleanStr(fileErr.message, 220)}` }, {}, req);
+      }
+      logAudit(user, 'email_recovery_hosting_fallback_issued', 'user', user.id, { newEmail: maskEmail(newEmail), ip: getIp(req), file: 'shared/email-recovery-code.txt' });
+      return sendJson(res, 202, {
+        recoveryOtpRequired: true,
+        hostingRecoveryRequired: true,
+        recoveryMode: 'hosting',
+        recoveryId: id,
+        recoveryCodeFile: 'shared/email-recovery-code.txt',
+        message: 'Email delivery is unavailable. A one-time Owner recovery code was written to shared/email-recovery-code.txt. Open Hosting File Manager, copy that code here, and confirm. No email is required.'
+      }, {}, req);
     }
-    logAudit(user, 'email_recovery_verification_sent', 'user', user.id, { newEmail: maskEmail(newEmail), ip: getIp(req) });
-    return sendJson(res, 202, { recoveryOtpRequired: true, recoveryId: id, message: `Verification OTP sent to ${maskEmail(newEmail)}.` }, {}, req);
   }
 
   const pending = pendingEmailRecoveries.get(recoveryId);
   if (!pending || Number(pending.userId) !== Number(user.id) || pending.newEmail.toLowerCase() !== newEmail.toLowerCase() || pending.expiresAt <= Date.now()) {
-    if (recoveryId) pendingEmailRecoveries.delete(recoveryId);
+    if (recoveryId) {
+      pendingEmailRecoveries.delete(recoveryId);
+      removeHostingEmailRecoveryFile(recoveryId);
+    }
     return sendJson(res, 422, { error: 'Email recovery verification expired. Start again.' }, {}, req);
   }
   if (pending.ipPrefix !== requestIpPrefix(req) || pending.uaHash !== requestUaHash(req)) {
     pendingEmailRecoveries.delete(recoveryId);
+    removeHostingEmailRecoveryFile(recoveryId);
     return sendJson(res, 401, { error: 'Email recovery cannot be confirmed from another browser or network.' }, {}, req);
   }
   pending.attempts += 1;
   if (pending.attempts > 6) {
     pendingEmailRecoveries.delete(recoveryId);
-    return sendJson(res, 429, { error: 'Too many email recovery OTP attempts. Start again later.' }, {}, req);
+    removeHostingEmailRecoveryFile(recoveryId);
+    return sendJson(res, 429, { error: 'Too many email recovery verification attempts. Start again later.' }, {}, req);
   }
-  if (String(body.recoveryOtp || '').trim() !== pending.code) {
-    return sendJson(res, 422, { error: 'Email recovery OTP is incorrect.' }, {}, req);
+  const codeOk = pending.mode === 'hosting'
+    ? secureCompareText(hostingRecoveryCodeHash(suppliedCode.toUpperCase(), recoveryId), pending.codeHash)
+    : secureCompareText(suppliedCode, pending.code);
+  if (!codeOk) {
+    return sendJson(res, 422, { error: pending.mode === 'hosting' ? 'Hosting recovery code is incorrect.' : 'Email recovery OTP is incorrect.' }, {}, req);
   }
 
   const oldEmail = user.email || '';
   user.email = newEmail;
   user.securityUpdatedAt = nowIso();
   pendingEmailRecoveries.delete(recoveryId);
+  removeHostingEmailRecoveryFile(recoveryId);
   pendingOtps.delete(user.id);
   const revokedDevices = revokeTrustedDevices(user, { reason: 'email_recovery' });
   const invalidatedSessions = invalidateUserSessions(user.id);
-  logAudit(user, 'login_email_recovered', 'user', user.id, { oldEmail: maskEmail(oldEmail), newEmail: maskEmail(newEmail), revokedDevices, invalidatedSessions, ip: getIp(req) });
-  addNotification('security_email_recovered', `Login email corrected for ${user.username}. Trusted devices were reset and full login is required.`, 'warning', { userId: user.id, audience: 'manager' });
-  saveDb();
+  // The recovery form already proved username + password + secret + either the
+  // new mailbox or hosting ownership. Enroll this browser now so recovery does
+  // not trigger another email OTP and cannot lock the Owner out during a mail outage.
+  const trustedDevice = enrollTrustedDevice(user, body.deviceEnrollment, req);
+  const session = trustedDevice ? createAuthenticatedSession(user, req, 'email_recovery', { deviceId: trustedDevice.id, authLevel: pending.mode === 'hosting' ? 'owner_hosting_recovery' : 'email_recovery_verified' }) : null;
+  logAudit(user, 'login_email_recovered', 'user', user.id, { oldEmail: maskEmail(oldEmail), newEmail: maskEmail(newEmail), mode: pending.mode, revokedDevices, invalidatedSessions, trustedDeviceEnrolled: Boolean(trustedDevice), ip: getIp(req) });
+  addNotification('security_email_recovered', `Login email corrected for ${user.username}. Previous trusted devices and sessions were reset.`, 'warning', { userId: user.id, audience: 'manager' });
   resetLoginThrottle(req);
+  saveDb();
+  if (session) {
+    return sendJson(res, 200, {
+      ok: true,
+      email: newEmail,
+      recoveredAndSignedIn: true,
+      csrfToken: session.csrfToken,
+      trustedDevice: trustedDeviceSafe(trustedDevice, trustedDevice.id),
+      mailSent: pending.mode === 'email',
+      message: 'Email corrected and this browser is now trusted. You are signed in without sending another login email.'
+    }, { 'Set-Cookie': sessionCookieHeader(session.sid, req) }, req);
+  }
   return sendJson(res, 200, {
     ok: true,
     email: newEmail,
     fullLoginRequired: true,
-    message: 'Email corrected successfully. For safety, trusted devices and old sessions were revoked. Sign in once with the new email/username, password, email OTP and secret code.'
+    message: 'Email corrected successfully. This browser could not create a device key, so one full login is still required.'
   }, { 'Set-Cookie': clearSessionCookieHeader(req) }, req);
 }
 

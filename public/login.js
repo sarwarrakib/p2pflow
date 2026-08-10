@@ -11,6 +11,8 @@ let verificationActive = false;
 let resendTimer = null;
 let deviceRecord = null;
 let recoveryOtpActive = false;
+let recoveryMode = 'email';
+let legacyUpgradeMode = false;
 
 function t(en, bn) { return lang === 'bn' ? bn : en; }
 
@@ -135,7 +137,7 @@ function setVerificationStep(message, { restartCooldown=true }={}) {
   setTimeout(() => ($$('.otp-digit').find(input => !input.value) || $('#loginSecretCode'))?.focus({ preventScroll:true }), 30);
 }
 function setFullLoginMode({ clear=false, focus=true, message='' }={}) {
-  loginMode = 'full'; verificationActive = false;
+  loginMode = 'full'; verificationActive = false; legacyUpgradeMode = false;
   $('#trustedDevicePanel')?.classList.add('hidden'); $('#credentialPanel')?.classList.remove('hidden'); $('#otpPanel')?.classList.add('hidden');
   $('.login-card')?.classList.remove('is-verification','is-trusted'); $('#changeCredentialsBtn')?.classList.add('hidden'); $('#credentialVerifiedNote')?.classList.add('hidden');
   ['#loginIdentity','#loginPassword'].forEach(selector => { const input=$(selector); if (input) { input.readOnly=false; input.closest('.login-input-shell')?.classList.remove('is-readonly'); } });
@@ -144,11 +146,11 @@ function setFullLoginMode({ clear=false, focus=true, message='' }={}) {
   if (message) setError(message); setBusy(false); if (focus) $('#loginIdentity')?.focus({ preventScroll:true });
 }
 function setTrustedMode(info={}) {
-  loginMode = 'trusted'; verificationActive = false;
+  loginMode = 'trusted'; verificationActive = false; legacyUpgradeMode = Boolean(info.legacyUpgrade);
   $('#credentialPanel')?.classList.add('hidden'); $('#otpPanel')?.classList.add('hidden'); $('#trustedDevicePanel')?.classList.remove('hidden');
   $('.login-card')?.classList.remove('is-verification'); $('.login-card')?.classList.add('is-trusted');
   $('#trustedDeviceAccountHint').textContent = info.accountHint ? `${t('Account', 'অ্যাকাউন্ট')}: ${info.accountHint}` : '';
-  $('#trustedDeviceStatus').textContent = t('Trusted browser recognized', 'বিশ্বস্ত ডিভাইস শনাক্ত হয়েছে');
+  $('#trustedDeviceStatus').textContent = legacyUpgradeMode ? t('Secure this existing session', 'এই পুরোনো সেশনটি সুরক্ষিত করুন') : t('Trusted browser recognized', 'বিশ্বস্ত ডিভাইস শনাক্ত হয়েছে');
   if ($('#trustedSecretCode')) $('#trustedSecretCode').value=''; setError(''); setBusy(false);
   setTimeout(() => $('#trustedSecretCode')?.focus({ preventScroll:true }), 40);
 }
@@ -177,10 +179,16 @@ async function enrollmentPayload() {
 
 async function submitTrustedLogin() {
   if (!validateTrusted()) return;
-  if (!deviceRecord) deviceRecord = await window.P2PFlowDeviceAuth?.load?.();
-  if (!deviceRecord) { setFullLoginMode({ message:t('Trusted browser key is missing. Use full login.', 'বিশ্বস্ত ডিভাইসের কী পাওয়া যায়নি। ফুল লগইন করুন।') }); return; }
   setBusy(true);
   try {
+    if (legacyUpgradeMode) {
+      const enrollment = await enrollmentPayload();
+      if (!enrollment) { setFullLoginMode({ message:t('This browser cannot create a secure device key. Use full login.', 'এই ব্রাউজার সিকিউর ডিভাইস কী তৈরি করতে পারছে না। ফুল লগইন করুন।') }); return; }
+      const data = await loginApi('/api/login/device/upgrade', { method:'POST', body:JSON.stringify({ secretCode:$('#trustedSecretCode').value, deviceEnrollment:enrollment }) });
+      if (data.ok) { window.location.replace(safeNextUrl()); return; }
+    }
+    if (!deviceRecord) deviceRecord = await window.P2PFlowDeviceAuth?.load?.();
+    if (!deviceRecord) { setFullLoginMode({ message:t('Trusted browser key is missing. Use full login.', 'বিশ্বস্ত ডিভাইসের কী পাওয়া যায়নি। ফুল লগইন করুন।') }); return; }
     const challenge = await loginApi('/api/login/device/challenge', { method:'POST', body:JSON.stringify({ deviceId:deviceRecord.deviceId }) });
     if (!challenge.trustedDevice || !challenge.signingPayload) { setFullLoginMode({ message:t('Full login is required on this browser.', 'এই ডিভাইসে ফুল লগইন প্রয়োজন।') }); return; }
     const signature = await window.P2PFlowDeviceAuth.sign(deviceRecord, challenge.signingPayload);
@@ -215,22 +223,42 @@ async function resendOtp() {
   catch(error){ setError(error.message); setAlert(error.message,error.status===429?'warning':'danger'); const wait=String(error.message||'').match(/wait\s+(\d+)\s+seconds/i); if(wait) startCooldown(Number(wait[1])); else if(button) button.disabled=false; }
 }
 
+function setRecoveryCodeMode(mode='email') {
+  recoveryMode = mode === 'hosting' ? 'hosting' : 'email';
+  const input = $('#recoveryOtp'), label = $('#recoveryCodeLabel');
+  if (!input) return;
+  if (recoveryMode === 'hosting') {
+    input.type = 'text'; input.inputMode = 'text'; input.maxLength = 24; input.pattern = '[A-Za-z0-9_-]{8,24}'; input.placeholder = 'Hosting recovery code';
+    if (label) label.textContent = t('Hosting Recovery Code', 'হোস্টিং রিকভারি কোড');
+  } else {
+    input.type = 'text'; input.inputMode = 'numeric'; input.maxLength = 6; input.pattern = '[0-9]{6}'; input.placeholder = '6 digit OTP';
+    if (label) label.textContent = t('New Email OTP', 'নতুন ইমেইল OTP');
+  }
+}
 function toggleRecovery(show) {
   const form=$('#emailRecoveryForm'); if(!form) return; form.classList.toggle('hidden',!show);
   if(show){ $('#recoveryIdentity').value=String($('#loginIdentity')?.value||'').trim(); $('#recoveryPassword').value=String($('#loginPassword')?.value||''); $('#recoveryIdentity')?.focus({preventScroll:true}); }
-  else { recoveryOtpActive=false; form.reset(); $('#recoveryId').value=''; $('#recoveryOtpWrap').classList.add('hidden'); setRecoveryMessage(''); }
+  else { recoveryOtpActive=false; recoveryMode='email'; form.reset(); $('#recoveryId').value=''; $('#recoveryOtpWrap').classList.add('hidden'); setRecoveryCodeMode('email'); setRecoveryMessage(''); }
 }
 async function submitEmailRecovery(event) {
   event.preventDefault(); setRecoveryMessage(''); const form=event.currentTarget; const payload=Object.fromEntries(new FormData(form));
-  payload.secretCode=String(payload.secretCode||'').replace(/\D/g,'').slice(0,6); payload.recoveryOtp=String(payload.recoveryOtp||'').replace(/\D/g,'').slice(0,6);
+  payload.secretCode=String(payload.secretCode||'').replace(/\D/g,'').slice(0,6);
+  payload.recoveryOtp = recoveryMode === 'hosting' ? String(payload.recoveryOtp||'').trim().toUpperCase().slice(0,24) : String(payload.recoveryOtp||'').replace(/\D/g,'').slice(0,6);
+  payload.recoveryMode = recoveryMode;
+  const enrollment = await enrollmentPayload(); if (enrollment) payload.deviceEnrollment = enrollment;
   if(!payload.username||!payload.password||payload.secretCode.length!==6||!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(String(payload.newEmail||''))){ setRecoveryMessage(t('Enter username, current password, 6 digit secret and a valid new email.','ইউজারনেম, বর্তমান পাসওয়ার্ড, ৬ ডিজিট সিক্রেট এবং সঠিক নতুন ইমেইল দিন।'),'danger'); return; }
-  if(recoveryOtpActive && payload.recoveryOtp.length!==6){ setRecoveryMessage(t('Enter the 6 digit OTP sent to the new email.','নতুন ইমেইলে পাঠানো ৬ ডিজিট OTP দিন।'),'danger'); return; }
+  if(recoveryOtpActive){
+    const validCode = recoveryMode === 'hosting' ? /^[A-Z0-9_-]{8,24}$/i.test(payload.recoveryOtp) : /^\d{6}$/.test(payload.recoveryOtp);
+    if(!validCode){ setRecoveryMessage(recoveryMode==='hosting' ? t('Enter the Hosting Recovery Code from shared/email-recovery-code.txt.','shared/email-recovery-code.txt থেকে Hosting Recovery Code দিন।') : t('Enter the 6 digit OTP sent to the new email.','নতুন ইমেইলে পাঠানো ৬ ডিজিট OTP দিন।'),'danger'); return; }
+  }
   const button=$('#recoverySubmitBtn'); button.disabled=true;
   try {
     const data=await loginApi('/api/login/recover-email',{method:'POST',body:JSON.stringify(payload)});
-    if(data.recoveryOtpRequired){ recoveryOtpActive=true; $('#recoveryId').value=data.recoveryId||''; $('#recoveryOtpWrap').classList.remove('hidden'); button.textContent=t('Confirm corrected email','সঠিক ইমেইল নিশ্চিত করুন'); setRecoveryMessage(data.message,'info'); $('#recoveryOtp')?.focus({preventScroll:true}); return; }
-    setRecoveryMessage(data.message||t('Email corrected. Full login is required.','ইমেইল ঠিক হয়েছে। এখন ফুল লগইন করুন।'),'success');
-    await window.P2PFlowDeviceAuth?.forget?.(); deviceRecord=null; recoveryOtpActive=false; $('#recoveryOtpWrap').classList.add('hidden'); $('#loginIdentity').value=payload.username; $('#loginPassword').value=''; setFullLoginMode({focus:false});
+    if(data.recoveryOtpRequired){ recoveryOtpActive=true; recoveryMode=data.recoveryMode==='hosting'?'hosting':'email'; setRecoveryCodeMode(recoveryMode); $('#recoveryId').value=data.recoveryId||''; $('#recoveryOtpWrap').classList.remove('hidden'); button.textContent=recoveryMode==='hosting'?t('Confirm with Hosting Code','হোস্টিং কোড দিয়ে নিশ্চিত করুন'):t('Confirm corrected email','সঠিক ইমেইল নিশ্চিত করুন'); setRecoveryMessage(data.message,'warning'); $('#recoveryOtp')?.focus({preventScroll:true}); return; }
+    setRecoveryMessage(data.message||t('Email corrected.','ইমেইল ঠিক হয়েছে।'),'success');
+    recoveryOtpActive=false; $('#recoveryOtpWrap').classList.add('hidden');
+    if (data.recoveredAndSignedIn) { setTimeout(()=>window.location.replace(safeNextUrl()),350); return; }
+    await window.P2PFlowDeviceAuth?.forget?.(); deviceRecord=null; $('#loginIdentity').value=payload.username; $('#loginPassword').value=''; setFullLoginMode({focus:false});
   } catch(error){ setRecoveryMessage(error.message,error.status===429?'warning':'danger'); }
   finally{ button.disabled=false; if(!recoveryOtpActive) button.textContent=t('Send verification OTP','ভেরিফিকেশন OTP পাঠান'); }
 }
@@ -259,6 +287,11 @@ async function initLogin(){
   deviceRecord=await window.P2PFlowDeviceAuth?.load?.();
   try { await loginApi('/api/me'); window.location.replace(safeNextUrl()); return; }
   catch(error){ if(error.status && error.status!==401) setError(error.message); }
+
+  try {
+    const legacy=await loginApi('/api/login/device/legacy');
+    if(legacy.legacySession){ setTrustedMode({ legacyUpgrade:true, accountHint:legacy.username, message:legacy.message }); return; }
+  } catch(error){ if(error.status && error.status>=500) setError(error.message); }
 
   if(deviceRecord){
     try { const info=await loginApi('/api/login/device/challenge',{method:'POST',body:JSON.stringify({deviceId:deviceRecord.deviceId})}); if(info.trustedDevice){setTrustedMode(info);return;} }
