@@ -27,11 +27,11 @@ Updater code এবং database আলাদা রাখে। Update install-�
 
 ## Version
 
-Internal SemVer: `1.5.3`  
+Internal SemVer: `1.5.4`  
 UI: `1.5`
 
 Normal next version: `SET_NEXT_VERSION.bat` -> `1.6.0`  
-Hotfix: `SET_HOTFIX_VERSION.bat` -> `1.5.4`
+Hotfix: `SET_HOTFIX_VERSION.bat` -> `1.5.5`
 
 ## Database history safety
 

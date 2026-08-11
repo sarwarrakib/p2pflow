@@ -9717,16 +9717,44 @@ function merchantOnlineStatusFromResponse(response) {
   );
 }
 
+function merchantBusinessStatusCodeFromResponse(response) {
+  const values = deepValuesByKey(response || {}, ['businessStatus','business_status'], 30);
+  for (const raw of values) {
+    const numeric = Number(raw);
+    if ([1, 2, 3].includes(numeric)) return numeric;
+    const text = String(raw ?? '').trim().toLowerCase();
+    if (['open','opened','business_open','started','working','normal'].includes(text)) return 1;
+    if (['closed','business_closed','stopped'].includes(text)) return 2;
+    if (['break','on_break','take_break','rest','resting'].includes(text)) return 3;
+  }
+  return null;
+}
+
+function merchantBusinessControlsFromStatusCode(code) {
+  const n = Number(code);
+  if (n === 1) return { business: 1, break: 0, mode: 'open' };
+  if (n === 2) return { business: 0, break: 0, mode: 'closed' };
+  if (n === 3) return { business: 1, break: 1, mode: 'break' };
+  return { business: null, break: null, mode: 'unknown' };
+}
+
 function merchantBusinessStatusFromResponse(response) {
+  const exact = merchantBusinessControlsFromStatusCode(merchantBusinessStatusCodeFromResponse(response));
+  if (exact.business !== null) return exact.business;
   return merchantStatusFromResponse(
     response,
-    ['businessStatus','business_status','isBusinessStarted','businessStarted','businessOpen','merchantBusinessStatus'],
+    ['isBusinessStarted','businessStarted','businessOpen','merchantBusinessStatus'],
     ['started','open','opened','business'],
     ['closed','stopped']
   );
 }
 
 function merchantBreakStatusFromResponse(response) {
+  // Binance user/baseDetail exposes the canonical P2P business state in businessStatus:
+  // 1 = Open, 2 = Closed, 3 = Take break. Treat status 3 as the same Break control used
+  // by merchant/startRest and merchant/endRest so Profile and Ads always share one state.
+  const exact = merchantBusinessControlsFromStatusCode(merchantBusinessStatusCodeFromResponse(response));
+  if (exact.break !== null) return exact.break;
   return merchantStatusFromResponse(
     response,
     ['restStatus','rest_status','isRest','inRest','resting','breakStatus','merchantRestStatus'],
@@ -9817,6 +9845,10 @@ const advertisementMerchantStatusRuntime = {
   lastError: null,
   busy: false,
   rawOnlineStatus: null,
+  ownerBusinessStatusCode: null,
+  ownerBusinessStatusSource: null,
+  ownerBusinessError: null,
+  ownerProfileBusinessChanged: false,
   lastModeProbeAt: null,
   lastModeProbeResult: null,
   lastModeProbeError: null
@@ -10062,6 +10094,9 @@ function advertisementMerchantControlsView() {
     checkedAt: advertisementMerchantStatusRuntime.lastCheckAt || null,
     lastSuccessAt: advertisementMerchantStatusRuntime.lastSuccessAt || null,
     syncError: advertisementMerchantStatusRuntime.lastError || null,
+    businessStatusCode: advertisementMerchantStatusRuntime.ownerBusinessStatusCode,
+    businessStatusSource: advertisementMerchantStatusRuntime.ownerBusinessStatusSource || null,
+    businessStatusError: advertisementMerchantStatusRuntime.ownerBusinessError || null,
     modeProbeAt: advertisementMerchantStatusRuntime.lastModeProbeAt || null,
     modeProbeResult: advertisementMerchantStatusRuntime.lastModeProbeResult || null,
     modeProbeError: advertisementMerchantStatusRuntime.lastModeProbeError || null
@@ -10170,12 +10205,72 @@ async function callAdvertisementMerchantEndpoint(credential, endpointName, optio
   return assertSuccessfulSapiResponse(result, endpointName);
 }
 
+async function readAdvertisementOwnerBusinessStatus(credential) {
+  const failures = [];
+  for (const endpointName of ['getUserBaseDetailOfficial', 'getUserBaseDetail']) {
+    try {
+      const result = await callSignedSapi({
+        apiKey: credential.apiKey,
+        secretKey: credential.secretKey,
+        endpointName,
+        body: {},
+        clientType: credential.clientType || 'web',
+        dryRun: false,
+        timeoutMs: 12000
+      });
+      assertSuccessfulSapiResponse(result, endpointName);
+      const businessStatusCode = merchantBusinessStatusCodeFromResponse(result);
+      if (businessStatusCode !== null) {
+        const controls = merchantBusinessControlsFromStatusCode(businessStatusCode);
+        return { ok: true, endpointName, businessStatusCode, ...controls, result };
+      }
+      failures.push(`${endpointName}: businessStatus missing`);
+    } catch (error) {
+      failures.push(`${endpointName}: ${cleanStr(error.message || error, 260)}`);
+    }
+  }
+  return { ok: false, businessStatusCode: null, business: null, break: null, mode: 'unknown', error: failures.slice(0, 2).join(' | ') };
+}
+
+function syncOwnerP2pBusinessStatusSnapshot(credential, businessStatusCode, source = 'merchant_realtime') {
+  const code = Number(businessStatusCode);
+  if (!credential || ![1, 2, 3].includes(code)) return false;
+  const record = ownerP2pProfileRecord(credential.id);
+  if (!record) return false;
+  const before = Number(record.account?.businessStatus || 0) || null;
+  if (before === code) return false;
+  record.account = { ...(record.account || {}), businessStatus: code };
+  record.businessStatusSyncedAt = nowIso();
+  record.businessStatusSource = cleanStr(source || 'merchant_realtime', 80);
+  const firstCredentialId = Number(sortedP2pProfileCredentials()[0]?.id || 0);
+  if (firstCredentialId && Number(credential.id) === firstCredentialId) db.ownerP2pProfile = record;
+  return true;
+}
+
 async function readAdvertisementMerchantStatuses(credential, options = {}) {
+  // Merchant getAdDetails is the best source for onlineStatus, but its documented response
+  // does not expose the canonical Open / Closed / Take break state. user/baseDetail does.
+  // Read both on the same realtime cycle so Profile businessStatus=3 and Ads Break cannot drift.
+  const ownerBusiness = await readAdvertisementOwnerBusinessStatus(credential);
   const candidates = Array.from(new Set((options.merchantNumbers || advertisementKnownMerchantNumbers(credential))
     .map(value => cleanStr(value || '', 120)).filter(Boolean)));
   const attempts = candidates.map(merchantNo => ({ merchantNo }));
   if (options.allowUnscoped !== false) attempts.push({ merchantNo: '' });
+
+  const partialFromOwnerBusiness = (result = ownerBusiness.result || null) => ({
+    result,
+    merchantNo: '',
+    online: ownerBusiness.break === 1 || ownerBusiness.business === 0 ? 0 : null,
+    business: ownerBusiness.business,
+    break: ownerBusiness.break,
+    businessStatusCode: ownerBusiness.businessStatusCode,
+    businessStatusSource: ownerBusiness.ok ? `user_base_detail:${ownerBusiness.endpointName}` : null,
+    ownerBusinessError: ownerBusiness.ok ? null : ownerBusiness.error || null,
+    suspendEndTime: null
+  });
+
   if (!attempts.length) {
+    if (ownerBusiness.ok) return partialFromOwnerBusiness();
     const error = Object.assign(new Error('Merchant number is not available for getMerchantAdDetails.'), { statusCode: 422 });
     error.merchantStatusUnavailable = true;
     throw error;
@@ -10184,12 +10279,23 @@ async function readAdvertisementMerchantStatuses(credential, options = {}) {
   for (const attempt of attempts) {
     try {
       const result = await callAdvertisementMerchantEndpoint(credential, 'getMerchantAdDetails', attempt);
+      const merchantBusinessStatusCode = merchantBusinessStatusCodeFromResponse(result);
+      const merchantBusiness = merchantBusinessStatusFromResponse(result);
+      const merchantBreak = merchantBreakStatusFromResponse(result);
+      const businessStatusCode = ownerBusiness.ok ? ownerBusiness.businessStatusCode : merchantBusinessStatusCode;
+      const exact = ownerBusiness.ok ? merchantBusinessControlsFromStatusCode(ownerBusiness.businessStatusCode) : { business: merchantBusiness, break: merchantBreak };
+      const breakStatus = exact.break !== null && exact.break !== undefined ? exact.break : merchantBreak;
+      const businessStatus = exact.business !== null && exact.business !== undefined ? exact.business : merchantBusiness;
+      const rawOnline = merchantOnlineStatusFromResponse(result);
       return {
         result,
         merchantNo: attempt.merchantNo || cleanStr(firstUsefulStringByKey(result, ['merchantNo'], '', 120), 120),
-        online: merchantOnlineStatusFromResponse(result),
-        business: merchantBusinessStatusFromResponse(result),
-        break: merchantBreakStatusFromResponse(result),
+        online: breakStatus === 1 || businessStatus === 0 ? 0 : rawOnline,
+        business: businessStatus,
+        break: breakStatus,
+        businessStatusCode,
+        businessStatusSource: ownerBusiness.ok ? `user_base_detail:${ownerBusiness.endpointName}` : (merchantBusinessStatusCode !== null ? 'merchant_details' : null),
+        ownerBusinessError: ownerBusiness.ok ? null : ownerBusiness.error || null,
         suspendEndTime: merchantRestSuspendEndTimeFromResponse(result)
       };
     } catch (error) {
@@ -10197,6 +10303,9 @@ async function readAdvertisementMerchantStatuses(credential, options = {}) {
       if (!isAdvertisementIllegalParameterError(error)) break;
     }
   }
+  // Even if merchant details temporarily fail, a successful user/baseDetail businessStatus is
+  // still authoritative for Closed/Break and is enough to keep the Ads toggle safe and correct.
+  if (ownerBusiness.ok) return partialFromOwnerBusiness();
   if (lastError) throw lastError;
   throw Object.assign(new Error('Binance merchant status is unavailable.'), { statusCode: 502, merchantStatusUnavailable: true });
 }
@@ -10485,9 +10594,15 @@ async function refreshAdvertisementMerchantControlVerification(credential, force
     const explicitBreak = rawStatus.break !== null && rawStatus.break !== undefined;
     const status = inferAdvertisementMerchantStatuses(rawStatus);
     advertisementMerchantStatusRuntime.rawOnlineStatus = rawStatus.online;
-    if (status.online !== null) setAdvertisementMerchantControlState('online', status.online === 1, { verified: true, strategy: 'getMerchantAdDetails', preserveActionAt: true });
-    if (status.business !== null) setAdvertisementMerchantControlState('business', status.business === 1, { verified: explicitBusiness || advertisementBusinessClosedHoldActive(), preserveActionAt: true });
-    if (status.break !== null) setAdvertisementMerchantControlState('break', status.break === 1, { verified: explicitBreak, preserveActionAt: true, source: explicitBreak ? 'merchant_details' : db.settings.adsMerchantBreakStateSource });
+    advertisementMerchantStatusRuntime.ownerBusinessStatusCode = rawStatus.businessStatusCode ?? null;
+    advertisementMerchantStatusRuntime.ownerBusinessStatusSource = rawStatus.businessStatusSource || null;
+    advertisementMerchantStatusRuntime.ownerBusinessError = rawStatus.ownerBusinessError || null;
+    if (syncOwnerP2pBusinessStatusSnapshot(credential, rawStatus.businessStatusCode, rawStatus.businessStatusSource || 'merchant_realtime')) {
+      advertisementMerchantStatusRuntime.ownerProfileBusinessChanged = true;
+    }
+    if (status.online !== null) setAdvertisementMerchantControlState('online', status.online === 1, { verified: true, strategy: status.break === 1 ? 'user_base_detail_break' : 'getMerchantAdDetails', preserveActionAt: true });
+    if (status.business !== null) setAdvertisementMerchantControlState('business', status.business === 1, { verified: explicitBusiness || advertisementBusinessClosedHoldActive(), preserveActionAt: true, source: rawStatus.businessStatusSource || undefined });
+    if (status.break !== null) setAdvertisementMerchantControlState('break', status.break === 1, { verified: explicitBreak, preserveActionAt: true, source: rawStatus.businessStatusSource || (explicitBreak ? 'merchant_details' : db.settings.adsMerchantBreakStateSource) });
     if (status.break === 1) {
       setAdvertisementMerchantControlState('business', true, { verified: explicitBusiness, preserveActionAt: true });
       setAdvertisementMerchantControlState('online', false, { verified: rawStatus.online !== null, strategy: 'merchant_break', preserveActionAt: true });
@@ -16879,11 +16994,22 @@ async function runAdvertisementMerchantStatusAutoSync(reason = 'timer') {
     const controls = await refreshAdvertisementMerchantControlVerification(credential, force);
     const after = advertisementMerchantControlSignature(controls);
     const changed = before !== after;
-    if (changed) {
-      saveDb({ broadcast: false });
-      broadcast({ type: 'ads.merchant.controls.synced', controls, reason, at: nowIso() });
+    const profileBusinessChanged = Boolean(advertisementMerchantStatusRuntime.ownerProfileBusinessChanged);
+    advertisementMerchantStatusRuntime.ownerProfileBusinessChanged = false;
+    if (changed || profileBusinessChanged) saveDb({ broadcast: false });
+    if (changed) broadcast({ type: 'ads.merchant.controls.synced', controls, reason, at: nowIso() });
+    if (profileBusinessChanged) {
+      const profile = ownerP2pProfileRecord(credential.id);
+      broadcast({
+        type: 'p2p.owner_profile.updated',
+        credentialId: credential.id,
+        userNo: profile?.userNo || '',
+        businessStatus: profile?.account?.businessStatus ?? null,
+        source: profile?.businessStatusSource || controls.businessStatusSource || 'merchant_realtime',
+        at: nowIso()
+      });
     }
-    return { changed, controls };
+    return { changed, profileBusinessChanged, controls };
   } finally {
     advertisementMerchantStatusBusy = false;
   }
