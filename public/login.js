@@ -207,7 +207,13 @@ async function submitFullLogin(form) {
   setBusy(true);
   try {
     const data=await loginApi('/api/login',{method:'POST',body:JSON.stringify(payload)});
-    if (data.otpRequired) { const message=data.message||t('Check your email and enter the OTP.','ইমেইল দেখে OTP লিখুন।'); setVerificationStep(message,{restartCooldown:!verificationActive||/sent|expired/i.test(message)}); return; }
+    if (data.otpRequired) {
+      const baseMessage=data.message||t('Check your email and enter the OTP.','ইমেইল দেখে OTP লিখুন।');
+      const deliveryHint=data.otpRecipient ? ` ${t('Recipient','প্রাপক')}: ${data.otpRecipient}${data.otpDriver ? ` · ${data.otpDriver}` : ''}` : '';
+      const message=`${baseMessage}${deliveryHint}`;
+      setVerificationStep(message,{restartCooldown:!verificationActive||/sent|expired/i.test(baseMessage)});
+      return;
+    }
     window.location.replace(safeNextUrl());
   } catch(error) {
     setError(error.message); if (verificationActive) setAlert(error.message,error.status===429?'warning':'danger'); else { $('#loginPassword')?.focus({preventScroll:true}); $('#loginPassword')?.select(); }
@@ -219,7 +225,13 @@ async function resendOtp() {
   if (!verificationActive) return; setError(''); const payload=Object.fromEntries(new FormData($('#loginForm'))); payload.emailOtp=''; payload.secretCode=''; payload.resendOtp=true;
   const enrollment=await enrollmentPayload(); if (enrollment) payload.deviceEnrollment=enrollment;
   const button=$('#resendOtpBtn'); if(button) button.disabled=true;
-  try { const data=await loginApi('/api/login',{method:'POST',body:JSON.stringify(payload)}); clearOtp(); setVerificationStep(data.message||t('A new OTP was sent.','নতুন OTP পাঠানো হয়েছে।'),{restartCooldown:true}); }
+  try {
+    const data=await loginApi('/api/login',{method:'POST',body:JSON.stringify(payload)});
+    clearOtp();
+    const baseMessage=data.message||t('A new OTP was sent.','নতুন OTP পাঠানো হয়েছে।');
+    const deliveryHint=data.otpRecipient ? ` ${t('Recipient','প্রাপক')}: ${data.otpRecipient}${data.otpDriver ? ` · ${data.otpDriver}` : ''}` : '';
+    setVerificationStep(`${baseMessage}${deliveryHint}`,{restartCooldown:true});
+  }
   catch(error){ setError(error.message); setAlert(error.message,error.status===429?'warning':'danger'); const wait=String(error.message||'').match(/wait\s+(\d+)\s+seconds/i); if(wait) startCooldown(Number(wait[1])); else if(button) button.disabled=false; }
 }
 

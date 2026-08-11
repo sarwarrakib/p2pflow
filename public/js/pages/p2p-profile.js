@@ -1,4 +1,4 @@
-// P2PFlow v1.4.19
+// P2PFlow v1.5.0
 // Dedicated Binance-style P2P Profile workspace. Login security is kept on the separate Security page.
 
 function profileMetricValue(value, suffix = '') {

@@ -27,7 +27,7 @@ async function renderSettings() {
     <div><label class="check"><input type="checkbox" name="requireEmailOtp" ${s.requireEmailOtp!==false?'checked':''}/> Require email OTP at login</label></div>
     <div><label class="check"><input type="checkbox" name="requireLoginSecretCode" ${s.requireLoginSecretCode!==false?'checked':''}/> Require 6 digit secret code</label></div>
 
-    <div class="full-row settings-section-head"><div><b>Email Delivery</b><span>Local mode needs no SMTP configuration. It tries hosting PHP mail(), PHP CLI, sendmail, then the saved SMTP account as a fallback.</span></div><span>${s.smtpConfigured ? badge('SMTP configured','ok') : badge('SMTP not configured','warn')}</span></div>
+    <div class="full-row settings-section-head"><div><b>Email Delivery</b><span>Local mode uses hosting PHP/sendmail first. If the host blocks the sender quota, a complete authenticated SMTP configuration is required for immediate fallback.</span></div><span>${s.smtpConfigured ? badge('SMTP configured','ok') : badge(`SMTP incomplete${Array.isArray(s.smtpMissingFields) && s.smtpMissingFields.length ? `: ${s.smtpMissingFields.join(', ')}` : ''}`,'warn')}</span></div>
     <div><label>Delivery Mode</label><select name="mailDriver">
       <option value="local" ${(s.mailDriver||'local')==='local'?'selected':''}>Local first + SMTP fallback</option>
       <option value="smtp" ${s.mailDriver==='smtp'?'selected':''}>SMTP only</option>
@@ -49,11 +49,17 @@ async function renderSettings() {
     <div><label>SMTP HELO Domain</label><input name="smtpHelo" value="${escapeAttr(s.smtpHelo || 'localhost')}" placeholder="your-domain.com" /></div>
     <div><label class="check"><input type="checkbox" name="clearSmtpPassword" /> Clear saved SMTP password</label></div>
     <div class="full-row"><div class="notice small">SMTP password is stored encrypted.</div></div>
+    <div class="full-row settings-section-head"><div><b>Automated Email</b><span>These switches control OTP-related security alerts, order mail and notification-center email delivery. Test Email does not depend on these switches.</span></div></div>
+    <div><label class="check"><input type="checkbox" name="sendNotificationEmail" ${s.sendNotificationEmail!==false?'checked':''}/> Email notification-center alerts</label></div>
+    <div><label class="check"><input type="checkbox" name="sendOrderEmail" ${s.sendOrderEmail!==false?'checked':''}/> Order assignment / attention emails</label></div>
+    <div><label class="check"><input type="checkbox" name="sendSecurityChangeEmail" ${s.sendSecurityChangeEmail!==false?'checked':''}/> Security change emails</label></div>
+    <div><label class="check"><input type="checkbox" name="sendLoginFailureEmail" ${s.sendLoginFailureEmail!==false?'checked':''}/> Failed-login security emails</label></div>
+    <div class="full-row"><div class="notice small"><b>Login OTP:</b> the OTP switch above applies to full login. A recognized trusted browser intentionally uses its device key + 6-digit secret without sending an OTP; choose <b>Use full login</b> on the login page when you want the email OTP path.</div></div>
 
     ${typeof notificationSoundSettingsHtml === 'function' ? notificationSoundSettingsHtml() : ''}
     <div><label class="check"><input type="checkbox" name="requireProofForFinalAction" ${s.requireProofForFinalAction?'checked':''}/> Require proof for final action</label></div>
     <div><label class="check"><input type="checkbox" name="allowAgentFinalAction" ${s.allowAgentFinalAction?'checked':''}/> Allow lead user final action</label></div>
-    <div class="full-row actions"><button type="submit">Save Settings</button><button type="button" class="secondary" id="settingsTestMailBtn">Send Test Email</button></div>
+    <div class="full-row actions"><button type="submit">Save Settings</button><button type="button" class="secondary" id="settingsTestMailBtn">Test Active Mail</button><button type="button" class="secondary" id="settingsTestSmtpBtn">Test SMTP</button><button type="button" class="secondary" id="settingsTestLocalMailBtn">Test Local Mail</button></div>
   </form><div id="settingsMailResult"></div><div class="notice">Live API actions require valid Binance credentials.</div></div>`;
 
   $('#settingsForm').onsubmit = async e => {
@@ -64,6 +70,10 @@ async function renderSettings() {
     obj.allowAgentFinalAction = e.target.allowAgentFinalAction.checked;
     obj.requireEmailOtp = e.target.requireEmailOtp.checked;
     obj.requireLoginSecretCode = e.target.requireLoginSecretCode.checked;
+    obj.sendNotificationEmail = e.target.sendNotificationEmail.checked;
+    obj.sendOrderEmail = e.target.sendOrderEmail.checked;
+    obj.sendSecurityChangeEmail = e.target.sendSecurityChangeEmail.checked;
+    obj.sendLoginFailureEmail = e.target.sendLoginFailureEmail.checked;
     obj.clearSmtpPassword = e.target.clearSmtpPassword.checked;
     obj.smtpSecure = e.target.smtpSecurity.value === 'ssl';
     obj.smtpStarttls = e.target.smtpSecurity.value === 'starttls';
@@ -73,15 +83,18 @@ async function renderSettings() {
     renderSettings();
   };
 
-  $('#settingsTestMailBtn').onclick = async () => {
+  const runMailTest = async (driver, label) => {
     const box = $('#settingsMailResult');
-    box.innerHTML = '<div class="notice">Sending test email with the currently saved settings...</div>';
+    box.innerHTML = `<div class="notice">${escapeHtml(label)}...</div>`;
     try {
-      const r = await api('/api/health/mail-test', { method:'POST', body: JSON.stringify({}) });
+      const r = await api('/api/health/mail-test', { method:'POST', body: JSON.stringify({ driver }) });
       box.innerHTML = `<div class="okbox">${escapeHtml(r.message || 'Test email accepted.')}</div>`;
     } catch (err) {
       box.innerHTML = `<div class="error">${escapeHtml(err.message || 'Test email failed.')}</div>`;
     }
   };
+  $('#settingsTestMailBtn').onclick = () => runMailTest('active', 'Testing the currently selected mail route');
+  $('#settingsTestSmtpBtn').onclick = () => runMailTest('smtp', 'Testing authenticated SMTP directly');
+  $('#settingsTestLocalMailBtn').onclick = () => runMailTest('local', 'Testing local PHP/sendmail without SMTP fallback');
   if (typeof bindNotificationSoundSettings === 'function') bindNotificationSoundSettings();
 }

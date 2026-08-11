@@ -88,6 +88,7 @@ const MAIL_FROM_NAME = cleanEnv(process.env.P2PFLOW_MAIL_FROM_NAME || process.en
 const MAIL_REPLY_TO = cleanEnv(process.env.P2PFLOW_MAIL_REPLY_TO || process.env.CRM_MAIL_REPLY_TO || '', '');
 const MAIL_ENVELOPE_FROM = cleanEnv(process.env.P2PFLOW_MAIL_ENVELOPE_FROM || process.env.CRM_MAIL_ENVELOPE_FROM || '', '');
 const MAIL_TIMEOUT_MS = Math.max(5000, Number(process.env.CRM_MAIL_TIMEOUT_MS || 20000) || 20000);
+const LOCAL_MAIL_QUOTA_COOLDOWN_MS = Math.max(5 * 60 * 1000, Number(process.env.P2PFLOW_LOCAL_MAIL_QUOTA_COOLDOWN_MINUTES || process.env.CRM_LOCAL_MAIL_QUOTA_COOLDOWN_MINUTES || 360) * 60 * 1000 || 6 * 60 * 60 * 1000);
 const OTP_RESEND_COOLDOWN_MS = Math.max(10000, Number(process.env.CRM_OTP_RESEND_COOLDOWN_SECONDS || 30) * 1000 || 30000);
 const TRUSTED_DEVICE_TTL_DAYS = Math.max(1, Math.min(180, Number(process.env.P2PFLOW_TRUSTED_DEVICE_TTL_DAYS || process.env.CRM_TRUSTED_DEVICE_TTL_DAYS || 30) || 30));
 const TRUSTED_DEVICE_CHALLENGE_TTL_MS = 2 * 60 * 1000;
@@ -244,6 +245,9 @@ const pendingSecurityChanges = new Map();
 const pendingDeviceChallenges = new Map();
 const pendingEmailRecoveries = new Map();
 const loginFailureMailThrottle = new Map();
+const backgroundMailJobs = new Set();
+let localMailQuotaBlockedUntil = 0;
+let localMailQuotaLastError = '';
 
 let db = null;
 let stateStore = null;
@@ -387,6 +391,7 @@ function defaultSettings() {
     sendLoginFailureEmail: true,
     sendSecurityChangeEmail: true,
     sendOrderEmail: true,
+    sendNotificationEmail: true,
     sendAssignmentPanelSms: true,
     binanceUsdtAvailable: 0,
     defaultUsdtRate: 0,
@@ -478,43 +483,32 @@ function defaultSettings() {
 function runtimeMailConfig() {
   const settings = db?.settings || {};
   const has = key => Object.prototype.hasOwnProperty.call(settings, key);
-  const pick = (key, fallback = '') => has(key) ? settings[key] : fallback;
   const pickText = (key, fallback = '') => {
     const value = has(key) ? String(settings[key] ?? '').trim() : '';
     return value || fallback;
   };
-  // Treat SMTP as one configuration bundle. A fresh install created by older
-  // builds could persist blank SMTP fields (and the default 587/false/true
-  // flags) even though P2PFLOW_SMTP_* was present in .env. In that case those
-  // blank DB defaults must not shadow the environment configuration.
-  const dbSmtpConfigured = Boolean(
-    String(settings.smtpHost || '').trim() ||
-    String(settings.smtpUser || '').trim() ||
-    String(settings.smtpPassword || '').trim()
-  );
-  const envSmtpConfigured = Boolean(
-    String(SMTP_HOST || '').trim() &&
-    String(SMTP_USER || '').trim() &&
-    String(SMTP_PASS || '').trim()
-  );
+  // Merge SMTP settings field-by-field. Older installs can contain a partially
+  // saved database bundle (for example host/user in DB but password only in .env).
+  // Treating any single DB field as the whole bundle made the environment password
+  // disappear at runtime and caused smtp.config to fail even though SMTP was valid.
+  const smtpHost = cleanEnv(String(settings.smtpHost || '').trim() || SMTP_HOST, '');
+  const smtpUser = String(settings.smtpUser || '').trim() || String(SMTP_USER || '').trim();
+  const smtpPassword = String(settings.smtpPassword || '') || String(SMTP_PASS || '');
+  const smtpPortRaw = Number(settings.smtpPort) > 0 ? settings.smtpPort : SMTP_PORT;
+  const port = Math.max(1, Math.min(65535, Number(smtpPortRaw || 587) || 587));
+  const dbSmtpFlagsTouched = Boolean(String(settings.smtpHost || '').trim() || String(settings.smtpUser || '').trim() || String(settings.smtpPassword || '').trim() || settings.mailSettingsUpdatedAt);
+  const secure = dbSmtpFlagsTouched && has('smtpSecure') ? Boolean(settings.smtpSecure) : Boolean(SMTP_SECURE);
+  const starttls = dbSmtpFlagsTouched && has('smtpStarttls') ? Boolean(settings.smtpStarttls) : Boolean(SMTP_STARTTLS);
+  const smtpHelo = cleanEnv(String(settings.smtpHelo || '').trim() || SMTP_HELO, 'localhost');
+  const envSmtpConfigured = Boolean(String(SMTP_HOST || '').trim() && String(SMTP_USER || '').trim() && String(SMTP_PASS || '').trim());
+  const mergedSmtpConfigured = Boolean(smtpHost && smtpUser && smtpPassword);
   const dbDriver = cleanEnv(pickText('mailDriver', MAIL_DRIVER || 'local'), 'local').toLowerCase();
   const envDriver = cleanEnv(MAIL_DRIVER || '', '').toLowerCase();
-  // Fresh installs can persist the old/default `local` driver in db.settings
-  // before the just-written .env is reloaded. If .env explicitly requests SMTP
-  // and contains a complete SMTP bundle, prefer that bundle until the user saves
-  // an actual SMTP configuration in Settings. This avoids falling back to
-  // rate-limited PHP mail/sendmail after a fresh setup.
-  const driver = (!dbSmtpConfigured && envSmtpConfigured && ['smtp', 'node-smtp'].includes(envDriver))
+  // Before Settings has explicitly saved a mail preference, honor an explicit
+  // SMTP driver from .env when the merged SMTP bundle is complete.
+  const driver = (!settings.mailDriverUpdatedAt && envSmtpConfigured && mergedSmtpConfigured && ['smtp', 'node-smtp'].includes(envDriver))
     ? 'smtp'
     : dbDriver;
-  const smtpHost = dbSmtpConfigured ? cleanEnv(settings.smtpHost || '', '') : SMTP_HOST;
-  const smtpUser = dbSmtpConfigured ? String(settings.smtpUser || '') : String(SMTP_USER || '');
-  const smtpPassword = dbSmtpConfigured ? String(settings.smtpPassword || '') : String(SMTP_PASS || '');
-  const smtpPortRaw = dbSmtpConfigured ? settings.smtpPort : SMTP_PORT;
-  const port = Math.max(1, Math.min(65535, Number(smtpPortRaw || 587) || 587));
-  const secure = dbSmtpConfigured ? Boolean(settings.smtpSecure) : Boolean(SMTP_SECURE);
-  const starttls = dbSmtpConfigured ? Boolean(settings.smtpStarttls) : Boolean(SMTP_STARTTLS);
-  const smtpHelo = dbSmtpConfigured ? cleanEnv(settings.smtpHelo || SMTP_HELO, 'localhost') : cleanEnv(SMTP_HELO, 'localhost');
   return {
     driver,
     from: cleanEnv(pickText('mailFrom', MAIL_FROM), ''),
@@ -1903,8 +1897,18 @@ function publicSettings() {
   delete settings.publicLoginHints;
   delete settings.p2pExtensionToken;
   delete settings.smtpPassword;
-  settings.smtpPasswordConfigured = Boolean(db.settings.smtpPassword || SMTP_PASS);
-  settings.smtpConfigured = Boolean((db.settings.smtpHost || SMTP_HOST) && (db.settings.smtpUser || SMTP_USER) && (db.settings.smtpPassword || SMTP_PASS));
+  const mailConfig = runtimeMailConfig();
+  const smtpState = smtpConfigStatus(mailConfig);
+  settings.mailDriver = mailConfig.driver;
+  settings.smtpHost = mailConfig.smtpHost;
+  settings.smtpPort = mailConfig.smtpPort;
+  settings.smtpSecure = mailConfig.smtpSecure;
+  settings.smtpStarttls = mailConfig.smtpStarttls;
+  settings.smtpUser = mailConfig.smtpUser;
+  settings.smtpHelo = mailConfig.smtpHelo;
+  settings.smtpPasswordConfigured = Boolean(mailConfig.smtpPassword);
+  settings.smtpConfigured = smtpState.ready;
+  settings.smtpMissingFields = smtpState.missing;
   settings.p2pExtensionConfigured = Boolean(db.settings.p2pExtensionToken);
   settings.applicationVersion = APP_VERSION;
   settings.databaseSchemaVersion = Number(db.meta?.schemaVersion || 0);
@@ -4320,10 +4324,75 @@ function userCanManageApprovals(user) {
   return !!user && userHasPermission(user, 'approvals.manage') && ['admin', 'manager'].includes(user.role);
 }
 
+function notificationEmailRecipients(item = {}) {
+  const recipients = new Map();
+  const excludeUserId = Number(item.excludeUserId || 0);
+  const addUser = user => {
+    if (!user || user.enabled === false || Number(user.id || 0) === excludeUserId) return;
+    const email = validEmailAddress(user.email || '');
+    if (!email) return;
+    recipients.set(email.toLowerCase(), { user, email });
+  };
+
+  if (item.userId) addUser((db.users || []).find(user => Number(user.id) === Number(item.userId)));
+  if (item.agentId) addUser(agentLoginUser(item.agentId));
+
+  const audience = String(item.audience || '').toLowerCase();
+  if (audience === 'manager') {
+    (db.users || []).filter(user => ['admin', 'manager'].includes(String(user.role || '').toLowerCase())).forEach(addUser);
+  } else if (audience === 'all') {
+    (db.users || []).forEach(addUser);
+  }
+
+  if (audience === 'order' || (item.orderId && !item.userId && !item.agentId && audience !== 'manager')) {
+    const order = orderById(item.orderId);
+    (db.users || []).filter(user => ['admin', 'manager'].includes(String(user.role || '').toLowerCase())).forEach(addUser);
+    if (order) {
+      for (const assignment of db.orderAgentAssignments || []) {
+        if (Number(assignment.orderId) !== Number(order.id) || assignment.status === 'left') continue;
+        addUser(agentLoginUser(assignment.agentId));
+      }
+    }
+  }
+  return Array.from(recipients.values());
+}
+
+function notificationEmailBody(item = {}, recipient = null) {
+  const order = item.orderId ? orderById(item.orderId) : null;
+  const lines = [
+    String(item.message || 'P2PFlow notification'),
+    '',
+    `Severity: ${String(item.severity || 'info')}`,
+    `Time: ${item.createdAt || nowIso()}`
+  ];
+  if (order?.orderNo) lines.push(`Order: ${order.orderNo}`);
+  if (recipient?.user?.username) lines.push(`Account: ${recipient.user.username}`);
+  lines.push('', 'This is an automated P2PFlow notification.');
+  return lines.join('\n');
+}
+
+function dispatchNotificationEmail(item = {}) {
+  if (!db || db.settings.sendNotificationEmail === false || item.emailNotification === false || item.type === 'mail_failed') return;
+  const recipients = notificationEmailRecipients(item);
+  if (!recipients.length) return;
+  const typeLabel = String(item.type || 'notification').replace(/[_-]+/g, ' ').trim() || 'notification';
+  const subject = `P2PFlow notification: ${typeLabel}`;
+  for (const recipient of recipients) {
+    queueSafeMail(recipient.email, subject, notificationEmailBody(item, recipient), {
+      type: 'notification',
+      notificationType: item.type || '',
+      notificationId: item.id || 0,
+      userId: recipient.user?.id || null,
+      orderId: item.orderId || null
+    });
+  }
+}
+
 function addNotification(type, message, severity = 'info', extra = {}) {
   const item = { id: nextId(), type, message, severity, status: 'unread', read: false, createdAt: nowIso(), ...extra };
   db.notifications.push(item);
   broadcast({ type: 'notification.created', notification: item, at: nowIso() });
+  dispatchNotificationEmail(item);
   return item;
 }
 
@@ -4462,8 +4531,24 @@ function effectiveEnvelopeFrom() {
   const config = runtimeMailConfig();
   return validMailboxAddress(config.envelopeFrom) || '';
 }
+function smtpConfigStatus(config = runtimeMailConfig()) {
+  const missing = [];
+  if (!String(config.smtpHost || '').trim()) missing.push('host');
+  if (!String(config.smtpUser || '').trim()) missing.push('username');
+  if (!String(config.smtpPassword || '')) missing.push('password');
+  if (!effectiveMailFrom(false)) missing.push('from email');
+  return { ready: missing.length === 0, missing };
+}
+function smtpConfigSource() {
+  const settings = db?.settings || {};
+  return {
+    host: String(settings.smtpHost || '').trim() ? 'settings' : (SMTP_HOST ? 'env' : 'missing'),
+    username: String(settings.smtpUser || '').trim() ? 'settings' : (SMTP_USER ? 'env' : 'missing'),
+    password: String(settings.smtpPassword || '') ? 'settings' : (SMTP_PASS ? 'env' : 'missing')
+  };
+}
 function getPhpMailBridgeSecret() {
-  const explicit = String(process.env.CRM_PHP_MAIL_SECRET || '').trim();
+  const explicit = String(process.env.P2PFLOW_PHP_MAIL_SECRET || process.env.CRM_PHP_MAIL_SECRET || '').trim();
   if (explicit.length >= 16) return explicit;
   if (!APP_KEY) return '';
   return crypto.createHmac('sha256', APP_KEY).update('php-mail-bridge:v1').digest('hex');
@@ -4632,16 +4717,32 @@ function sendMailMessage(to, subject, body) {
   return Promise.reject(new Error(`Unsupported mail driver=${driver}. Use local, php, sendmail or smtp.`));
 }
 
-async function safeSendMail(to, subject, body, context = {}) {
+async function sendTrackedMail(to, subject, body, context = {}) {
   try {
     const info = await sendMailMessage(to, subject, body);
     logAudit(null, 'mail_sent', 'mail', 0, { to: maskEmail(to), subject, driver: info.driver || runtimeMailConfig().driver, ...context });
+    return info;
+  } catch (err) {
+    logAudit(null, 'mail_failed', 'mail', 0, { to: maskEmail(to), subject, error: err.message, driver: runtimeMailConfig().driver, ...context });
+    throw err;
+  }
+}
+
+async function safeSendMail(to, subject, body, context = {}) {
+  try {
+    const info = await sendTrackedMail(to, subject, body, context);
     return { ok: true, info };
   } catch (err) {
-    logAudit(null, 'mail_failed', 'mail', 0, { to: maskEmail(to), subject, error: err.message, ...context });
-    addNotification('mail_failed', `Mail failed: ${subject} to ${maskEmail(to)}`, 'warning', { audience: 'manager', error: err.message });
+    addNotification('mail_failed', `Mail failed: ${subject} to ${maskEmail(to)}`, 'warning', { audience: 'manager', error: err.message, emailNotification: false });
     return { ok: false, error: err };
   }
+}
+
+function queueSafeMail(to, subject, body, context = {}) {
+  const task = safeSendMail(to, subject, body, context);
+  backgroundMailJobs.add(task);
+  task.finally(() => backgroundMailJobs.delete(task));
+  return task;
 }
 
 function sendLoginFailedAlert(user, reason, req) {
@@ -4661,7 +4762,7 @@ Time: ${nowIso()}
 
 Repeated failures are rate-limited to avoid exhausting the server mail quota.
 If this was not you, change your password and secret code immediately.`;
-  safeSendMail(user.email, 'Security alert: failed login attempt', body, { type: 'login_failed', userId: user.id, reason });
+  queueSafeMail(user.email, 'Security alert: failed login attempt', body, { type: 'login_failed', userId: user.id, reason });
 }
 
 function sendSecurityChangeAlert(to, user, summary, revertUrl, req) {
@@ -4677,7 +4778,7 @@ If you did not make this change, revert it immediately using this link:
 ${revertUrl}
 
 The revert link expires in 24 hours and can be used once.`;
-  safeSendMail(to, 'Security alert: login settings changed', body, { type: 'security_changed', userId: user.id });
+  queueSafeMail(to, 'Security alert: login settings changed', body, { type: 'security_changed', userId: user.id });
 }
 
 function sendOrderAssignedEmail(order, agent, reason = 'assigned') {
@@ -4690,7 +4791,7 @@ ${mailPreviewOrder(order)}
 
 Assignment reason: ${reason}
 Open the operations panel and handle the order manually.`;
-  safeSendMail(user.email, `Order assigned: ${order.orderNo}`, body, { type: 'order_assigned', orderId: order.id, agentId: agent.id });
+  queueSafeMail(user.email, `Order assigned: ${order.orderNo}`, body, { type: 'order_assigned', orderId: order.id, agentId: agent.id });
 }
 
 function notifyOrderAssigned(order, agent, reason = 'assigned') {
@@ -4703,7 +4804,8 @@ function notifyOrderAssigned(order, agent, reason = 'assigned') {
     audience: 'agent',
     panelChannel: true,
     smsChannel: db.settings.sendAssignmentPanelSms !== false && agent.smsEnabled !== false ? 'panel' : 'disabled',
-    reason
+    reason,
+    emailNotification: false
   });
   sendOrderAssignedEmail(order, agent, reason);
 }
@@ -4719,10 +4821,10 @@ function orderAlertRecipients() {
 }
 
 function notifyOrderManagerQueue(order, reason = 'no_agent_available') {
-  notifyManager(reason, order.id, `Order ${order.orderNo} is waiting in manager queue.`, 'warning');
+  notifyManager(reason, order.id, `Order ${order.orderNo} is waiting in manager queue.`, 'warning', { emailNotification: false });
   if (db.settings.sendOrderEmail === false) return;
   orderAlertRecipients().forEach(u => {
-    safeSendMail(u.email, `Order needs attention: ${order.orderNo}`, `${mailPreviewOrder(order)}
+    queueSafeMail(u.email, `Order needs attention: ${order.orderNo}`, `${mailPreviewOrder(order)}
 
 Reason: ${reason}`, { type: reason, orderId: order.id, userId: u.id });
   });
@@ -8220,7 +8322,14 @@ async function issueLoginOtp(user) {
   } catch (err) {
     pendingOtps.delete(user.id);
     console.error(`[EMAIL OTP DELIVERY FAILED] ${maskEmail(user.email)}: ${err.message}`);
-    const publicError = new Error('Email OTP could not be sent. Local PHP mail/sendmail and the configured SMTP fallback were attempted. Open Settings > Email Delivery or Health Check > Send Test Email to verify the saved mail account.');
+    const smtpState = smtpConfigStatus();
+    let message = 'Email OTP could not be sent. Open Settings > Email Delivery and run Test Active Mail / Test SMTP.';
+    if (localMailRateLimited(err) && !smtpState.ready) {
+      message = `Email OTP could not be sent because the hosting local-mail sender quota is exceeded and SMTP fallback is incomplete (missing: ${smtpState.missing.join(', ')}). Configure authenticated SMTP and run Test SMTP.`;
+    } else if (localMailRateLimited(err)) {
+      message = 'Email OTP could not be sent because the hosting local-mail sender quota is exceeded and the SMTP fallback also failed. Run Test SMTP in Settings to see the SMTP error.';
+    }
+    const publicError = new Error(message);
     publicError.statusCode = 503;
     throw publicError;
   }
@@ -8232,52 +8341,78 @@ function sendOtpEmail(user, code) {
   const body = `Your P2PFlow login OTP is ${code}.
 
 This code expires in 5 minutes. If you did not request this login, change your password immediately.`;
-  return sendMailMessage(to, subject, body);
+  return sendTrackedMail(to, subject, body, { type: 'login_otp', userId: user.id });
 }
 
 function localMailRateLimited(error) {
   return /rate\s*overlimit|rate[ -]?limit|daily limit|quota exceeded|too many (?:messages|emails)|sender rate/i.test(String(error?.message || error || ''));
 }
+function markLocalMailQuotaLimited(error) {
+  if (!localMailRateLimited(error)) return;
+  localMailQuotaBlockedUntil = Math.max(localMailQuotaBlockedUntil, Date.now() + LOCAL_MAIL_QUOTA_COOLDOWN_MS);
+  localMailQuotaLastError = cleanStr(error?.message || error || 'Local mail sender quota exceeded', 500);
+}
+function localMailQuotaState() {
+  const remainingMs = Math.max(0, localMailQuotaBlockedUntil - Date.now());
+  return {
+    blocked: remainingMs > 0,
+    remainingMinutes: remainingMs > 0 ? Math.ceil(remainingMs / 60000) : 0,
+    error: remainingMs > 0 ? localMailQuotaLastError : ''
+  };
+}
 
-async function sendViaLocalServerMail(to, subject, body) {
+async function sendViaLocalServerMail(to, subject, body, options = {}) {
   const errors = [];
-  let localRateLimited = false;
-  try {
-    const info = await sendViaPhpMail(to, subject, body);
-    return { ...info, driver: info.driver === 'php-web' ? 'local/php-web' : 'local/php-cli' };
-  } catch (err) {
-    errors.push(`php: ${err.message}`);
-    localRateLimited = localMailRateLimited(err);
+  const allowSmtpFallback = options.allowSmtpFallback !== false;
+  const smtpState = smtpConfigStatus();
+  const quotaState = localMailQuotaState();
+  let localRateLimited = quotaState.blocked;
+
+  if (!quotaState.blocked) {
+    try {
+      const info = await sendViaPhpMail(to, subject, body);
+      return { ...info, driver: info.driver === 'php-web' ? 'local/php-web' : 'local/php-cli' };
+    } catch (err) {
+      errors.push(`php: ${err.message}`);
+      localRateLimited = localMailRateLimited(err);
+      if (localRateLimited) markLocalMailQuotaLimited(err);
+    }
+  } else {
+    errors.push(`php: local sender quota cooldown active (${quotaState.remainingMinutes}m remaining)`);
   }
 
   // Shared-hosting PHP mail() and sendmail normally share the same sender quota.
-  // Once PHP reports a rate/quota limit, do not hammer additional local
-  // transports. Move straight to authenticated SMTP when it is configured.
-  if (localRateLimited && runtimeMailConfig().smtpHost) {
-    try {
-      const info = await sendViaSmtp(to, subject, body);
-      return { ...info, driver: 'local/smtp-fallback' };
-    } catch (err) {
-      errors.push(`smtp: ${err.message}`);
-      throw new Error(`Local server mail is rate-limited and SMTP fallback failed. ${errors.join(' | ')}`);
+  // Once PHP reports a rate/quota limit, do not hammer additional local transports.
+  // Use authenticated SMTP only when the complete SMTP bundle is available.
+  if (localRateLimited) {
+    if (allowSmtpFallback && smtpState.ready) {
+      try {
+        const info = await sendViaSmtp(to, subject, body);
+        return { ...info, driver: 'local/smtp-fallback' };
+      } catch (err) {
+        errors.push(`smtp: ${err.message}`);
+        throw new Error(`Hosting local mail sender quota is exceeded and SMTP fallback failed. ${errors.join(' | ')}`);
+      }
     }
+    const missing = smtpState.missing.length ? ` Missing SMTP: ${smtpState.missing.join(', ')}.` : '';
+    throw new Error(`Hosting local mail sender quota is exceeded.${allowSmtpFallback ? missing : ' SMTP fallback was intentionally disabled for this test.'} ${errors.join(' | ')}`.trim());
   }
 
-  if (!localRateLimited) {
-    try {
-      const info = await sendViaSendmail(to, subject, body);
-      return { ...info, driver: 'local/sendmail' };
-    } catch (err) {
-      errors.push(`sendmail: ${err.message}`);
-    }
+  try {
+    const info = await sendViaSendmail(to, subject, body);
+    return { ...info, driver: 'local/sendmail' };
+  } catch (err) {
+    errors.push(`sendmail: ${err.message}`);
   }
-  if (runtimeMailConfig().smtpHost) {
+  if (allowSmtpFallback && smtpState.ready) {
     try {
       const info = await sendViaSmtp(to, subject, body);
       return { ...info, driver: 'local/smtp-fallback' };
     } catch (err) {
       errors.push(`smtp: ${err.message}`);
     }
+  } else if (allowSmtpFallback && smtpState.missing.length) {
+    errors.push(`smtp: configuration incomplete (missing: ${smtpState.missing.join(', ')})`);
   }
   throw new Error(`Local server mail failed. ${errors.join(' | ')}`);
 }
@@ -8878,6 +9013,19 @@ async function mailHealth() {
   const steps = [];
   const supported = ['local','server','auto','php','sendmail','node','smtp','node-smtp'].includes(config.driver);
   steps.push(healthStep('mail.driver', supported, { driver: config.driver }));
+  const enabledUsers = (db.users || []).filter(user => user.enabled !== false);
+  const usersWithMail = enabledUsers.filter(user => validEmailAddress(user.email || ''));
+  steps.push(healthStep('mail.automation', usersWithMail.length > 0, {
+    requireEmailOtp: db.settings.requireEmailOtp !== false,
+    trustedDeviceBehavior: 'Trusted-device unlock intentionally skips email OTP; use Full login to exercise the OTP mail path.',
+    notificationEmail: db.settings.sendNotificationEmail !== false,
+    loginFailureEmail: db.settings.sendLoginFailureEmail !== false,
+    securityChangeEmail: db.settings.sendSecurityChangeEmail !== false,
+    orderEmail: db.settings.sendOrderEmail !== false,
+    enabledUsers: enabledUsers.length,
+    usersWithValidEmail: usersWithMail.length,
+    usersMissingValidEmail: Math.max(0, enabledUsers.length - usersWithMail.length)
+  }));
 
   const webPhp = await probePhpWebMailCapability();
   steps.push(healthStep('php.web-mail', webPhp.ok, {
@@ -8915,7 +9063,9 @@ async function mailHealth() {
   }) || '';
   steps.push(healthStep('sendmail.path', Boolean(sendmailCandidate), { path: sendmailCandidate || SENDMAIL_PATH }));
 
-  const smtpReady = Boolean(config.smtpHost && config.smtpUser && config.smtpPassword && effectiveMailFrom(false));
+  const smtpState = smtpConfigStatus(config);
+  const smtpReady = smtpState.ready;
+  const quotaState = localMailQuotaState();
   steps.push(healthStep('smtp.config', smtpReady, {
     host: config.smtpHost ? maskHost(config.smtpHost) : '',
     port: config.smtpPort,
@@ -8923,14 +9073,22 @@ async function mailHealth() {
     starttls: config.smtpStarttls,
     userConfigured: Boolean(config.smtpUser),
     passwordConfigured: Boolean(config.smtpPassword),
-    fromConfigured: Boolean(effectiveMailFrom(false))
+    fromConfigured: Boolean(effectiveMailFrom(false)),
+    missing: smtpState.missing,
+    source: smtpConfigSource()
+  }));
+  steps.push(healthStep('local-mail.quota', !quotaState.blocked, {
+    blocked: quotaState.blocked,
+    cooldownRemainingMinutes: quotaState.remainingMinutes,
+    error: quotaState.error
   }));
 
   const phpReady = webPhp.ok || php.ok;
-  const localReady = phpReady || Boolean(sendmailCandidate) || smtpReady;
+  const localTransportOperational = !quotaState.blocked && (phpReady || Boolean(sendmailCandidate));
+  const localReady = localTransportOperational || smtpReady;
   const driverReady = ['local','server','auto'].includes(config.driver) ? localReady
-    : config.driver === 'php' ? phpReady
-    : ['sendmail','node'].includes(config.driver) ? Boolean(sendmailCandidate)
+    : config.driver === 'php' ? (phpReady && !quotaState.blocked)
+    : ['sendmail','node'].includes(config.driver) ? (Boolean(sendmailCandidate) && !quotaState.blocked)
     : ['smtp','node-smtp'].includes(config.driver) ? smtpReady
     : false;
   return {
@@ -8997,9 +9155,19 @@ async function handleHealth(req, res, url) {
     const body = await readBody(req);
     const to = cleanStr(body.email || user.email || '', 180);
     if (!to || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(to)) return sendJson(res, 422, { error: 'Valid test email address required.' }, {}, req);
-    const info = await sendMailMessage(to, 'P2PFlow health check test email', `This is a local-server mail health check from P2PFlow.\n\nTime: ${nowIso()}\nUser: ${user.username}\nIf you did not request this test, review your security logs.`);
-    logAudit(user, 'health_mail_test_sent', 'system', user.id, { to: maskEmail(to), driver: info.driver || runtimeMailConfig().driver });
-    return sendJson(res, 200, { ok: true, message: `Test email accepted by ${info.driver || runtimeMailConfig().driver}. Check inbox/spam.`, driver: info.driver || runtimeMailConfig().driver, to: maskEmail(to) }, {}, req);
+    const requestedDriver = cleanStr(body.driver || 'active', 30).toLowerCase();
+    let info;
+    if (requestedDriver === 'smtp') {
+      const smtpState = smtpConfigStatus();
+      if (!smtpState.ready) return sendJson(res, 422, { error: `SMTP configuration incomplete. Missing: ${smtpState.missing.join(', ')}.` }, {}, req);
+      info = await sendViaSmtp(to, 'P2PFlow SMTP test email', `This is a direct authenticated SMTP health check from P2PFlow.\n\nTime: ${nowIso()}\nUser: ${user.username}\nIf you did not request this test, review your security logs.`);
+    } else if (requestedDriver === 'local') {
+      info = await sendViaLocalServerMail(to, 'P2PFlow local mail test email', `This is a local PHP/sendmail health check from P2PFlow. SMTP fallback is disabled for this test.\n\nTime: ${nowIso()}\nUser: ${user.username}`, { allowSmtpFallback: false });
+    } else {
+      info = await sendMailMessage(to, 'P2PFlow active mail test email', `This is an active mail-route health check from P2PFlow.\n\nTime: ${nowIso()}\nUser: ${user.username}\nIf you did not request this test, review your security logs.`);
+    }
+    logAudit(user, 'health_mail_test_sent', 'system', user.id, { to: maskEmail(to), requestedDriver, driver: info.driver || runtimeMailConfig().driver });
+    return sendJson(res, 200, { ok: true, message: `Test email accepted by ${info.driver || runtimeMailConfig().driver}. Check inbox/spam.`, driver: info.driver || runtimeMailConfig().driver, requestedDriver, to: maskEmail(to) }, {}, req);
   }
   return sendJson(res, 405, { error: 'Method not allowed' }, {}, req);
 }
@@ -12515,11 +12683,11 @@ async function handleLogin(req, res) {
     if (!body.emailOtp) {
       pending = resendRequested ? await resendLoginOtp(user) : await getValidLoginOtp(user);
       const message = resendRequested ? 'A new email OTP was sent. Check your inbox and spam folder.' : 'Email OTP sent. Check your email and enter the OTP.';
-      return sendJson(res, 202, { otpRequired: true, message }, {}, req);
+      return sendJson(res, 202, { otpRequired: true, message, otpRecipient: maskEmail(user.email), otpDriver: pending?.delivery?.driver || runtimeMailConfig().driver }, {}, req);
     }
     if (!pending || !pending.delivered || pending.expiresAt < Date.now()) {
-      await issueLoginOtp(user);
-      return sendJson(res, 202, { otpRequired: true, message: 'OTP expired. A new OTP has been sent.' }, {}, req);
+      pending = await issueLoginOtp(user);
+      return sendJson(res, 202, { otpRequired: true, message: 'OTP expired. A new OTP has been sent.', otpRecipient: maskEmail(user.email), otpDriver: pending?.delivery?.driver || runtimeMailConfig().driver }, {}, req);
     }
     pending.attempts += 1;
     if (pending.attempts > 6) {
@@ -12529,7 +12697,7 @@ async function handleLogin(req, res) {
     }
     if (String(body.emailOtp).trim() !== pending.code) {
       sendLoginFailedAlert(user, 'invalid_email_otp', req);
-      return sendJson(res, 202, { otpRequired: true, message: 'Email OTP is incorrect. Try again.' }, {}, req);
+      return sendJson(res, 202, { otpRequired: true, message: 'Email OTP is incorrect. Try again.', otpRecipient: maskEmail(user.email), otpDriver: pending?.delivery?.driver || runtimeMailConfig().driver }, {}, req);
     }
   }
   if (needSecret && !verifyPassword(String(body.secretCode || ''), user.loginSecretHash || '')) {
@@ -12671,7 +12839,7 @@ async function handleMeSecurity(req, res) {
     const revertUrl = `${publicBaseUrl(req)}/api/security/revert/${token}`;
     const changes = { changed: pending.summary, revertExpiresAt: expiresAt };
     logAudit(user, 'security_settings_updated_verified', 'user', user.id, changes);
-    addNotification('security_settings_changed', `Security settings changed for ${user.username}. Revert link was sent by email.`, 'warning', { userId: user.id, audience: 'manager' });
+    addNotification('security_settings_changed', `Security settings changed for ${user.username}. Revert link was sent by email.`, 'warning', { userId: user.id, audience: 'manager', emailNotification: false });
     sendSecurityChangeAlert(oldEmail, user, pending.summary, revertUrl, req);
     if (user.email && user.email !== oldEmail) sendSecurityChangeAlert(user.email, user, pending.summary, revertUrl, req);
     const revokedDevices = revokeTrustedDevices(user, { reason: 'security_settings_changed' });
@@ -16155,7 +16323,7 @@ async function handleSettings(req, res) {
   if (req.method === 'GET') return sendJson(res, 200, { settings: publicSettings() }, {}, req);
   if (req.method === 'PATCH') {
     const body = await readBody(req);
-    const allowed = ['requireProofForFinalAction','mismatchTolerance','highAmountApprovalThreshold','activeLockSeconds','apiMode','allowAgentFinalAction','maxProofSizeBytes','requireEmailOtp','requireLoginSecretCode','binanceUsdtAvailable','defaultUsdtRate','binanceAutoOrderSync','binanceAutoSyncSeconds','binanceAutoSyncRows','binanceOpenOrderDetailRows','activityHeartbeatSeconds','activityIdleAfterSeconds','activityOfflineAfterSeconds','activityRetentionDays','p2pExtensionEnabled','p2pExtensionPollSeconds','p2pExtensionTaskTtlMinutes','p2pExtensionCachePurgeHour','p2pExtensionCachePurgeMinute','p2pAdvertiserDetailUrlTemplate'];
+    const allowed = ['requireProofForFinalAction','mismatchTolerance','highAmountApprovalThreshold','activeLockSeconds','apiMode','allowAgentFinalAction','maxProofSizeBytes','requireEmailOtp','requireLoginSecretCode','sendLoginFailureEmail','sendSecurityChangeEmail','sendOrderEmail','sendNotificationEmail','binanceUsdtAvailable','defaultUsdtRate','binanceAutoOrderSync','binanceAutoSyncSeconds','binanceAutoSyncRows','binanceOpenOrderDetailRows','activityHeartbeatSeconds','activityIdleAfterSeconds','activityOfflineAfterSeconds','activityRetentionDays','p2pExtensionEnabled','p2pExtensionPollSeconds','p2pExtensionTaskTtlMinutes','p2pExtensionCachePurgeHour','p2pExtensionCachePurgeMinute','p2pAdvertiserDetailUrlTemplate'];
     for (const k of allowed) {
       if (body[k] === undefined) continue;
       if (typeof db.settings[k] === 'boolean') db.settings[k] = !!body[k];
@@ -16167,6 +16335,7 @@ async function handleSettings(req, res) {
     if (body.mailDriver !== undefined) {
       const driver = cleanStr(body.mailDriver, 30).toLowerCase();
       db.settings.mailDriver = ['local','auto','php','sendmail','smtp'].includes(driver) ? driver : 'local';
+      db.settings.mailDriverUpdatedAt = nowIso();
     }
     if (body.mailFrom !== undefined) {
       const value = cleanStr(body.mailFrom, 180);

@@ -45,17 +45,25 @@ function crm_bridge_env_value(string $name): string {
     return '';
 }
 
-function crm_bridge_secret(): string {
-    $explicit = crm_bridge_env_value('CRM_PHP_MAIL_SECRET');
-    if (strlen($explicit) >= 16) return $explicit;
+function crm_bridge_secret_candidates(): array {
+    $values = [];
+    $explicit = crm_bridge_env_value('P2PFLOW_PHP_MAIL_SECRET');
+    if ($explicit === '') $explicit = crm_bridge_env_value('CRM_PHP_MAIL_SECRET');
+    if (strlen($explicit) >= 16) $values[] = $explicit;
     foreach ([__DIR__.'/data/.mail-bridge-secret', dirname(__DIR__).'/data/.mail-bridge-secret'] as $file) {
         if (!is_file($file) || !is_readable($file)) continue;
         $secret = trim((string)@file_get_contents($file));
-        if (strlen($secret) >= 16) return $secret;
+        if (strlen($secret) >= 16) $values[] = $secret;
     }
     $appKey = crm_bridge_env_value('P2PFLOW_APP_KEY');
     if ($appKey === '') $appKey = crm_bridge_env_value('CRM_APP_KEY');
-    return strlen($appKey) >= 16 ? $appKey : '';
+    if (strlen($appKey) >= 16) {
+        // Node derives the default bridge signing key from APP_KEY. Keep the raw
+        // APP_KEY as a legacy candidate so older clients continue to work.
+        $values[] = hash_hmac('sha256', 'php-mail-bridge:v1', $appKey);
+        $values[] = $appKey;
+    }
+    return array_values(array_unique(array_filter($values, static fn($value) => strlen((string)$value) >= 16)));
 }
 
 if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') {
@@ -69,13 +77,17 @@ if (strlen($raw) > 65536) crm_bridge_reply(413, ['ok' => false, 'error' => 'Requ
 $timestamp = trim((string)($_SERVER['HTTP_X_CRM_MAIL_TIMESTAMP'] ?? ''));
 $nonce = trim((string)($_SERVER['HTTP_X_CRM_MAIL_NONCE'] ?? ''));
 $signature = strtolower(trim((string)($_SERVER['HTTP_X_CRM_MAIL_SIGNATURE'] ?? '')));
-$secret = crm_bridge_secret();
+$secrets = crm_bridge_secret_candidates();
 
-if ($secret === '') crm_bridge_reply(500, ['ok' => false, 'error' => 'Mail bridge secret is not configured']);
+if (!$secrets) crm_bridge_reply(500, ['ok' => false, 'error' => 'Mail bridge secret is not configured']);
 if (!ctype_digit($timestamp) || abs(time() - (int)$timestamp) > 300) crm_bridge_reply(401, ['ok' => false, 'error' => 'Expired mail bridge request']);
 if (!preg_match('/^[a-f0-9]{16,128}$/i', $nonce)) crm_bridge_reply(401, ['ok' => false, 'error' => 'Invalid mail bridge nonce']);
-$expected = hash_hmac('sha256', $timestamp.'.'.$nonce.'.'.$raw, $secret);
-if (!hash_equals($expected, $signature)) crm_bridge_reply(401, ['ok' => false, 'error' => 'Invalid mail bridge signature']);
+$validSignature = false;
+foreach ($secrets as $secret) {
+    $expected = hash_hmac('sha256', $timestamp.'.'.$nonce.'.'.$raw, $secret);
+    if (hash_equals($expected, $signature)) { $validSignature = true; break; }
+}
+if (!$validSignature) crm_bridge_reply(401, ['ok' => false, 'error' => 'Invalid mail bridge signature']);
 
 $data = json_decode($raw, true);
 if (!is_array($data)) crm_bridge_reply(400, ['ok' => false, 'error' => 'Invalid JSON payload']);

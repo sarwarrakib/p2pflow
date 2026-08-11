@@ -45,9 +45,16 @@ function copySafe(src, dst, relative = '') {
 
 fs.rmSync(outDir, { recursive:true, force:true });
 fs.mkdirSync(stage, { recursive:true });
+const currentReleaseNotes = `P2PFlow_v${pkg.version}_RELEASE_NOTES_BN.md`;
+function isTopLevelPackageClutter(name) {
+  if (/^P2PFlow_v.*_TEST_REPORT\.txt$/i.test(name)) return true;
+  if (/^P2PFlow_v.*_RELEASE_NOTES_BN\.md$/i.test(name) && name !== currentReleaseNotes) return true;
+  return false;
+}
 for (const name of fs.readdirSync(root)) {
   if (topLevelExcludes.has(name)) continue;
   if (name === path.basename(outDir)) continue;
+  if (isTopLevelPackageClutter(name)) continue;
   copySafe(path.join(root, name), path.join(stage, name), name);
 }
 

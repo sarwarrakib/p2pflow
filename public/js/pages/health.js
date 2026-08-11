@@ -28,7 +28,7 @@ async function renderHealth() {
     ['Last Live Message', cred.activeCredential ? (cred.activeCredential.liveTestMessage || '-') : '-']
   ];
   $('#content').innerHTML = `
-    <div class="toolbar"><div class="actions"><button id="rerunHealthBtn">Run Again</button><button class="secondary" id="binanceOnlyHealthBtn">Binance Network Only</button><button class="secondary" id="sendHealthMailBtn">Send Test Email</button></div></div>
+    <div class="toolbar"><div class="actions"><button id="rerunHealthBtn">Run Again</button><button class="secondary" id="binanceOnlyHealthBtn">Binance Network Only</button><button class="secondary" id="sendHealthMailBtn">Test Active Mail</button><button class="secondary" id="sendHealthSmtpBtn">Test SMTP</button><button class="secondary" id="sendHealthLocalMailBtn">Test Local Mail</button></div></div>
     <div class="notice"><b>Diagnosis:</b> ${escapeHtml(binance.diagnosis || '-')}</div>
     <div class="grid two">
       ${healthCard('Application', true, table(['Metric','Value'], appRows.map(r => [escapeHtml(r[0]), escapeHtml(r[1])] )))}
@@ -46,13 +46,16 @@ async function renderHealth() {
       $('#healthMiniRun').outerHTML = `<div class="notice"><b>Binance diagnosis:</b> ${escapeHtml(r.diagnosis || '-')}<br>${table(['Step','Status','Target','Time/Status','Detail'], stepRows(r.steps || []))}</div>`;
     } catch (err) { $('#healthMiniRun').outerHTML = `<div class="error">${escapeHtml(err.message)}</div>`; }
   };
-  $('#sendHealthMailBtn').onclick = async () => {
-    if (!confirm('Send a local-server test email to your account email?')) return;
+  const runHealthMailTest = async (driver, promptText) => {
+    if (!confirm(promptText)) return;
     try {
-      const r = await api('/api/health/mail-test', { method:'POST', body: JSON.stringify({}) });
+      const r = await api('/api/health/mail-test', { method:'POST', body: JSON.stringify({ driver }) });
       notify(r.message || 'Test email sent', 'ok', 8000);
     } catch (err) {}
   };
+  $('#sendHealthMailBtn').onclick = () => runHealthMailTest('active', 'Test the currently selected mail route to your account email?');
+  $('#sendHealthSmtpBtn').onclick = () => runHealthMailTest('smtp', 'Test authenticated SMTP directly to your account email?');
+  $('#sendHealthLocalMailBtn').onclick = () => runHealthMailTest('local', 'Test local PHP/sendmail only, without SMTP fallback?');
   applyLanguage(document.querySelector('#content') || document);
 }
 

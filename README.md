@@ -1,4 +1,4 @@
-# P2PFlow 1.4 - Unified Package
+# P2PFlow 1.5 - Unified Package
 
 এই সংস্করণে Hostinger, GitHub এবং manual update-এর জন্য আলাদা package নেই। **একটাই ZIP সব কাজে ব্যবহার হবে।**
 
@@ -27,11 +27,11 @@ Updater code এবং database আলাদা রাখে। Update install-�
 
 ## Version
 
-Internal SemVer: `1.4.19`  
-UI: `1.4`
+Internal SemVer: `1.5.0`  
+UI: `1.5`
 
-Normal next version: `SET_NEXT_VERSION.bat` -> `1.5.0`  
-Hotfix: `SET_HOTFIX_VERSION.bat` -> `1.4.20`
+Normal next version: `SET_NEXT_VERSION.bat` -> `1.6.0`  
+Hotfix: `SET_HOTFIX_VERSION.bat` -> `1.5.1`
 
 ## Database history safety
 
