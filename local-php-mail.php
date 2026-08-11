@@ -50,11 +50,6 @@ function crm_bridge_secret_candidates(): array {
     $explicit = crm_bridge_env_value('P2PFLOW_PHP_MAIL_SECRET');
     if ($explicit === '') $explicit = crm_bridge_env_value('CRM_PHP_MAIL_SECRET');
     if (strlen($explicit) >= 16) $values[] = $explicit;
-    foreach ([__DIR__.'/data/.mail-bridge-secret', dirname(__DIR__).'/data/.mail-bridge-secret'] as $file) {
-        if (!is_file($file) || !is_readable($file)) continue;
-        $secret = trim((string)@file_get_contents($file));
-        if (strlen($secret) >= 16) $values[] = $secret;
-    }
     $appKey = crm_bridge_env_value('P2PFLOW_APP_KEY');
     if ($appKey === '') $appKey = crm_bridge_env_value('CRM_APP_KEY');
     if (strlen($appKey) >= 16) {

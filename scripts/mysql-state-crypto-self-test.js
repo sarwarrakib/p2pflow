@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 'use strict';
+const crypto = require('crypto');
 const { MySqlStateStore, mysqlConnectionOptions, sha256 } = require('../lib/mysqlStateStore');
+const { payloadInfo } = require('../lib/statePayloadCodec');
 
 (async () => {
   const store = new MySqlStateStore({ appKey: 'm'.repeat(48), table: 'p2pflow_state', connectionString: 'mysql://user:pass@127.0.0.1:3306/p2pflow' });
@@ -11,11 +13,22 @@ const { MySqlStateStore, mysqlConnectionOptions, sha256 } = require('../lib/mysq
   const sealed = store.encryptBuffer(Buffer.from('database object'));
   if (store.decryptBuffer(sealed).toString() !== 'database object') throw new Error('MariaDB/MySQL object encryption round trip failed.');
   if (!/^[a-f0-9]{64}$/.test(sha256(payload))) throw new Error('MariaDB/MySQL state checksum failed.');
+  const repetitive = { rows: Array.from({ length: 2000 }, (_, i) => ({ id: i + 1, status: 'completed', currency: 'USDT', note: 'P2PFlow database compression test row' })) };
+  const compactPayload = store.encryptObject(repetitive);
+  const compactInfo = payloadInfo(compactPayload);
+  const plainBytes = Buffer.byteLength(JSON.stringify(repetitive));
+  if (compactInfo.version !== 2 || compactInfo.compression !== 'br' || compactPayload.length >= plainBytes) throw new Error('Compressed state payload did not reduce repetitive database state.');
+  const legacyPlain = Buffer.from(JSON.stringify(original));
+  const legacyIv = crypto.randomBytes(12);
+  const legacyCipher = crypto.createCipheriv('aes-256-gcm', store.keyBytes(), legacyIv);
+  const legacyEncrypted = Buffer.concat([legacyCipher.update(legacyPlain), legacyCipher.final()]);
+  const legacyPayload = JSON.stringify({ v:1, iv:legacyIv.toString('base64'), tag:legacyCipher.getAuthTag().toString('base64'), data:legacyEncrypted.toString('base64') });
+  if (JSON.stringify(store.decryptObject(legacyPayload)) !== JSON.stringify(original)) throw new Error('Legacy v1 state payload compatibility failed.');
   const options = mysqlConnectionOptions('mysql://u:p@localhost:3306/demo');
   if (options.host !== 'localhost' || options.port !== 3306 || options.database !== 'demo') throw new Error('MariaDB/MySQL URL parsing failed.');
-  if (store.historyLimit !== 8) throw new Error(`Expected safe default history limit 8, got ${store.historyLimit}.`);
+  if (store.historyLimit !== 3) throw new Error(`Expected compact default history limit 3, got ${store.historyLimit}.`);
   const clamped = new MySqlStateStore({ appKey: 'm'.repeat(48), historyLimit: 500, connectionString: 'mysql://u:p@localhost:3306/demo' });
-  if (clamped.historyLimit > 25) throw new Error('History limit safety clamp failed.');
+  if (clamped.historyLimit > 12) throw new Error('History limit safety clamp failed.');
 
   let createAttempted = false;
   const existingSchemaStore = new MySqlStateStore({
@@ -69,6 +82,7 @@ const { MySqlStateStore, mysqlConnectionOptions, sha256 } = require('../lib/mysq
         const text = String(sql || '');
         if (/SELECT revision FROM `p2pflow_state_history`/i.test(text)) return [[{ revision: 10 }, { revision: 9 }, { revision: 8 }], []];
         if (/DELETE FROM `p2pflow_state_history`/i.test(text)) { deletedHistoryRows += 3; return [{ affectedRows: 3 }, []]; }
+        if (/WHERE payload LIKE/i.test(text)) return [[], []];
         throw new Error(`Unexpected cleanup query: ${text.slice(0, 120)}`);
       }
     }
@@ -85,7 +99,11 @@ const { MySqlStateStore, mysqlConnectionOptions, sha256 } = require('../lib/mysq
     maxHistoryLimit: clamped.historyLimit,
     existingSchemaNeedsCreatePrivilege: false,
     healthyStartupReadsHistoryPayloads: historyReadOnHealthyStartup,
-    incrementalHistoryPruneRows: cleanupResult.pruned
+    incrementalHistoryPruneRows: cleanupResult.pruned,
+    payloadCodecVersion: compactInfo.version,
+    compressedPayloadBytes: compactInfo.payloadBytes,
+    originalJsonBytes: plainBytes,
+    legacyPayloadReadable: true
   }, null, 2));
 })().catch(error => {
   console.error(error && error.stack || error);

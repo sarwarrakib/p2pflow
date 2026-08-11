@@ -19,7 +19,7 @@ if (!server.includes("'/api/login/device/challenge'")) fail('trusted-device chal
 if (!server.includes("'/api/login/device'")) fail('trusted-device login route is missing');
 if (!server.includes("'/api/login/recover-email'")) fail('email recovery route is missing');
 if (!server.includes("'/api/login/device/legacy'") || !server.includes("'/api/login/device/upgrade'")) fail('legacy-session secure upgrade routes are missing');
-if (!server.includes('email-recovery-code.txt') || !server.includes('HOSTING_EMAIL_RECOVERY_TTL_MS')) fail('mail-outage owner recovery file fallback is missing');
+if (!server.includes('deriveHostingEmailRecoveryCode') || !server.includes('owner-email-recovery-code.js') || !server.includes('HOSTING_EMAIL_RECOVERY_TTL_MS')) fail('mail-outage database-only hosting recovery fallback is missing');
 if (!server.includes("X-P2PFlow-Device-Id") && !server.includes("x-p2pflow-device-id")) fail('device-id API binding is missing');
 if (!server.includes("'Strict', 'Strict'")) fail('Strict SameSite default is missing');
 if (!server.includes('LOGIN_FAILURE_EMAIL_COOLDOWN_MS')) fail('failed-login email cooldown is missing');
@@ -29,7 +29,7 @@ if (!deviceAuth.includes('indexedDB')) fail('device private key is not stored in
 if (!login.includes("/api/login/device/challenge") || !login.includes("/api/login/device")) fail('standalone login client does not use trusted-device flow');
 if (!login.includes('/api/login/recover-email')) fail('standalone login client does not expose email recovery');
 if (!login.includes('/api/login/device/legacy') || !login.includes('/api/login/device/upgrade')) fail('standalone login client cannot secure a legacy session after update');
-if (!login.includes('shared/email-recovery-code.txt')) fail('standalone login client does not explain hosting recovery fallback');
+if (!login.includes('Hosting Terminal command')) fail('standalone login client does not explain hosting recovery fallback');
 if (!loginHtml.includes('/device-auth.js')) fail('login page does not load trusted-device key helper');
 if (!app.includes('p2pflowTrustedDeviceId')) fail('application API requests are not bound to trusted-device id');
 

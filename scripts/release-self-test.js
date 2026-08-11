@@ -31,8 +31,8 @@ for (const file of files) {
 
 const required = [
   'server.js','app-server.js','package.json','package-lock.json','public/index.html','public/js/pages/system-update.js',
-  'lib/updateManager.js','lib/releaseIntegrity.js','lib/publicAssetMirror.js','lib/databaseProvider.js','lib/hostingSetup.js','lib/mysqlStateStore.js','lib/postgresStateStore.js',
-  'scripts/build-release.js','scripts/build-unified-package.js','scripts/set-version.js','scripts/public-asset-mirror-self-test.js','scripts/unified-supervisor-self-test.js',
+  'lib/updateManager.js','lib/releaseIntegrity.js','lib/publicAssetMirror.js','lib/databaseProvider.js','lib/hostingSetup.js','lib/statePayloadCodec.js','lib/mysqlStateStore.js','lib/postgresStateStore.js',
+  'scripts/build-release.js','scripts/build-unified-package.js','scripts/set-version.js','scripts/owner-email-recovery-code.js','scripts/public-asset-mirror-self-test.js','scripts/unified-supervisor-self-test.js',
   '.github/workflows/release.yml','.github/workflows/ci.yml','SET_NEXT_VERSION.bat','SET_HOTFIX_VERSION.bat'
 ];
 for (const relative of required) if (!fs.existsSync(path.join(root, relative))) throw new Error(`Missing unified release file: ${relative}`);
@@ -51,7 +51,7 @@ if (app.includes('max-age=31536000, immutable')) throw new Error('Frontend appli
 for (const marker of ["const appCodeAsset = ['.html','.js','.css'].includes(ext)", "'no-store, no-cache, must-revalidate, max-age=0'", "'X-P2PFlow-Version': APP_VERSION"]) {
   if (!app.includes(marker)) throw new Error(`Frontend cache-safety marker is missing: ${marker}`);
 }
-for (const forbidden of ['CRM_DB_PROVIDER=file','CRM_DB_FILE','0.0032']) {
+for (const forbidden of ['CRM_DB_PROVIDER=file','CRM_DB_FILE','0.0032','shared/email-recovery-code.txt']) {
   if (app.includes(forbidden)) throw new Error(`Application server contains forbidden legacy marker: ${forbidden}`);
 }
 const updater = fs.readFileSync(path.join(root, 'lib', 'updateManager.js'), 'utf8');

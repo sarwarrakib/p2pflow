@@ -101,7 +101,7 @@ if (fileImport.missing.length && String(process.env.CRM_ALLOW_MISSING_LEGACY_FIL
     const encoded = proof.dataBase64 || proof.contentBase64 || '';
     if (!encoded) continue;
     const buffer = Buffer.from(String(encoded), 'base64');
-    proof.objectId = proof.objectId || `proof:${proof.id}:${crypto.createHash('sha256').update(buffer).digest('hex')}`;
+    proof.objectId = proof.objectId || `proof:${crypto.createHash('sha256').update(buffer).digest('hex')}`;
     await store.putObject(proof.objectId, buffer, { kind: 'proof', contentType: proof.mimeType, filename: proof.filename, metadata: { orderId: proof.orderId || null, splitId: proof.splitId || null } });
     proof.storage = 'postgres_object';
     proof.sizeBytes = buffer.length;
@@ -113,7 +113,7 @@ if (fileImport.missing.length && String(process.env.CRM_ALLOW_MISSING_LEGACY_FIL
     const encoded = media.dataBase64 || '';
     if (!encoded) continue;
     const buffer = Buffer.from(String(encoded), 'base64');
-    media.objectId = media.objectId || `chat-media:${media.id}:${crypto.createHash('sha256').update(buffer).digest('hex')}`;
+    media.objectId = media.objectId || `chat-media:${crypto.createHash('sha256').update(buffer).digest('hex')}`;
     media.token = media.token || crypto.randomBytes(32).toString('hex');
     await store.putObject(media.objectId, buffer, { kind: 'chat_media', contentType: media.mimeType, filename: media.filename, metadata: { orderNo: media.orderNo || '' } });
     media.storage = 'postgres_object';

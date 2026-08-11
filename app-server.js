@@ -94,7 +94,6 @@ const TRUSTED_DEVICE_TTL_DAYS = Math.max(1, Math.min(180, Number(process.env.P2P
 const TRUSTED_DEVICE_CHALLENGE_TTL_MS = 2 * 60 * 1000;
 const LOGIN_FAILURE_EMAIL_COOLDOWN_MS = Math.max(60 * 60 * 1000, Number(process.env.P2PFLOW_LOGIN_FAILURE_EMAIL_COOLDOWN_HOURS || 6) * 60 * 60 * 1000 || 6 * 60 * 60 * 1000);
 const HOSTING_EMAIL_RECOVERY_TTL_MS = 15 * 60 * 1000;
-const HOSTING_EMAIL_RECOVERY_FILE = path.join(SHARED_DIR, 'email-recovery-code.txt');
 const PHP_BINARY = cleanEnv(process.env.CRM_PHP_BINARY || 'php', 'php');
 const PHP_BINARIES = cleanEnv(process.env.CRM_PHP_BINARIES || '', '');
 const PHP_MAIL_URL = cleanEnv(process.env.CRM_PHP_MAIL_URL || '', '');
@@ -537,7 +536,7 @@ async function externalizeDatabaseObjects(target = db) {
     const encoded = proof.dataBase64 || proof.contentBase64 || '';
     if (!encoded) continue;
     const buffer = Buffer.from(String(encoded), 'base64');
-    const objectId = proof.objectId || `proof:${proof.id}:${crypto.createHash('sha256').update(buffer).digest('hex')}`;
+    const objectId = proof.objectId || `proof:${crypto.createHash('sha256').update(buffer).digest('hex')}`;
     await stateStore.putObject(objectId, buffer, { kind: 'proof', contentType: proof.mimeType, filename: proof.filename, metadata: { orderId: proof.orderId || null, splitId: proof.splitId || null } });
     proof.objectId = objectId;
     proof.storage = 'database_object';
@@ -550,7 +549,7 @@ async function externalizeDatabaseObjects(target = db) {
     const encoded = media.dataBase64 || '';
     if (!encoded) continue;
     const buffer = Buffer.from(String(encoded), 'base64');
-    const objectId = media.objectId || `chat-media:${media.id}:${crypto.createHash('sha256').update(buffer).digest('hex')}`;
+    const objectId = media.objectId || `chat-media:${crypto.createHash('sha256').update(buffer).digest('hex')}`;
     await stateStore.putObject(objectId, buffer, { kind: 'chat_media', contentType: media.mimeType, filename: media.filename, metadata: { orderNo: media.orderNo || '' } });
     media.objectId = objectId;
     media.storage = 'database_object';
@@ -609,9 +608,10 @@ async function initDb() {
     appVersion: APP_VERSION,
     poolMax: Number(process.env.P2PFLOW_DATABASE_POOL_MAX || process.env.P2PFLOW_MYSQL_POOL_MAX || process.env.P2PFLOW_POSTGRES_POOL_MAX || process.env.CRM_DATABASE_POOL_MAX || process.env.CRM_MYSQL_POOL_MAX || process.env.CRM_POSTGRES_POOL_MAX || 5),
     ssl: storageSslOptions(),
-    historyLimit: Number(process.env.CRM_DB_HISTORY_LIMIT || process.env.P2PFLOW_DB_HISTORY_LIMIT || 8),
-    historyWriteIntervalMs: Number(process.env.P2PFLOW_DB_HISTORY_INTERVAL_MS || 15 * 60 * 1000),
+    historyLimit: Number(process.env.CRM_DB_HISTORY_LIMIT || process.env.P2PFLOW_DB_HISTORY_LIMIT || 3),
+    historyWriteIntervalMs: Number(process.env.P2PFLOW_DB_HISTORY_INTERVAL_MS || 6 * 60 * 60 * 1000),
     historyCleanupBatch: Number(process.env.P2PFLOW_DB_HISTORY_CLEANUP_BATCH || 3),
+    backupLimit: Number(process.env.P2PFLOW_DB_BACKUP_LIMIT || process.env.CRM_DB_BACKUP_LIMIT || 5),
     instanceLockKey: cleanEnv(process.env.P2PFLOW_INSTANCE_LOCK_KEY || process.env.CRM_INSTANCE_LOCK_KEY || `${DATABASE_TABLE}:single-instance`, `${DATABASE_TABLE}:single-instance`)
   });
   await stateStore.init();
@@ -1225,7 +1225,7 @@ function migrateDb(target) {
   });
   target.paymentSplits.forEach(split => {
     if (split.screenshotDataUrl && !split.proofFileId) {
-      const proof = saveProofDataUrlToDisk(split.screenshotDataUrl, { orderId: split.orderId, splitId: split.id, uploadedBy: split.updatedBy || split.createdBy || null, createdAt: split.updatedAt || nowIso() }, target);
+      const proof = saveProofDataUrlToDatabase(split.screenshotDataUrl, { orderId: split.orderId, splitId: split.id, uploadedBy: split.updatedBy || split.createdBy || null, createdAt: split.updatedAt || nowIso() }, target);
       if (proof) split.proofFileId = proof.id;
       delete split.screenshotDataUrl;
     }
@@ -7710,7 +7710,7 @@ function parseVideoDataUrl(dataUrl) {
 async function saveDatabaseChatVideo(req, orderNo, originalName, parsed) {
   const id = nextId();
   const token = crypto.randomBytes(32).toString('hex');
-  const objectId = `chat-media:${id}:${crypto.createHash('sha256').update(parsed.buffer).digest('hex')}`;
+  const objectId = `chat-media:${crypto.createHash('sha256').update(parsed.buffer).digest('hex')}`;
   const fileName = cleanStr(originalName || `video-${id}.${parsed.ext}`, 180).replace(/[^a-zA-Z0-9_.-]/g, '-') || `video-${id}.${parsed.ext}`;
   await stateStore.putObject(objectId, parsed.buffer, { kind: 'chat_media', contentType: parsed.mime, filename: fileName, metadata: { orderNo: cleanStr(orderNo || '', 80) } });
   const media = {
@@ -8264,31 +8264,13 @@ function secureCompareText(a, b) {
 function hostingRecoveryCodeHash(code, recoveryId) {
   return crypto.createHash('sha256').update(`${String(recoveryId || '')}\n${String(code || '').trim().toUpperCase()}`).digest('hex');
 }
-function writeHostingEmailRecoveryCode({ code, recoveryId, newEmail, expiresAt }) {
-  fs.mkdirSync(SHARED_DIR, { recursive: true, mode: 0o700 });
-  const content = [
-    'P2PFlow Owner Email Recovery Code',
-    '',
-    `Code: ${code}`,
-    `Recovery ID: ${recoveryId}`,
-    `New email: ${newEmail}`,
-    `Expires: ${new Date(expiresAt).toISOString()}`,
-    '',
-    'Use this code only in the P2PFlow login email-recovery form.',
-    'Delete this file after recovery. P2PFlow also removes it after successful use.'
-  ].join('\n');
-  fs.writeFileSync(HOSTING_EMAIL_RECOVERY_FILE, content, { encoding: 'utf8', mode: 0o600 });
-  try { fs.chmodSync(HOSTING_EMAIL_RECOVERY_FILE, 0o600); } catch {}
+function deriveHostingEmailRecoveryCode(recoveryId) {
+  if (!APP_KEY || APP_KEY.length < 32) throw new Error('Application Key is unavailable for hosting recovery.');
+  const digest = crypto.createHmac('sha256', APP_KEY).update(`p2pflow-owner-email-recovery\n${String(recoveryId || '')}`).digest('hex').toUpperCase();
+  return `${digest.slice(0, 4)}-${digest.slice(4, 8)}-${digest.slice(8, 12)}-${digest.slice(12, 16)}`;
 }
-function removeHostingEmailRecoveryFile(recoveryId = '') {
-  try {
-    if (!fs.existsSync(HOSTING_EMAIL_RECOVERY_FILE)) return;
-    if (recoveryId) {
-      const text = fs.readFileSync(HOSTING_EMAIL_RECOVERY_FILE, 'utf8');
-      if (!text.includes(`Recovery ID: ${recoveryId}`)) return;
-    }
-    fs.unlinkSync(HOSTING_EMAIL_RECOVERY_FILE);
-  } catch {}
+function removeHostingEmailRecoveryFile() {
+  // v1.5 database-only data policy: no recovery code is written to the local filesystem.
 }
 function sessionCookieSid(req) {
   const cookie = req?.headers?.cookie || '';
@@ -9001,7 +8983,39 @@ async function storageHealth() {
   const items = [healthStep('storage.provider', true, { provider: DATABASE_PROVIDER })];
   try {
     const health = await stateStore.health();
-    items.push(healthStep('database.reachable', true, { provider: DATABASE_PROVIDER, databaseVersion: health.databaseVersion || '', table: DATABASE_TABLE, proofStorage: 'database', mediaStorage: 'database', revision: health.revision, singleWriterLock: health.singleWriterLock, ms: health.ms }));
+    const payloadBytes = Number(health.payload?.payloadBytes || 0);
+    const plainStateBytes = Number(health.payload?.plainBytes || 0);
+    const payloadSavingPercent = plainStateBytes > 0
+      ? Number((Math.max(0, 1 - (payloadBytes / plainStateBytes)) * 100).toFixed(1))
+      : 0;
+    const storageTables = Object.fromEntries(Object.entries(health.storage?.tables || {}).map(([name, bytes]) => [name, {
+      bytes: Number(bytes || 0),
+      mb: Number((Number(bytes || 0) / 1024 / 1024).toFixed(3)),
+      rows: Number(health.storage?.rowCounts?.[name] || 0)
+    }]));
+    items.push(healthStep('database.reachable', true, {
+      provider: DATABASE_PROVIDER,
+      databaseVersion: health.databaseVersion || '',
+      table: DATABASE_TABLE,
+      proofStorage: 'database_object',
+      mediaStorage: 'database_object',
+      stateStorage: 'database_encrypted_compressed',
+      payloadCodec: health.payloadCodec || '',
+      payloadBytes,
+      plainStateBytes,
+      payloadSavingPercent,
+      databaseStorageBytes: Number(health.storage?.totalBytes || 0),
+      databaseStorageMB: Number(((Number(health.storage?.totalBytes || 0)) / 1024 / 1024).toFixed(2)),
+      databaseTables: storageTables,
+      databaseObjectCount: Number(health.storage?.rowCounts?.[stateStore.objectTable] || 0),
+      databaseObjectSourceMB: Number((Number(health.storage?.objectSourceBytes || 0) / 1024 / 1024).toFixed(2)),
+      historyLimit: Number(health.historyLimit || 0),
+      backupLimit: Number(health.backupLimit || 0),
+      historyWriteIntervalMinutes: Number(health.historyWriteIntervalMinutes || 0),
+      revision: health.revision,
+      singleWriterLock: health.singleWriterLock,
+      ms: health.ms
+    }));
   } catch (err) {
     items.push(healthStep('database.reachable', false, { provider: DATABASE_PROVIDER, table: DATABASE_TABLE, error: healthError(err) }));
   }
@@ -12555,28 +12569,28 @@ async function handleLoginEmailRecovery(req, res) {
       if (user.isOwner !== true) {
         return sendJson(res, 503, { error: 'The verification email could not be sent. Ask the P2PFlow Owner to repair Email Delivery.' }, {}, req);
       }
-      // Owner lockout fallback: proof of hosting-file access replaces email only
-      // when mail delivery itself is unavailable. The code never crosses the API.
-      const hostingCode = crypto.randomBytes(12).toString('base64url').replace(/[-_]/g, 'A').slice(0, 16).toUpperCase();
+      // Owner lockout fallback without local data files. The one-time code is
+      // derived from the permanent Application Key plus this recovery ID. It is
+      // never stored on disk or returned by the API. A hosting operator can derive
+      // it on demand with scripts/owner-email-recovery-code.js.
+      let hostingCode;
+      try { hostingCode = deriveHostingEmailRecoveryCode(id); }
+      catch (recoveryErr) {
+        return sendJson(res, 503, { error: `Email delivery failed and secure hosting recovery is unavailable: ${cleanStr(recoveryErr.message, 220)}` }, {}, req);
+      }
       item.mode = 'hosting';
       item.code = '';
       item.codeHash = hostingRecoveryCodeHash(hostingCode, id);
       item.expiresAt = Date.now() + HOSTING_EMAIL_RECOVERY_TTL_MS;
       pendingEmailRecoveries.set(id, item);
-      try {
-        writeHostingEmailRecoveryCode({ code: hostingCode, recoveryId: id, newEmail, expiresAt: item.expiresAt });
-      } catch (fileErr) {
-        pendingEmailRecoveries.delete(id);
-        return sendJson(res, 503, { error: `Email delivery failed and the secure hosting recovery file could not be created: ${cleanStr(fileErr.message, 220)}` }, {}, req);
-      }
-      logAudit(user, 'email_recovery_hosting_fallback_issued', 'user', user.id, { newEmail: maskEmail(newEmail), ip: getIp(req), file: 'shared/email-recovery-code.txt' });
+      logAudit(user, 'email_recovery_hosting_fallback_issued', 'user', user.id, { newEmail: maskEmail(newEmail), ip: getIp(req), storage: 'memory_only_challenge', localFileCreated: false });
       return sendJson(res, 202, {
         recoveryOtpRequired: true,
         hostingRecoveryRequired: true,
         recoveryMode: 'hosting',
         recoveryId: id,
-        recoveryCodeFile: 'shared/email-recovery-code.txt',
-        message: 'Email delivery is unavailable. A one-time Owner recovery code was written to shared/email-recovery-code.txt. Open Hosting File Manager, copy that code here, and confirm. No email is required.'
+        recoveryCodeCommand: `node scripts/owner-email-recovery-code.js ${id}`,
+        message: 'Email delivery is unavailable. No local recovery file was created. From the application root, run the shown Owner recovery command in Hosting Terminal, then enter the one-time code here.'
       }, {}, req);
     }
   }
@@ -14228,7 +14242,7 @@ async function addSplit(req, res, user, order) {
   if (validationError) return sendJson(res, 422, { error: validationError }, {}, req);
   const split = { id: nextId(), orderId: order.id, agentId: splitAgentId, paymentAccountId: accountItem.id, paymentMethodId: accountItem.paymentMethodId, direction, plannedAmount: planned, actualAmount: 0, transactionChargeAmount: 0, transactionChargeMode: 'none', transactionChargeSource: '', status: actual === 0 ? 'planned' : (actual < planned ? 'partial' : 'completed'), proofFileId: null, transactionReference: cleanStr(body.transactionReference || '', 120), note: cleanStr(body.note || '', 300), createdBy: user.id, updatedBy: user.id, createdAt: nowIso(), updatedAt: nowIso() };
   if (body.screenshotDataUrl) {
-    const proof = saveProofDataUrlToDisk(body.screenshotDataUrl, { orderId: split.orderId, splitId: split.id, uploadedBy: user.id, createdAt: nowIso() }, db);
+    const proof = saveProofDataUrlToDatabase(body.screenshotDataUrl, { orderId: split.orderId, splitId: split.id, uploadedBy: user.id, createdAt: nowIso() }, db);
     if (!proof) return sendJson(res, 422, { error: 'Invalid or unsupported proof image' }, {}, req);
     split.proofFileId = proof.id;
   }
@@ -14273,7 +14287,7 @@ async function handleSplitById(req, res, parts) {
     if (body.note !== undefined) split.note = cleanStr(body.note, 300);
     if (body.transactionReference !== undefined) split.transactionReference = cleanStr(body.transactionReference, 120);
     if (body.screenshotDataUrl) {
-      const proof = saveProofDataUrlToDisk(body.screenshotDataUrl, { orderId: split.orderId, splitId: split.id, uploadedBy: user.id, createdAt: nowIso() }, db);
+      const proof = saveProofDataUrlToDatabase(body.screenshotDataUrl, { orderId: split.orderId, splitId: split.id, uploadedBy: user.id, createdAt: nowIso() }, db);
       if (!proof) return sendJson(res, 422, { error: 'Invalid or unsupported proof image' }, {}, req);
       split.proofFileId = proof.id;
     }
@@ -14294,7 +14308,7 @@ async function handleSplitById(req, res, parts) {
   return sendJson(res, 405, { error: 'Method not allowed' }, {}, req);
 }
 
-function saveProofDataUrlToDisk(dataUrl, meta, target = db) {
+function saveProofDataUrlToDatabase(dataUrl, meta, target = db) {
   const match = String(dataUrl || '').match(/^data:(image\/(png|jpeg|jpg|webp));base64,([A-Za-z0-9+/=\r\n]+)$/);
   if (!match) return null;
   const mime = match[1].replace('jpg', 'jpeg');
@@ -14366,7 +14380,7 @@ function applySplitCompletionEvidence(order, assignment, user, body = {}) {
   if (body.note !== undefined) split.note = cleanStr(body.note || '', 300);
   if (body.transactionReference !== undefined) split.transactionReference = cleanStr(body.transactionReference || '', 120);
   if (body.screenshotDataUrl) {
-    const proof = saveProofDataUrlToDisk(body.screenshotDataUrl, { orderId: split.orderId, splitId: split.id, uploadedBy: user.id, createdAt: nowIso() }, db);
+    const proof = saveProofDataUrlToDatabase(body.screenshotDataUrl, { orderId: split.orderId, splitId: split.id, uploadedBy: user.id, createdAt: nowIso() }, db);
     if (!proof) throw Object.assign(new Error('Invalid or unsupported proof image.'), { statusCode: 422 });
     split.proofFileId = proof.id;
   }
@@ -17174,9 +17188,6 @@ global.SSE_CLIENTS = SSE_CLIENTS;
 
 /* ================= v1.0.46 FULL CONTROL SYSTEM ================= */
 
-const auditLog = [];
-const riskCache = {};
-
 // simple risk scoring
 function calcRisk(order){
   let score = 0;
@@ -17188,15 +17199,25 @@ function calcRisk(order){
 }
 
 function addAudit(action, data){
-  auditLog.push({
-    action,
-    data,
-    ts: Date.now()
-  });
-  if(auditLog.length > 500) auditLog.shift();
+  if (!db) return null;
+  const item = {
+    id: typeof nextId === 'function' ? nextId() : Date.now(),
+    action: cleanStr(action || 'legacy_audit', 120),
+    entityType: 'system',
+    entityId: null,
+    userId: null,
+    userName: 'System',
+    role: 'system',
+    details: data || {},
+    createdAt: nowIso()
+  };
+  db.auditLogs = Array.isArray(db.auditLogs) ? db.auditLogs : [];
+  db.auditLogs.push(item);
+  saveDb({ reason: 'legacy_audit' });
+  return item;
 }
 
-global.auditLog = auditLog;
+Object.defineProperty(global, 'auditLog', { configurable: true, get: () => (db && Array.isArray(db.auditLogs) ? db.auditLogs : []) });
 global.calcRisk = calcRisk;
 global.addAudit = addAudit;
 
@@ -17223,12 +17244,15 @@ try {
 
 /* ================= GOD MODE v1.0.47 ================= */
 
-// ADVANCED LEDGER SYSTEM
-const ledger = {
-  orders: new Map(),
-  users: new Map(),
-  transactions: []
-};
+// ADVANCED LEDGER COMPATIBILITY VIEW
+// No second in-memory ledger is allowed: authoritative rows stay in db.* and are
+// persisted by the main database state store.
+const ledger = {};
+Object.defineProperties(ledger, {
+  orders: { enumerable: true, get: () => new Map(((db && db.orders) || []).map(item => [String(item.id || item.orderNo || ''), item])) },
+  users: { enumerable: true, get: () => new Map(((db && db.users) || []).map(item => [String(item.id || item.username || ''), item])) },
+  transactions: { enumerable: true, get: () => ((db && db.ledgers) || []) }
+});
 
 // FRAUD ENGINE
 function fraudScore(order){
@@ -17299,8 +17323,6 @@ global.broadcast = broadcast;
    without creating a second JSON database that can split production data.
 */
 
-global.__paymentCache = global.__paymentCache || Object.create(null);
-
 function stablePayment(order) {
   if (!order) return 'Unknown';
   const id = String(order.id || order.orderNo || order.externalOrderNo || '');
@@ -17314,8 +17336,6 @@ function stablePayment(order) {
     order.paymentMethod ||
     ''
   ).trim();
-  if (!method && id && global.__paymentCache[id]) return global.__paymentCache[id];
-  if (method && id) global.__paymentCache[id] = method;
   return method || 'Unknown';
 }
 
@@ -17343,7 +17363,6 @@ function finalBossLogAudit(action, payload) {
   };
   target.auditLogs = Array.isArray(target.auditLogs) ? target.auditLogs : [];
   target.auditLogs.unshift(item);
-  if (target.auditLogs.length > 2000) target.auditLogs.length = 2000;
   saveDB(target);
   return item;
 }
