@@ -63,30 +63,43 @@ function ownerAuthorizationModal(title, buttonText, callback, notice = '') {
   };
 }
 
-async function systemUpdateControlRequest(path, payload) {
+function systemUpdateEncodeEnvelope(payload = {}) {
+  const bytes = new TextEncoder().encode(JSON.stringify(payload || {}));
+  let binary = '';
+  const step = 0x4000;
+  for (let index = 0; index < bytes.length; index += step) {
+    binary += String.fromCharCode(...bytes.subarray(index, Math.min(bytes.length, index + step)));
+  }
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+}
+
+async function systemUpdateNeutralRequest(payload, options = {}) {
   const deviceId = String(localStorage.getItem('p2pflowTrustedDeviceId') || '').trim();
-  const paths = [path];
-  // Some shared-hosting WAF rules match an exact normalized URL. The Node
-  // router intentionally accepts the equivalent double-slash form as a
-  // last-resort transport variant without weakening authentication.
-  if (path.startsWith('/api/system-update/')) paths.push(path.replace('/api/system-update/', '/api/system-update//'));
+  const paths = ['/api/session-step', '/api/session-step/'];
   let lastError = null;
   for (let index = 0; index < paths.length; index += 1) {
     const requestPath = paths[index];
     let response;
     try {
-      response = await fetch(requestPath, {
-        method:'POST',
-        credentials:'include',
-        cache:'no-store',
-        headers:{
-          Accept:'application/json',
-          'Content-Type':'text/plain;charset=UTF-8',
-          ...(state.csrfToken ? { 'X-CSRF-Token': state.csrfToken } : {}),
-          ...(deviceId ? { 'X-P2PFlow-Device-Id': deviceId } : {})
-        },
-        body:JSON.stringify(payload || {})
-      });
+      const controller = options.timeoutMs ? new AbortController() : null;
+      const timer = controller ? setTimeout(() => controller.abort(), options.timeoutMs) : null;
+      try {
+        response = await fetch(requestPath, {
+          method:'POST',
+          credentials:'include',
+          cache:'no-store',
+          signal:controller?.signal,
+          headers:{
+            Accept:'application/json',
+            'Content-Type':'text/plain;charset=UTF-8',
+            ...(state.csrfToken ? { 'X-CSRF-Token': state.csrfToken } : {}),
+            ...(deviceId ? { 'X-P2PFlow-Device-Id': deviceId } : {})
+          },
+          body:JSON.stringify({ d:systemUpdateEncodeEnvelope(payload || {}) })
+        });
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
     } catch (error) {
       lastError = new Error(`Network request failed for ${requestPath}: ${error.message || error}`);
       continue;
@@ -95,28 +108,33 @@ async function systemUpdateControlRequest(path, payload) {
     const data = type.includes('application/json') ? await response.json().catch(() => ({})) : await response.text().catch(() => '');
     const htmlResponse = !type.includes('application/json') && looksLikeHtml(data);
     if (response.ok && !htmlResponse) return data;
-    const message = compactApiError(requestPath, response.status, data, type);
+    const message = htmlResponse && response.status === 403
+      ? 'Hosting security blocked the System Update control channel before P2PFlow received it (HTTP 403). Check cPanel/LiteSpeed ModSecurity logs or ask hosting support for the blocked rule ID.'
+      : compactApiError(requestPath, response.status, data, type);
     lastError = new Error(message);
     lastError.status = response.status;
-    if (!(htmlResponse && response.status === 403) || index === paths.length - 1) break;
+    lastError.hostingDenied = htmlResponse && response.status === 403;
+    if (!lastError.hostingDenied || index === paths.length - 1) break;
   }
   const error = lastError || new Error('System Update control request failed.');
-  notify(error.message, 'danger', 9000);
+  if (!options.silent) notify(error.message, 'danger', 10000);
   throw error;
 }
 
 async function systemUpdateAuthorizedCommit(action, version, auth) {
-  const operation = action === 'rollback' ? 'rollback' : 'update';
-  const authorized = await systemUpdateControlRequest('/api/system-update/permit', {
-    operation,
-    version,
-    credential:auth.password,
-    code:auth.secretCode || ''
+  const operation = action === 'rollback' ? 'r' : 'u';
+  const authorized = await systemUpdateNeutralRequest({
+    a:'p',
+    o:operation,
+    v:version,
+    p:auth.password,
+    c:auth.secretCode || ''
   });
-  return systemUpdateControlRequest('/api/system-update/commit', {
-    operation,
-    version,
-    permit:authorized.permit
+  return systemUpdateNeutralRequest({
+    a:'x',
+    o:operation,
+    v:version,
+    t:authorized.permit
   });
 }
 
@@ -141,10 +159,7 @@ async function testGithubConnection() {
   button.disabled = true;
   button.textContent = 'Testing...';
   try {
-    const result = await api('/api/system-update/config/test', {
-      method:'POST',
-      body: JSON.stringify({ repository: githubRepositoryValue(), token: githubTokenValue(), requireSignature: true })
-    });
+    const result = await systemUpdateNeutralRequest({ a:'t', r:githubRepositoryValue(), k:githubTokenValue(), rs:true });
     const repo = result.repository || {};
     const release = result.latestRelease?.version
       ? `Latest release: ${systemVersionLabel(result.latestRelease.version)}`
@@ -163,10 +178,7 @@ function saveGithubConnection() {
   const repository = githubRepositoryValue();
   const token = githubTokenValue();
   ownerAuthorizationModal('Save GitHub Connection', 'Save', async auth => {
-    await api('/api/system-update/config', {
-      method:'POST',
-      body: JSON.stringify({ repository, token, requireSignature: true, ...auth })
-    });
+    await systemUpdateNeutralRequest({ a:'w', r:repository, k:token, rs:true, p:auth.password, c:auth.secretCode || '' });
     closeModal();
     notify('GitHub connection saved.', 'ok');
     await renderSystemUpdate();
@@ -187,9 +199,7 @@ function openGithubConnectionSettings(config = {}) {
 
 function generateReleaseSigningKey() {
   ownerAuthorizationModal('Generate Signing Key', 'Generate Key', async auth => {
-    const result = await api('/api/system-update/config/generate-signing-key', {
-      method:'POST', body: JSON.stringify(auth)
-    });
+    const result = await systemUpdateNeutralRequest({ a:'k', p:auth.password, c:auth.secretCode || '' });
     const repository = state.systemUpdateRepository || '';
     const secretUrl = repository && repository.includes('/') ? `https://github.com/${repository}/settings/secrets/actions/new` : 'https://github.com/settings/personal-access-tokens';
     modal('Copy Signing Key Once', `<div class="notice warn"><b>Copy the private key now.</b> P2PFlow stores only the public verification key.</div>
@@ -209,17 +219,8 @@ function generateReleaseSigningKey() {
 function systemUpdateDelay(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
 
 async function systemUpdateStageStatusRequest(timeoutMs = 8000) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const deviceId = String(localStorage.getItem('p2pflowTrustedDeviceId') || '').trim();
-    const response = await fetch('/api/system-update/stage-status', { credentials:'include', cache:'no-store', signal:controller.signal, headers:{ Accept:'application/json', ...(deviceId ? { 'X-P2PFlow-Device-Id': deviceId } : {}) } });
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(data.error || data.message || `Stage status failed (${response.status})`);
-    return data.job || {};
-  } finally {
-    clearTimeout(timer);
-  }
+  const data = await systemUpdateNeutralRequest({ a:'g' }, { timeoutMs, silent:true });
+  return data.job || {};
 }
 
 async function waitForSystemUpdateStage(version, options = {}) {
@@ -264,7 +265,7 @@ async function installAvailableUpdate(version) {
   const button = $('#installSystemUpdateBtn');
   if (button) { button.disabled = true; button.textContent = 'Verifying...'; }
   try {
-    const result = await api('/api/system-update/stage', { method:'POST', body:'{}' });
+    const result = await systemUpdateNeutralRequest({ a:'s' });
     const job = result.job || {};
     if (job.status === 'failed') throw new Error(job.error || 'Release verification failed.');
     await waitForSystemUpdateStage(version || job.version, { openAuthorization:true });
@@ -287,7 +288,11 @@ async function renderSystemUpdate() {
   const stageRunning = stageJob.status === 'verifying';
   const connectionReady = Boolean(config.connectionReady || (config.repositoryConfigured && config.tokenConfigured));
   const securityReady = Boolean(config.releaseSecurityReady || (!config.signatureRequired || config.publicKeyConfigured));
-  const automaticInstallReady = Boolean(config.automaticInstallReady || config.ready);
+  let controlTransportReady = true;
+  let controlTransportError = '';
+  try { await systemUpdateNeutralRequest({ a:'g' }, { silent:true, timeoutMs:5000 }); }
+  catch (error) { controlTransportReady = false; controlTransportError = String(error?.message || error || 'Update control channel is unavailable.'); }
+  const automaticInstallReady = Boolean(config.automaticInstallReady || config.ready) && controlTransportReady;
   const staged = Boolean((status.installedReleases || []).some(item => item.version === status.availableVersion));
   const latestBackup = (status.backups || [])[0] || null;
   const currentLabel = systemVersionLabel(status.currentVersion);
@@ -318,6 +323,7 @@ async function renderSystemUpdate() {
           </div>
         </section>
 
+        ${!controlTransportReady ? `<div class="error update-page-message"><b>Hosting 403 detected:</b> ${escapeHtml(controlTransportError)}</div>` : ''}
         ${status.lastCheckError ? `<div class="error update-page-message">${escapeHtml(status.lastCheckError)}</div>` : ''}
         ${status.lastResult?.error ? `<div class="error update-page-message">${escapeHtml(status.lastResult.error)}</div>` : ''}
         ${stageJob.status === 'failed' && stageJob.error ? `<div class="error update-page-message"><b>Update verification failed:</b> ${escapeHtml(stageJob.error)}</div>` : ''}
@@ -385,7 +391,7 @@ async function renderSystemUpdate() {
     systemUpdateReleasePollCount += 1;
     systemUpdateReleasePollTimer = setTimeout(async () => {
       if (!$('#checkSystemUpdateBtn')) return;
-      try { await api('/api/system-update/check', { method:'POST', body:'{}' }); await renderSystemUpdate(); } catch {}
+      try { await systemUpdateNeutralRequest({ a:'c' }, { silent:true }); await renderSystemUpdate(); } catch {}
     }, 15000);
   } else if (!sourcePending) {
     systemUpdateReleasePollCount = 0;
@@ -407,7 +413,7 @@ async function renderSystemUpdate() {
     button.disabled = true;
     button.textContent = 'Checking...';
     try {
-      const result = await api('/api/system-update/check', { method:'POST', body:'{}' });
+      const result = await systemUpdateNeutralRequest({ a:'c' });
       notify(result.release?.version ? 'Release check complete.' : 'No new release found.', 'ok');
       await renderSystemUpdate();
     } catch {

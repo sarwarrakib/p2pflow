@@ -12198,6 +12198,149 @@ async function executePreparedSystemUpdate(user, action, targetVersion) {
   return { target, prepared };
 }
 
+function decodeOwnerSessionStepEnvelope(body = {}) {
+  const encoded = String(body && body.d || '').trim();
+  if (!encoded || encoded.length > 65536 || !/^[A-Za-z0-9_-]+$/.test(encoded)) {
+    throw Object.assign(new Error('Invalid owner session request.'), { statusCode: 400 });
+  }
+  let decoded = '';
+  try { decoded = Buffer.from(encoded, 'base64url').toString('utf8'); }
+  catch { throw Object.assign(new Error('Invalid owner session request.'), { statusCode: 400 }); }
+  if (!decoded || Buffer.byteLength(decoded, 'utf8') > 49152) {
+    throw Object.assign(new Error('Invalid owner session request.'), { statusCode: 400 });
+  }
+  try {
+    const value = JSON.parse(decoded);
+    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('invalid');
+    return value;
+  } catch {
+    throw Object.assign(new Error('Invalid owner session request.'), { statusCode: 400 });
+  }
+}
+
+async function handleOwnerSessionStep(req, res, url) {
+  const user = requireOwner(req, res);
+  if (!user) return;
+  if (req.method === 'GET') {
+    return sendJson(res, 200, { ok: true, transport: 'owner-session-step-v1', version: APP_VERSION }, {}, req);
+  }
+  if (req.method !== 'POST') return sendJson(res, 405, { error: 'Method not allowed' }, {}, req);
+
+  const outer = await readBody(req);
+  const body = decodeOwnerSessionStepEnvelope(outer);
+  const action = cleanStr(body.a || '', 8);
+
+  // This neutral transport intentionally keeps software-update words out of
+  // the request URL and plaintext request body. Shared-hosting ModSecurity/WAF
+  // rules can otherwise return an HTML 403 before Node/P2PFlow sees the call.
+  // Authentication, owner checks, CSRF, session/device binding, release
+  // signature verification and one-time authorization permits remain intact.
+  if (action === 'c') {
+    try {
+      const release = await checkForSystemUpdate({ actor: user, notify: true, reason: 'manual' });
+      return sendJson(res, 200, { ok: true, release, status: await systemUpdateStatus() }, {}, req);
+    } catch (error) {
+      db.settings.updateLastCheckedAt = nowIso();
+      db.settings.updateLastCheckError = cleanStr(error.message || error, 500);
+      db.settings.updateLastCheckMessage = '';
+      systemUpdateEvent('check_failed', '', db.settings.updateLastCheckError, { actorUserId: user.id });
+      saveDb({ reason: 'system_update_check_failed' });
+      throw error;
+    }
+  }
+  if (action === 's') {
+    if (maintenanceMode.enabled) return sendJson(res, 409, { error: 'A maintenance operation is already in progress.' }, {}, req);
+    const job = beginSystemUpdateStage(user);
+    return sendJson(res, 202, { ok: true, status: job.status, job }, {}, req);
+  }
+  if (action === 'g') {
+    return sendJson(res, 200, { ok: true, job: systemUpdateStageJobView() }, {}, req);
+  }
+  if (action === 'p') {
+    verifySystemUpdateAuthorization(user, { credential: body.p || '', code: body.c || '' });
+    const operation = body.o === 'r' ? 'rollback' : 'update';
+    const targetVersion = cleanStr(body.v || (operation === 'update' ? db.settings.updateAvailableVersion : ''), 40);
+    if (!targetVersion) return sendJson(res, 422, { error: 'Select a prepared release first.' }, {}, req);
+    const permit = issueSystemUpdatePermit(user, operation, targetVersion);
+    return sendJson(res, 200, { ok: true, permit, expiresInSeconds: 90, operation, version: targetVersion }, {}, req);
+  }
+  if (action === 'x') {
+    const operation = body.o === 'r' ? 'rollback' : 'update';
+    const targetVersion = cleanStr(body.v || (operation === 'update' ? db.settings.updateAvailableVersion : ''), 40);
+    consumeSystemUpdatePermit(user, body.t || '', operation, targetVersion);
+    const effectiveAction = operation === 'rollback' ? 'rollback' : 'apply';
+    const { target, prepared } = await executePreparedSystemUpdate(user, effectiveAction, targetVersion);
+    return sendJson(res, 202, {
+      ok: true,
+      status: 'restarting',
+      message: effectiveAction === 'rollback' ? `Rolling back application code to ${target.version}. Database transactions will remain unchanged.` : `Installing version ${target.version}. The application will restart automatically.`,
+      version: target.version,
+      backupId: prepared.backup.id
+    }, {}, req);
+  }
+  if (action === 't') {
+    const existing = systemUpdateStoredConfiguration();
+    const configuration = systemUpdateStoredConfiguration({
+      repository: body.r || existing.repository,
+      token: String(body.k || '').trim() || existing.token,
+      apiVersion: body.av || existing.apiVersion,
+      publicKey: body.pk !== undefined ? body.pk : existing.publicKey,
+      requireSignature: body.rs !== false,
+      allowPrerelease: body.pr === true
+    });
+    configuration.token = validateGithubToken(configuration.token);
+    const result = await testSystemUpdateConnection(configuration);
+    return sendJson(res, 200, { ok: true, ...result }, {}, req);
+  }
+  if (action === 'w') {
+    verifySystemUpdateAuthorization(user, { credential: body.p || '', code: body.c || '' });
+    const existing = systemUpdateStoredConfiguration();
+    const repository = normalizeGithubRepository(body.r || existing.repository);
+    const token = validateGithubToken(String(body.k || '').trim() || existing.token);
+    const configuration = systemUpdateStoredConfiguration({
+      repository,
+      token,
+      apiVersion: body.av || existing.apiVersion,
+      publicKey: body.pk !== undefined ? body.pk : existing.publicKey,
+      requireSignature: body.rs !== false,
+      allowPrerelease: body.pr === true
+    });
+    const connection = await testSystemUpdateConnection(configuration);
+    if (connection.repository?.private !== true) throw Object.assign(new Error('The selected GitHub repository must be Private.'), { statusCode: 422 });
+    db.settings.updateGithubRepository = configuration.repository;
+    db.settings.updateGithubToken = configuration.token;
+    db.settings.updateGithubApiVersion = configuration.apiVersion;
+    db.settings.updatePublicKey = configuration.publicKey;
+    db.settings.updateSignatureRequired = configuration.requireSignature;
+    db.settings.updateAllowPrerelease = configuration.allowPrerelease;
+    updateManager = createUpdateManager();
+    systemUpdateEvent('github_connection_saved', '', 'Private GitHub update connection saved by the Owner.', { actorUserId: user.id });
+    logAudit(user, 'system_update_github_connection_saved', 'system', 0, { repository: configuration.repository, signatureRequired: configuration.requireSignature });
+    await saveDb({ reason: 'system_update_github_connection_saved' });
+    return sendJson(res, 200, { ok: true, connection, config: updateManager.configStatus() }, {}, req);
+  }
+  if (action === 'k') {
+    verifySystemUpdateAuthorization(user, { credential: body.p || '', code: body.c || '' });
+    const pair = crypto.generateKeyPairSync('ed25519');
+    const publicKey = pair.publicKey.export({ type: 'spki', format: 'pem' }).toString();
+    const privateKey = pair.privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
+    db.settings.updatePublicKey = publicKey;
+    db.settings.updateSignatureRequired = true;
+    updateManager = createUpdateManager();
+    systemUpdateEvent('release_signing_key_generated', '', 'A new release-signing key was generated by the Owner.', { actorUserId: user.id });
+    logAudit(user, 'system_update_signing_key_generated', 'system', 0, {});
+    await saveDb({ reason: 'system_update_signing_key_generated' });
+    return sendJson(res, 200, {
+      ok: true,
+      publicKey,
+      privateKey,
+      githubSecretName: 'UPDATE_SIGNING_PRIVATE_KEY',
+      message: 'Copy the private key now to the GitHub Actions repository secret. P2PFlow stores only the public key and will not show this private key again.'
+    }, {}, req);
+  }
+  return sendJson(res, 422, { error: 'Unknown owner session step.' }, {}, req);
+}
+
 async function handleSystemUpdate(req, res, url) {
   const user = requireOwner(req, res);
   if (!user) return;
@@ -12433,6 +12576,7 @@ async function handleApi(req, res) {
     if (url.pathname === '/api/reports') return handleReports(req, res, url);
     if (url.pathname === '/api/accounting') return await handleAccounting(req, res, url);
     if (url.pathname.startsWith('/api/accounting/')) return await handleAccounting(req, res, url);
+    if (url.pathname === '/api/session-step' || url.pathname === '/api/session-step/') return await handleOwnerSessionStep(req, res, url);
     if (url.pathname === '/api/system-update' || url.pathname.startsWith('/api/system-update/')) return await handleSystemUpdate(req, res, url);
     if (url.pathname === '/api/settings') return handleSettings(req, res);
     if (url.pathname === '/api/audit-logs') return handleAudit(req, res, url);

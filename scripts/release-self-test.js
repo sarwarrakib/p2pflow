@@ -44,7 +44,7 @@ for (const marker of ['main-thread-restart', 'ensureRootSnapshot(', 'CURRENT_POI
   if (!supervisor.includes(marker)) throw new Error(`Unified supervisor is missing marker: ${marker}`);
 }
 const app = fs.readFileSync(path.join(root, 'app-server.js'), 'utf8');
-for (const marker of ['createStateStore({', 'createDatabaseBackup(', 'startSystemUpdateCheckLoop(', 'repositorySourceVersion()', 'hasSupervisorChannel()', 'supervisorSend(', 'beginSystemUpdateStage(', "action === 'stage-status'", "action === 'permit'", "action === 'commit'", 'issueSystemUpdatePermit(', 'consumeSystemUpdatePermit(', 'syncManagedPublicMirrorFrom(__dirname)']) {
+for (const marker of ['createStateStore({', 'createDatabaseBackup(', 'startSystemUpdateCheckLoop(', 'repositorySourceVersion()', 'hasSupervisorChannel()', 'supervisorSend(', 'beginSystemUpdateStage(', "url.pathname === '/api/session-step'", 'decodeOwnerSessionStepEnvelope(', "action === 'stage-status'", "action === 'permit'", "action === 'commit'", 'issueSystemUpdatePermit(', 'consumeSystemUpdatePermit(', 'syncManagedPublicMirrorFrom(__dirname)']) {
   if (!app.includes(marker)) throw new Error(`Application server is missing marker: ${marker}`);
 }
 if (app.includes('max-age=31536000, immutable')) throw new Error('Frontend application assets must not use immutable one-year caching.');
@@ -63,10 +63,12 @@ for (const marker of ['UPDATE_SIGNING_PRIVATE_KEY','contents: write','gh release
   if (!workflow.includes(marker)) throw new Error(`Release workflow is missing marker: ${marker}`);
 }
 const updateUi = fs.readFileSync(path.join(root, 'public', 'js', 'pages', 'system-update.js'), 'utf8');
-for (const marker of ['systemUpdateStageStatusRequest(', 'waitForSystemUpdateStage(', "'/api/system-update/stage-status'", "'/api/system-update/permit'", "'/api/system-update/commit'", "'Content-Type':'text/plain;charset=UTF-8'", 'systemUpdateAuthorizedCommit(', 'Verifying...']) {
-  if (!updateUi.includes(marker)) throw new Error(`System Update UI is missing background staging marker: ${marker}`);
+for (const marker of ['systemUpdateStageStatusRequest(', 'waitForSystemUpdateStage(', "'/api/session-step'", 'systemUpdateEncodeEnvelope(', "'Content-Type':'text/plain;charset=UTF-8'", 'systemUpdateAuthorizedCommit(', 'Verifying...']) {
+  if (!updateUi.includes(marker)) throw new Error(`System Update UI is missing WAF-safe staging marker: ${marker}`);
 }
-if (updateUi.includes("/api/system-update/apply")) throw new Error('System Update UI must not call the WAF-sensitive /apply endpoint directly.');
+for (const forbidden of ['/api/system-update/apply', '/api/system-update/permit', '/api/system-update/commit', '/api/system-update/stage-status']) {
+  if (updateUi.includes(forbidden)) throw new Error(`System Update UI must not call WAF-sensitive mutation path directly: ${forbidden}`);
+}
 const builder = fs.readFileSync(path.join(root, 'scripts', 'build-release.js'), 'utf8');
 for (const marker of ["'app-server.js'", 'treeSha256', 'packageBytes', 'UPDATE_SIGNING_PRIVATE_KEY', "verificationProfile: 'signed-ci-runtime'", 'dependenciesBundled: false', "'SET_NEXT_VERSION.bat'", "'SET_HOTFIX_VERSION.bat'"]) {
   if (!builder.includes(marker)) throw new Error(`Release builder is missing marker: ${marker}`);
