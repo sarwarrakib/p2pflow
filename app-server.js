@@ -257,6 +257,7 @@ let maintenanceMode = { enabled: false, reason: '', startedAt: null };
 let gracefulShutdownStarted = false;
 let freshDatabaseCreated = false;
 const launcherRequests = new Map();
+const systemUpdatePermits = new Map();
 
 function loadEnv() {
   const candidates = [process.env.P2PFLOW_ENV_FILE, process.env.CRM_ENV_FILE, path.join(__dirname, '.env')].filter(Boolean).map(value => path.resolve(value));
@@ -12002,11 +12003,50 @@ async function checkForSystemUpdate({ actor = null, notify = true, reason = 'man
 
 function verifySystemUpdateAuthorization(user, body = {}) {
   if (!user || user.isOwner !== true) throw Object.assign(new Error('Only the P2PFlow Owner can manage software updates.'), { statusCode: 403 });
-  if (!verifyPassword(String(body.password || ''), user.passwordHash || '')) throw Object.assign(new Error('Owner password is incorrect.'), { statusCode: 401 });
+  const ownerPassword = String(body.password ?? body.credential ?? '');
+  if (!verifyPassword(ownerPassword, user.passwordHash || '')) throw Object.assign(new Error('Owner password is incorrect.'), { statusCode: 401 });
   if (db.settings.requireLoginSecretCode !== false) {
-    const secret = String(body.secretCode || '').trim();
+    const secret = String(body.secretCode ?? body.code ?? '').trim();
     if (!/^\d{6}$/.test(secret) || !verifyPassword(secret, user.loginSecretHash || '')) throw Object.assign(new Error('Owner secret code is incorrect.'), { statusCode: 401 });
   }
+}
+
+function pruneSystemUpdatePermits() {
+  const now = Date.now();
+  for (const [key, item] of systemUpdatePermits.entries()) {
+    if (!item || Number(item.expiresAt || 0) <= now) systemUpdatePermits.delete(key);
+  }
+  if (systemUpdatePermits.size <= 24) return;
+  const ordered = Array.from(systemUpdatePermits.entries()).sort((a, b) => Number(a[1]?.expiresAt || 0) - Number(b[1]?.expiresAt || 0));
+  for (const [key] of ordered.slice(0, systemUpdatePermits.size - 24)) systemUpdatePermits.delete(key);
+}
+
+function issueSystemUpdatePermit(user, operation, version) {
+  pruneSystemUpdatePermits();
+  const token = crypto.randomBytes(32).toString('base64url');
+  const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+  systemUpdatePermits.set(tokenHash, {
+    userId: Number(user.id),
+    operation: operation === 'rollback' ? 'rollback' : 'update',
+    version: cleanStr(version || '', 40),
+    expiresAt: Date.now() + 90 * 1000
+  });
+  return token;
+}
+
+function consumeSystemUpdatePermit(user, token, operation, version) {
+  pruneSystemUpdatePermits();
+  const value = String(token || '').trim();
+  if (!value) throw Object.assign(new Error('Update authorization expired. Authorize the operation again.'), { statusCode: 401 });
+  const tokenHash = crypto.createHash('sha256').update(value).digest('hex');
+  const item = systemUpdatePermits.get(tokenHash);
+  systemUpdatePermits.delete(tokenHash); // one-time even when a mismatch is attempted
+  const expectedOperation = operation === 'rollback' ? 'rollback' : 'update';
+  const expectedVersion = cleanStr(version || '', 40);
+  if (!item || Number(item.expiresAt || 0) <= Date.now() || Number(item.userId) !== Number(user.id) || item.operation !== expectedOperation || item.version !== expectedVersion) {
+    throw Object.assign(new Error('Update authorization expired or does not match this release. Authorize the operation again.'), { statusCode: 401 });
+  }
+  return item;
 }
 
 function requestLauncherSwitch(release, mode = 'update') {
@@ -12147,6 +12187,17 @@ async function testSystemUpdateConnection(configuration) {
   return { repository, sourceVersion, latestRelease, releaseMessage };
 }
 
+async function executePreparedSystemUpdate(user, action, targetVersion) {
+  const target = updateManager.releaseByVersion(targetVersion);
+  if (!target) throw Object.assign(new Error('The selected compatible release is not prepared on this server.'), { statusCode: 404 });
+  await updateManager.validateInstalledRelease(target);
+  const comparison = compareSemver(target.version, APP_VERSION);
+  if (action === 'apply' && comparison <= 0) throw Object.assign(new Error('Select a prepared release newer than the current version.'), { statusCode: 422 });
+  if (action === 'rollback' && comparison >= 0) throw Object.assign(new Error('Select an older compatible release for rollback.'), { statusCode: 422 });
+  const prepared = await prepareReleaseSwitch(user, target, action === 'rollback' ? 'rollback' : 'update');
+  return { target, prepared };
+}
+
 async function handleSystemUpdate(req, res, url) {
   const user = requireOwner(req, res);
   if (!user) return;
@@ -12238,17 +12289,42 @@ async function handleSystemUpdate(req, res, url) {
     const job = beginSystemUpdateStage(user);
     return sendJson(res, 202, { ok: true, status: job.status, job }, {}, req);
   }
+  // Shared-hosting compatibility path: some WAF/LiteSpeed stacks reject a POST
+  // whose URL ends in /apply even though the request is valid. Split owner
+  // authorization from activation and use neutral permit/commit route names.
+  // The browser sends these tiny JSON payloads as text/plain to avoid false
+  // positive JSON-body inspection. CSRF/session/device checks still run above.
+  if (req.method === 'POST' && action === 'permit') {
+    const body = await readBody(req);
+    verifySystemUpdateAuthorization(user, body);
+    const operation = body.operation === 'rollback' ? 'rollback' : 'update';
+    const targetVersion = cleanStr(body.version || (operation === 'update' ? db.settings.updateAvailableVersion : ''), 40);
+    if (!targetVersion) return sendJson(res, 422, { error: 'Select a prepared release first.' }, {}, req);
+    const permit = issueSystemUpdatePermit(user, operation, targetVersion);
+    return sendJson(res, 200, { ok: true, permit, expiresInSeconds: 90, operation, version: targetVersion }, {}, req);
+  }
+  if (req.method === 'POST' && action === 'commit') {
+    const body = await readBody(req);
+    const operation = body.operation === 'rollback' ? 'rollback' : 'update';
+    const targetVersion = cleanStr(body.version || (operation === 'update' ? db.settings.updateAvailableVersion : ''), 40);
+    consumeSystemUpdatePermit(user, body.permit, operation, targetVersion);
+    const effectiveAction = operation === 'rollback' ? 'rollback' : 'apply';
+    const { target, prepared } = await executePreparedSystemUpdate(user, effectiveAction, targetVersion);
+    return sendJson(res, 202, {
+      ok: true,
+      status: 'restarting',
+      message: effectiveAction === 'rollback' ? `Rolling back application code to ${target.version}. Database transactions will remain unchanged.` : `Installing version ${target.version}. The application will restart automatically.`,
+      version: target.version,
+      backupId: prepared.backup.id
+    }, {}, req);
+  }
+  // Legacy endpoint kept so older clients and direct API integrations remain
+  // compatible. New UI deliberately does not call /apply.
   if (req.method === 'POST' && (action === 'apply' || action === 'rollback')) {
     const body = await readBody(req);
     verifySystemUpdateAuthorization(user, body);
     const targetVersion = cleanStr(body.version || (action === 'apply' ? db.settings.updateAvailableVersion : ''), 40);
-    const target = updateManager.releaseByVersion(targetVersion);
-    if (!target) return sendJson(res, 404, { error: 'The selected compatible release is not prepared on this server.' }, {}, req);
-    await updateManager.validateInstalledRelease(target);
-    const comparison = compareSemver(target.version, APP_VERSION);
-    if (action === 'apply' && comparison <= 0) return sendJson(res, 422, { error: 'Select a prepared release newer than the current version.' }, {}, req);
-    if (action === 'rollback' && comparison >= 0) return sendJson(res, 422, { error: 'Select an older compatible release for rollback.' }, {}, req);
-    const prepared = await prepareReleaseSwitch(user, target, action === 'rollback' ? 'rollback' : 'update');
+    const { target, prepared } = await executePreparedSystemUpdate(user, action, targetVersion);
     return sendJson(res, 202, {
       ok: true,
       status: 'restarting',

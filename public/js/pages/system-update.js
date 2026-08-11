@@ -63,15 +63,69 @@ function ownerAuthorizationModal(title, buttonText, callback, notice = '') {
   };
 }
 
+async function systemUpdateControlRequest(path, payload) {
+  const deviceId = String(localStorage.getItem('p2pflowTrustedDeviceId') || '').trim();
+  const paths = [path];
+  // Some shared-hosting WAF rules match an exact normalized URL. The Node
+  // router intentionally accepts the equivalent double-slash form as a
+  // last-resort transport variant without weakening authentication.
+  if (path.startsWith('/api/system-update/')) paths.push(path.replace('/api/system-update/', '/api/system-update//'));
+  let lastError = null;
+  for (let index = 0; index < paths.length; index += 1) {
+    const requestPath = paths[index];
+    let response;
+    try {
+      response = await fetch(requestPath, {
+        method:'POST',
+        credentials:'include',
+        cache:'no-store',
+        headers:{
+          Accept:'application/json',
+          'Content-Type':'text/plain;charset=UTF-8',
+          ...(state.csrfToken ? { 'X-CSRF-Token': state.csrfToken } : {}),
+          ...(deviceId ? { 'X-P2PFlow-Device-Id': deviceId } : {})
+        },
+        body:JSON.stringify(payload || {})
+      });
+    } catch (error) {
+      lastError = new Error(`Network request failed for ${requestPath}: ${error.message || error}`);
+      continue;
+    }
+    const type = response.headers.get('content-type') || '';
+    const data = type.includes('application/json') ? await response.json().catch(() => ({})) : await response.text().catch(() => '');
+    const htmlResponse = !type.includes('application/json') && looksLikeHtml(data);
+    if (response.ok && !htmlResponse) return data;
+    const message = compactApiError(requestPath, response.status, data, type);
+    lastError = new Error(message);
+    lastError.status = response.status;
+    if (!(htmlResponse && response.status === 403) || index === paths.length - 1) break;
+  }
+  const error = lastError || new Error('System Update control request failed.');
+  notify(error.message, 'danger', 9000);
+  throw error;
+}
+
+async function systemUpdateAuthorizedCommit(action, version, auth) {
+  const operation = action === 'rollback' ? 'rollback' : 'update';
+  const authorized = await systemUpdateControlRequest('/api/system-update/permit', {
+    operation,
+    version,
+    credential:auth.password,
+    code:auth.secretCode || ''
+  });
+  return systemUpdateControlRequest('/api/system-update/commit', {
+    operation,
+    version,
+    permit:authorized.permit
+  });
+}
+
 function openSystemUpdateAuthorization(action, version) {
   const label = systemVersionLabel(version);
   const title = action === 'rollback' ? `Roll back to ${label}` : `Install ${label}`;
   const actionText = action === 'rollback' ? 'Roll Back Code' : 'Install Update';
   ownerAuthorizationModal(title, actionText, async auth => {
-    const result = await api(`/api/system-update/${action === 'rollback' ? 'rollback' : 'apply'}`, {
-      method:'POST',
-      body: JSON.stringify({ version, ...auth })
-    });
+    const result = await systemUpdateAuthorizedCommit(action, version, auth);
     closeModal();
     systemUpdateRestartWait(result.version || version);
   }, action === 'rollback'

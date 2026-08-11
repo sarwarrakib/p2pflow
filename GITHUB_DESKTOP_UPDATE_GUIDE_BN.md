@@ -1,6 +1,6 @@
 # GitHub Desktop - P2PFlow Unified Update
 
-P2PFlow 1.5 থেকে **GitHub-এর জন্য আলাদা ZIP নেই**। Hosting এবং GitHub দু জায়গাতেই একই `P2PFlow_v1.5.1_UNIFIED.zip` ব্যবহার করবেন।
+P2PFlow 1.5 থেকে **GitHub-এর জন্য আলাদা ZIP নেই**। Hosting এবং GitHub দু জায়গাতেই একই `P2PFlow_v1.5.2_UNIFIED.zip` ব্যবহার করবেন।
 
 ## প্রথম upload
 
@@ -26,3 +26,7 @@ Push হওয়ার পরে GitHub Actions tests + audit + signed package bui
 - `.env`, `.p2pflow`, `shared/`, database dump/key/token GitHub-এ দেবেন না।
 - `UPDATE_SIGNING_PRIVATE_KEY` শুধু GitHub Actions repository secret-এ থাকবে।
 - `github_pat_...` read token P2PFlow-এর encrypted database setting-এ থাকবে; source code-এ নয়।
+
+## Shared-hosting 403 note (v1.5.2+)
+
+যদি hosting/WAF পুরোনো `/api/system-update/apply` POST-কে HTML `403` দিয়ে block করে, v1.5.2 থেকে System Update final activation `permit -> commit` flow ব্যবহার করে এবং ছোট control payload `text/plain` transport-এ পাঠায়। Session, Owner authorization, trusted-device binding, same-origin এবং CSRF protection অপরিবর্তিত থাকে। v1.5.1 নিজেই যদি পুরোনো `/apply` endpoint-এ block হয়, v1.5.2 একবার manual package upload/restart করে install করতে হবে; এরপর website updater নতুন flow ব্যবহার করবে।
