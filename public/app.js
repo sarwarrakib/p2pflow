@@ -1,4 +1,4 @@
-// v1.5.4: first-run recovery reuses the saved Application Key and software updates are Owner-only from Control Panel.
+// v1.5.11: first-run recovery reuses the saved Application Key and software updates are Owner-only from Control Panel.
 // v1.0.137: Diagnose and harden Binance P2P Create Advertisement privilege flow.
 // v1.0.128: lightweight Ads UI, cached reloads and realtime Binance merchant-status sync.
 // v1.0.117: Stop order countdowns immediately after completed or cancelled status sync.
@@ -4255,7 +4255,7 @@ function renderNav() {
   // legacy flat menu while this marker is absent, the browser/proxy is serving
   // stale frontend JavaScript rather than the active release.
   nav.dataset.navigationModel = 'grouped-control-center';
-  nav.dataset.uiRelease = '1.5.4';
+  nav.dataset.uiRelease = '1.5.11';
   nav.innerHTML = '';
   const visible = visiblePages();
   const visibleIds = new Set(visible.map(([id]) => id));
@@ -5532,6 +5532,10 @@ function openUserModal(userItem=null) {
       <div><label>Mobile / SMS Number</label><input name="mobile" value="${escapeAttr(userItem?.mobile || '')}" placeholder="optional" /></div>
       <div><label>${isEdit ? 'New Password (optional)' : 'Password'}</label><input name="password" type="password" ${isEdit ? '' : 'required'} /></div>
       <div><label>${isEdit ? 'New 6 Digit Secret (optional)' : '6 Digit Secret Code'}</label><input name="secretCode" inputmode="numeric" maxlength="6" ${isEdit ? 'placeholder="optional"' : 'required'} /></div>
+      <div class="full-row"><label>Login Security Question (optional)</label><input name="securityQuestion" maxlength="240" value="${escapeAttr(u.securityQuestion || '')}" placeholder="Used only if Login OTP cannot be sent" /></div>
+      <div><label>${u.securityFallbackConfigured ? 'New Security Answer (optional)' : 'Security Answer'}</label><input name="securityAnswer" type="password" maxlength="200" autocomplete="new-password" placeholder="${u.securityFallbackConfigured ? 'Leave blank to keep current answer' : 'Set with question'}" /></div>
+      <div><label class="check"><input type="checkbox" name="clearSecurityFallback" /> Remove Security Question fallback</label></div>
+      <div class="full-row"><div class="notice small">Security Answer is stored only as a one-way password hash. When Login OTP delivery fails, the user must enter the correct answer + existing 6 digit secret.</div></div>
       <div><label>Max Active Orders</label><input name="maxActiveOrders" type="number" value="${userItem?.maxActiveOrders || 5}" /></div>
       <div><label>Max Release Amount</label><input name="maxReleaseAmount" type="number" value="${userItem?.maxReleaseAmount || 0}" /></div>
       <div><label class="check"><input type="checkbox" name="allowNewOrders" ${userItem?.allowNewOrders === false ? '' : 'checked'} /> Allow new orders</label></div>
@@ -5552,6 +5556,10 @@ function openUserModal(userItem=null) {
     e.preventDefault();
     const obj = formObj(e.target);
     if (obj.secretCode && !/^\d{6}$/.test(obj.secretCode)) { setFormMessage('#userFormMessage', 'Secret code must be exactly 6 digits.', 'danger'); return; }
+    obj.clearSecurityFallback = e.target.clearSecurityFallback.checked;
+    if (!obj.clearSecurityFallback && !u.securityFallbackConfigured && (String(obj.securityQuestion || '').trim() || String(obj.securityAnswer || '').trim())) {
+      if (String(obj.securityQuestion || '').trim().length < 4 || String(obj.securityAnswer || '').trim().length < 2) { setFormMessage('#userFormMessage', 'Security Question and Security Answer are both required when enabling fallback.', 'danger'); return; }
+    }
     obj.allowNewOrders = e.target.allowNewOrders.checked;
     obj.smsEnabled = e.target.smsEnabled.checked;
     obj.canRelease = e.target.canRelease.checked;

@@ -18,10 +18,11 @@ if (!server.includes("update('php-mail-bridge:v1')")) fail('Node bridge secret d
 if (!phpPublic.includes("hash_hmac('sha256', 'php-mail-bridge:v1', $appKey)")) fail('PHP bridge does not derive the same APP_KEY signing secret as Node');
 if (!server.includes('P2PFLOW_PHP_MAIL_SECRET || process.env.CRM_PHP_MAIL_SECRET')) fail('P2PFLOW_PHP_MAIL_SECRET alias is not supported');
 if (!server.includes('SMTP configuration incomplete. Missing:')) fail('direct SMTP diagnostic endpoint is missing');
-if (!server.includes('configuration incomplete (missing:')) fail('local SMTP fallback does not report incomplete configuration');
+if (!server.includes('must never switch to SMTP behind the global Email Sending System setting')) fail('Hosting Auto no-hidden-SMTP guard is missing');
 if (!server.includes('local-mail.quota')) fail('local mail quota health state is missing');
 if (!server.includes('localMailQuotaBlockedUntil')) fail('local mail quota circuit breaker is missing');
 if (!server.includes("requestedDriver === 'smtp'")) fail('direct SMTP test route is missing');
+if (!server.includes("requestedDriver === 'login-otp'")) fail('exact Login OTP route test is missing');
 
 const appKey = 'mail-self-test-app-key-1234567890';
 const expected = crypto.createHmac('sha256', appKey).update('php-mail-bridge:v1').digest('hex');

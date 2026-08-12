@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="robots" content="noindex,nofollow" />
   <title>P2PFlow | লগইন</title>
-  <link rel="stylesheet" href="/style.css?v=1.5.4" />
+  <link rel="stylesheet" href="/style.css?v=1.5.11" />
 </head>
 <body class="login-page">
   <div id="login" class="login-wrap">
@@ -145,6 +145,49 @@
           </div>
         </section>
 
+        <section id="securityFallbackPanel" class="login-verification-panel hidden" aria-labelledby="securityFallbackTitle">
+          <div id="securityFallbackHelp" class="login-alert login-alert-warning" role="status">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 10v6M12 7h.01" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+            <span>Email OTP is unavailable. Use your Security Question fallback.</span>
+          </div>
+          <div class="verification-heading">
+            <div><h2 id="securityFallbackTitle">Security Question verification</h2><p>Answer the saved question and enter your existing 6 digit secret.</p></div>
+            <span class="secure-chip">Fallback</span>
+          </div>
+          <div class="notice small"><b>Security Question</b><br/><span id="securityFallbackQuestion">-</span></div>
+          <label for="securityFallbackAnswer">Security Answer</label>
+          <div class="login-input-shell">
+            <span class="login-input-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M9.7 9.5a2.5 2.5 0 0 1 4.8.9c0 1.8-2.5 2-2.5 3.7M12 17h.01" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></span>
+            <input id="securityFallbackAnswer" name="securityAnswer" type="password" maxlength="200" autocomplete="off" placeholder="Security answer" />
+            <button type="button" class="login-visibility-btn" data-visibility-target="securityFallbackAnswer" aria-label="Show security answer" aria-pressed="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.3-5 9.5-5 9.5 5 9.5 5-3.3 5-9.5 5-9.5-5-9.5-5Z" fill="none" stroke="currentColor" stroke-width="1.7"/><circle cx="12" cy="12" r="2.5" fill="none" stroke="currentColor" stroke-width="1.7"/></svg></button>
+          </div>
+          <label for="securityFallbackSecretCode">Security PIN</label>
+          <div class="login-input-shell login-secret-shell">
+            <span class="login-input-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3 5 6v5c0 4.8 2.9 8.7 7 10 4.1-1.3 7-5.2 7-10V6l-7-3Z" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M9.5 12h5M12 9.5v5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></span>
+            <input id="securityFallbackSecretCode" name="fallbackSecretCode" type="password" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" placeholder="6-digit secret" />
+            <button type="button" class="login-visibility-btn" data-visibility-target="securityFallbackSecretCode" aria-label="Show secret code" aria-pressed="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.3-5 9.5-5 9.5 5 9.5 5-3.3 5-9.5 5-9.5-5-9.5-5Z" fill="none" stroke="currentColor" stroke-width="1.7"/><circle cx="12" cy="12" r="2.5" fill="none" stroke="currentColor" stroke-width="1.7"/></svg></button>
+          </div>
+          <div class="notice small">Challenge expires in 5 minutes and allows at most 5 attempts. The Security Answer is stored only as a one-way hash.</div>
+        </section>
+
+        <section id="ownerMailOutagePanel" class="login-verification-panel hidden" aria-labelledby="ownerMailOutageTitle">
+          <div id="ownerMailOutageHelp" class="login-alert login-alert-warning" role="status">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 10v6M12 7h.01" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+            <span>Email OTP delivery failed. Owner Emergency Login is available.</span>
+          </div>
+          <div class="verification-heading">
+            <div><h2 id="ownerMailOutageTitle">Owner Emergency Login</h2><p id="ownerMailOutageDescription">Mail service is down. Confirm your existing 6 digit secret. Login email stays unchanged.</p></div>
+            <span class="secure-chip">Owner only</span>
+          </div>
+          <label for="ownerMailOutageSecretCode">Security PIN</label>
+          <div class="login-input-shell login-secret-shell">
+            <span class="login-input-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3 5 6v5c0 4.8 2.9 8.7 7 10 4.1-1.3 7-5.2 7-10V6l-7-3Z" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M9.5 12h5M12 9.5v5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></span>
+            <input id="ownerMailOutageSecretCode" name="ownerEmergencySecretCode" type="password" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" placeholder="6-digit secret" />
+            <button type="button" class="login-visibility-btn" data-visibility-target="ownerMailOutageSecretCode" aria-label="Show secret code" aria-pressed="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.3-5 9.5-5 9.5 5 9.5 5-3.3 5-9.5 5-9.5-5-9.5-5Z" fill="none" stroke="currentColor" stroke-width="1.7"/><circle cx="12" cy="12" r="2.5" fill="none" stroke="currentColor" stroke-width="1.7"/></svg></button>
+          </div>
+          <div class="notice small">Available only after the configured email route actually fails for the Owner account. Challenge expires in 5 minutes, allows at most 5 attempts, does not change the login email, and requires no Hosting Terminal command.</div>
+        </section>
+
         <button type="submit" id="loginBtn" class="login-submit-btn">
           <span class="login-submit-icon" aria-hidden="true">
             <svg viewBox="0 0 24 24"><path d="M12 3 5 6v5c0 4.8 2.9 8.7 7 10 4.1-1.3 7-5.2 7-10V6l-7-3Z" fill="none" stroke="currentColor" stroke-width="1.9"/><path d="m9.5 12 1.7 1.8 3.5-3.7" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -155,6 +198,11 @@
       </form>
 
       <div id="loginError" class="login-error" role="alert" aria-live="assertive"></div>
+
+      <div id="ownerEmergencyEntry" class="login-recovery-entry hidden">
+        <button type="button" id="ownerEmergencyStartBtn" class="login-recovery-toggle">Email sender down? Owner Emergency Login</button>
+        <div class="notice small">Use this only when the website sender Gmail/SMTP cannot deliver the login OTP. The server will verify the mail route again; emergency access is offered only to the Owner when that delivery fails.</div>
+      </div>
 
       <div class="login-recovery-entry">
         <button type="button" id="emailRecoveryToggle" class="login-recovery-toggle">Setup email is wrong? Correct it</button>
@@ -183,7 +231,7 @@
   </div>
 
 
-  <script src="/device-auth.js?v=1.5.4"></script>
-  <script src="/login.js?v=1.5.4"></script>
+  <script src="/device-auth.js?v=1.5.11"></script>
+  <script src="/login.js?v=1.5.11"></script>
 </body>
 </html>

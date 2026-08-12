@@ -6,13 +6,18 @@
 const $ = (selector, root=document) => root.querySelector(selector);
 const $$ = (selector, root=document) => Array.from(root.querySelectorAll(selector));
 let lang = localStorage.getItem('crmLang') || 'bn';
-let loginMode = 'full'; // full | verification | trusted
+let loginMode = 'full'; // full | verification | secret-only | fallback | owner-mail-outage | trusted
 let verificationActive = false;
+let secretOnlyActive = false;
 let resendTimer = null;
 let deviceRecord = null;
 let recoveryOtpActive = false;
 let recoveryMode = 'email';
 let legacyUpgradeMode = false;
+let securityFallbackActive = false;
+let securityFallbackId = '';
+let ownerMailOutageActive = false;
+let ownerMailOutageId = '';
 
 function t(en, bn) { return lang === 'bn' ? bn : en; }
 
@@ -81,13 +86,20 @@ function setRecoveryMessage(message='', tone='info') {
   box.classList.add(`login-alert-${['warning','danger','success'].includes(tone) ? tone : 'info'}`);
   const span = box.querySelector('span'); if (span) span.textContent = String(message || '');
 }
+function setOwnerEmergencyEntry(show=false) {
+  $('#ownerEmergencyEntry')?.classList.toggle('hidden', !show);
+}
+function looksLikeMailDeliveryFailure(error) {
+  const text = `${String(error?.message || '')} ${String(error?.data?.error || '')} ${String(error?.data?.mailErrorCode || '')}`.toLowerCase();
+  return /email|mail|smtp|gmail|outlook|sendmail|recipient|quota|rate limit|tls|ssl|network|timeout|535|550|delivery/.test(text);
+}
 
 function setBusy(busy) {
   const button = $('#loginBtn'); if (!button) return;
   button.disabled = Boolean(busy); button.classList.toggle('is-loading', Boolean(busy));
   const label = $('#loginBtnText'); if (!label) return;
-  if (busy) label.textContent = loginMode === 'trusted' ? t('Unlocking...', 'আনলক করা হচ্ছে...') : (verificationActive ? t('Verifying...', 'ভেরিফাই করা হচ্ছে...') : t('Checking...', 'যাচাই করা হচ্ছে...'));
-  else label.textContent = loginMode === 'trusted' ? t('Unlock with Secret', 'সিক্রেট দিয়ে লগইন') : (verificationActive ? t('Verify & Sign In', 'ভেরিফাই করে সাইন ইন করুন') : t('Continue securely', 'নিরাপদে চালিয়ে যান'));
+  if (busy) label.textContent = loginMode === 'trusted' ? t('Unlocking...', 'আনলক করা হচ্ছে...') : (loginMode === 'fallback' ? t('Verifying fallback...', 'ফলব্যাক যাচাই করা হচ্ছে...') : (loginMode === 'owner-mail-outage' ? t('Opening emergency session...', 'ইমার্জেন্সি সেশন খোলা হচ্ছে...') : (loginMode === 'secret-only' ? t('Verifying PIN...', 'পিন যাচাই করা হচ্ছে...') : (verificationActive ? t('Verifying...', 'ভেরিফাই করা হচ্ছে...') : t('Checking...', 'যাচাই করা হচ্ছে...')))));
+  else label.textContent = loginMode === 'trusted' ? t('Unlock with Secret', 'সিক্রেট দিয়ে লগইন') : (loginMode === 'fallback' ? t('Verify Answer & Sign In', 'উত্তর যাচাই করে সাইন ইন') : (loginMode === 'owner-mail-outage' ? t('Owner Emergency Sign In', 'ওনার ইমার্জেন্সি লগইন') : (loginMode === 'secret-only' ? t('Verify PIN & Sign In', 'পিন যাচাই করে সাইন ইন') : (verificationActive ? t('Verify & Sign In', 'ভেরিফাই করে সাইন ইন করুন') : t('Continue securely', 'নিরাপদে চালিয়ে যান')))));
 }
 
 function syncOtpValue() {
@@ -128,26 +140,79 @@ function startCooldown(seconds=30) {
   render(); resendTimer = setInterval(render, 1000);
 }
 
+function restoreEmailOtpUi() {
+  $('#emailOtpDigits')?.classList.remove('hidden');
+  $('.otp-resend-row')?.classList.remove('hidden');
+  if ($('#verificationTitle')) $('#verificationTitle').textContent = t('Email verification code', 'ইমেইল ভেরিফিকেশন কোড');
+  const note = $('#credentialVerifiedNote small'); if (note) note.textContent = t('Enter OTP and secret.', 'OTP এবং সিক্রেট লিখুন।');
+}
+
 function setVerificationStep(message, { restartCooldown=true }={}) {
-  loginMode = 'verification'; verificationActive = true;
+  setOwnerEmergencyEntry(false);
+  loginMode = 'verification'; verificationActive = true; secretOnlyActive = false; restoreEmailOtpUi();
+  securityFallbackActive = false; securityFallbackId = ''; ownerMailOutageActive = false; ownerMailOutageId = ''; $('#securityFallbackPanel')?.classList.add('hidden'); $('#ownerMailOutagePanel')?.classList.add('hidden');
   $('#trustedDevicePanel')?.classList.add('hidden'); $('#credentialPanel')?.classList.remove('hidden'); $('#otpPanel')?.classList.remove('hidden');
   $('.login-card')?.classList.add('is-verification'); $('#changeCredentialsBtn')?.classList.remove('hidden'); $('#credentialVerifiedNote')?.classList.remove('hidden');
   ['#loginIdentity','#loginPassword'].forEach(selector => { const input=$(selector); if (input) { input.readOnly=true; input.closest('.login-input-shell')?.classList.add('is-readonly'); } });
   setAlert(message || t('Enter the email OTP.', 'ইমেইল OTP লিখুন।'), 'info'); if (restartCooldown) startCooldown(30); setBusy(false);
   setTimeout(() => ($$('.otp-digit').find(input => !input.value) || $('#loginSecretCode'))?.focus({ preventScroll:true }), 30);
 }
+
+function setSecretOnlyStep(message='') {
+  setOwnerEmergencyEntry(false);
+  loginMode = 'secret-only'; verificationActive = false; secretOnlyActive = true;
+  securityFallbackActive = false; securityFallbackId = ''; ownerMailOutageActive = false; ownerMailOutageId = '';
+  $('#trustedDevicePanel')?.classList.add('hidden'); $('#credentialPanel')?.classList.remove('hidden'); $('#otpPanel')?.classList.remove('hidden'); $('#securityFallbackPanel')?.classList.add('hidden'); $('#ownerMailOutagePanel')?.classList.add('hidden');
+  $('#emailOtpDigits')?.classList.add('hidden'); $('.otp-resend-row')?.classList.add('hidden');
+  if ($('#verificationTitle')) $('#verificationTitle').textContent = t('Security PIN', 'সিকিউরিটি পিন');
+  const note = $('#credentialVerifiedNote small'); if (note) note.textContent = t('Enter your existing 6 digit secret.', 'আপনার বর্তমান ৬ ডিজিট সিক্রেট লিখুন।');
+  $('.login-card')?.classList.add('is-verification'); $('.login-card')?.classList.remove('is-trusted'); $('#changeCredentialsBtn')?.classList.remove('hidden'); $('#credentialVerifiedNote')?.classList.remove('hidden');
+  ['#loginIdentity','#loginPassword'].forEach(selector => { const input=$(selector); if (input) { input.readOnly=true; input.closest('.login-input-shell')?.classList.add('is-readonly'); } });
+  clearOtp(); if ($('#loginSecretCode')) $('#loginSecretCode').value = '';
+  if (resendTimer) clearInterval(resendTimer); resendTimer = null;
+  setAlert(message || t('Email OTP is disabled. Enter your existing 6 digit Security PIN.', 'ইমেইল OTP বন্ধ আছে। আপনার বর্তমান ৬ ডিজিট সিকিউরিটি পিন লিখুন।'), 'info');
+  setError(''); setBusy(false); setTimeout(() => $('#loginSecretCode')?.focus({ preventScroll:true }), 30);
+}
+function setSecurityFallbackStep(data={}) {
+  setOwnerEmergencyEntry(false);
+  loginMode = 'fallback'; verificationActive = false; secretOnlyActive = false; securityFallbackActive = true; securityFallbackId = String(data.fallbackId || ''); ownerMailOutageActive = false; ownerMailOutageId = ''; legacyUpgradeMode = false;
+  $('#trustedDevicePanel')?.classList.add('hidden'); $('#credentialPanel')?.classList.remove('hidden'); $('#otpPanel')?.classList.add('hidden'); $('#securityFallbackPanel')?.classList.remove('hidden'); $('#ownerMailOutagePanel')?.classList.add('hidden');
+  $('.login-card')?.classList.add('is-verification'); $('.login-card')?.classList.remove('is-trusted'); $('#changeCredentialsBtn')?.classList.remove('hidden'); $('#credentialVerifiedNote')?.classList.remove('hidden');
+  ['#loginIdentity','#loginPassword'].forEach(selector => { const input=$(selector); if (input) { input.readOnly=true; input.closest('.login-input-shell')?.classList.add('is-readonly'); } });
+  if ($('#securityFallbackQuestion')) $('#securityFallbackQuestion').textContent = String(data.securityQuestion || '-');
+  if ($('#securityFallbackAnswer')) $('#securityFallbackAnswer').value = '';
+  if ($('#securityFallbackSecretCode')) $('#securityFallbackSecretCode').value = '';
+  const help = $('#securityFallbackHelp span'); if (help) help.textContent = String(data.message || t('Email OTP is unavailable. Use your Security Question fallback.', 'ইমেইল OTP পাঠানো যাচ্ছে না। Security Question fallback ব্যবহার করুন।'));
+  if (resendTimer) clearInterval(resendTimer); resendTimer = null; setError(''); setBusy(false);
+  setTimeout(() => $('#securityFallbackAnswer')?.focus({ preventScroll:true }), 40);
+}
+
+function setOwnerMailOutageStep(data={}) {
+  setOwnerEmergencyEntry(false);
+  loginMode = 'owner-mail-outage'; verificationActive = false; secretOnlyActive = false; securityFallbackActive = false; securityFallbackId = ''; ownerMailOutageActive = true; ownerMailOutageId = String(data.ownerMailOutageId || ''); legacyUpgradeMode = false;
+  $('#trustedDevicePanel')?.classList.add('hidden'); $('#credentialPanel')?.classList.remove('hidden'); $('#otpPanel')?.classList.add('hidden'); $('#securityFallbackPanel')?.classList.add('hidden'); $('#ownerMailOutagePanel')?.classList.remove('hidden');
+  $('.login-card')?.classList.add('is-verification'); $('.login-card')?.classList.remove('is-trusted'); $('#changeCredentialsBtn')?.classList.remove('hidden'); $('#credentialVerifiedNote')?.classList.remove('hidden');
+  ['#loginIdentity','#loginPassword'].forEach(selector => { const input=$(selector); if (input) { input.readOnly=true; input.closest('.login-input-shell')?.classList.add('is-readonly'); } });
+  if ($('#ownerMailOutageSecretCode')) $('#ownerMailOutageSecretCode').value = '';
+  const help = $('#ownerMailOutageHelp span'); if (help) help.textContent = String(data.message || t('Email delivery failed. Owner Emergency Login is available.', 'ইমেইল পাঠানো ব্যর্থ হয়েছে। Owner Emergency Login ব্যবহার করা যাবে।'));
+  if (resendTimer) clearInterval(resendTimer); resendTimer = null; setError(''); setBusy(false);
+  setTimeout(() => $('#ownerMailOutageSecretCode')?.focus({ preventScroll:true }), 40);
+}
+
 function setFullLoginMode({ clear=false, focus=true, message='' }={}) {
-  loginMode = 'full'; verificationActive = false; legacyUpgradeMode = false;
-  $('#trustedDevicePanel')?.classList.add('hidden'); $('#credentialPanel')?.classList.remove('hidden'); $('#otpPanel')?.classList.add('hidden');
+  if (clear) setOwnerEmergencyEntry(false);
+  loginMode = 'full'; verificationActive = false; secretOnlyActive = false; legacyUpgradeMode = false; restoreEmailOtpUi(); securityFallbackActive = false; securityFallbackId = ''; ownerMailOutageActive = false; ownerMailOutageId = '';
+  $('#trustedDevicePanel')?.classList.add('hidden'); $('#credentialPanel')?.classList.remove('hidden'); $('#otpPanel')?.classList.add('hidden'); $('#securityFallbackPanel')?.classList.add('hidden'); $('#ownerMailOutagePanel')?.classList.add('hidden');
   $('.login-card')?.classList.remove('is-verification','is-trusted'); $('#changeCredentialsBtn')?.classList.add('hidden'); $('#credentialVerifiedNote')?.classList.add('hidden');
   ['#loginIdentity','#loginPassword'].forEach(selector => { const input=$(selector); if (input) { input.readOnly=false; input.closest('.login-input-shell')?.classList.remove('is-readonly'); } });
-  if (clear) { clearOtp(); if ($('#loginSecretCode')) $('#loginSecretCode').value=''; }
+  if (clear) { clearOtp(); if ($('#loginSecretCode')) $('#loginSecretCode').value=''; if ($('#securityFallbackAnswer')) $('#securityFallbackAnswer').value=''; if ($('#securityFallbackSecretCode')) $('#securityFallbackSecretCode').value=''; if ($('#ownerMailOutageSecretCode')) $('#ownerMailOutageSecretCode').value=''; }
   if (resendTimer) clearInterval(resendTimer); resendTimer=null; if ($('#resendOtpBtn')) $('#resendOtpBtn').disabled=false;
   if (message) setError(message); setBusy(false); if (focus) $('#loginIdentity')?.focus({ preventScroll:true });
 }
 function setTrustedMode(info={}) {
-  loginMode = 'trusted'; verificationActive = false; legacyUpgradeMode = Boolean(info.legacyUpgrade);
-  $('#credentialPanel')?.classList.add('hidden'); $('#otpPanel')?.classList.add('hidden'); $('#trustedDevicePanel')?.classList.remove('hidden');
+  setOwnerEmergencyEntry(false);
+  loginMode = 'trusted'; verificationActive = false; secretOnlyActive = false; securityFallbackActive = false; securityFallbackId = ''; ownerMailOutageActive = false; ownerMailOutageId = ''; legacyUpgradeMode = Boolean(info.legacyUpgrade);
+  $('#credentialPanel')?.classList.add('hidden'); $('#otpPanel')?.classList.add('hidden'); $('#securityFallbackPanel')?.classList.add('hidden'); $('#ownerMailOutagePanel')?.classList.add('hidden'); $('#trustedDevicePanel')?.classList.remove('hidden');
   $('.login-card')?.classList.remove('is-verification'); $('.login-card')?.classList.add('is-trusted');
   $('#trustedDeviceAccountHint').textContent = info.accountHint ? `${t('Account', 'অ্যাকাউন্ট')}: ${info.accountHint}` : '';
   $('#trustedDeviceStatus').textContent = legacyUpgradeMode ? t('Secure this existing session', 'এই পুরোনো সেশনটি সুরক্ষিত করুন') : t('Trusted browser recognized', 'বিশ্বস্ত ডিভাইস শনাক্ত হয়েছে');
@@ -158,6 +223,25 @@ function setTrustedMode(info={}) {
 function validateFull() {
   const identity=String($('#loginIdentity')?.value||'').trim(), password=String($('#loginPassword')?.value||'');
   if (!identity || !password) { setError(t('Enter your username or Gmail and password.', 'ইউজারনেম বা জিমেইল এবং পাসওয়ার্ড লিখুন।')); (!identity ? $('#loginIdentity') : $('#loginPassword'))?.focus(); return false; }
+  if (loginMode === 'fallback') {
+    const answer = String($('#securityFallbackAnswer')?.value || '').trim();
+    const secret = String($('#securityFallbackSecretCode')?.value || '').replace(/\D/g,'').slice(0,6); if ($('#securityFallbackSecretCode')) $('#securityFallbackSecretCode').value = secret;
+    if (!answer) { setError(t('Enter your Security Answer.', 'Security Answer লিখুন।')); $('#securityFallbackAnswer')?.focus(); return false; }
+    if (secret.length !== 6) { setError(t('Enter your existing 6-digit security PIN / secret.', 'আপনার বর্তমান ৬ ডিজিট সিকিউরিটি পিন / সিক্রেট লিখুন।')); $('#securityFallbackSecretCode')?.focus(); return false; }
+    if (!securityFallbackId) { setError(t('Security Question challenge expired. Start again.', 'Security Question challenge শেষ হয়েছে। আবার শুরু করুন।')); return false; }
+    return true;
+  }
+  if (loginMode === 'owner-mail-outage') {
+    const secret = String($('#ownerMailOutageSecretCode')?.value || '').replace(/\D/g,'').slice(0,6); if ($('#ownerMailOutageSecretCode')) $('#ownerMailOutageSecretCode').value = secret;
+    if (secret.length !== 6) { setError(t('Enter your existing 6-digit security PIN / secret.', 'আপনার বর্তমান ৬ ডিজিট সিকিউরিটি পিন / সিক্রেট লিখুন।')); $('#ownerMailOutageSecretCode')?.focus(); return false; }
+    if (!ownerMailOutageId) { setError(t('Owner Emergency Login challenge expired. Start again.', 'Owner Emergency Login challenge শেষ হয়েছে। আবার শুরু করুন।')); return false; }
+    return true;
+  }
+  if (loginMode === 'secret-only') {
+    const secret = String($('#loginSecretCode')?.value || '').replace(/\D/g,'').slice(0,6); if ($('#loginSecretCode')) $('#loginSecretCode').value = secret;
+    if (secret.length !== 6) { setError(t('Enter your existing 6-digit security PIN / secret.', 'আপনার বর্তমান ৬ ডিজিট সিকিউরিটি পিন / সিক্রেট লিখুন।')); $('#loginSecretCode')?.focus(); return false; }
+    return true;
+  }
   if (!verificationActive) return true;
   const otp=syncOtpValue(), secret=String($('#loginSecretCode')?.value||'').replace(/\D/g,'').slice(0,6); if ($('#loginSecretCode')) $('#loginSecretCode').value=secret;
   if (otp.length!==6) { setError(t('Enter the complete 6-digit email OTP.', 'সম্পূর্ণ ৬ ডিজিট ইমেইল OTP লিখুন।')); return false; }
@@ -203,10 +287,21 @@ async function submitTrustedLogin() {
 async function submitFullLogin(form) {
   if (!validateFull()) return;
   syncOtpValue(); const payload=Object.fromEntries(new FormData(form));
+  if (loginMode === 'fallback') {
+    payload.emailOtp = ''; payload.resendOtp = false; payload.securityFallbackId = securityFallbackId;
+    payload.securityAnswer = String($('#securityFallbackAnswer')?.value || '').trim();
+    payload.secretCode = String($('#securityFallbackSecretCode')?.value || '').replace(/\D/g,'').slice(0,6);
+  } else if (loginMode === 'owner-mail-outage') {
+    payload.emailOtp = ''; payload.resendOtp = false; payload.ownerMailOutageId = ownerMailOutageId;
+    payload.secretCode = String($('#ownerMailOutageSecretCode')?.value || '').replace(/\D/g,'').slice(0,6);
+  }
   const enrollment = await enrollmentPayload(); if (enrollment) payload.deviceEnrollment=enrollment;
   setBusy(true);
   try {
     const data=await loginApi('/api/login',{method:'POST',body:JSON.stringify(payload)});
+    if (data.securityFallbackRequired) { setSecurityFallbackStep(data); return; }
+    if (data.ownerMailOutageRequired) { setOwnerMailOutageStep(data); return; }
+    if (data.secretRequired) { setSecretOnlyStep(data.message); return; }
     if (data.otpRequired) {
       const baseMessage=data.message||t('Check your email and enter the OTP.','ইমেইল দেখে OTP লিখুন।');
       const deliveryHint=data.otpRecipient ? ` ${t('Recipient','প্রাপক')}: ${data.otpRecipient}${data.otpDriver ? ` · ${data.otpDriver}` : ''}` : '';
@@ -216,8 +311,47 @@ async function submitFullLogin(form) {
     }
     window.location.replace(safeNextUrl());
   } catch(error) {
-    setError(error.message); if (verificationActive) setAlert(error.message,error.status===429?'warning':'danger'); else { $('#loginPassword')?.focus({preventScroll:true}); $('#loginPassword')?.select(); }
+    if (error.data?.securityFallbackExpired || error.data?.ownerMailOutageExpired) { setFullLoginMode({ clear:true, focus:true, message:error.message }); }
+    else if (loginMode === 'fallback' || loginMode === 'owner-mail-outage') { setError(error.message); const help=$('#securityFallbackHelp span'); if(help) help.textContent=error.message; }
+    else {
+      setError(error.message);
+      if (verificationActive) setAlert(error.message,error.status===429?'warning':'danger');
+      else {
+        if (loginMode === 'full' && looksLikeMailDeliveryFailure(error)) setOwnerEmergencyEntry(true);
+        $('#loginPassword')?.focus({preventScroll:true}); $('#loginPassword')?.select();
+      }
+    }
   } finally { setBusy(false); }
+}
+async function startOwnerEmergencyLogin() {
+  const identity = String($('#loginIdentity')?.value || '').trim();
+  const password = String($('#loginPassword')?.value || '');
+  if (!identity || !password) {
+    setError(t('Enter the Owner username/email and password first.', 'আগে Owner ইউজারনেম/ইমেইল এবং পাসওয়ার্ড লিখুন।'));
+    (!identity ? $('#loginIdentity') : $('#loginPassword'))?.focus({ preventScroll:true });
+    return;
+  }
+  setError('');
+  const button = $('#ownerEmergencyStartBtn'); if (button) button.disabled = true;
+  try {
+    const payload = { username: identity, password, ownerEmergencyStart: true };
+    const data = await loginApi('/api/login', { method:'POST', body:JSON.stringify(payload) });
+    if (data.securityFallbackRequired) { setSecurityFallbackStep(data); return; }
+    if (data.ownerMailOutageRequired) { setOwnerMailOutageStep(data); return; }
+    if (data.secretRequired) { setSecretOnlyStep(data.message); return; }
+    if (data.otpRequired) {
+      const baseMessage = data.message || t('The email route is working; use the OTP that was sent.', 'ইমেইল রুট কাজ করছে; পাঠানো OTP ব্যবহার করুন।');
+      const deliveryHint = data.otpRecipient ? ` ${t('Recipient','প্রাপক')}: ${data.otpRecipient}${data.otpDriver ? ` · ${data.otpDriver}` : ''}` : '';
+      setVerificationStep(`${baseMessage}${deliveryHint}`, { restartCooldown:true });
+      return;
+    }
+    setError(t('Owner Emergency Login could not be started.', 'Owner Emergency Login শুরু করা যায়নি।'));
+  } catch (error) {
+    setError(error.message);
+    if (looksLikeMailDeliveryFailure(error)) setOwnerEmergencyEntry(true);
+  } finally {
+    if (button) button.disabled = false;
+  }
 }
 async function submitLogin(event) { event.preventDefault(); setError(''); if (loginMode==='trusted') return submitTrustedLogin(); return submitFullLogin(event.currentTarget); }
 
@@ -227,6 +361,8 @@ async function resendOtp() {
   const button=$('#resendOtpBtn'); if(button) button.disabled=true;
   try {
     const data=await loginApi('/api/login',{method:'POST',body:JSON.stringify(payload)});
+    if (data.securityFallbackRequired) { clearOtp(); setSecurityFallbackStep(data); return; }
+    if (data.ownerMailOutageRequired) { clearOtp(); setOwnerMailOutageStep(data); return; }
     clearOtp();
     const baseMessage=data.message||t('A new OTP was sent.','নতুন OTP পাঠানো হয়েছে।');
     const deliveryHint=data.otpRecipient ? ` ${t('Recipient','প্রাপক')}: ${data.otpRecipient}${data.otpDriver ? ` · ${data.otpDriver}` : ''}` : '';
@@ -276,7 +412,7 @@ async function submitEmailRecovery(event) {
 }
 
 const translations=[
-  ['.login-eyebrow','Secure access','সুরক্ষিত অ্যাক্সেস'],['.login-brand p','P2P operations panel.','P2P অপারেশন প্যানেল।'],['#credentialStepIndicator b','Account','অ্যাকাউন্ট'],['#verificationStepIndicator b','Verify','ভেরিফাই'],['.credential-heading-row h2','Sign in','সাইন ইন'],['label[for="loginIdentity"]','User or Gmail','ইউজার অথবা জিমেইল'],['label[for="loginPassword"]','Password','পাসওয়ার্ড'],['#changeCredentialsBtn','Change','পরিবর্তন'],['#credentialVerifiedNote b','Password verified','পাসওয়ার্ড যাচাই হয়েছে'],['#credentialVerifiedNote small','Enter OTP and secret.','OTP এবং সিক্রেট লিখুন।'],['#verificationTitle','Email verification code','ইমেইল ভেরিফিকেশন কোড'],['label[for="loginSecretCode"]','Security PIN','সিকিউরিটি পিন'],['#resendOtpBtn','Resend OTP','OTP আবার পাঠান'],['.login-footer-note > span:last-child','Secure access','সুরক্ষিত অ্যাক্সেস'],['#emailRecoveryToggle','Setup email is wrong? Correct it','সেটআপের ইমেইল ভুল? এখানে ঠিক করুন'],['#useFullLoginBtn','Use full login','ফুল লগইন ব্যবহার করুন']
+  ['.login-eyebrow','Secure access','সুরক্ষিত অ্যাক্সেস'],['.login-brand p','P2P operations panel.','P2P অপারেশন প্যানেল।'],['#credentialStepIndicator b','Account','অ্যাকাউন্ট'],['#verificationStepIndicator b','Verify','ভেরিফাই'],['.credential-heading-row h2','Sign in','সাইন ইন'],['label[for="loginIdentity"]','User or Gmail','ইউজার অথবা জিমেইল'],['label[for="loginPassword"]','Password','পাসওয়ার্ড'],['#changeCredentialsBtn','Change','পরিবর্তন'],['#credentialVerifiedNote b','Password verified','পাসওয়ার্ড যাচাই হয়েছে'],['#credentialVerifiedNote small','Enter OTP and secret.','OTP এবং সিক্রেট লিখুন।'],['#verificationTitle','Email verification code','ইমেইল ভেরিফিকেশন কোড'],['label[for="loginSecretCode"]','Security PIN','সিকিউরিটি পিন'],['#resendOtpBtn','Resend OTP','OTP আবার পাঠান'],['.login-footer-note > span:last-child','Secure access','সুরক্ষিত অ্যাক্সেস'],['#emailRecoveryToggle','Setup email is wrong? Correct it','সেটআপের ইমেইল ভুল? এখানে ঠিক করুন'],['#useFullLoginBtn','Use full login','ফুল লগইন ব্যবহার করুন'],['#ownerMailOutageTitle','Owner Emergency Login','ওনার ইমার্জেন্সি লগইন'],['#ownerMailOutageDescription','Mail service is down. Confirm your existing 6 digit secret. Login email stays unchanged.','মেইল সার্ভিস বন্ধ। বর্তমান ৬ ডিজিট সিক্রেট নিশ্চিত করুন। লগইন ইমেইল অপরিবর্তিত থাকবে।'],['#ownerEmergencyStartBtn','Email sender down? Owner Emergency Login','ইমেইল সেন্ডার বন্ধ? Owner Emergency Login'],['label[for="ownerMailOutageSecretCode"]','Security PIN','সিকিউরিটি পিন']
 ];
 function applyLanguage(){
   document.documentElement.lang=lang==='bn'?'bn':'en'; document.body.classList.toggle('lang-bn',lang==='bn'); document.body.classList.toggle('lang-en',lang!=='bn'); document.title=lang==='bn'?'P2PFlow | লগইন':'P2PFlow | Login';
@@ -285,7 +421,15 @@ function applyLanguage(){
   if($('#loginPassword')) $('#loginPassword').placeholder=t('Enter your password','পাসওয়ার্ড লিখুন');
   if($('#loginSecretCode')) $('#loginSecretCode').placeholder=t('6-digit secret','৬ ডিজিট সিক্রেট');
   if($('#trustedSecretCode')) $('#trustedSecretCode').placeholder=t('6-digit secret','৬ ডিজিট সিক্রেট');
-  const toggle=$('#loginLangToggle'); if(toggle) toggle.setAttribute('aria-checked',lang==='bn'?'true':'false'); setBusy(false);
+  if($('#securityFallbackAnswer')) $('#securityFallbackAnswer').placeholder=t('Security answer','সিকিউরিটি উত্তর');
+  if($('#securityFallbackSecretCode')) $('#securityFallbackSecretCode').placeholder=t('6-digit secret','৬ ডিজিট সিক্রেট');
+  if($('#ownerMailOutageSecretCode')) $('#ownerMailOutageSecretCode').placeholder=t('6-digit secret','৬ ডিজিট সিক্রেট');
+  const toggle=$('#loginLangToggle'); if(toggle) toggle.setAttribute('aria-checked',lang==='bn'?'true':'false');
+  if (loginMode === 'secret-only') {
+    if ($('#verificationTitle')) $('#verificationTitle').textContent = t('Security PIN', 'সিকিউরিটি পিন');
+    const note = $('#credentialVerifiedNote small'); if (note) note.textContent = t('Enter your existing 6 digit secret.', 'আপনার বর্তমান ৬ ডিজিট সিক্রেট লিখুন।');
+  }
+  setBusy(false);
 }
 
 async function initLogin(){
@@ -294,6 +438,7 @@ async function initLogin(){
   $('#changeCredentialsBtn')?.addEventListener('click',()=>{setError('');setFullLoginMode({clear:true,focus:true});});
   $('#useFullLoginBtn')?.addEventListener('click',()=>setFullLoginMode({clear:true,focus:true}));
   $('#resendOtpBtn')?.addEventListener('click',resendOtp); $('#loginForm')?.addEventListener('submit',submitLogin);
+  $('#ownerEmergencyStartBtn')?.addEventListener('click',startOwnerEmergencyLogin);
   $('#emailRecoveryToggle')?.addEventListener('click',()=>toggleRecovery($('#emailRecoveryForm')?.classList.contains('hidden'))); $('#recoveryCancelBtn')?.addEventListener('click',()=>toggleRecovery(false)); $('#emailRecoveryForm')?.addEventListener('submit',submitEmailRecovery);
 
   deviceRecord=await window.P2PFlowDeviceAuth?.load?.();

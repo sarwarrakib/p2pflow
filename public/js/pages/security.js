@@ -1,4 +1,4 @@
-// P2PFlow v1.5.4
+// P2PFlow v1.5.11
 // Dedicated account/login security page. Binance P2P Profile lives on #/p2p-profile.
 
 function securityStatusPill(label, enabled) {
@@ -30,6 +30,7 @@ async function renderSecurity() {
       <div class="security-status-row">
         ${securityStatusPill('Email OTP on full login', data.emailOtpRequired !== false)}
         ${securityStatusPill('6 Digit Secret', data.secretCodeRequired !== false && data.secretCodeSet)}
+        ${securityStatusPill('Security Question Fallback', data.securityFallbackConfigured === true)}
         ${securityStatusPill('Device-bound sessions', true)}
       </div>
       <div class="notice small">After one full login, this browser can sign in with only the 6 digit secret for up to ${escapeHtml(String(data.trustedDeviceTtlDays || 30))} days. A copied session cookie alone is not accepted for normal API access.</div>
@@ -39,6 +40,21 @@ async function renderSecurity() {
     <section class="card security-change-card">
       <div class="section-head"><div><h2>Trusted Devices</h2><p>Remove any browser you no longer use. Removing the current browser forces one full login again.</p></div></div>
       ${securityDeviceRows(data.trustedDevices || [])}
+    </section>
+
+    <section class="card security-change-card">
+      <div class="section-head"><div><h2>Login Security Question Fallback</h2><p>Used only when full-login Email OTP cannot be sent. The answer is never stored as plaintext.</p></div>${data.securityFallbackConfigured ? badge('Configured','ok') : badge('Not configured','warn')}</div>
+      ${data.securityQuestionFallbackEnabled === false ? '<div class="notice small">The global fallback switch is currently disabled in Settings. You can still configure your question now.</div>' : '<div class="okbox small">If Login OTP delivery fails, sign-in will require the correct Security Answer + your existing 6 digit secret. Challenge lifetime: 5 minutes, maximum 5 attempts.</div>'}
+      <form id="securityFallbackForm" class="form-grid">
+        <div class="full-row"><label>Security Question</label><input name="securityQuestion" maxlength="240" value="${escapeAttr(data.securityQuestion || '')}" placeholder="Example: What private phrase do I use for recovery?" required></div>
+        <div><label>${data.securityFallbackConfigured ? 'New Security Answer (optional)' : 'Security Answer'}</label><input name="securityAnswer" type="password" maxlength="200" autocomplete="new-password" placeholder="${data.securityFallbackConfigured ? 'Leave blank to keep current answer' : 'Required'}"></div>
+        <div><label>Current Password</label><input name="currentPassword" type="password" autocomplete="current-password" required></div>
+        <div><label>Current 6 Digit Secret</label><input name="currentSecretCode" type="password" inputmode="numeric" maxlength="6" autocomplete="one-time-code" required></div>
+        <div><label class="check"><input type="checkbox" name="clearSecurityFallback" /> Remove Security Question fallback</label></div>
+        <div class="full-row"><div class="notice small">This fallback-only setting is verified with your current password + current 6 digit secret and does not depend on email delivery.</div></div>
+        <div class="full-row" id="securityFallbackMessage"></div>
+        <div class="full-row"><button type="submit">Save Security Question</button></div>
+      </form>
     </section>
 
     <section class="card security-change-card">
@@ -87,6 +103,23 @@ async function renderSecurity() {
       await renderSecurity();
     } catch (err) { notify(err.message || 'Could not revoke trusted browser.', 'danger'); }
   }));
+
+  const fallbackForm = $('#securityFallbackForm');
+  if (fallbackForm) fallbackForm.onsubmit = async event => {
+    event.preventDefault();
+    const obj = Object.fromEntries(new FormData(fallbackForm));
+    obj.currentSecretCode = String(obj.currentSecretCode || '').replace(/\D/g, '').slice(0, 6);
+    obj.clearSecurityFallback = fallbackForm.clearSecurityFallback.checked;
+    if (obj.currentSecretCode.length !== 6) return setFormMessage('#securityFallbackMessage', 'Enter your current 6 digit secret.', 'danger');
+    if (!obj.clearSecurityFallback && String(obj.securityQuestion || '').trim().length < 4) return setFormMessage('#securityFallbackMessage', 'Enter a Security Question.', 'danger');
+    if (!obj.clearSecurityFallback && !data.securityFallbackConfigured && String(obj.securityAnswer || '').trim().length < 2) return setFormMessage('#securityFallbackMessage', 'Enter a Security Answer.', 'danger');
+    try {
+      const result = await api('/api/me/security/fallback', { method:'PATCH', body:JSON.stringify(obj) });
+      setFormMessage('#securityFallbackMessage', result.message || 'Security Question fallback updated.', 'ok');
+      notify(result.message || 'Security Question fallback updated.', 'ok');
+      setTimeout(() => renderSecurity(), 350);
+    } catch (err) { setFormMessage('#securityFallbackMessage', err.message || 'Security Question update failed.', 'danger'); }
+  };
 
   const recoveryForm = $('#securityEmailRecoveryForm');
   let recoveryOtpActive = false;

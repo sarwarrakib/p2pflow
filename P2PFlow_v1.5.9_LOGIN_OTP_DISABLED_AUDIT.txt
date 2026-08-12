@@ -1,0 +1,37 @@
+P2PFlow v1.5.9 Login OTP Disabled / Owner Emergency Audit
+===========================================================
+
+Reported symptom
+----------------
+Clicking "Email sender down? Owner Emergency Login" returned:
+"Email OTP is disabled, so Owner Emergency Login is not required."
+
+Root cause
+----------
+1. app-server.js correctly derived needOtp=false when Settings.requireEmailOtp was disabled.
+2. The normal full-login UI did not have a PIN-only continuation state.
+3. When the required 6-digit login secret was not yet present, requireOtpContinue() unconditionally called getValidLoginOtp(), which could touch the configured sender even though Email OTP was disabled.
+4. The explicit Owner Emergency Login branch separately rejected needOtp=false with HTTP 409.
+
+Fix
+---
+- requireOtpContinue() now short-circuits to secretRequired=true whenever requireEmailOtp=false.
+- public/login.js now has a secret-only continuation state that shows only the Security PIN field and hides OTP digits/resend controls.
+- Explicit Owner Emergency Login requests in OTP-disabled mode route to the same PIN-only continuation rather than returning the old 409 dead-end.
+- OTP-enabled mail-outage behavior remains unchanged.
+
+Security properties
+-------------------
+- Password is verified before the PIN-only continuation is issued.
+- Existing 6-digit login secret remains required when requireLoginSecretCode is enabled.
+- No email OTP bypass is introduced while requireEmailOtp=true.
+- Login email is unchanged.
+- No Hosting Terminal code is required.
+- Owner mail-outage emergency challenge behavior remains memory-only, 5 minutes, max 5 attempts, browser/network bound, and does not silently enroll a Trusted Device.
+
+Regression checks
+-----------------
+- login-otp-disabled-self-test.js
+- owner-mail-outage-login-self-test.js
+- full npm test
+- npm run build
