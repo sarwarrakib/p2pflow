@@ -200,24 +200,24 @@ function renderOrderMobileCard(o, previousSnapshot, nextSnapshot) {
       <div class="order-mobile-title"><span class="order-mobile-type ${sideClass}">${type === 'BUY' ? 'Buy' : 'Sell'}</span><b>${escapeHtml(o.asset || 'USDT')}</b></div>
       <div class="order-mobile-status">${badge(statusText, statusClass(o.status))}</div>
     </div>
-    <div class="order-mobile-pill-row">
-      ${sourceBadge}
+    <div class="order-mobile-context">
+      <span class="order-mobile-source">${sourceBadge}</span>
       <span class="order-mobile-method">${escapeHtml(paymentText || 'N/A')}</span>
       ${leadName ? `<span class="order-mobile-mini-sub">Lead: <b>${escapeHtml(leadName)}</b></span>` : ''}
     </div>
     <div class="order-mobile-grid">
-      <div class="order-mobile-row"><span>Amount</span><b>${money(o.amount || 0)}</b></div>
+      <div class="order-mobile-row order-mobile-row-amount"><span>Amount</span><b>${money(o.amount || 0)}</b></div>
       <div class="order-mobile-row"><span>Price</span><b>${o.orderSource === 'offline' ? '-' : money(o.rate || 0)}</b></div>
       <div class="order-mobile-row"><span>${escapeHtml(qtyLabel)}</span><b>${assetFmt(o.assetAmount || 0, o.asset || 'USDT')}</b></div>
-      <div class="order-mobile-row"><span>Actual</span><b>${actualText}<small>${actualSub}</small></b></div>
-      <div class="order-mobile-row"><span>Order</span><b class="order-mobile-order-no">${escapeHtml(o.orderNo || o.externalOrderNo || '-')}</b></div>
+      <div class="order-mobile-row order-mobile-row-actual"><span>Actual</span><b>${actualText}<small>${actualSub}</small></b></div>
+      <div class="order-mobile-row order-mobile-row-order"><span>Order</span><b class="order-mobile-order-no">${escapeHtml(o.orderNo || o.externalOrderNo || '-')}</b></div>
     </div>
     <div class="order-mobile-footer">
-      <div class="order-mobile-user-pill">
-        <span>${escapeHtml(counterparty)}</span>
-        <small>${escapeHtml(liveText)}</small>
+      <div class="order-mobile-counterparty-wrap">
+        <div class="order-mobile-user-pill"><span>${escapeHtml(counterparty)}</span></div>
+        ${orderChatButtonHtml(o)}
       </div>
-      ${orderChatButtonHtml(o)}
+      <small class="order-mobile-time">${escapeHtml(liveText)}</small>
     </div>
   </article>`;
 }

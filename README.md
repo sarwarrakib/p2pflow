@@ -27,17 +27,17 @@ Updater code এবং database আলাদা রাখে। Update install-�
 
 ## Version
 
-Internal SemVer: `1.5.12`
+Internal SemVer: `1.5.13`
 UI: `1.5`
 
 Normal next version: `SET_NEXT_VERSION.bat` -> `1.6.0`  
-Hotfix: `SET_HOTFIX_VERSION.bat` -> `1.5.13`
+Hotfix: `SET_HOTFIX_VERSION.bat` -> `1.5.14`
 
 ## Database history safety
 
 P2PFlow keeps authoritative business/application data in MariaDB/MySQL/PostgreSQL. State payloads are compressed with Brotli before AES-256-GCM encryption, proofs/chat media are stored as encrypted database objects, and identical newly uploaded proof/media bytes use content-addressed object IDs to avoid duplicate blobs. The default is 3 retained recovery checkpoints with a 6-hour archive interval and 5 retained automatic database backups. Older uncompressed state/history/backup payloads are upgraded incrementally after startup. Health Check reports each P2PFlow database table's allocated size/row count, current encrypted state payload size, compression saving percentage, and proof/chat object usage so database-MB growth can be inspected without terminal access. `shared/`, `.p2pflow`, `.env`, `releases/` and temporary restart/update markers are operational bootstrap/update metadata only; they are not an application/business-data store. The application runtime itself does not write proof, chat, audit, order, ledger, notification or recovery-code data to local files.
 
-## v1.5.12 Settings Workspace & Compact Mail Failover UI
+## v1.5.13 Settings Workspace & Compact Mail Failover UI
 
 Settings আর একটি দীর্ঘ single-page form নয়। এখন **General, Binance & Sync, Login & Security, Email Delivery, Notifications, Presence & Activity**—এই ৬টি purpose-based section আছে। Desktop-এ compact section navigation এবং mobile-এ horizontal section switcher ব্যবহার করা হয়; selected section browser-এ মনে থাকে।
 

@@ -1,4 +1,4 @@
-// P2PFlow v1.5.12
+// P2PFlow v1.5.13
 // Settings workspace: categorized navigation, compact email delivery and ordered failover routes.
 
 const P2PFLOW_EMAIL_SYSTEMS = [
