@@ -1,5 +1,5 @@
-// P2PFlow v1.5.11
-// Page module: settings. Primary email system plus ordered automatic backup routes.
+// P2PFlow v1.5.12
+// Settings workspace: categorized navigation, compact email delivery and ordered failover routes.
 
 const P2PFLOW_EMAIL_SYSTEMS = [
   ['auto','Hosting Auto'],
@@ -38,34 +38,81 @@ const P2PFLOW_SMTP_PRESETS = {
 function p2pflowMailSystemOptions(selected = 'auto') {
   return P2PFLOW_EMAIL_SYSTEMS.map(([value,label]) => `<option value="${value}" ${selected===value?'selected':''}>${label}</option>`).join('');
 }
+
+function p2pflowMailRouteStatus(route = {}, { primary = false } = {}) {
+  const system = route.mailSendingSystem || 'auto';
+  const systemLabel = route.mailSendingSystemLabel || (P2PFLOW_EMAIL_SYSTEMS.find(item => item[0] === system)?.[1] || system);
+  const smtpSystem = !['auto','php','sendmail'].includes(system);
+  if (!primary && route.enabled !== true) return badge('Off','muted');
+  if (!smtpSystem) return badge(systemLabel,'ok');
+  if (route.smtpConfigured) return badge('Ready','ok');
+  const missing = Array.isArray(route.smtpMissingFields) && route.smtpMissingFields.length ? `: ${route.smtpMissingFields.join(', ')}` : '';
+  return badge(`Needs setup${missing}`,'warn');
+}
+
 function p2pflowFallbackRouteHtml(route = {}, slot = 1) {
   const system = route.mailSendingSystem || 'auto';
   const security = route.smtpSecure ? 'ssl' : (route.smtpStarttls ? 'starttls' : 'none');
-  const systemLabel = route.mailSendingSystemLabel || (P2PFLOW_EMAIL_SYSTEMS.find(item => item[0] === system)?.[1] || system);
-  const smtpSystem = !['auto','php','sendmail'].includes(system);
-  const status = route.enabled === true
-    ? (smtpSystem ? (route.smtpConfigured ? badge('Ready','ok') : badge(`Incomplete${Array.isArray(route.smtpMissingFields) && route.smtpMissingFields.length ? `: ${route.smtpMissingFields.join(', ')}` : ''}`,'warn')) : badge(systemLabel,'ok'))
-    : badge('Disabled','muted');
+  const shouldOpen = route.enabled === true && !route.smtpConfigured && !['auto','php','sendmail'].includes(system);
   return `
-    <div class="full-row settings-section-head"><div><b>Backup Email Route ${slot}</b><span>Used only when every earlier route fails with a provider, authentication, quota, sender, network or explicit delivery rejection.</span></div><span>${status}</span></div>
-    <div><label class="check"><input type="checkbox" name="fallback${slot}Enabled" ${route.enabled===true?'checked':''}/> Enable backup route ${slot}</label></div>
-    <div><label>Email System</label><select name="fallback${slot}System" id="fallback${slot}System">${p2pflowMailSystemOptions(system)}</select></div>
-    <div><label>From Email</label><input name="fallback${slot}MailFrom" type="email" value="${escapeAttr(route.mailFrom || '')}" placeholder="optional — SMTP username can be used" autocomplete="email" /></div>
-    <div><label>From Name</label><input name="fallback${slot}MailFromName" value="${escapeAttr(route.mailFromName || '')}" placeholder="P2PFlow" /></div>
-    <div><label>Reply-To Email</label><input name="fallback${slot}MailReplyTo" type="email" value="${escapeAttr(route.mailReplyTo || '')}" placeholder="optional" /></div>
-    <div><label>Envelope From</label><input name="fallback${slot}MailEnvelopeFrom" type="email" value="${escapeAttr(route.mailEnvelopeFrom || '')}" placeholder="optional" /></div>
-    <div><label>SMTP Host</label><input name="fallback${slot}SmtpHost" value="${escapeAttr(route.smtpHost || '')}" placeholder="smtp.example.com" autocomplete="off" /></div>
-    <div><label>SMTP Port</label><input name="fallback${slot}SmtpPort" type="number" min="1" max="65535" value="${Number(route.smtpPort || 587)}" /></div>
-    <div><label>SMTP Encryption</label><select name="fallback${slot}SmtpSecurity">
-      <option value="ssl" ${security==='ssl'?'selected':''}>SSL/TLS (usually port 465)</option>
-      <option value="starttls" ${security==='starttls'?'selected':''}>STARTTLS (usually port 587)</option>
-      <option value="none" ${security==='none'?'selected':''}>None</option>
-    </select></div>
-    <div><label>SMTP Username</label><input name="fallback${slot}SmtpUser" value="${escapeAttr(route.smtpUser || '')}" autocomplete="username" /></div>
-    <div><label>SMTP Password / App Password</label><input name="fallback${slot}SmtpPassword" type="password" value="" placeholder="${route.smtpPasswordConfigured ? 'Saved — leave blank to keep' : 'Enter SMTP password'}" autocomplete="new-password" /></div>
-    <div><label>SMTP HELO Domain</label><input name="fallback${slot}SmtpHelo" value="${escapeAttr(route.smtpHelo || 'localhost')}" placeholder="your-domain.com" /></div>
-    <div><label class="check"><input type="checkbox" name="fallback${slot}ClearSmtpPassword" /> Clear saved backup password</label></div>
-    <div class="full-row actions"><button type="button" class="secondary" id="settingsTestFallback${slot}Btn">Test Backup Route ${slot}</button></div>`;
+    <article class="settings-mail-route" data-mail-route="fallback-${slot}">
+      <div class="settings-mail-route-head">
+        <div class="settings-mail-route-title">
+          <span class="settings-route-index">${slot}</span>
+          <div><b>Backup ${slot}</b><small>Used only if every earlier route cannot deliver.</small></div>
+        </div>
+        <div class="settings-mail-route-head-actions">
+          ${p2pflowMailRouteStatus(route)}
+          <label class="settings-switch" title="Enable backup route ${slot}"><input type="checkbox" name="fallback${slot}Enabled" ${route.enabled===true?'checked':''}/><span></span></label>
+        </div>
+      </div>
+      <div class="settings-mail-route-quick">
+        <div><label>Provider</label><select name="fallback${slot}System" id="fallback${slot}System">${p2pflowMailSystemOptions(system)}</select></div>
+        <div><label>From Email</label><input name="fallback${slot}MailFrom" type="email" value="${escapeAttr(route.mailFrom || '')}" placeholder="optional" autocomplete="email" /></div>
+        <button type="button" class="secondary settings-route-test" id="settingsTestFallback${slot}Btn">Test</button>
+      </div>
+      <details class="settings-route-details" ${shouldOpen ? 'open' : ''}>
+        <summary>Connection & sender details</summary>
+        <div class="settings-field-grid settings-route-detail-grid">
+          <div><label>From Name</label><input name="fallback${slot}MailFromName" value="${escapeAttr(route.mailFromName || '')}" placeholder="P2PFlow" /></div>
+          <div><label>Reply-To Email</label><input name="fallback${slot}MailReplyTo" type="email" value="${escapeAttr(route.mailReplyTo || '')}" placeholder="optional" /></div>
+          <div><label>Envelope From</label><input name="fallback${slot}MailEnvelopeFrom" type="email" value="${escapeAttr(route.mailEnvelopeFrom || '')}" placeholder="optional" /></div>
+          <div><label>SMTP Host</label><input name="fallback${slot}SmtpHost" value="${escapeAttr(route.smtpHost || '')}" placeholder="smtp.example.com" autocomplete="off" /></div>
+          <div><label>SMTP Port</label><input name="fallback${slot}SmtpPort" type="number" min="1" max="65535" value="${Number(route.smtpPort || 587)}" /></div>
+          <div><label>Encryption</label><select name="fallback${slot}SmtpSecurity">
+            <option value="ssl" ${security==='ssl'?'selected':''}>SSL/TLS · 465</option>
+            <option value="starttls" ${security==='starttls'?'selected':''}>STARTTLS · 587</option>
+            <option value="none" ${security==='none'?'selected':''}>None</option>
+          </select></div>
+          <div><label>SMTP Username</label><input name="fallback${slot}SmtpUser" value="${escapeAttr(route.smtpUser || '')}" autocomplete="username" /></div>
+          <div><label>SMTP Password / App Password</label><input name="fallback${slot}SmtpPassword" type="password" value="" placeholder="${route.smtpPasswordConfigured ? 'Saved — leave blank to keep' : 'Enter SMTP password'}" autocomplete="new-password" /></div>
+          <div><label>SMTP HELO Domain</label><input name="fallback${slot}SmtpHelo" value="${escapeAttr(route.smtpHelo || 'localhost')}" placeholder="your-domain.com" /></div>
+          <div class="settings-inline-check"><label class="check"><input type="checkbox" name="fallback${slot}ClearSmtpPassword" /> Clear saved password</label></div>
+        </div>
+      </details>
+    </article>`;
+}
+
+function p2pflowSettingsPanel(id, title, description, content) {
+  return `<section class="settings-panel" data-settings-panel="${id}">
+    <div class="settings-panel-head"><div><h2>${title}</h2><p>${description}</p></div></div>
+    <div class="settings-panel-body">${content}</div>
+  </section>`;
+}
+
+function p2pflowActivateSettingsSection(section) {
+  const desired = String(section || 'general');
+  const buttons = [...document.querySelectorAll('[data-settings-section]')];
+  const panels = [...document.querySelectorAll('[data-settings-panel]')];
+  const exists = panels.some(panel => panel.dataset.settingsPanel === desired);
+  const active = exists ? desired : 'general';
+  buttons.forEach(button => {
+    const selected = button.dataset.settingsSection === active;
+    button.classList.toggle('active', selected);
+    button.setAttribute('aria-selected', selected ? 'true' : 'false');
+  });
+  panels.forEach(panel => panel.classList.toggle('active', panel.dataset.settingsPanel === active));
+  try { localStorage.setItem('p2pflow.settings.section', active); } catch (_) {}
 }
 
 async function renderSettings() {
@@ -75,66 +122,146 @@ async function renderSettings() {
   const mailSystem = s.mailSendingSystem || 'auto';
   const smtpSecurity = s.smtpSecure ? 'ssl' : (s.smtpStarttls ? 'starttls' : 'none');
   const selectedSystemLabel = s.mailSendingSystemLabel || (P2PFLOW_EMAIL_SYSTEMS.find(item => item[0] === mailSystem)?.[1] || mailSystem);
-  const smtpSystem = !['auto','php','sendmail'].includes(mailSystem);
   const fallbackRoutes = Array.isArray(s.mailFallbackRoutes) ? s.mailFallbackRoutes : [];
   const fallbackRoutesHtml = Array.from({ length: P2PFLOW_MAX_MAIL_FALLBACKS }, (_, index) => p2pflowFallbackRouteHtml(fallbackRoutes[index] || {}, index + 1)).join('');
-  $('#content').innerHTML = `<div class="card"><form id="settingsForm" class="form-grid">
-    <div><label>Mismatch Tolerance</label><input name="mismatchTolerance" type="number" value="${s.mismatchTolerance}" /></div>
-    <div><label>High Amount Approval Threshold</label><input name="highAmountApprovalThreshold" type="number" value="${s.highAmountApprovalThreshold}" /></div>
-    <div><label>Active Lock Seconds</label><input name="activeLockSeconds" type="number" value="${s.activeLockSeconds}" /></div>
-    <div><label>Max Proof Size Bytes</label><input name="maxProofSizeBytes" type="number" value="${s.maxProofSizeBytes}" /></div>
-    <div><label>API Mode</label><select name="apiMode"><option value="live-disabled" ${s.apiMode==='live-disabled'?'selected':''}>live-disabled</option><option value="live" ${s.apiMode==='live'?'selected':''}>live</option></select></div>
-    <div><label>Binance USDT Available (SELL capacity)</label><input name="binanceUsdtAvailable" type="number" step="0.00000001" value="${s.binanceUsdtAvailable || 0}" /></div>
-    <div><label>Default USDT Rate (fallback)</label><input name="defaultUsdtRate" type="number" step="0.01" value="${s.defaultUsdtRate || 0}" /></div>
-    <div><label class="check"><input type="checkbox" name="binanceAutoOrderSync" ${s.binanceAutoOrderSync!==false?'checked':''}/> Auto import Binance orders periodically</label></div>
-    <div><label>Auto-sync Seconds</label><input name="binanceAutoSyncSeconds" type="number" min="15" max="300" value="${s.binanceAutoSyncSeconds || 15}" /></div>
-    <div><label>Auto-sync Rows</label><input name="binanceAutoSyncRows" type="number" min="5" max="100" value="${s.binanceAutoSyncRows || 30}" /></div>
-    <div><label>Open-order Detail Rows</label><input name="binanceOpenOrderDetailRows" type="number" min="5" max="100" value="${s.binanceOpenOrderDetailRows || 100}" /></div>
-    <div class="full-row"><div class="okbox"><b>Server-side real-time order reconciliation</b><br/>The server refreshes every open Binance order detail even when no user is logged in. List and detail views receive the result through live events.</div></div>
-    <div class="full-row"><div class="okbox"><b>Dynamic presence & activity</b><br/>Online state is automatic. Active means visible, focused and recently used; away means the page is in the background; idle means open without recent interaction.</div></div>
-    <div><label>Activity Heartbeat Seconds</label><input name="activityHeartbeatSeconds" type="number" min="5" max="60" value="${s.activityHeartbeatSeconds || 15}" /></div>
-    <div><label>Mark Idle After Seconds</label><input name="activityIdleAfterSeconds" type="number" min="30" max="3600" value="${s.activityIdleAfterSeconds || 60}" /></div>
-    <div><label>Mark Offline After Seconds</label><input name="activityOfflineAfterSeconds" type="number" min="20" max="600" value="${s.activityOfflineAfterSeconds || 45}" /></div>
-    <div><label>Activity Retention Days</label><input name="activityRetentionDays" type="number" min="30" max="1095" value="${s.activityRetentionDays || 180}" /></div>
-    <div><label class="check"><input type="checkbox" name="requireEmailOtp" ${s.requireEmailOtp!==false?'checked':''}/> Require email OTP at login</label></div>
-    <div><label class="check"><input type="checkbox" name="requireLoginSecretCode" ${s.requireLoginSecretCode!==false?'checked':''}/> Require 6 digit secret code</label></div>
-    <div class="full-row"><label class="check"><input type="checkbox" name="loginSecurityQuestionFallbackEnabled" ${s.loginSecurityQuestionFallbackEnabled!==false?'checked':''}/> Enable Security Question fallback when Login OTP cannot be sent</label><div class="notice small">Fallback is available only for users who have configured a Security Question + hashed answer. Login then requires the correct answer and the user's existing 6 digit secret.</div></div>
+  const enabledBackups = Number(s.mailFailoverEnabledCount || 0);
+  const primaryStatus = p2pflowMailRouteStatus(s, { primary:true });
 
-    <div class="full-row settings-section-head"><div><b>Primary Email Sending System</b><span>This route is always tried first for Login OTP, recovery/security verification, order email, notification email and every other site email.</span></div><span>${smtpSystem ? (s.smtpConfigured ? badge('SMTP configured','ok') : badge(`SMTP incomplete${Array.isArray(s.smtpMissingFields) && s.smtpMissingFields.length ? `: ${s.smtpMissingFields.join(', ')}` : ''}`,'warn')) : badge(selectedSystemLabel,'ok')}</span></div>
-    <div><label>Primary Email System</label><select name="mailSendingSystem" id="mailSendingSystemSelect">${p2pflowMailSystemOptions(mailSystem)}</select></div>
-    <div><label>From Email</label><input name="mailFrom" type="email" value="${escapeAttr(s.mailFrom || '')}" placeholder="no-reply@your-domain.com" autocomplete="email" /></div>
-    <div><label>From Name</label><input name="mailFromName" value="${escapeAttr(s.mailFromName || 'P2PFlow')}" /></div>
-    <div><label>Reply-To Email</label><input name="mailReplyTo" type="email" value="${escapeAttr(s.mailReplyTo || '')}" placeholder="optional" /></div>
-    <div><label>SMTP Host</label><input name="smtpHost" value="${escapeAttr(s.smtpHost || '')}" placeholder="smtp.example.com" autocomplete="off" /></div>
-    <div><label>SMTP Port</label><input name="smtpPort" type="number" min="1" max="65535" value="${Number(s.smtpPort || 587)}" /></div>
-    <div><label>SMTP Encryption</label><select name="smtpSecurity">
-      <option value="ssl" ${smtpSecurity==='ssl'?'selected':''}>SSL/TLS (usually port 465)</option>
-      <option value="starttls" ${smtpSecurity==='starttls'?'selected':''}>STARTTLS (usually port 587)</option>
-      <option value="none" ${smtpSecurity==='none'?'selected':''}>None</option>
-    </select></div>
-    <div><label>SMTP Username</label><input name="smtpUser" value="${escapeAttr(s.smtpUser || '')}" autocomplete="username" /></div>
-    <div><label>SMTP Password / App Password</label><input name="smtpPassword" type="password" value="" placeholder="${s.smtpPasswordConfigured ? 'Saved — leave blank to keep' : 'Enter SMTP password'}" autocomplete="new-password" /></div>
-    <div><label>SMTP HELO Domain</label><input name="smtpHelo" value="${escapeAttr(s.smtpHelo || 'localhost')}" placeholder="your-domain.com" /></div>
-    <div><label>Mail Test Recipient</label><input id="settingsMailTestRecipient" name="mailTestRecipient" type="email" value="" placeholder="optional — defaults to your login email" autocomplete="email" /></div>
-    <div><label class="check"><input type="checkbox" name="clearSmtpPassword" /> Clear saved SMTP password</label></div>
-    <div class="full-row"><div class="notice small">Selecting Gmail, Outlook/Microsoft, Yahoo, Zoho, iCloud, AOL, Fastmail, GMX/Mail.com, Yandex, SendGrid, Mailgun or Brevo automatically presets SMTP host, port and encryption. Credentials remain under your control. SMTP password is stored encrypted.</div></div>
-    <div class="full-row"><div class="notice small"><b>SMTP last verified:</b> ${escapeHtml(s.smtpLastVerifiedAt ? fmt(s.smtpLastVerifiedAt) : 'not verified')} · <b>Login OTP route last verified:</b> ${escapeHtml(s.loginOtpRouteLastVerifiedAt ? fmt(s.loginOtpRouteLastVerifiedAt) : 'not verified')}</div></div>
+  const generalPanel = p2pflowSettingsPanel('general', 'General', 'Core business rules and final-action controls.', `
+    <div class="settings-field-grid">
+      <div><label>Mismatch Tolerance</label><input name="mismatchTolerance" type="number" value="${s.mismatchTolerance}" /></div>
+      <div><label>High Amount Approval Threshold</label><input name="highAmountApprovalThreshold" type="number" value="${s.highAmountApprovalThreshold}" /></div>
+      <div><label>Active Lock Seconds</label><input name="activeLockSeconds" type="number" value="${s.activeLockSeconds}" /></div>
+      <div><label>Max Proof Size Bytes</label><input name="maxProofSizeBytes" type="number" value="${s.maxProofSizeBytes}" /></div>
+      <div><label>API Mode</label><select name="apiMode"><option value="live-disabled" ${s.apiMode==='live-disabled'?'selected':''}>Live disabled</option><option value="live" ${s.apiMode==='live'?'selected':''}>Live</option></select></div>
+    </div>
+    <div class="settings-option-list">
+      <label class="settings-option-row"><span><b>Require proof for final action</b><small>Final action needs proof before completion.</small></span><input type="checkbox" name="requireProofForFinalAction" ${s.requireProofForFinalAction?'checked':''}/></label>
+      <label class="settings-option-row"><span><b>Allow lead user final action</b><small>Lead users can complete the permitted final action.</small></span><input type="checkbox" name="allowAgentFinalAction" ${s.allowAgentFinalAction?'checked':''}/></label>
+    </div>`);
 
-    <div class="full-row settings-section-head"><div><b>Automatic Mail Failover</b><span>Primary is tried first, then each enabled backup route in order. Recipient rejection is not retried on another provider, and an ambiguous disconnect after SMTP DATA is not retried to avoid duplicate emails.</span></div><span>${badge(`${Number(s.mailFailoverEnabledCount || 0)} backup${Number(s.mailFailoverEnabledCount || 0) === 1 ? '' : 's'} enabled`, Number(s.mailFailoverEnabledCount || 0) ? 'ok' : 'muted')}</span></div>
-    ${fallbackRoutesHtml}
+  const binancePanel = p2pflowSettingsPanel('binance', 'Binance & Sync', 'Balances, automatic order import and server-side reconciliation.', `
+    <div class="settings-callout ok"><b>Server-side reconciliation is always working</b><span>Open Binance order details keep refreshing even when nobody is logged in.</span></div>
+    <div class="settings-field-grid">
+      <div><label>Binance USDT Available</label><input name="binanceUsdtAvailable" type="number" step="0.00000001" value="${s.binanceUsdtAvailable || 0}" /></div>
+      <div><label>Default USDT Rate</label><input name="defaultUsdtRate" type="number" step="0.01" value="${s.defaultUsdtRate || 0}" /></div>
+      <div><label>Auto-sync Seconds</label><input name="binanceAutoSyncSeconds" type="number" min="15" max="300" value="${s.binanceAutoSyncSeconds || 15}" /></div>
+      <div><label>Auto-sync Rows</label><input name="binanceAutoSyncRows" type="number" min="5" max="100" value="${s.binanceAutoSyncRows || 30}" /></div>
+      <div><label>Open-order Detail Rows</label><input name="binanceOpenOrderDetailRows" type="number" min="5" max="100" value="${s.binanceOpenOrderDetailRows || 100}" /></div>
+    </div>
+    <div class="settings-option-list">
+      <label class="settings-option-row"><span><b>Auto import Binance orders</b><small>Periodically imports the latest orders in the background.</small></span><input type="checkbox" name="binanceAutoOrderSync" ${s.binanceAutoOrderSync!==false?'checked':''}/></label>
+    </div>`);
 
-    <div class="full-row settings-section-head"><div><b>Automated Email</b><span>These switches control security alerts, order mail and notification-center email delivery. Login OTP uses the same primary + backup failover chain above.</span></div></div>
-    <div><label class="check"><input type="checkbox" name="sendNotificationEmail" ${s.sendNotificationEmail!==false?'checked':''}/> Email notification-center alerts</label></div>
-    <div><label class="check"><input type="checkbox" name="sendOrderEmail" ${s.sendOrderEmail!==false?'checked':''}/> Order assignment / attention emails</label></div>
-    <div><label class="check"><input type="checkbox" name="sendSecurityChangeEmail" ${s.sendSecurityChangeEmail!==false?'checked':''}/> Security change emails</label></div>
-    <div><label class="check"><input type="checkbox" name="sendLoginFailureEmail" ${s.sendLoginFailureEmail!==false?'checked':''}/> Failed-login security emails</label></div>
-    <div class="full-row"><div class="notice small"><b>Login OTP:</b> a recognized trusted browser intentionally uses its device key + 6-digit secret without sending an OTP; choose <b>Use full login</b> on the login page when you want to exercise the email OTP path.</div></div>
+  const securityPanel = p2pflowSettingsPanel('security', 'Login & Security', 'Keep the normal login path simple and define recovery behavior here.', `
+    <div class="settings-option-list">
+      <label class="settings-option-row"><span><b>Email OTP at login</b><small>Send an email OTP during full login.</small></span><input type="checkbox" name="requireEmailOtp" ${s.requireEmailOtp!==false?'checked':''}/></label>
+      <label class="settings-option-row"><span><b>6-digit Secret Code</b><small>Require the existing security PIN during login.</small></span><input type="checkbox" name="requireLoginSecretCode" ${s.requireLoginSecretCode!==false?'checked':''}/></label>
+      <label class="settings-option-row"><span><b>Security Question fallback</b><small>Only used when Login OTP cannot be sent and the user has configured a question and hashed answer.</small></span><input type="checkbox" name="loginSecurityQuestionFallbackEnabled" ${s.loginSecurityQuestionFallbackEnabled!==false?'checked':''}/></label>
+    </div>
+    <div class="settings-callout"><b>Trusted browser behavior</b><span>A recognized trusted browser can use its device key + 6-digit secret without sending an OTP. Use Full Login when you specifically want to test email OTP.</span></div>`);
 
-    ${typeof notificationSoundSettingsHtml === 'function' ? notificationSoundSettingsHtml() : ''}
-    <div><label class="check"><input type="checkbox" name="requireProofForFinalAction" ${s.requireProofForFinalAction?'checked':''}/> Require proof for final action</label></div>
-    <div><label class="check"><input type="checkbox" name="allowAgentFinalAction" ${s.allowAgentFinalAction?'checked':''}/> Allow lead user final action</label></div>
-    <div class="full-row actions"><button type="submit">Save Settings</button><button type="button" class="secondary" id="settingsTestMailBtn">Test Full Mail Chain</button><button type="button" class="secondary" id="settingsTestLoginOtpBtn">Test Login OTP Failover</button><button type="button" class="secondary" id="settingsTestSmtpBtn">Test SMTP</button><button type="button" class="secondary" id="settingsTestLocalMailBtn">Test Local Mail</button></div>
-  </form><div id="settingsMailResult"></div><div class="notice">Live API actions require valid Binance credentials.</div></div>`;
+  const emailPanel = p2pflowSettingsPanel('email', 'Email Delivery', 'One primary route with compact automatic backups. Expand only the route you need to edit.', `
+    <div class="settings-email-summary">
+      <div><span>Primary</span><b>${escapeHtml(selectedSystemLabel)}</b><small>${primaryStatus}</small></div>
+      <div><span>Backups</span><b>${enabledBackups} / ${P2PFLOW_MAX_MAIL_FALLBACKS}</b><small>${enabledBackups ? 'Automatic failover active' : 'Primary only'}</small></div>
+      <div><span>SMTP verified</span><b>${escapeHtml(s.smtpLastVerifiedAt ? fmt(s.smtpLastVerifiedAt) : 'Not yet')}</b><small>Login OTP: ${escapeHtml(s.loginOtpRouteLastVerifiedAt ? fmt(s.loginOtpRouteLastVerifiedAt) : 'not verified')}</small></div>
+    </div>
+
+    <div class="settings-mail-chain" aria-label="Email delivery order">
+      <span class="primary">Primary</span><i>→</i><span>Backup 1</span><i>→</i><span>Backup 2</span><i>→</i><span>Backup 3</span>
+    </div>
+
+    <article class="settings-mail-route primary" data-mail-route="primary">
+      <div class="settings-mail-route-head">
+        <div class="settings-mail-route-title"><span class="settings-route-index">P</span><div><b>Primary route</b><small>Always tried first for every site email.</small></div></div>
+        <div class="settings-mail-route-head-actions">${primaryStatus}</div>
+      </div>
+      <div class="settings-mail-route-quick primary-quick">
+        <div><label>Provider</label><select name="mailSendingSystem" id="mailSendingSystemSelect">${p2pflowMailSystemOptions(mailSystem)}</select></div>
+        <div><label>From Email</label><input name="mailFrom" type="email" value="${escapeAttr(s.mailFrom || '')}" placeholder="no-reply@your-domain.com" autocomplete="email" /></div>
+      </div>
+      <details class="settings-route-details" ${!s.smtpConfigured && !['auto','php','sendmail'].includes(mailSystem) ? 'open' : ''}>
+        <summary>Connection & sender details</summary>
+        <div class="settings-field-grid settings-route-detail-grid">
+          <div><label>From Name</label><input name="mailFromName" value="${escapeAttr(s.mailFromName || 'P2PFlow')}" /></div>
+          <div><label>Reply-To Email</label><input name="mailReplyTo" type="email" value="${escapeAttr(s.mailReplyTo || '')}" placeholder="optional" /></div>
+          <div><label>SMTP Host</label><input name="smtpHost" value="${escapeAttr(s.smtpHost || '')}" placeholder="smtp.example.com" autocomplete="off" /></div>
+          <div><label>SMTP Port</label><input name="smtpPort" type="number" min="1" max="65535" value="${Number(s.smtpPort || 587)}" /></div>
+          <div><label>Encryption</label><select name="smtpSecurity">
+            <option value="ssl" ${smtpSecurity==='ssl'?'selected':''}>SSL/TLS · 465</option>
+            <option value="starttls" ${smtpSecurity==='starttls'?'selected':''}>STARTTLS · 587</option>
+            <option value="none" ${smtpSecurity==='none'?'selected':''}>None</option>
+          </select></div>
+          <div><label>SMTP Username</label><input name="smtpUser" value="${escapeAttr(s.smtpUser || '')}" autocomplete="username" /></div>
+          <div><label>SMTP Password / App Password</label><input name="smtpPassword" type="password" value="" placeholder="${s.smtpPasswordConfigured ? 'Saved — leave blank to keep' : 'Enter SMTP password'}" autocomplete="new-password" /></div>
+          <div><label>SMTP HELO Domain</label><input name="smtpHelo" value="${escapeAttr(s.smtpHelo || 'localhost')}" placeholder="your-domain.com" /></div>
+          <div class="settings-inline-check"><label class="check"><input type="checkbox" name="clearSmtpPassword" /> Clear saved SMTP password</label></div>
+        </div>
+        <div class="settings-route-help">Popular providers automatically preset host, port and encryption. Passwords remain stored encrypted.</div>
+      </details>
+    </article>
+
+    <div class="settings-subsection-head"><div><b>Automatic backups</b><span>Only the compact route row is shown. Open Connection details when you actually need to edit it.</span></div>${badge(`${enabledBackups} enabled`, enabledBackups ? 'ok' : 'muted')}</div>
+    <div class="settings-mail-route-list">${fallbackRoutesHtml}</div>
+    <details class="settings-route-details settings-failover-safety"><summary>Failover safety</summary><div class="settings-route-help">Recipient rejection is not retried on another provider. An ambiguous disconnect after SMTP DATA is not retried to avoid duplicate emails.</div></details>
+
+    <div class="settings-mail-test-card">
+      <div class="settings-subsection-head"><div><b>Test delivery</b><span>Use one recipient to test the real chain without hunting through the page.</span></div></div>
+      <div class="settings-test-row">
+        <div><label>Mail Test Recipient</label><input id="settingsMailTestRecipient" name="mailTestRecipient" type="email" value="" placeholder="optional — defaults to your login email" autocomplete="email" /></div>
+        <div class="actions"><button type="button" class="secondary" id="settingsTestMailBtn">Test Full Chain</button><button type="button" class="secondary" id="settingsTestLoginOtpBtn">Test Login OTP</button></div>
+      </div>
+      <details class="settings-route-details settings-low-level-tests"><summary>Low-level mail tests</summary><div class="actions"><button type="button" class="secondary" id="settingsTestSmtpBtn">Test SMTP directly</button><button type="button" class="secondary" id="settingsTestLocalMailBtn">Test local PHP/sendmail</button></div></details>
+      <div id="settingsMailResult"></div>
+    </div>`);
+
+  const notificationsPanel = p2pflowSettingsPanel('notifications', 'Notifications', 'Choose which emails are automatic and configure the browser alert sound.', `
+    <div class="settings-option-list">
+      <label class="settings-option-row"><span><b>Notification-center email</b><small>Email notification-center alerts.</small></span><input type="checkbox" name="sendNotificationEmail" ${s.sendNotificationEmail!==false?'checked':''}/></label>
+      <label class="settings-option-row"><span><b>Order email</b><small>Order assignment and attention emails.</small></span><input type="checkbox" name="sendOrderEmail" ${s.sendOrderEmail!==false?'checked':''}/></label>
+      <label class="settings-option-row"><span><b>Security change email</b><small>Send alerts when security settings change.</small></span><input type="checkbox" name="sendSecurityChangeEmail" ${s.sendSecurityChangeEmail!==false?'checked':''}/></label>
+      <label class="settings-option-row"><span><b>Failed-login email</b><small>Send security alerts for failed login attempts.</small></span><input type="checkbox" name="sendLoginFailureEmail" ${s.sendLoginFailureEmail!==false?'checked':''}/></label>
+    </div>
+    ${typeof notificationSoundSettingsHtml === 'function' ? notificationSoundSettingsHtml() : ''}`);
+
+  const activityPanel = p2pflowSettingsPanel('activity', 'Presence & Activity', 'Tune online, away, idle and retention timing without mixing it with email or security.', `
+    <div class="settings-callout ok"><b>Dynamic presence is automatic</b><span>Active means visible and recently used; away means background; idle means open without recent interaction.</span></div>
+    <div class="settings-field-grid">
+      <div><label>Activity Heartbeat Seconds</label><input name="activityHeartbeatSeconds" type="number" min="5" max="60" value="${s.activityHeartbeatSeconds || 15}" /></div>
+      <div><label>Mark Idle After Seconds</label><input name="activityIdleAfterSeconds" type="number" min="30" max="3600" value="${s.activityIdleAfterSeconds || 60}" /></div>
+      <div><label>Mark Offline After Seconds</label><input name="activityOfflineAfterSeconds" type="number" min="20" max="600" value="${s.activityOfflineAfterSeconds || 45}" /></div>
+      <div><label>Activity Retention Days</label><input name="activityRetentionDays" type="number" min="30" max="1095" value="${s.activityRetentionDays || 180}" /></div>
+    </div>`);
+
+  $('#content').innerHTML = `<div class="settings-workspace">
+    <div class="settings-hero">
+      <div><span class="settings-eyebrow">Control center</span><h2>Settings</h2><p>Everything is grouped by purpose. Open one section, change what you need, save once.</p></div>
+      <div class="settings-hero-status"><span>${primaryStatus}</span><small>${enabledBackups ? `${enabledBackups} mail backup${enabledBackups === 1 ? '' : 's'} ready` : 'Primary mail route only'}</small></div>
+    </div>
+    <div class="settings-layout">
+      <aside class="settings-nav" role="tablist" aria-label="Settings sections">
+        <button type="button" data-settings-section="general"><span>General</span><small>Rules & actions</small></button>
+        <button type="button" data-settings-section="binance"><span>Binance & Sync</span><small>Orders & balance</small></button>
+        <button type="button" data-settings-section="security"><span>Login & Security</span><small>OTP & recovery</small></button>
+        <button type="button" data-settings-section="email"><span>Email Delivery</span><small>Primary & backups</small></button>
+        <button type="button" data-settings-section="notifications"><span>Notifications</span><small>Email & sound</small></button>
+        <button type="button" data-settings-section="activity"><span>Presence & Activity</span><small>Online timing</small></button>
+      </aside>
+      <form id="settingsForm" class="settings-form">
+        <div class="settings-panel-stack">${generalPanel}${binancePanel}${securityPanel}${emailPanel}${notificationsPanel}${activityPanel}</div>
+        <div class="settings-savebar"><div><b>Unsaved changes stay on this screen</b><span>Save once after editing any section.</span></div><button type="submit">Save Settings</button></div>
+      </form>
+    </div>
+    <div class="settings-footer-note">Live API actions require valid Binance credentials.</div>
+  </div>`;
+
+  [...document.querySelectorAll('[data-settings-section]')].forEach(button => {
+    button.onclick = () => p2pflowActivateSettingsSection(button.dataset.settingsSection);
+  });
+  let initialSection = 'general';
+  try { initialSection = localStorage.getItem('p2pflow.settings.section') || 'general'; } catch (_) {}
+  p2pflowActivateSettingsSection(initialSection);
 
   const systemSelect = $('#mailSendingSystemSelect');
   if (systemSelect) systemSelect.onchange = () => {
@@ -218,7 +345,7 @@ async function renderSettings() {
       const data = err?.data || {};
       const stage = data.smtpStage ? `SMTP stage: ${data.smtpStage}${data.smtpCode ? ` · code ${data.smtpCode}` : ''}` : '';
       const detail = data.detail ? String(data.detail) : '';
-      box.innerHTML = `<div class="error"><b>${escapeHtml(data.error || err.message || 'Test email failed.')}</b>${stage ? `<br/><small>${escapeHtml(stage)}</small>` : ''}${detail ? `<br/><small>${escapeHtml(detail)}</small>` : ''}</div>`;
+      box.innerHTML = `<div class="error settings-mail-test-error"><b>${escapeHtml(data.error || err.message || 'Test email failed.')}</b>${stage ? `<br/><small>${escapeHtml(stage)}</small>` : ''}${detail ? `<br/><small>${escapeHtml(detail)}</small>` : ''}</div>`;
     }
   };
   $('#settingsTestMailBtn').onclick = () => runMailTest('selected', 'Testing primary + automatic backup email routes');

@@ -1,13 +1,13 @@
 {
   "name": "p2pflow",
-  "version": "1.5.11",
+  "version": "1.5.12",
   "description": "P2PFlow unified package for fresh install, manual update, GitHub release publishing, and in-panel signed automatic updates.",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
     "dev": "node server.js",
     "build": "node --check server.js && node --check app-server.js && node --check lib/updateManager.js && node --check lib/hostingSetup.js",
-    "test": "node scripts/merchant-break-sync-self-test.js && node scripts/mail-delivery-self-test.js && node scripts/mail-routing-self-test.js && node scripts/mail-failover-self-test.js && node scripts/security-question-fallback-self-test.js && node scripts/owner-mail-outage-login-self-test.js && node scripts/login-otp-disabled-self-test.js && node scripts/release-self-test.js && node scripts/login-route-self-test.js && node scripts/trusted-device-auth-self-test.js && node scripts/ui-localization-self-test.js && node scripts/ui-color-system-self-test.js && node scripts/hosting-setup-self-test.js && node scripts/production-preflight-self-test.js && node scripts/postgres-state-crypto-self-test.js && node scripts/mysql-state-crypto-self-test.js && node scripts/database-only-persistence-self-test.js && node scripts/system-update-waf-transport-self-test.js && node scripts/update-manager-self-test.js && node scripts/public-asset-mirror-self-test.js && node scripts/unified-supervisor-self-test.js && node scripts/main-thread-supervisor-integration-self-test.js && node app-server.js --accounting-self-test",
+    "test": "node scripts/merchant-break-sync-self-test.js && node scripts/mail-delivery-self-test.js && node scripts/mail-routing-self-test.js && node scripts/mail-failover-self-test.js && node scripts/security-question-fallback-self-test.js && node scripts/owner-mail-outage-login-self-test.js && node scripts/login-otp-disabled-self-test.js && node scripts/release-self-test.js && node scripts/login-route-self-test.js && node scripts/trusted-device-auth-self-test.js && node scripts/settings-ui-self-test.js && node scripts/ui-localization-self-test.js && node scripts/ui-color-system-self-test.js && node scripts/hosting-setup-self-test.js && node scripts/production-preflight-self-test.js && node scripts/postgres-state-crypto-self-test.js && node scripts/mysql-state-crypto-self-test.js && node scripts/database-only-persistence-self-test.js && node scripts/system-update-waf-transport-self-test.js && node scripts/update-manager-self-test.js && node scripts/public-asset-mirror-self-test.js && node scripts/unified-supervisor-self-test.js && node scripts/main-thread-supervisor-integration-self-test.js && node app-server.js --accounting-self-test",
     "check": "node scripts/release-self-test.js",
     "migrate:postgres": "node scripts/migrate-file-to-postgres.js",
     "preflight:production": "node scripts/production-doctor.js",

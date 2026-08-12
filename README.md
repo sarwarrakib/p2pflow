@@ -27,20 +27,22 @@ Updater code এবং database আলাদা রাখে। Update install-�
 
 ## Version
 
-Internal SemVer: `1.5.11`
+Internal SemVer: `1.5.12`
 UI: `1.5`
 
 Normal next version: `SET_NEXT_VERSION.bat` -> `1.6.0`  
-Hotfix: `SET_HOTFIX_VERSION.bat` -> `1.5.12`
+Hotfix: `SET_HOTFIX_VERSION.bat` -> `1.5.13`
 
 ## Database history safety
 
 P2PFlow keeps authoritative business/application data in MariaDB/MySQL/PostgreSQL. State payloads are compressed with Brotli before AES-256-GCM encryption, proofs/chat media are stored as encrypted database objects, and identical newly uploaded proof/media bytes use content-addressed object IDs to avoid duplicate blobs. The default is 3 retained recovery checkpoints with a 6-hour archive interval and 5 retained automatic database backups. Older uncompressed state/history/backup payloads are upgraded incrementally after startup. Health Check reports each P2PFlow database table's allocated size/row count, current encrypted state payload size, compression saving percentage, and proof/chat object usage so database-MB growth can be inspected without terminal access. `shared/`, `.p2pflow`, `.env`, `releases/` and temporary restart/update markers are operational bootstrap/update metadata only; they are not an application/business-data store. The application runtime itself does not write proof, chat, audit, order, ledger, notification or recovery-code data to local files.
 
-## v1.5.11 Automatic Multi-Email Failover
+## v1.5.12 Settings Workspace & Compact Mail Failover UI
 
-Settings-এর **Email Sending System** এখন একটি Primary route-এর পাশাপাশি সর্বোচ্চ ৩টি ordered Backup Email Route রাখতে পারে। Login OTP, recovery/security verification, order mail, notification mail এবং অন্য সব site email Primary -> Backup 1 -> Backup 2 -> Backup 3 priority-তে delivery চেষ্টা করে।
+Settings আর একটি দীর্ঘ single-page form নয়। এখন **General, Binance & Sync, Login & Security, Email Delivery, Notifications, Presence & Activity**—এই ৬টি purpose-based section আছে। Desktop-এ compact section navigation এবং mobile-এ horizontal section switcher ব্যবহার করা হয়; selected section browser-এ মনে থাকে।
 
-প্রতিটি backup-এর নিজস্ব provider, From/Reply-To এবং SMTP credentials থাকে। Provider/auth/quota/TLS/network/sender/relay/policy failure হলে next route চেষ্টা হয়। Permanent recipient rejection হলে অন্য provider-এ retry হয় না, এবং SMTP DATA পাঠানোর পর ambiguous connection loss হলে duplicate email এড়াতে failover বন্ধ থাকে।
+Email Delivery page-এ Primary route এবং Backup 1/2/3 compact route card হিসেবে দেখায়। প্রতিটি backup-এর পুরো SMTP form একসাথে repeat করে দেখানো হয় না; Provider, From Email, status এবং Test action সামনে থাকে, আর connection/sender details প্রয়োজন হলে expand করা যায়। Primary -> Backup 1 -> Backup 2 -> Backup 3 chain একটি compact delivery strip-এ দেখা যায়।
 
-Login OTP সব configured mail route fail হওয়ার পরেই Security Question fallback বা Owner Mail Service Down Emergency Login-এ যায়। Email OTP disabled থাকলে existing 6-digit PIN-only continuation অপরিবর্তিত। Settings-এ Full Mail Chain, Login OTP Failover এবং প্রতিটি Backup Route-এর direct test আছে।
+Mail failover engine v1.5.11-এর behavior অপরিবর্তিত: Login OTP, recovery/security verification, order mail, notification mail এবং অন্য site email একই ordered chain ব্যবহার করে। Permanent recipient rejection হলে next provider retry হয় না এবং ambiguous post-DATA disconnect duplicate email এড়াতে retry হয় না। Login OTP সব usable mail route fail হওয়ার পর Security Question fallback বা Owner Emergency Login-এ যায়; Email OTP disabled থাকলে PIN-only flow অপরিবর্তিত।
+
+Email test controls-ও এক জায়গায় আনা হয়েছে: Test Full Chain, Test Login OTP, optional Mail Test Recipient এবং collapsible low-level SMTP/local tests।
