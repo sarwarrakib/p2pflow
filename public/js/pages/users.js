@@ -1,4 +1,4 @@
-// P2PFlow v1.5.15
+// P2PFlow v1.5.16
 // Page module: users. Edit this file for the users page UI.
 
 async function renderUsers() {
@@ -27,8 +27,7 @@ async function renderUsers() {
       </div>
     </div>
     <div class="toolbar mt">
-      <div class="actions"><button id="addUserBtn">Add User + Login</button><button class="secondary" id="goRolesBtn">User Roles</button>${hasPerm('activity.view') ? '<button class="ghost" id="goActivityBtn">Activity Monitor</button>' : ''}</div>
-      <div class="sub">Presence updates live from heartbeat, visibility, focus and interaction. Active, online, idle and away users remain assignment-eligible; only offline users are excluded.</div>
+      <div class="actions"><button type="button" id="addUserBtn">Add User + Login</button><button type="button" class="secondary" id="goRolesBtn">User Roles</button>${hasPerm('activity.view') ? '<button type="button" class="ghost" id="goActivityBtn">Activity Monitor</button>' : ''}</div>
     </div>
     <div class="report-cards wide">
       ${agents.items.map(a => {
@@ -53,12 +52,31 @@ async function renderUsers() {
             <div><span>Cash</span><b>${money(sumLocal(aa.map(x=>x.currentBalance)))}</b></div>
             <div><span>Last Seen</span><b class="activity-small-value">${escapeHtml(fmt(p.lastSeenAt))}</b></div>
           </div>
-          <button data-edit-agent="${Number(a.id || 0)}">Edit User / Permissions</button>
+          <button type="button" data-edit-agent="${Number(a.id || 0)}">Edit User / Permissions</button>
         </div>`;
       }).join('') || '<div class="empty-state">No users</div>'}
     </div>`;
-  $('#addUserBtn').onclick = () => openUserModal();
-  if ($('#goRolesBtn')) $('#goRolesBtn').onclick = () => setRoute('user-roles');
-  if ($('#goActivityBtn')) $('#goActivityBtn').onclick = () => setRoute('activity');
-  $$('[data-edit-agent]').forEach(b => b.onclick = () => openUserModal(agents.items.find(a => a.id === Number(b.dataset.editAgent))));
+  const bindUserAction = (selector, handler) => {
+    const button = $(selector);
+    if (!button) return;
+    button.addEventListener('click', event => {
+      event.preventDefault();
+      event.stopPropagation();
+      try {
+        handler(event);
+      } catch (error) {
+        console.error('User action failed', error);
+        notify(error?.message || 'Could not complete the user action.', 'danger', 6500);
+      }
+    });
+  };
+  bindUserAction('#addUserBtn', () => openUserModal(null));
+  bindUserAction('#goRolesBtn', () => setRoute('user-roles'));
+  bindUserAction('#goActivityBtn', () => setRoute('activity'));
+  $$('[data-edit-agent]').forEach(button => button.addEventListener('click', event => {
+    event.preventDefault();
+    const userItem = agents.items.find(agent => Number(agent.id) === Number(button.dataset.editAgent));
+    if (!userItem) return notify('User could not be found.', 'danger', 5000);
+    openUserModal(userItem);
+  }));
 }

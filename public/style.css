@@ -4923,7 +4923,7 @@ tr:hover td{background:#fbfbfc}
   .order-mobile-time { font-size: 9px; }
 }
 
-/* v1.5.15 - login recovery, account-scoped Binance RBAC and account context */
+/* v1.5.16 - login recovery, account-scoped Binance RBAC and account context */
 .text-ok{color:var(--ok-text,#166534)!important}
 .text-warn{color:var(--warn-text,#92400e)!important}
 .security-recovery-panel{
@@ -4992,15 +4992,60 @@ tr:hover td{background:#fbfbfc}
 .page-account-strip{
   display:flex;
   align-items:center;
-  justify-content:space-between;
+  justify-content:flex-start;
   gap:14px;
   margin:0 0 14px;
-  padding:12px 14px;
+  padding:10px 12px;
   border:1px solid var(--line,#e5e7eb);
   border-radius:16px;
   background:var(--surface,#fff);
   box-shadow:0 3px 12px rgba(17,24,39,.035);
 }
+.binance-account-switcher{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  width:100%;
+  min-width:0;
+  overflow-x:auto;
+  padding:1px;
+  scrollbar-width:none;
+  -webkit-overflow-scrolling:touch;
+}
+.binance-account-switcher::-webkit-scrollbar{display:none}
+.binance-account-tab{
+  flex:0 0 auto;
+  width:auto;
+  min-width:68px;
+  min-height:38px;
+  max-width:250px;
+  padding:8px 15px;
+  overflow:hidden;
+  border:1px solid var(--line,#e5e7eb);
+  border-radius:999px;
+  background:#f7f8f9;
+  color:var(--text,#181a20);
+  font-size:12px;
+  font-weight:850;
+  line-height:1.15;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+  box-shadow:none;
+}
+.binance-account-tab:hover{
+  transform:none;
+  filter:none;
+  border-color:var(--line-strong,#d5d9de);
+  background:#eef0f2;
+}
+.binance-account-tab.active{
+  border-color:var(--brand,#f0b90b);
+  background:var(--brand,#f0b90b);
+  color:var(--brand-ink,#181a20);
+  box-shadow:0 5px 14px rgba(240,185,11,.22);
+}
+.binance-account-tab.is-disabled{opacity:.58}
+.binance-account-tab:focus-visible{outline:3px solid rgba(240,185,11,.22);outline-offset:2px}
 .binance-account-selector{display:flex;align-items:center;gap:9px;min-width:0;margin:0}
 .binance-account-selector>span{flex:0 0 auto;color:var(--muted,#707782);font-size:11px;font-weight:850;letter-spacing:.03em;text-transform:uppercase}
 .binance-account-selector select{min-width:220px;max-width:360px;min-height:38px;padding-top:7px;padding-bottom:7px}
@@ -5046,6 +5091,8 @@ tr:hover td{background:#fbfbfc}
 .ads-fixed-account .binance-account-badge{margin:0}
 .ads-fixed-account small{color:var(--muted,#707782);font-size:11px}
 .ads-account-field .ads-full-selector{width:100%}
+.ads-merchant-inline-item.is-mixed{background:var(--brand-soft,#fff8dc)}
+.ads-merchant-inline-item.is-mixed .ads-merchant-inline-label i{background:var(--brand,#f0b90b)}
 
 @media(max-width:820px){
   .binance-permission-groups{grid-template-columns:1fr}
@@ -5065,5 +5112,7 @@ tr:hover td{background:#fbfbfc}
   .binance-permission-account-head .actions.compact{flex-wrap:nowrap}
   .binance-permission-group{padding:11px}
   .page-account-strip{margin-bottom:10px;padding:10px 11px;border-radius:13px}
+  .binance-account-switcher{gap:6px}
+  .binance-account-tab{min-height:36px;max-width:190px;padding:7px 12px;font-size:11px}
   .binance-account-badge{max-width:180px}
 }

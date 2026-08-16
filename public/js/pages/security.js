@@ -1,4 +1,4 @@
-// P2PFlow v1.5.15
+// P2PFlow v1.5.16
 // Dedicated account/login security page. Binance P2P Profile lives on #/p2p-profile.
 
 function securityStatusPill(label, enabled) {

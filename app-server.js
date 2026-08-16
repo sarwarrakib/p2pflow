@@ -337,6 +337,36 @@ function binanceCredentialIdsForUserPermission(user = {}, permission, options = 
     .map(item => Number(item.id));
 }
 
+function binanceCredentialP2pIdentity(credential = {}, target = db) {
+  if (!credential || !Number(credential.id || 0)) {
+    return { p2pUsername: '', nickname: '', displayName: '', accountName: '', userNo: '', merchantNo: '', profileSyncedAt: null };
+  }
+  const credentialId = Number(credential.id);
+  const profiles = Array.isArray(target?.ownerP2pProfiles) ? target.ownerP2pProfiles : [];
+  let profile = profiles.find(item => Number(item?.credentialId || 0) === credentialId) || null;
+  if (!profile) {
+    const orderedIds = [...(target?.apiCredentials || [])].sort((a, b) => {
+      const at = Date.parse(a.createdAt || '') || 0;
+      const bt = Date.parse(b.createdAt || '') || 0;
+      return at - bt || Number(a.id || 0) - Number(b.id || 0);
+    }).map(item => Number(item.id || 0)).filter(Boolean);
+    if (credentialId === Number(orderedIds[0] || 0) && target?.ownerP2pProfile && typeof target.ownerP2pProfile === 'object') profile = target.ownerP2pProfile;
+  }
+  const accountName = cleanStr(credential.name || `API ${credential.id}`, 120);
+  const p2pUsername = cleanStr(profile?.nickname || credential.ownerP2pNickname || '', 120);
+  const userNo = cleanStr(profile?.userNo || credential.ownerP2pUserNo || '', 120);
+  const merchantNo = cleanStr(profile?.merchantNo || credential.ownerP2pMerchantNo || '', 120);
+  return {
+    p2pUsername,
+    nickname: p2pUsername,
+    displayName: p2pUsername || accountName,
+    accountName,
+    userNo,
+    merchantNo,
+    profileSyncedAt: profile?.syncedAt || credential.ownerP2pProfileLastSyncAt || null
+  };
+}
+
 function binanceCredentialOptionsForUser(user = {}, permission = null, options = {}) {
   const target = options.target || db;
   const includeDisabled = options.includeDisabled !== false;
@@ -350,14 +380,24 @@ function binanceCredentialOptionsForUser(user = {}, permission = null, options =
       const bt = Date.parse(b.createdAt || '') || 0;
       return at - bt || Number(a.id || 0) - Number(b.id || 0);
     })
-    .map(item => ({
-      id: Number(item.id),
-      name: cleanStr(item.name || `API ${item.id}`, 120),
-      status: item.disabled ? 'disabled' : cleanStr(item.status || 'saved', 40),
-      disabled: Boolean(item.disabled),
-      createdAt: item.createdAt || null,
-      permissions: grants.get(Number(item.id)) || []
-    }));
+    .map(item => {
+      const identity = binanceCredentialP2pIdentity(item, target);
+      return {
+        id: Number(item.id),
+        name: identity.accountName,
+        accountName: identity.accountName,
+        displayName: identity.displayName,
+        p2pUsername: identity.p2pUsername,
+        nickname: identity.nickname,
+        userNo: identity.userNo,
+        merchantNo: identity.merchantNo,
+        profileSyncedAt: identity.profileSyncedAt,
+        status: item.disabled ? 'disabled' : cleanStr(item.status || 'saved', 40),
+        disabled: Boolean(item.disabled),
+        createdAt: item.createdAt || null,
+        permissions: grants.get(Number(item.id)) || []
+      };
+    });
 }
 
 function resolveBinanceCredentialForUser(user = {}, requestedId = 0, permission, options = {}) {
@@ -5751,6 +5791,10 @@ function binanceCredentialLabel(credential) {
   return credential ? cleanStr(credential.name || `API ${credential.id}`, 120) : '';
 }
 
+function binanceCredentialDisplayName(credential, target = db) {
+  return credential ? binanceCredentialP2pIdentity(credential, target).displayName : '';
+}
+
 function usableBinanceCredentialOptionsForUser(user, permission) {
   return binanceCredentialOptionsForUser(user, permission, { includeDisabled: false })
     .filter(option => {
@@ -10629,8 +10673,14 @@ function adsManagerPresence() {
 function advertisementCapability(user, credentialId = 0) {
   const presence = adsManagerPresence();
   const accountId = Number(credentialId || 0);
-  const canView = userHasPermission(user, 'ads.view') && (!accountId || userHasBinanceCredentialPermission(user, accountId, 'ads.view'));
-  const hasManagePermission = userHasPermission(user, 'ads.manage') && (!accountId || userHasBinanceCredentialPermission(user, accountId, 'ads.manage'));
+  const viewAccountIds = accountId
+    ? (userHasBinanceCredentialPermission(user, accountId, 'ads.view') ? [accountId] : [])
+    : binanceCredentialIdsForUserPermission(user, 'ads.view', { includeDisabled: true });
+  const manageAccountIds = accountId
+    ? (userHasBinanceCredentialPermission(user, accountId, 'ads.manage') ? [accountId] : [])
+    : binanceCredentialIdsForUserPermission(user, 'ads.manage', { includeDisabled: false });
+  const canView = userHasPermission(user, 'ads.view') && viewAccountIds.length > 0;
+  const hasManagePermission = userHasPermission(user, 'ads.manage') && manageAccountIds.length > 0;
   const blockedByManager = false;
   let reason = '';
   if (!hasManagePermission) reason = 'Permission denied: ads.manage';
@@ -10639,6 +10689,8 @@ function advertisementCapability(user, credentialId = 0) {
     canView,
     hasManagePermission,
     canManage: hasManagePermission,
+    manageableCredentialIds: manageAccountIds,
+    manageableAccountCount: manageAccountIds.length,
     blockedByManager,
     reason,
     activeManagers: presence.activeManagers,
@@ -10859,11 +10911,24 @@ function advertisementView(item) {
     ? positiveNum(item.surplusAmount)
     : positiveNum(item.initAmount || 0);
   const credential = binanceCredentialById(item.credentialId);
+  const credentialIdentity = credential ? binanceCredentialP2pIdentity(credential) : null;
   return {
     ...item,
     credentialId: Number(item.credentialId || 0) || null,
     credentialName: credential ? binanceCredentialLabel(credential) : cleanStr(item.credentialName || '', 120),
-    binanceAccount: credential ? { id: Number(credential.id), name: binanceCredentialLabel(credential), status: credential.disabled ? 'disabled' : cleanStr(credential.status || 'saved', 40), disabled: Boolean(credential.disabled) } : null,
+    credentialDisplayName: credentialIdentity?.displayName || cleanStr(item.credentialName || '', 120),
+    p2pUsername: credentialIdentity?.p2pUsername || '',
+    binanceAccount: credential ? {
+      id: Number(credential.id),
+      name: credentialIdentity.displayName,
+      displayName: credentialIdentity.displayName,
+      p2pUsername: credentialIdentity.p2pUsername,
+      accountName: credentialIdentity.accountName,
+      userNo: credentialIdentity.userNo,
+      merchantNo: credentialIdentity.merchantNo,
+      status: credential.disabled ? 'disabled' : cleanStr(credential.status || 'saved', 40),
+      disabled: Boolean(credential.disabled)
+    } : null,
     // The generic API Trade flag is diagnostic for C2C ad creation. Hide stale
     // draft warnings from older builds and let Binance /ads/post decide access.
     apiTradePermissionRequired: false,
@@ -10879,9 +10944,12 @@ function advertisementView(item) {
 
 function advertisementCredentialMeta(item = {}) {
   const credential = binanceCredentialById(item.credentialId);
+  const identity = credential ? binanceCredentialP2pIdentity(credential) : null;
   return {
     credentialId: Number(item.credentialId || 0) || null,
-    credentialName: credential ? binanceCredentialLabel(credential) : cleanStr(item.credentialName || '', 120)
+    credentialName: credential ? binanceCredentialLabel(credential) : cleanStr(item.credentialName || '', 120),
+    credentialDisplayName: identity?.displayName || cleanStr(item.credentialName || '', 120),
+    p2pUsername: identity?.p2pUsername || ''
   };
 }
 
@@ -11662,9 +11730,12 @@ function advertisementMerchantControlsView(explicitCredentialId = 0) {
   const credentialId = advertisementMerchantCredentialId(explicitCredentialId);
   const runtime = advertisementMerchantRuntime(credentialId);
   const credential = binanceCredentialById(credentialId);
+  const identity = credential ? binanceCredentialP2pIdentity(credential) : null;
   return {
     credentialId: credential ? Number(credential.id) : (credentialId || null),
     credentialName: credential ? binanceCredentialLabel(credential) : '',
+    credentialDisplayName: identity?.displayName || '',
+    p2pUsername: identity?.p2pUsername || '',
     business: advertisementMerchantControlState('business', credentialId),
     online: advertisementMerchantControlState('online', credentialId),
     break: advertisementMerchantControlState('break', credentialId),
@@ -11678,6 +11749,69 @@ function advertisementMerchantControlsView(explicitCredentialId = 0) {
     modeProbeAt: runtime.lastModeProbeAt || null,
     modeProbeResult: runtime.lastModeProbeResult || null,
     modeProbeError: runtime.lastModeProbeError || null
+  };
+}
+
+function aggregateAdvertisementMerchantControlState(views = [], control = 'online') {
+  const states = views.map(view => view?.[control] || {});
+  const total = states.length;
+  const enabledCount = states.filter(state => state.enabled === true).length;
+  const disabledCount = states.filter(state => state.enabled === false).length;
+  const unknownCount = Math.max(0, total - enabledCount - disabledCount);
+  const allEnabled = total > 0 && enabledCount === total;
+  const allDisabled = total > 0 && disabledCount === total;
+  const knownCount = enabledCount + disabledCount;
+  const mixed = total > 1 && ((enabledCount > 0 && disabledCount > 0) || (knownCount > 0 && unknownCount > 0));
+  const errors = Array.from(new Set(states.map(state => cleanStr(state.lastError || '', 260)).filter(Boolean)));
+  return {
+    enabled: allEnabled ? true : (allDisabled ? false : null),
+    status: mixed ? 'mixed' : (allEnabled ? (control === 'online' ? 'online' : 'on') : (allDisabled ? (control === 'online' ? 'offline' : 'off') : 'unknown')),
+    verified: total > 0 && states.every(state => state.verified === true),
+    mixed,
+    anyEnabled: enabledCount > 0,
+    allEnabled,
+    allDisabled,
+    enabledCount,
+    disabledCount,
+    unknownCount,
+    total,
+    lastError: errors.length ? errors.join(' | ') : null
+  };
+}
+
+function advertisementMerchantControlsAggregate(credentialIds = []) {
+  const ids = Array.from(new Set((credentialIds || []).map(Number).filter(Boolean)));
+  const views = ids.map(id => advertisementMerchantControlsView(id));
+  const controlsByCredential = Object.fromEntries(views.map(view => [String(view.credentialId), view]));
+  const modes = Array.from(new Set(views.map(view => view.mode?.id || 'unknown')));
+  const checkedAt = views.map(view => view.checkedAt).filter(Boolean).sort().at(-1) || null;
+  const lastSuccessAt = views.map(view => view.lastSuccessAt).filter(Boolean).sort().at(-1) || null;
+  const syncErrors = Array.from(new Set(views.map(view => cleanStr(view.syncError || '', 260)).filter(Boolean)));
+  return {
+    aggregate: true,
+    credentialId: null,
+    credentialIds: ids,
+    credentialCount: ids.length,
+    business: aggregateAdvertisementMerchantControlState(views, 'business'),
+    online: aggregateAdvertisementMerchantControlState(views, 'online'),
+    break: aggregateAdvertisementMerchantControlState(views, 'break'),
+    mode: views.length === 0
+      ? { id: 'unknown', label: 'Checking Binance status', tone: 'unknown', verified: false }
+      : (modes.length === 1
+        ? (views[0]?.mode || { id: 'unknown', label: 'Checking Binance status', tone: 'unknown', verified: false })
+        : { id: 'mixed', label: 'Mixed account status', tone: 'mixed', verified: false }),
+    checkedAt,
+    lastSuccessAt,
+    syncError: syncErrors.length ? syncErrors.join(' | ') : null,
+    controlsByCredential,
+    accounts: views.map(view => ({
+      credentialId: view.credentialId,
+      credentialName: view.credentialName,
+      credentialDisplayName: view.credentialDisplayName,
+      p2pUsername: view.p2pUsername,
+      mode: view.mode,
+      checkedAt: view.checkedAt
+    }))
   };
 }
 
@@ -12901,12 +13035,22 @@ async function handleAdvertisements(req, res, url) {
   if (requestedCredentialId) {
     selectedCredential = resolveBinanceCredentialForUser(user, requestedCredentialId, 'ads.view', { includeDisabled: true });
     if (!selectedCredential) return sendJson(res, 403, { error: 'No ads.view access to the selected Binance account.' }, {}, req);
-  } else if (credentialOptions.length === 1) {
-    selectedCredential = binanceCredentialById(credentialOptions[0].id);
   }
   const capability = advertisementCapability(user, selectedCredential?.id || 0);
   if (req.method === 'GET') {
-    const merchantCredential = db.settings.apiMode === 'live' && selectedCredential && !selectedCredential.disabled && selectedCredential.apiKey && selectedCredential.secretKey ? selectedCredential : null;
+    const configuredCredential = credential => Boolean(credential && !credential.disabled && credential.apiKey && credential.secretKey);
+    const viewCredentials = credentialOptions
+      .map(option => binanceCredentialById(option.id))
+      .filter(configuredCredential);
+    const manageableOptions = binanceCredentialOptionsForUser(user, 'ads.manage', { includeDisabled: true });
+    const manageableIds = new Set(manageableOptions.map(option => Number(option.id)));
+    const manageableCredentials = manageableOptions
+      .map(option => binanceCredentialById(option.id))
+      .filter(configuredCredential);
+    const merchantCredentials = selectedCredential
+      ? (configuredCredential(selectedCredential) ? [selectedCredential] : [])
+      : manageableCredentials;
+    const merchantCredential = selectedCredential && configuredCredential(selectedCredential) ? selectedCredential : null;
     if (merchantCredential && url.searchParams.get('refreshLive') === '1') {
       try {
         await syncBinanceAdvertisementsWithCredential(user, merchantCredential, { rows: db.settings.adsSyncRows || 50, audit: true, syncCatalog: true, forceCatalog: true });
@@ -12916,13 +13060,15 @@ async function handleAdvertisements(req, res, url) {
         db.settings.adsLastSyncError = cleanStr(error.message || error, 300);
       }
     }
-    if (merchantCredential) {
-      const forceMerchant = url.searchParams.get('refreshMerchant') === '1';
-      const lastMerchantCheck = Date.parse(advertisementMerchantRuntime(merchantCredential.id).lastCheckAt || '') || 0;
+    const forceMerchant = url.searchParams.get('refreshMerchant') === '1';
+    if (merchantCredentials.length) {
       if (forceMerchant) {
-        await refreshAdvertisementMerchantControlVerification(merchantCredential, true).catch(() => {});
-      } else if (!lastMerchantCheck || Date.now() - lastMerchantCheck > 3500) {
-        refreshAdvertisementMerchantControlVerification(merchantCredential, false).catch(() => {});
+        await Promise.allSettled(merchantCredentials.map(credential => refreshAdvertisementMerchantControlVerification(credential, true)));
+      } else {
+        for (const credential of merchantCredentials) {
+          const lastMerchantCheck = Date.parse(advertisementMerchantRuntime(credential.id).lastCheckAt || '') || 0;
+          if (!lastMerchantCheck || Date.now() - lastMerchantCheck > 3500) refreshAdvertisementMerchantControlVerification(credential, false).catch(() => {});
+        }
       }
     }
     let apiCreateReadiness = null;
@@ -12941,25 +13087,43 @@ async function handleAdvertisements(req, res, url) {
     if (tradeType) items = items.filter(item => item.tradeType === tradeType);
     if (status) items = items.filter(item => item.status === status);
     items.sort((a, b) => (Date.parse(b.updatedAt || b.advUpdateTime || b.createdAt || '') || 0) - (Date.parse(a.updatedAt || a.advUpdateTime || a.createdAt || '') || 0));
+    const merchantCredentialIds = merchantCredentials.map(credential => Number(credential.id));
+    const merchantControls = selectedCredential
+      ? advertisementMerchantControlsView(selectedCredential.id)
+      : advertisementMerchantControlsAggregate(merchantCredentialIds);
+    const merchantControlsByCredential = Object.fromEntries(credentialOptions.map(option => {
+      const id = Number(option.id);
+      return [String(id), selectedCredential && id === Number(selectedCredential.id) ? merchantControls : advertisementMerchantControlsView(id)];
+    }));
+    const merchantControlTargets = credentialOptions.map(option => {
+      const credential = binanceCredentialById(option.id);
+      const configured = configuredCredential(credential);
+      return {
+        ...option,
+        canManage: manageableIds.has(Number(option.id)) && configured,
+        configured,
+        merchantControls: merchantControlsByCredential?.[String(option.id)] || advertisementMerchantControlsView(option.id),
+        apiCreateReadiness: advertisementCreateReadinessView(option.id)
+      };
+    });
     return sendJson(res, 200, {
       items,
       capability,
       credentialOptions,
+      merchantControlTargets,
       selectedCredentialId: selectedCredential ? Number(selectedCredential.id) : null,
       paymentMethods: (db.paymentMethods || []).filter(method => method.enabled !== false).map(method => advertisementPaymentMethodView(method, user)),
       ...advertisementOptionLists(),
       liveMode: db.settings.apiMode === 'live',
-      credentialConfigured: credentialOptions.length > 0,
-      autoSyncEnabled: db.settings.apiMode === 'live' && credentialOptions.some(option => {
-        const credential = binanceCredentialById(option.id);
-        return Boolean(credential && !credential.disabled && credential.apiKey && credential.secretKey);
-      }),
+      credentialConfigured: selectedCredential ? configuredCredential(selectedCredential) : viewCredentials.length > 0,
+      autoSyncEnabled: db.settings.apiMode === 'live' && viewCredentials.length > 0,
       autoSyncSeconds: Math.max(3, Number(db.settings.adsAutoSyncSeconds || 5)),
       lastSyncAt: db.settings.adsLastSyncAt || null,
       lastSyncError: db.settings.adsLastSyncError || null,
       defaultCommissionRate: positiveNum(db.settings.adsDefaultCommissionRate || 0),
-      merchantOnline: advertisementMerchantOnlineView(selectedCredential?.id || 0),
-      merchantControls: advertisementMerchantControlsView(selectedCredential?.id || 0),
+      merchantOnline: merchantControls.online || advertisementMerchantOnlineView(selectedCredential?.id || 0),
+      merchantControls,
+      merchantControlsByCredential,
       apiCreateReadiness
     }, {}, req);
   }
@@ -13198,11 +13362,96 @@ async function handleAdvertisementMerchantControl(req, res) {
   if (!manager) return;
   if (db.settings.apiMode !== 'live') return sendJson(res, 422, { error: 'Enable Binance live mode before using merchant controls.' }, {}, req);
   const body = await readBody(req);
-  const credential = requireLiveBinanceCredentialForUser(req, res, manager, body.credentialId, 'ads.manage', { requireExplicitWhenMultiple: true });
-  if (!credential) return;
   const control = cleanStr(body.control || '', 20).toLowerCase();
   const enabled = body.enabled === true || body.enabled === 1 || body.enabled === '1' || String(body.enabled || '').toLowerCase() === 'true';
   if (!['business','online','break'].includes(control)) return sendJson(res, 422, { error: 'Control must be business, online or break.' }, {}, req);
+
+  const applyToAll = body.applyToAll === true || body.applyToAll === 1 || body.applyToAll === '1' || String(body.applyToAll || '').toLowerCase() === 'true';
+  if (applyToAll) {
+    const permittedOptions = binanceCredentialOptionsForUser(manager, 'ads.manage', { includeDisabled: true });
+    if (!permittedOptions.length) return sendJson(res, 403, { error: 'No Binance account is assigned with ads.manage permission.' }, {}, req);
+    const skipped = [];
+    const targetOptions = permittedOptions.filter(option => {
+      const credential = binanceCredentialById(option.id);
+      if (!credential) {
+        skipped.push({ credentialId: Number(option.id), credentialDisplayName: option.displayName || option.name || `API ${option.id}`, p2pUsername: option.p2pUsername || '', error: 'Binance account was not found.' });
+        return false;
+      }
+      if (credential.disabled || !credential.apiKey || !credential.secretKey) {
+        const identity = binanceCredentialP2pIdentity(credential);
+        skipped.push({ credentialId: Number(credential.id), credentialDisplayName: identity.displayName, p2pUsername: identity.p2pUsername, error: credential.disabled ? 'Binance account is disabled.' : 'Binance API credential is incomplete.' });
+        return false;
+      }
+      return true;
+    });
+    if (!targetOptions.length) return sendJson(res, 422, { error: 'No active configured Binance account is available for this action.', skipped }, {}, req);
+    const successes = [];
+    const failures = [];
+    for (const option of targetOptions) {
+      const credential = binanceCredentialById(option.id);
+      const identity = credential ? binanceCredentialP2pIdentity(credential) : { displayName: option.displayName || option.name || `API ${option.id}`, p2pUsername: option.p2pUsername || '' };
+      if (!credential) {
+        failures.push({ credentialId: Number(option.id), credentialDisplayName: identity.displayName, p2pUsername: identity.p2pUsername, error: 'Binance account was not found.' });
+        continue;
+      }
+      if (credential.disabled || !credential.apiKey || !credential.secretKey) {
+        failures.push({ credentialId: Number(credential.id), credentialDisplayName: identity.displayName, p2pUsername: identity.p2pUsername, error: credential.disabled ? 'Binance account is disabled.' : 'Binance API credential is incomplete.' });
+        continue;
+      }
+      try {
+        const commandKey = `merchant-control:${advertisementCredentialKey(credential)}:${control}:${enabled ? 1 : 0}`;
+        const result = await runAdvertisementMutationOnce(commandKey, () => changeAdvertisementMerchantControl(manager, credential, control, enabled, 'manual_toggle_all'), 1200);
+        const controls = advertisementMerchantControlsView(credential.id);
+        successes.push({
+          credentialId: Number(credential.id),
+          credentialName: binanceCredentialLabel(credential),
+          credentialDisplayName: identity.displayName,
+          p2pUsername: identity.p2pUsername,
+          result,
+          merchantControls: controls
+        });
+        broadcast({ type: 'ads.merchant.controls', credentialId: Number(credential.id), control, enabled, controls, at: nowIso() });
+      } catch (error) {
+        failures.push({
+          credentialId: Number(credential.id),
+          credentialName: binanceCredentialLabel(credential),
+          credentialDisplayName: identity.displayName,
+          p2pUsername: identity.p2pUsername,
+          error: cleanStr(error.message || error, 500),
+          noticeOnly: Boolean(error.noticeOnly),
+          attempts: Array.isArray(error.merchantControlAttempts) ? error.merchantControlAttempts : [],
+          merchantControls: advertisementMerchantControlsView(credential.id)
+        });
+      }
+    }
+    saveDb();
+    const targetIds = targetOptions.map(option => Number(option.id));
+    const merchantControls = advertisementMerchantControlsAggregate(targetIds);
+    const payload = {
+      ok: failures.length === 0,
+      batch: true,
+      applyToAll: true,
+      control,
+      enabled,
+      targetCount: targetOptions.length,
+      permittedCount: permittedOptions.length,
+      successCount: successes.length,
+      failureCount: failures.length,
+      skippedCount: skipped.length,
+      successes,
+      failures,
+      skipped,
+      merchantControls,
+      merchantControlsByCredential: merchantControls.controlsByCredential
+    };
+    if (!successes.length) {
+      return sendJson(res, 502, { ...payload, error: failures[0]?.error || 'The merchant control could not be updated for any permitted Binance account.' }, {}, req);
+    }
+    return sendJson(res, failures.length ? 207 : 200, payload, {}, req);
+  }
+
+  const credential = requireLiveBinanceCredentialForUser(req, res, manager, body.credentialId, 'ads.manage', { requireExplicitWhenMultiple: true });
+  if (!credential) return;
   try {
     const commandKey = `merchant-control:${advertisementCredentialKey(credential)}:${control}:${enabled ? 1 : 0}`;
     const result = await runAdvertisementMutationOnce(commandKey, () => changeAdvertisementMerchantControl(manager, credential, control, enabled, 'manual_toggle'), 1200);
@@ -16259,7 +16508,30 @@ function orderListView(order, user = null) {
   const viewerSummary = viewerOrderSummary(order, user);
   const assetSummary = deriveOrderAssetSummary(order);
   const credential = order.orderSource === 'offline' ? null : binanceCredentialById(order.credentialId);
-  return { ...order, credentialName: credential ? binanceCredentialLabel(credential) : cleanStr(order.credentialName || '', 120), binanceAccount: credential ? { id: Number(credential.id), name: binanceCredentialLabel(credential), status: credential.disabled ? 'disabled' : cleanStr(credential.status || 'saved', 40), disabled: Boolean(credential.disabled) } : null, method: methodById(order.paymentMethodId), leadAgent: agentById(order.leadAgentId), assignments: db.orderAgentAssignments.filter(a => a.orderId === order.id).map(a => ({ ...a, agent: agentById(a.agentId) })), summary, viewerSummary, assetSummary };
+  const identity = credential ? binanceCredentialP2pIdentity(credential) : null;
+  return {
+    ...order,
+    credentialName: credential ? binanceCredentialLabel(credential) : cleanStr(order.credentialName || '', 120),
+    credentialDisplayName: identity?.displayName || cleanStr(order.credentialName || '', 120),
+    p2pUsername: identity?.p2pUsername || '',
+    binanceAccount: credential ? {
+      id: Number(credential.id),
+      name: identity.displayName,
+      displayName: identity.displayName,
+      p2pUsername: identity.p2pUsername,
+      accountName: identity.accountName,
+      userNo: identity.userNo,
+      merchantNo: identity.merchantNo,
+      status: credential.disabled ? 'disabled' : cleanStr(credential.status || 'saved', 40),
+      disabled: Boolean(credential.disabled)
+    } : null,
+    method: methodById(order.paymentMethodId),
+    leadAgent: agentById(order.leadAgentId),
+    assignments: db.orderAgentAssignments.filter(a => a.orderId === order.id).map(a => ({ ...a, agent: agentById(a.agentId) })),
+    summary,
+    viewerSummary,
+    assetSummary
+  };
 }
 
 
@@ -19762,7 +20034,10 @@ async function runAdsMerchantAccountIsolationSelfTest() {
       ],
       advertisements: [],
       auditLogs: [],
-      ownerP2pProfiles: [],
+      ownerP2pProfiles: [
+        { credentialId: 101, credentialName: 'Primary Binance', userNo: '10001', merchantNo: '50001', nickname: 'AlphaP2P', syncedAt: '2026-01-10T00:00:00.000Z', stats: emptyCounterpartyStats(), feedbackRows: { positive: [], negative: [] }, warnings: [] },
+        { credentialId: 202, credentialName: 'Secondary Binance', userNo: '10002', merchantNo: '50002', nickname: 'BetaP2P', syncedAt: '2026-01-11T00:00:00.000Z', stats: emptyCounterpartyStats(), feedbackRows: { positive: [], negative: [] }, warnings: [] }
+      ],
       ownerP2pProfile: { userNo: '', nickname: '', stats: emptyCounterpartyStats(), feedbackRows: { positive: [], negative: [] }, source: '', syncedAt: null, lastError: '', warnings: [] }
     };
 
@@ -19796,6 +20071,14 @@ async function runAdsMerchantAccountIsolationSelfTest() {
     }
     if (secondary.business.enabled !== false || secondary.online.enabled !== false || secondary.break.enabled !== true || secondary.mode.id !== 'break') {
       throw new Error(`Secondary account merchant state leaked or was not preserved: ${JSON.stringify(secondary)}`);
+    }
+    const aggregate = advertisementMerchantControlsAggregate([101, 202]);
+    if (!aggregate.business.mixed || !aggregate.online.mixed || !aggregate.break.mixed || aggregate.break.anyEnabled !== true) {
+      throw new Error(`Aggregate merchant state is incorrect: ${JSON.stringify(aggregate)}`);
+    }
+    const adminOptions = binanceCredentialOptionsForUser({ id: 1, role: 'admin', permissions: PERMISSION_CATALOG }, 'ads.view', { includeDisabled: true });
+    if (adminOptions[0]?.displayName !== 'AlphaP2P' || adminOptions[1]?.displayName !== 'BetaP2P') {
+      throw new Error(`P2P usernames were not exposed as account display names: ${JSON.stringify(adminOptions)}`);
     }
     if (primary.checkedAt === secondary.checkedAt || primary.checkedAt !== '2026-02-01T00:00:00.000Z' || secondary.checkedAt !== '2026-02-02T00:00:00.000Z') {
       throw new Error('Per-account merchant runtime state is not isolated.');
@@ -19856,6 +20139,8 @@ async function runAdsMerchantAccountIsolationSelfTest() {
       schemaVersion: APP_SCHEMA_VERSION,
       primary: { credentialId: primary.credentialId, mode: primary.mode.id, checkedAt: primary.checkedAt },
       secondary: { credentialId: secondary.credentialId, mode: secondary.mode.id, checkedAt: secondary.checkedAt },
+      aggregate: { mode: aggregate.mode.id, businessMixed: aggregate.business.mixed, onlineMixed: aggregate.online.mixed, breakMixed: aggregate.break.mixed },
+      p2pDisplayNames: adminOptions.map(option => option.displayName),
       readinessIsolated: true,
       deletionCleanup: true,
       legacyMigrationCredentialId: 301

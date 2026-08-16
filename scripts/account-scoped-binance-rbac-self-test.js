@@ -18,7 +18,7 @@ const css = read('public/style.css');
 const fail = message => { throw new Error(`Account-scoped Binance RBAC self-test failed: ${message}`); };
 const assert = (condition, message) => { if (!condition) fail(message); };
 
-assert(pkg.version === '1.5.15', `expected v1.5.15, got ${pkg.version}`);
+assert(pkg.version === '1.5.16', `expected v1.5.16, got ${pkg.version}`);
 assert(server.includes('const APP_SCHEMA_VERSION = 30;'), 'schema migration version 29 is missing');
 
 for (const marker of [
@@ -57,18 +57,22 @@ assert(server.includes("const canManageUsers = Boolean(viewer && userHasPermissi
 assert(users.includes('Individual only') && users.includes('Company total'), 'Users page does not show profit accounting scope');
 
 for (const marker of [
-  'orderCredentialFilter',
-  'All assigned accounts',
+  'orderAccountSwitcherHtml',
+  'data-order-account',
+  'orderSourceAccountHtml',
   'orders.create',
-  'binance.sync',
-  'orderAccountBadgeHtml'
+  'binance.sync'
 ]) assert(orders.includes(marker), `orders account UI marker missing: ${marker}`);
+assert(!orders.includes("'Binance Account'"), 'Orders still renders a separate Binance Account column');
 assert(app.includes('obj.credentialId = Number(obj.credentialId || 0);'), 'order modal does not normalize and submit credentialId');
 
 for (const marker of [
-  'adsCredentialFilter',
+  'adsAccountSwitcherHtml',
+  'data-ads-account',
   'ads.manage',
   'credentialId: selectedCredentialId',
+  'applyToAll',
+  'merchantControlTargets',
   'currentCredentialId()',
   'binance-account-badge',
   'refreshEditorAccount'

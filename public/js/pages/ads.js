@@ -1,4 +1,4 @@
-// P2PFlow v1.5.15
+// P2PFlow v1.5.16
 // Restored FULL advertisement update payload with no-updateMode compatibility retry.
 
 const ADS_COUNTRY_CODES = ["BD","US","GB","IN","PK","AE","SA","TR","NG","KE","GH","ZA","MY","SG","ID","PH","TH","VN","AU","CA","DE","FR","IT","ES","NL","BE","PT","JP","KR","CN","HK","TW","BR","MX","AR","CO","PE","CL","EG","MA","DZ","TN","QA","KW","BH","OM","LK","NP","AW","AF","AO","AI","AX","AL","AD","AM","AS","AQ","TF","AG","AT","AZ","BI","BJ","BQ","BF","BG","BS","BA","BL","BY","BZ","BM","BO","BB","BN","BT","BV","BW","CF","CC","CH","CI","CM","CD","CG","CK","KM","CV","CR","CU","CW","CX","KY","CY","CZ","DJ","DM","DK","DO","EC","ER","EH","EE","ET","FI","FJ","FK","FO","FM","GA","GE","GG","GI","GN","GP","GM","GW","GQ","GR","GD","GL","GT","GF","GU","GY","HM","HN","HR","HT","HU","IM","IO","IE","IR","IQ","IS","IL","JM","JE","JO","KZ","KG","KH","KI","KN","LA","LB","LR","LY","LC","LI","LS","LT","LU","LV","MO","MF","MC","MD","MG","MV","MH","MK","ML","MT","MM","ME","MN","MP","MZ","MR","MS","MQ","MU","MW","YT","NA","NC","NE","NF","NI","NU","NO","NR","NZ","PA","PN","PW","PG","PL","PR","KP","PY","PS","PF","RE","RO","RU","RW","SD","SN","GS","SH","SJ","SB","SL","SV","SM","SO","PM","RS","SS","ST","SR","SK","SI","SE","SZ","SX","SC","SY","TC","TD","TG","TJ","TK","TM","TL","TO","TT","TV","TZ","UG","UA","UM","UY","UZ","VA","VC","VE","VG","VI","VU","WF","WS","YE","ZM","ZW"];
@@ -61,6 +61,44 @@ function adsAccountHasPermission(option, permission) {
   return Boolean(option && !option.disabled && Array.isArray(option.permissions) && option.permissions.includes(permission));
 }
 
+function adsAccountDisplayName(value = {}) {
+  return value.displayName || value.p2pUsername || value.nickname || value.binanceAccount?.displayName || value.binanceAccount?.p2pUsername || value.binanceAccount?.name || value.credentialDisplayName || value.credentialName || (value.id || value.credentialId ? `API ${value.id || value.credentialId}` : 'Unassigned account');
+}
+
+function adsAccountSwitcherHtml(options = [], selectedId = 0) {
+  return `<div class="binance-account-switcher ads-account-switcher" role="tablist" aria-label="Binance P2P accounts">
+    <button type="button" class="binance-account-tab ${selectedId ? '' : 'active'}" data-ads-account="0" role="tab" aria-selected="${selectedId ? 'false' : 'true'}">All</button>
+    ${options.map(option => `<button type="button" class="binance-account-tab ${Number(option.id) === Number(selectedId) ? 'active' : ''} ${option.disabled ? 'is-disabled' : ''}" data-ads-account="${Number(option.id)}" role="tab" aria-selected="${Number(option.id) === Number(selectedId) ? 'true' : 'false'}" title="${escapeAttr(option.accountName || option.name || `API ${option.id}`)}">${escapeHtml(adsAccountDisplayName(option))}</button>`).join('')}
+  </div>`;
+}
+
+function adsMerchantControlsForCredential(data = {}, credentialId = 0) {
+  const id = Number(credentialId || 0);
+  if (!id) return data.merchantControls || {};
+  return data.merchantControlsByCredential?.[String(id)]
+    || (data.merchantControlTargets || []).find(target => Number(target.id) === id)?.merchantControls
+    || {};
+}
+
+function adsAccountTarget(data = {}, credentialId = 0) {
+  const id = Number(credentialId || 0);
+  return (data.merchantControlTargets || []).find(target => Number(target.id) === id)
+    || adsCredentialOptions(data).find(option => Number(option.id) === id)
+    || null;
+}
+
+function adsCapabilityForAdvertisement(ad = {}, data = {}) {
+  const option = adsAccountTarget(data, ad.credentialId);
+  const controls = adsMerchantControlsForCredential(data, ad.credentialId);
+  const canManage = adsAccountHasPermission(option, 'ads.manage') && option?.canManage !== false && option?.configured !== false;
+  return {
+    canManage,
+    breakMode: controls.break?.enabled === true,
+    businessClosed: controls.mode?.id === 'business_closed',
+    reason: canManage ? '' : 'Ads Manage permission is not assigned for this account.'
+  };
+}
+
 function adsSelectedAccount(data = {}) {
   const selectedId = Number(state.adsCredentialId || data.selectedCredentialId || 0);
   return adsCredentialOptions(data).find(option => Number(option.id) === selectedId) || null;
@@ -78,16 +116,6 @@ function adsPageUrl(extra = {}) {
   return `/api/ads${query ? `?${query}` : ''}`;
 }
 
-function adCapabilityNotice(capability = {}) {
-  if (!capability.credentialSelected) {
-    return `<div class="ads-access-banner blocked"><div class="ads-access-icon">ℹ</div><div><b>Select a Binance account.</b><p>You can view all assigned advertisements, but create, edit, status and merchant actions require one exact account.</p></div></div>`;
-  }
-  if (!capability.canManage) {
-    return `<div class="ads-access-banner blocked"><div class="ads-access-icon">🔒</div><div><b>Read-only advertisement access.</b><p>${escapeHtml(capability.reason || 'Ads Manage permission is not assigned for this Binance account.')}</p></div></div>`;
-  }
-  return `<div class="ads-access-banner available"><div class="ads-access-icon">✓</div><div><b>Account-scoped advertisement controls are ready.</b><p>Only the selected Binance account can be managed.</p></div></div>`;
-}
-
 function adCardHtml(ad = {}, capability = {}) {
   const online = String(ad.status || '').toLowerCase() === 'online';
   const methods = adTradeMethodNames(ad);
@@ -99,7 +127,7 @@ function adCardHtml(ad = {}, capability = {}) {
   const pricePrefix = String(ad.fiatUnit || 'BDT').toUpperCase() === 'BDT' ? 'Tk.' : `${escapeHtml(ad.fiatUnit || '')} `;
   return `<article class="crm-ad-card" data-ad-card="${Number(ad.id || 0)}">
     <div class="crm-ad-card-head">
-      <div><div class="crm-ad-title"><span class="${type === 'BUY' ? 'buy' : 'sell'}">${escapeHtml(type === 'BUY' ? 'Buy' : 'Sell')}</span> ${escapeHtml(ad.asset || 'USDT')} <small>With</small> ${escapeHtml(ad.fiatUnit || 'BDT')}</div><span class="binance-account-badge">${escapeHtml(ad.credentialName || (ad.credentialId ? `API ${ad.credentialId}` : 'Unassigned account'))}</span></div>
+      <div><div class="crm-ad-title"><span class="${type === 'BUY' ? 'buy' : 'sell'}">${escapeHtml(type === 'BUY' ? 'Buy' : 'Sell')}</span> ${escapeHtml(ad.asset || 'USDT')} <small>With</small> ${escapeHtml(ad.fiatUnit || 'BDT')}</div><span class="binance-account-badge" title="${escapeAttr(ad.binanceAccount?.accountName || ad.credentialName || 'Binance P2P account')}">${escapeHtml(adsAccountDisplayName(ad))}</span></div>
       <div class="crm-ad-card-actions">
         ${badge(adStatusLabel(ad), adStatusBadgeClass(ad))}
         <label class="ad-toggle" title="${escapeAttr(canToggle ? (online ? 'Pause advertisement' : 'Activate advertisement') : (capability.breakMode && !online ? 'Turn Break off before activating advertisements.' : (capability.reason || 'Advertisement controls locked')))}">
@@ -137,12 +165,12 @@ function applyAdsFilters(items = []) {
 
 function adsLiveStatus(data = {}) {
   if (!data.liveMode) return '<span class="ads-live-chip off"><i></i>Draft</span>';
-  if (!data.selectedCredentialId) return '<span class="ads-live-chip off"><i></i>Select account</span>';
   if (!data.credentialConfigured) return '<span class="ads-live-chip error"><i></i>API missing</span>';
   return '<span class="ads-live-chip"><i></i>Live</span>';
 }
 
 function adsMerchantControlStatus(control = {}, type = '') {
+  if (control.mixed === true || control.status === 'mixed') return 'Mixed';
   if (control.enabled === null || control.enabled === undefined || control.status === 'unknown') return 'Unknown';
   if (type === 'online') return control.enabled ? 'Online' : 'Offline';
   if (type === 'break') return control.enabled ? 'On break' : 'Working';
@@ -163,18 +191,6 @@ function adsApiCreateReadinessNotice(data = {}) {
   return '';
 }
 
-function adsMerchantModeNotice(data = {}) {
-  const controls = data.merchantControls || {};
-  const mode = controls.mode || {};
-  const checkedAt = controls.checkedAt || controls.modeProbeAt || data.lastSyncAt || null;
-  const stamp = checkedAt ? `<small>${escapeHtml(fmt(checkedAt))}</small>` : '';
-  if (mode.id === 'business_closed') return `<div class="ads-merchant-mode-note is-closed"><b>Business Closed</b><span>Advertisements are unavailable until Business is started.</span>${stamp}</div>`;
-  if (mode.id === 'break') return `<div class="ads-merchant-mode-note is-break"><b>Break Mode</b><span>Advertisement actions are paused.</span>${stamp}</div>`;
-  if (mode.id === 'offline') return `<div class="ads-merchant-mode-note is-offline"><b>Business Open · Offline</b><span>Go Online before activating advertisements.</span>${stamp}</div>`;
-  if (mode.id === 'unknown') return `<div class="ads-merchant-mode-note is-checking"><b>Checking Binance status</b><span>Business and Break state are being verified.</span>${stamp}</div>`;
-  return '';
-}
-
 function adsMerchantControls(data = {}, capability = {}) {
   if (!data.liveMode || !data.credentialConfigured) return '';
   const controls = data.merchantControls || {
@@ -187,23 +203,21 @@ function adsMerchantControls(data = {}, capability = {}) {
     { key: 'online', title: 'Online' },
     { key: 'break', title: 'Break' }
   ];
-  const breakOn = controls.break?.enabled === true;
-  const tradeBlocked = data.apiCreateReadiness?.tradingStatus?.locked === true || data.apiCreateReadiness?.accountStatus?.normal === false;
-  const checkedAt = controls.checkedAt || data.lastSyncAt || null;
-  const syncLabel = controls.syncError ? 'Merchant sync delayed' : (checkedAt ? `Auto synced ${fmt(checkedAt)}` : 'Merchant status syncing');
-  return `<section class="ads-merchant-inline ${controls.syncError ? 'has-sync-error' : ''}" id="adsMerchantControls" title="${escapeAttr(syncLabel)}">
+  const breakOn = controls.break?.enabled === true || controls.break?.anyEnabled === true;
+  const tradeBlocked = Boolean(data.selectedCredentialId) && (data.apiCreateReadiness?.tradingStatus?.locked === true || data.apiCreateReadiness?.accountStatus?.normal === false);
+  return `<section class="ads-merchant-inline ${controls.syncError ? 'has-sync-error' : ''}" id="adsMerchantControls">
     ${rows.map(row => {
       const control = controls[row.key] || {};
-      const unknown = control.enabled === null || control.enabled === undefined || control.status === 'unknown';
-      const checked = control.enabled === true;
+      const mixed = control.mixed === true || control.status === 'mixed';
+      const unknown = !mixed && (control.enabled === null || control.enabled === undefined || control.status === 'unknown');
+      const checked = control.enabled === true || (mixed && row.key === 'break' && control.anyEnabled === true);
       const disabled = !capability.canManage || tradeBlocked || (breakOn && row.key !== 'break');
       const statusText = adsMerchantControlStatus(control, row.key);
-      const quality = control.verified ? 'verified' : (unknown ? 'unknown' : 'accepted');
-      const title = control.lastError || (tradeBlocked ? 'Clear the Binance account trading lock or abnormal account state before using merchant controls.' : (disabled && breakOn && row.key !== 'break' ? 'Break mode is active. Turn Break off before using this control.' : `${row.title}: ${statusText}. ${syncLabel}`));
-      return `<div class="ads-merchant-inline-item ${checked ? 'is-on' : ''} ${unknown ? 'is-unknown' : ''} ${row.key === 'break' && checked ? 'is-break' : ''}" title="${escapeAttr(title)}">
+      const quality = control.verified ? 'verified' : (unknown || mixed ? 'unknown' : 'accepted');
+      return `<div class="ads-merchant-inline-item ${checked ? 'is-on' : ''} ${unknown ? 'is-unknown' : ''} ${mixed ? 'is-mixed' : ''} ${row.key === 'break' && checked ? 'is-break' : ''}" title="${escapeAttr(`${row.title}: ${statusText}`)}">
         <span class="ads-merchant-inline-label"><i class="${quality}"></i>${escapeHtml(row.title)}</span>
         <label class="ad-toggle merchant-control-toggle">
-          <input type="checkbox" data-merchant-control="${escapeAttr(row.key)}" ${checked ? 'checked' : ''} ${disabled ? 'disabled' : ''} aria-label="${escapeAttr(row.title)}" />
+          <input type="checkbox" data-merchant-control="${escapeAttr(row.key)}" ${checked ? 'checked' : ''} ${mixed ? 'data-mixed="1"' : ''} ${disabled ? 'disabled' : ''} aria-label="${escapeAttr(row.title)}" />
           <span></span>
         </label>
       </div>`;
@@ -213,10 +227,15 @@ function adsMerchantControls(data = {}, capability = {}) {
 
 function adsRealtimeSignature(data = {}) {
   const controls = data.merchantControls || {};
+  const controlsByCredential = data.merchantControlsByCredential || {};
   return JSON.stringify({
     selectedCredentialId: Number(data.selectedCredentialId || 0),
     ads: (data.items || []).map(ad => [ad.id, ad.credentialId, ad.advNo, ad.status, ad.price, ad.surplusAmount, ad.initAmount, ad.updatedAt, ad.lastSyncedAt]),
-    controls: ['business','online','break'].map(key => [controls[key]?.enabled, controls[key]?.verified, controls[key]?.lastError || '']),
+    controls: ['business','online','break'].map(key => [controls[key]?.enabled, controls[key]?.mixed, controls[key]?.anyEnabled, controls[key]?.verified, controls[key]?.lastError || '']),
+    controlsByCredential: Object.keys(controlsByCredential).sort((a, b) => Number(a) - Number(b)).map(key => {
+      const value = controlsByCredential[key] || {};
+      return [Number(key), ['business','online','break'].map(control => [value[control]?.enabled, value[control]?.verified, value[control]?.lastError || '']), value.mode?.id || 'unknown'];
+    }),
     mode: controls.mode?.id || 'unknown',
     apiCreateReadiness: [data.apiCreateReadiness?.permission?.tradeEnabled, data.apiCreateReadiness?.tradingStatus?.locked, data.apiCreateReadiness?.accountStatus?.normal, data.apiCreateReadiness?.error || ''],
     capability: [data.capability?.canManage, data.capability?.credentialId],
@@ -229,7 +248,7 @@ async function refreshAdsRealtime(force = false) {
   if (state.adsRealtimeBusy) return;
   state.adsRealtimeBusy = true;
   try {
-    const data = await api(adsPageUrl(force ? { refreshLive: 1, refreshMerchant: 1 } : { refreshMerchant: 1 }));
+    const data = await api(adsPageUrl(force ? { refreshLive: 1, refreshMerchant: 1 } : {}));
     const signature = adsRealtimeSignature(data);
     if (force || signature !== state.adsRealtimeSignature) await renderAds(data);
   } catch (_) {
@@ -262,7 +281,7 @@ async function renderAds(prefetchedData = null) {
       if (!state.adsCredentialId) throw error;
       state.adsCredentialId = 0;
       localStorage.removeItem('crmAdsCredentialId');
-      data = await api('/api/ads');
+      data = await api('/api/ads?refreshMerchant=1');
     }
   }
 
@@ -272,31 +291,34 @@ async function renderAds(prefetchedData = null) {
     selectedCredentialId = 0;
     state.adsCredentialId = 0;
     localStorage.removeItem('crmAdsCredentialId');
-    if (data.selectedCredentialId) data = await api('/api/ads');
+    if (data.selectedCredentialId) data = await api('/api/ads?refreshMerchant=1');
     credentialOptions = adsCredentialOptions(data);
-  }
-  if (!selectedCredentialId && credentialOptions.length === 1) {
-    selectedCredentialId = Number(credentialOptions[0].id || 0);
-    state.adsCredentialId = selectedCredentialId;
-    localStorage.setItem('crmAdsCredentialId', String(selectedCredentialId));
   }
   if (selectedCredentialId && Number(data.selectedCredentialId || 0) !== selectedCredentialId) {
     state.adsCredentialId = selectedCredentialId;
     data = await api(adsPageUrl({ refreshMerchant: 1 }));
     credentialOptions = adsCredentialOptions(data);
   }
+
   state.adsCredentialId = selectedCredentialId;
   const selectedOption = credentialOptions.find(option => Number(option.id) === selectedCredentialId) || null;
+  const selectedTarget = selectedOption ? adsAccountTarget(data, selectedCredentialId) : null;
   const exactManagePermission = adsAccountHasPermission(selectedOption, 'ads.manage');
+  const allManageTargets = (data.merchantControlTargets || credentialOptions).filter(option => adsAccountHasPermission(option, 'ads.manage') && option.canManage !== false && option.configured !== false);
   const serverCapability = data.capability || {};
-  const capability = {
+  const capability = selectedOption ? {
     ...serverCapability,
-    credentialSelected: Boolean(selectedOption),
-    credentialId: selectedOption ? Number(selectedOption.id) : null,
-    canManage: Boolean(selectedOption && exactManagePermission && serverCapability.canManage !== false),
-    reason: selectedOption
-      ? (exactManagePermission ? serverCapability.reason || '' : 'Ads Manage permission is not assigned for this Binance account.')
-      : 'Select an exact Binance account before using advertisement controls.'
+    credentialSelected: true,
+    credentialId: Number(selectedOption.id),
+    canManage: Boolean(exactManagePermission && selectedTarget?.canManage !== false && selectedTarget?.configured !== false && serverCapability.canManage !== false),
+    reason: exactManagePermission ? serverCapability.reason || '' : 'Ads Manage permission is not assigned for this account.'
+  } : {
+    ...serverCapability,
+    credentialSelected: false,
+    credentialId: null,
+    canManage: Boolean(allManageTargets.length && serverCapability.canManage !== false),
+    manageableAccountCount: allManageTargets.length,
+    reason: allManageTargets.length ? '' : 'No permitted account is available for Ads management.'
   };
   const visibleItems = selectedCredentialId
     ? (data.items || []).filter(item => Number(item.credentialId || 0) === selectedCredentialId)
@@ -306,38 +328,39 @@ async function renderAds(prefetchedData = null) {
     items: visibleItems,
     credentialOptions,
     selectedCredentialId: selectedCredentialId || null,
-    credentialConfigured: Boolean(selectedOption && !selectedOption.disabled),
+    credentialConfigured: selectedOption
+      ? Boolean(!selectedOption.disabled && selectedTarget?.configured !== false && data.credentialConfigured !== false)
+      : Boolean(data.credentialConfigured),
     capability
   };
   state.adsData = data;
   state.adsRealtimeSignature = adsRealtimeSignature(data);
+
   const items = applyAdsFilters(data.items || []);
-  const scopedCapability = { ...capability, breakMode: data.merchantControls?.break?.enabled === true, businessClosed: data.merchantControls?.mode?.id === 'business_closed' };
-  const assets = (data.assets || [...new Set((data.items || []).map(ad => String(ad.asset || '').toUpperCase()).filter(Boolean))]);
-  const fiats = (data.fiats || [...new Set((data.items || []).map(ad => String(ad.fiatUnit || '').toUpperCase()).filter(Boolean))]);
-  const accountContext = selectedOption
-    ? `Showing only <b>${escapeHtml(selectedOption.name || `API ${selectedOption.id}`)}</b>. All changes are restricted to this account.`
-    : credentialOptions.length
-      ? 'Showing advertisements from all assigned accounts. Select one account to manage ads.'
-      : 'No Binance account is assigned with Ads View permission.';
-  const canManualSync = Boolean(selectedOption && exactManagePermission && data.liveMode && !selectedOption.disabled);
+  const aggregateBreakOn = data.merchantControls?.break?.enabled === true || data.merchantControls?.break?.anyEnabled === true;
+  const scopedCapability = {
+    ...capability,
+    breakMode: aggregateBreakOn,
+    businessClosed: data.merchantControls?.mode?.id === 'business_closed'
+  };
+  const assets = data.assets || [...new Set((data.items || []).map(ad => String(ad.asset || '').toUpperCase()).filter(Boolean))];
+  const fiats = data.fiats || [...new Set((data.items || []).map(ad => String(ad.fiatUnit || '').toUpperCase()).filter(Boolean))];
+  const canManualSync = Boolean(selectedOption && exactManagePermission && data.liveMode && !selectedOption.disabled && selectedTarget?.configured !== false);
+  const canCreate = Boolean(selectedOption && scopedCapability.canManage && !scopedCapability.breakMode);
 
   $('#content').innerHTML = `<section class="ads-page screenshot-layout compact-ads-page">
     <div class="page-account-strip ads-account-strip">
-      <label class="binance-account-selector"><span>Binance Account</span><select id="adsCredentialFilter"><option value="0" ${selectedCredentialId ? '' : 'selected'}>All assigned accounts</option>${credentialOptions.map(option => `<option value="${Number(option.id)}" ${Number(option.id) === selectedCredentialId ? 'selected' : ''}>${escapeHtml(option.name || `API ${option.id}`)}${option.disabled ? ' · Disabled' : ''}</option>`).join('')}</select></label>
-      <small>${accountContext}</small>
+      ${adsAccountSwitcherHtml(credentialOptions, selectedCredentialId)}
     </div>
-    ${adCapabilityNotice(scopedCapability)}
     <div class="ads-page-head compact">
       <div class="ads-sync-line">${adsLiveStatus(data)} ${data.lastSyncAt ? `<small>${escapeHtml(fmt(data.lastSyncAt))}</small>` : ''}</div>
       <div class="ads-page-actions">
-        <button class="ads-sync-icon" id="syncAdsBtn" type="button" ${canManualSync ? '' : 'disabled'} title="Sync advertisements for the selected account">↻</button>
-        <button class="ads-create-icon" id="createAdBtn" type="button" ${scopedCapability.canManage && !scopedCapability.breakMode ? '' : 'disabled'} title="${scopedCapability.breakMode ? 'Turn Break off before creating an advertisement' : 'Create advertisement'}">＋</button>
+        <button class="ads-sync-icon" id="syncAdsBtn" type="button" ${canManualSync ? '' : 'disabled'} title="Sync selected account">↻</button>
+        <button class="ads-create-icon" id="createAdBtn" type="button" ${canCreate ? '' : 'disabled'} title="Create advertisement">＋</button>
       </div>
     </div>
     ${selectedOption ? adsApiCreateReadinessNotice(data) : ''}
-    ${selectedOption ? adsMerchantControls(data, scopedCapability) : ''}
-    ${selectedOption ? adsMerchantModeNotice(data) : ''}
+    ${credentialOptions.length ? adsMerchantControls(data, scopedCapability) : ''}
     <div class="ads-filter-bar screenshot-filters">
       <select id="adsAssetFilter"><option value="">Cryptos</option>${assets.map(v => `<option value="${escapeAttr(v)}" ${state.adsFilters.asset === v ? 'selected' : ''}>${escapeHtml(v)}</option>`).join('')}</select>
       <select id="adsFiatFilter"><option value="">Currency</option>${fiats.map(v => `<option value="${escapeAttr(v)}" ${state.adsFilters.fiat === v ? 'selected' : ''}>${escapeHtml(v)}</option>`).join('')}</select>
@@ -345,19 +368,19 @@ async function renderAds(prefetchedData = null) {
       <select id="adsStatusFilter"><option value="">Status</option><option value="online" ${state.adsFilters.status === 'online' ? 'selected' : ''}>Online</option><option value="offline" ${state.adsFilters.status === 'offline' ? 'selected' : ''}>Offline</option><option value="private" ${state.adsFilters.status === 'private' ? 'selected' : ''}>Private</option><option value="closed" ${state.adsFilters.status === 'closed' ? 'selected' : ''}>Closed</option></select>
     </div>
     <input class="ads-search-line" id="adsSearch" value="${escapeAttr(state.adsFilters.search || '')}" placeholder="Search ad number or payment method" />
-    <div class="ads-grid screenshot-cards">${items.length ? items.map(ad => adCardHtml(ad, scopedCapability)).join('') : '<div class="ads-no-more">No advertisements found.</div>'}</div>
-    ${items.length ? '<div class="ads-no-more">No more data</div>' : ''}
-    ${data.lastSyncError ? `<div class="notice warn">Live sync: ${escapeHtml(data.lastSyncError)}</div>` : ''}
+    <div class="ads-grid screenshot-cards">${items.length ? items.map(ad => adCardHtml(ad, adsCapabilityForAdvertisement(ad, data))).join('') : '<div class="ads-no-more">No advertisements found.</div>'}</div>
+    ${data.lastSyncError ? `<div class="notice warn">${escapeHtml(data.lastSyncError)}</div>` : ''}
   </section>`;
 
-  $('#adsCredentialFilter').onchange = () => {
-    state.adsCredentialId = Number($('#adsCredentialFilter').value || 0);
+  $$('[data-ads-account]').forEach(button => button.onclick = () => {
+    state.adsCredentialId = Number(button.dataset.adsAccount || 0);
     if (state.adsCredentialId) localStorage.setItem('crmAdsCredentialId', String(state.adsCredentialId));
     else localStorage.removeItem('crmAdsCredentialId');
     state.adsData = null;
     state.adsRealtimeSignature = '';
     renderAds();
-  };
+  });
+
   const rerenderWithFilters = () => {
     state.adsFilters = {
       asset: $('#adsAssetFilter')?.value || '',
@@ -373,13 +396,14 @@ async function renderAds(prefetchedData = null) {
     clearTimeout(state.adsSearchTimer);
     state.adsSearchTimer = setTimeout(rerenderWithFilters, 180);
   };
+
   if ($('#syncAdsBtn')) $('#syncAdsBtn').onclick = async () => {
-    if (!selectedCredentialId) return notify('Select a Binance account first.', 'warn');
+    if (!selectedCredentialId) return;
     const button = $('#syncAdsBtn');
     button.disabled = true;
     try {
       const result = await api('/api/ads/sync', { method:'POST', silent:true, body: JSON.stringify({ credentialId: selectedCredentialId, rows: data.autoSyncRows || 50, syncCatalog: true, forceCatalog: true }) });
-      notify(`Advertisement sync complete. Created ${result.created || 0}, updated ${result.updated || 0}.`, 'ok');
+      notify(`Synced ${result.created || 0} new and ${result.updated || 0} updated ads.`, 'ok');
       const fresh = await api(adsPageUrl({ refreshMerchant: 1 }));
       await renderAds(fresh);
     } catch (error) {
@@ -388,65 +412,97 @@ async function renderAds(prefetchedData = null) {
     }
   };
   if ($('#createAdBtn')) $('#createAdBtn').onclick = () => openAdvertisementEditor(null, data);
-  $$('[data-merchant-control]').forEach(input => input.onchange = async () => {
-    const control = String(input.dataset.merchantControl || '');
-    const enabled = Boolean(input.checked);
-    state.adsMerchantCommandBusy = state.adsMerchantCommandBusy || new Set();
-    if (state.adsMerchantCommandBusy.size || state.adsMerchantCommandBusy.has(control)) {
-      input.checked = !enabled;
-      return;
-    }
-    const breakOn = data.merchantControls?.break?.enabled === true;
-    if (breakOn && control !== 'break') {
-      input.checked = !enabled;
-      notify('Break mode is active. Turn Break off first.', 'warn', 4500);
-      return;
-    }
-    state.adsMerchantCommandBusy.add(control);
-    $$('[data-merchant-control], [data-ad-toggle], [data-edit-ad], #createAdBtn, #syncAdsBtn').forEach(node => { node.disabled = true; });
-    try {
-      if (control === 'business' && !enabled) {
-        const approved = await confirmAdsAction('Close Business?', 'Closing business will take active advertisements offline for this Binance account. Continue?', 'Close Business');
-        if (!approved) { input.checked = true; return; }
+
+  $$('[data-merchant-control]').forEach(input => {
+    if (input.dataset.mixed === '1') input.indeterminate = true;
+    input.onchange = async () => {
+      const control = String(input.dataset.merchantControl || '');
+      const enabled = Boolean(input.checked);
+      const applyToAll = !selectedCredentialId;
+      const currentControl = data.merchantControls?.[control] || {};
+      const restore = () => {
+        const mixed = currentControl.mixed === true || currentControl.status === 'mixed';
+        input.checked = currentControl.enabled === true || (control === 'break' && mixed && currentControl.anyEnabled === true);
+        input.indeterminate = mixed;
+      };
+      state.adsMerchantCommandBusy = state.adsMerchantCommandBusy || new Set();
+      if (state.adsMerchantCommandBusy.size || state.adsMerchantCommandBusy.has(control)) {
+        restore();
+        return;
       }
-      if (control === 'break' && enabled) {
-        const approved = await confirmAdsAction('Start Break?', 'Break mode will pause advertisements for this Binance account and disable the other controls until Break is turned off.', 'Start Break');
-        if (!approved) { input.checked = false; return; }
+      const breakOn = data.merchantControls?.break?.enabled === true || data.merchantControls?.break?.anyEnabled === true;
+      if (breakOn && control !== 'break') {
+        restore();
+        notify('Turn Break off first.', 'warn', 4500);
+        return;
       }
-      const result = await api('/api/ads/merchant-control', {
-        method: 'POST',
-        silent: true,
-        body: JSON.stringify({ credentialId: selectedCredentialId, control, enabled, requestId: `merchant-${selectedCredentialId}-${control}-${enabled ? 1 : 0}-${Date.now()}` })
-      });
-      const fresh = await api(adsPageUrl({ refreshMerchant: 1 }));
-      await renderAds(fresh);
-      const current = result?.merchantControls?.[control] || result?.result?.controls?.[control] || {};
-      const actionName = control === 'business' ? 'Business' : (control === 'break' ? 'Break' : 'Online');
-      notify(`${actionName} ${enabled ? 'ON' : 'OFF'}${current.verified ? '' : ' · accepted'}`, 'ok', 3500);
-    } catch (err) {
-      input.checked = !enabled;
-      notify(err.message || 'Could not update Binance merchant control.', err?.data?.noticeOnly ? 'warn' : 'danger', 7000);
-    } finally {
-      state.adsMerchantCommandBusy.delete(control);
-    }
+      state.adsMerchantCommandBusy.add(control);
+      $$('[data-merchant-control], [data-ad-toggle], [data-edit-ad], #createAdBtn, #syncAdsBtn').forEach(node => { node.disabled = true; });
+      try {
+        const scopeText = applyToAll ? 'all permitted accounts' : adsAccountDisplayName(selectedOption || {});
+        if (control === 'business' && !enabled) {
+          const approved = await confirmAdsAction('Close Business?', `Close Business for ${scopeText}?`, 'Close Business');
+          if (!approved) { restore(); return; }
+        }
+        if (control === 'break' && enabled) {
+          const approved = await confirmAdsAction('Start Break?', `Start Break for ${scopeText}?`, 'Start Break');
+          if (!approved) { restore(); return; }
+        }
+        const result = await api('/api/ads/merchant-control', {
+          method: 'POST',
+          silent: true,
+          body: JSON.stringify({
+            credentialId: selectedCredentialId || null,
+            applyToAll,
+            control,
+            enabled,
+            requestId: `merchant-${selectedCredentialId || 'all'}-${control}-${enabled ? 1 : 0}-${Date.now()}`
+          })
+        });
+        const fresh = await api(adsPageUrl({ refreshMerchant: 1 }));
+        await renderAds(fresh);
+        const actionName = control === 'business' ? 'Business' : (control === 'break' ? 'Break' : 'Online');
+        if (result.batch) {
+          const tone = result.failureCount ? 'warn' : 'ok';
+          notify(`${actionName} ${enabled ? 'ON' : 'OFF'} · ${result.successCount}/${result.targetCount} accounts`, tone, result.failureCount ? 7000 : 3500);
+        } else {
+          notify(`${actionName} ${enabled ? 'ON' : 'OFF'}`, 'ok', 3500);
+        }
+      } catch (err) {
+        restore();
+        const fresh = await api(adsPageUrl({ refreshMerchant: 1 })).catch(() => null);
+        if (fresh) await renderAds(fresh);
+        notify(err.message || 'Could not update Binance merchant control.', err?.data?.noticeOnly ? 'warn' : 'danger', 7000);
+      } finally {
+        state.adsMerchantCommandBusy.delete(control);
+      }
+    };
   });
+
   $$('[data-edit-ad]').forEach(btn => btn.onclick = () => {
     const ad = (data.items || []).find(item => Number(item.id) === Number(btn.dataset.editAd));
-    if (ad && scopedCapability.canManage) openAdvertisementEditor(ad, data);
+    if (ad && adsCapabilityForAdvertisement(ad, data).canManage) openAdvertisementEditor(ad, data);
   });
+
   $$('[data-ad-toggle]').forEach(input => input.onchange = async () => {
     const ad = (data.items || []).find(item => Number(item.id) === Number(input.dataset.adToggle));
     if (!ad) return;
+    const adCapability = adsCapabilityForAdvertisement(ad, data);
+    if (!adCapability.canManage) {
+      input.checked = !input.checked;
+      return;
+    }
     const activating = Boolean(input.checked);
     const adKey = String(ad.id || ad.advNo || 'unknown');
+    const adControls = adsMerchantControlsForCredential(data, ad.credentialId);
     state.adsStatusCommandBusy = state.adsStatusCommandBusy || new Set();
     if (state.adsStatusCommandBusy.has(adKey) || state.adsMerchantCommandBusy?.size) {
       input.checked = !activating;
       return;
     }
-    if (data.merchantControls?.break?.enabled === true) {
+    if (adControls.break?.enabled === true) {
       input.checked = false;
-      notify('Break mode is active. Advertisement actions are paused.', 'warn', 5000);
+      notify('Break is active for this account.', 'warn', 5000);
       return;
     }
     state.adsStatusCommandBusy.add(adKey);
@@ -454,14 +510,10 @@ async function renderAds(prefetchedData = null) {
     try {
       let autoStartMerchant = false;
       if (activating) {
-        const controls = data.merchantControls || {};
-        const businessOff = controls.business?.enabled !== true;
-        const onlineOff = controls.online?.enabled !== true;
+        const businessOff = adControls.business?.enabled !== true;
+        const onlineOff = adControls.online?.enabled !== true;
         if (businessOff || onlineOff) {
-          const actions = [];
-          if (businessOff) actions.push('start Business');
-          if (onlineOff) actions.push('set the merchant Online');
-          const approved = await confirmAdsAction('Activate Advertisement?', `The system needs to ${actions.join(', ')} for ${selectedOption?.name || 'the selected account'} before this advertisement can be activated. Continue?`, 'Continue & Activate');
+          const approved = await confirmAdsAction('Activate Advertisement?', `Start Business and set ${adsAccountDisplayName(ad)} Online?`, 'Continue & Activate');
           if (!approved) { input.checked = false; return; }
           autoStartMerchant = true;
         }
@@ -470,28 +522,14 @@ async function renderAds(prefetchedData = null) {
       const sendStatus = shouldAutoStart => api(`/api/ads/${ad.id}/status`, {
         method: 'POST',
         silent: true,
-        body: JSON.stringify({ credentialId: Number(ad.credentialId || selectedCredentialId), status: next, autoStartMerchant: Boolean(shouldAutoStart), requestId: `ad-${ad.credentialId || selectedCredentialId}-${adKey}-${next}-${Date.now()}` })
+        body: JSON.stringify({ credentialId: Number(ad.credentialId), status: next, autoStartMerchant: Boolean(shouldAutoStart), requestId: `ad-${ad.credentialId}-${adKey}-${next}-${Date.now()}` })
       });
       let result;
       try {
         result = await sendStatus(autoStartMerchant);
       } catch (statusError) {
         if (activating && statusError?.data?.businessClosed) {
-          const serverControls = statusError.data.merchantControls;
-          if (serverControls) {
-            const currentData = state.adsData || data;
-            const serverItem = statusError.data?.id ? statusError.data : null;
-            const nextItems = serverItem
-              ? (currentData.items || []).map(entry => Number(entry.id) === Number(serverItem.id) ? { ...entry, ...serverItem } : entry)
-              : (currentData.items || []);
-            state.adsData = { ...currentData, items: nextItems, merchantControls: serverControls };
-            await renderAds(state.adsData);
-          }
-          const approved = await confirmAdsAction(
-            'Business is Closed',
-            'Binance confirms that Business is closed for this account. Start Business, set Merchant Online and activate this advertisement now?',
-            'Start & Activate'
-          );
+          const approved = await confirmAdsAction('Business is Closed', `Start Business, set ${adsAccountDisplayName(ad)} Online and activate this ad?`, 'Start & Activate');
           if (!approved) {
             input.checked = false;
             const fresh = await api(adsPageUrl({ refreshMerchant: 1 }));
@@ -509,26 +547,20 @@ async function renderAds(prefetchedData = null) {
       else notify(next === 'online' ? 'Advertisement activated.' : 'Advertisement paused.', 'ok');
     } catch (err) {
       input.checked = !activating;
-      if (err?.data?.merchantControls) {
-        const currentData = state.adsData || data;
-        const serverItem = err.data?.id ? err.data : null;
-        const nextItems = serverItem
-          ? (currentData.items || []).map(entry => Number(entry.id) === Number(serverItem.id) ? { ...entry, ...serverItem } : entry)
-          : (currentData.items || []);
-        state.adsData = { ...currentData, items: nextItems, merchantControls: err.data.merchantControls };
-        await renderAds(state.adsData);
-      }
+      const fresh = await api(adsPageUrl({ refreshMerchant: 1 })).catch(() => null);
+      if (fresh) await renderAds(fresh);
       notify(err?.data?.notice || err.message || 'Could not change advertisement status.', err?.data?.noticeOnly ? 'warn' : 'danger', 7000);
     } finally {
       state.adsStatusCommandBusy.delete(adKey);
     }
   });
+
   startAdsRealtimePolling();
-  if (data.liveMode && data.credentialConfigured && selectedCredentialId) {
+  if (data.liveMode && data.credentialConfigured) {
+    const refreshScope = selectedCredentialId ? String(selectedCredentialId) : 'all';
     const lastForced = Number(state.adsInitialLiveRefreshAt || 0);
-    const previousCredentialId = Number(state.adsInitialLiveRefreshCredentialId || 0);
-    if (previousCredentialId !== selectedCredentialId || !lastForced || Date.now() - lastForced > 30000) {
-      state.adsInitialLiveRefreshCredentialId = selectedCredentialId;
+    if (state.adsInitialLiveRefreshScope !== refreshScope || !lastForced || Date.now() - lastForced > 30000) {
+      state.adsInitialLiveRefreshScope = refreshScope;
       state.adsInitialLiveRefreshAt = Date.now();
       setTimeout(() => refreshAdsRealtime(true), 80);
     }
@@ -752,8 +784,8 @@ function openAdvertisementEditor(ad = null, data = {}) {
     <section class="ads-field-section ads-account-field">
       <label class="ads-label">Binance Account</label>
       ${isEdit
-        ? `<input type="hidden" name="credentialId" value="${editorCredentialId}"><div class="ads-fixed-account"><span class="binance-account-badge">${escapeHtml(editorCredential?.name || ad?.credentialName || `API ${editorCredentialId}`)}</span><small>This advertisement cannot be moved to another Binance account.</small></div>`
-        : `<select name="credentialId" class="ads-full-selector" required>${manageCredentialOptions.map(option => `<option value="${Number(option.id)}" ${Number(option.id) === editorCredentialId ? 'selected' : ''}>${escapeHtml(option.name || `API ${option.id}`)}</option>`).join('')}</select><small>Only accounts with Ads Manage permission are listed.</small>`}
+        ? `<input type="hidden" name="credentialId" value="${editorCredentialId}"><div class="ads-fixed-account"><span class="binance-account-badge">${escapeHtml(adsAccountDisplayName(editorCredential || ad || { credentialId: editorCredentialId }))}</span></div>`
+        : `<select name="credentialId" class="ads-full-selector" required>${manageCredentialOptions.map(option => `<option value="${Number(option.id)}" ${Number(option.id) === editorCredentialId ? 'selected' : ''}>${escapeHtml(adsAccountDisplayName(option))}</option>`).join('')}</select>`}
     </section>
 
     <section class="ads-field-section">
