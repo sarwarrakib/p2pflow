@@ -27,15 +27,26 @@ Updater code এবং database আলাদা রাখে। Update install-�
 
 ## Version
 
-Internal SemVer: `1.5.13`
+Internal SemVer: `1.5.14`
 UI: `1.5`
 
 Normal next version: `SET_NEXT_VERSION.bat` -> `1.6.0`  
-Hotfix: `SET_HOTFIX_VERSION.bat` -> `1.5.14`
+Hotfix: `SET_HOTFIX_VERSION.bat` -> `1.5.15`
 
 ## Database history safety
 
 P2PFlow keeps authoritative business/application data in MariaDB/MySQL/PostgreSQL. State payloads are compressed with Brotli before AES-256-GCM encryption, proofs/chat media are stored as encrypted database objects, and identical newly uploaded proof/media bytes use content-addressed object IDs to avoid duplicate blobs. The default is 3 retained recovery checkpoints with a 6-hour archive interval and 5 retained automatic database backups. Older uncompressed state/history/backup payloads are upgraded incrementally after startup. Health Check reports each P2PFlow database table's allocated size/row count, current encrypted state payload size, compression saving percentage, and proof/chat object usage so database-MB growth can be inspected without terminal access. `shared/`, `.p2pflow`, `.env`, `releases/` and temporary restart/update markers are operational bootstrap/update metadata only; they are not an application/business-data store. The application runtime itself does not write proof, chat, audit, order, ledger, notification or recovery-code data to local files.
+
+## v1.5.14 Multi-Account RBAC, Ads Management ও Profit Scope
+
+- Add/Edit User form-এ prominent **Login Security & Recovery** panel থেকে Security Question ও Answer set/replace/remove করা যায়।
+- Global permission-এর পাশাপাশি প্রতিটি Binance API account-এর জন্য Orders, Sync/Chat, Ads এবং P2P Profile permission আলাদাভাবে assign করা যায়। Admin ছাড়া অন্য role-এর কোনো implicit account access নেই।
+- Orders ও My Ads page-এ Binance Account selector, account badge এবং exact-account API action যোগ হয়েছে। User শুধু assigned account-এর orders/ads দেখতে ও granted action করতে পারে।
+- Ads create/edit/delete/publish/status/sync/merchant-control flow selected credential দিয়ে চলে; active Manager presence আর authorised ad mutation block করে না।
+- User profit `Company total` বা `Individual only` করা যায়। Individual-only profit report-এ দেখা যায়, কিন্তু company-counted user income ও recognized capital থেকে বাদ থাকে।
+- Schema v29 existing data migrate করে; existing users defaultভাবে company totals-এ included থাকে।
+
+বিস্তারিত: `P2PFlow_v1.5.14_RELEASE_NOTES_BN.md` এবং `P2PFlow_v1.5.14_MANUAL_UPDATE_BN.md`।
 
 ## v1.5.13 Settings Workspace & Compact Mail Failover UI
 

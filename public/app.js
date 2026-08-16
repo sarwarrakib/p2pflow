@@ -1,4 +1,5 @@
-// v1.5.13: first-run recovery reuses the saved Application Key and software updates are Owner-only from Control Panel.
+// v1.5.14: account-scoped Binance RBAC, visible security recovery setup and individual-only profit accounting.
+// v1.5.14: first-run recovery reuses the saved Application Key and software updates are Owner-only from Control Panel.
 // v1.0.137: Diagnose and harden Binance P2P Create Advertisement privilege flow.
 // v1.0.128: lightweight Ads UI, cached reloads and realtime Binance merchant-status sync.
 // v1.0.117: Stop order countdowns immediately after completed or cancelled status sync.
@@ -29,6 +30,9 @@ const state = {
   refreshing: false,
   pendingRefresh: false,
   orderSnapshot: null,
+  orderCredentialId: Number(localStorage.getItem('crmOrderCredentialId') || 0),
+  orderCredentialOptions: [],
+  orderLiveCredentialOptions: [],
   orderDetailSyncTimer: null,
   currentOrderReloadTimer: null,
   pendingOpenChatOrderId: null,
@@ -51,6 +55,7 @@ const state = {
   notificationCenterData: { total: 0, items: [] },
   adsFilters: { asset:'', fiat:'', tradeType:'', status:'', search:'' },
   adsData: null,
+  adsCredentialId: Number(localStorage.getItem('crmAdsCredentialId') || 0),
   adsSearchTimer: null,
   mobileNavCounts: { orders: 0, chats: 0, approvals: 0 },
   mobileNavSyncTimer: null,
@@ -4255,7 +4260,7 @@ function renderNav() {
   // legacy flat menu while this marker is absent, the browser/proxy is serving
   // stale frontend JavaScript rather than the active release.
   nav.dataset.navigationModel = 'grouped-control-center';
-  nav.dataset.uiRelease = '1.5.13';
+  nav.dataset.uiRelease = '1.5.14';
   nav.innerHTML = '';
   const visible = visiblePages();
   const visibleIds = new Set(visible.map(([id]) => id));
@@ -5506,15 +5511,69 @@ function openRoleModal(role=null) {
   };
 }
 
-function p2pCredentialAccessChecks(selectedIds = []) {
-  const options = Array.isArray(state.p2pCredentialOptions) ? state.p2pCredentialOptions : [];
-  const selected = new Set((selectedIds || []).map(Number));
-  if (!options.length) return '<div class="notice small">No API credential is assigned.</div>';
-  return `<div class="p2p-profile-credential-access-grid">${options.map(item => `<label class="check p2p-profile-credential-access-item"><input type="checkbox" name="allowedP2pCredentialIds" value="${Number(item.id)}" ${selected.has(Number(item.id)) ? 'checked' : ''}/><span><b>${escapeHtml(item.name || `API ${item.id}`)}</b><small>${escapeHtml(item.nickname || item.userNo || item.status || '')}</small></span></label>`).join('')}</div>`;
+function binanceCredentialPermissionMatrix(selectedRows = []) {
+  const options = Array.isArray(state.binanceCredentialOptions) ? state.binanceCredentialOptions : (Array.isArray(state.p2pCredentialOptions) ? state.p2pCredentialOptions : []);
+  const groups = Array.isArray(state.binanceAccountPermissionGroups) && state.binanceAccountPermissionGroups.length
+    ? state.binanceAccountPermissionGroups
+    : [
+        { id: 'orders', label: 'Orders', permissions: ['orders.view','orders.create','orders.assign','orders.split','orders.final_action','orders.quick_release'] },
+        { id: 'sync_chat', label: 'Sync & Chat', permissions: ['binance.sync','binance.chat'] },
+        { id: 'ads', label: 'Advertisements', permissions: ['ads.view','ads.manage'] },
+        { id: 'profile', label: 'P2P Profile', permissions: ['p2p.profile.view','p2p.profile.sync'] }
+      ];
+  const selected = new Map((selectedRows || []).map(row => [Number(row.credentialId), new Set(row.permissions || [])]));
+  if (!options.length) return '<div class="notice small">No Binance API account is available. Add an API credential first.</div>';
+  return `<div class="binance-permission-matrix">${options.map(item => {
+    const credentialId = Number(item.id);
+    const allowed = new Set(Array.isArray(item.permissions) ? item.permissions : []);
+    const chosen = selected.get(credentialId) || new Set();
+    return `<section class="binance-permission-account" data-binance-permission-account="${credentialId}">
+      <div class="binance-permission-account-head">
+        <div><b>${escapeHtml(item.name || `API ${credentialId}`)}</b><small>${escapeHtml(item.status || '')}${item.disabled ? ' · disabled' : ''}</small></div>
+        <div class="actions compact"><button type="button" class="ghost" data-binance-account-all="${credentialId}">All</button><button type="button" class="ghost" data-binance-account-clear="${credentialId}">Clear</button></div>
+      </div>
+      <div class="binance-permission-groups">${groups.map(group => {
+        const permissions = (group.permissions || []).filter(permission => allowed.includes(permission));
+        if (!permissions.length) return '';
+        return `<div class="binance-permission-group"><span>${escapeHtml(group.label || group.id || '')}</span>${permissions.map(permission => `<label class="check"><input type="checkbox" name="binanceCredentialPermission" data-credential-id="${credentialId}" value="${escapeAttr(permission)}" ${chosen.has(permission) ? 'checked' : ''}/> ${escapeHtml(PERMISSION_LABELS[permission] || permission)}</label>`).join('')}</div>`;
+      }).join('')}</div>
+    </section>`;
+  }).join('')}</div>`;
 }
 
-function selectedP2pCredentialIds(form) {
-  return [...form.querySelectorAll('input[name="allowedP2pCredentialIds"]:checked')].map(input => Number(input.value)).filter(Boolean);
+function selectedBinanceCredentialPermissions(form) {
+  const rows = new Map();
+  form.querySelectorAll('input[name="binanceCredentialPermission"]:checked').forEach(input => {
+    const credentialId = Number(input.dataset.credentialId || 0);
+    if (!credentialId) return;
+    if (!rows.has(credentialId)) rows.set(credentialId, []);
+    rows.get(credentialId).push(input.value);
+  });
+  return [...rows.entries()].map(([credentialId, permissions]) => ({ credentialId, permissions }));
+}
+
+function syncBinancePermissionMatrixWithGlobalPermissions(form) {
+  if (!form) return;
+  const globalPermissions = new Set([...form.querySelectorAll('input[name="permissions"]:checked')].map(input => input.value));
+  form.querySelectorAll('input[name="binanceCredentialPermission"]').forEach(input => {
+    const globallyAllowed = globalPermissions.has(input.value);
+    input.disabled = !globallyAllowed;
+    if (!globallyAllowed) input.checked = false;
+  });
+}
+
+function bindBinancePermissionMatrix(form) {
+  if (!form) return;
+  form.querySelectorAll('[data-binance-account-all]').forEach(button => button.onclick = () => {
+    const credentialId = Number(button.dataset.binanceAccountAll || 0);
+    form.querySelectorAll(`input[name="binanceCredentialPermission"][data-credential-id="${credentialId}"]:not(:disabled)`).forEach(input => { input.checked = true; });
+  });
+  form.querySelectorAll('[data-binance-account-clear]').forEach(button => button.onclick = () => {
+    const credentialId = Number(button.dataset.binanceAccountClear || 0);
+    form.querySelectorAll(`input[name="binanceCredentialPermission"][data-credential-id="${credentialId}"]`).forEach(input => { input.checked = false; });
+  });
+  form.querySelectorAll('input[name="permissions"]').forEach(input => input.addEventListener('change', () => syncBinancePermissionMatrixWithGlobalPermissions(form)));
+  syncBinancePermissionMatrixWithGlobalPermissions(form);
 }
 
 function openUserModal(userItem=null) {
@@ -5532,17 +5591,24 @@ function openUserModal(userItem=null) {
       <div><label>Mobile / SMS Number</label><input name="mobile" value="${escapeAttr(userItem?.mobile || '')}" placeholder="optional" /></div>
       <div><label>${isEdit ? 'New Password (optional)' : 'Password'}</label><input name="password" type="password" ${isEdit ? '' : 'required'} /></div>
       <div><label>${isEdit ? 'New 6 Digit Secret (optional)' : '6 Digit Secret Code'}</label><input name="secretCode" inputmode="numeric" maxlength="6" ${isEdit ? 'placeholder="optional"' : 'required'} /></div>
-      <div class="full-row"><label>Login Security Question (optional)</label><input name="securityQuestion" maxlength="240" value="${escapeAttr(u.securityQuestion || '')}" placeholder="Used only if Login OTP cannot be sent" /></div>
-      <div><label>${u.securityFallbackConfigured ? 'New Security Answer (optional)' : 'Security Answer'}</label><input name="securityAnswer" type="password" maxlength="200" autocomplete="new-password" placeholder="${u.securityFallbackConfigured ? 'Leave blank to keep current answer' : 'Set with question'}" /></div>
-      <div><label class="check"><input type="checkbox" name="clearSecurityFallback" /> Remove Security Question fallback</label></div>
-      <div class="full-row"><div class="notice small">Security Answer is stored only as a one-way password hash. When Login OTP delivery fails, the user must enter the correct answer + existing 6 digit secret.</div></div>
+      <fieldset class="full-row security-recovery-panel">
+        <legend>Login Security & Recovery ${u.securityFallbackConfigured ? badge('Configured', 'ok') : badge('Not configured', 'warn')}</legend>
+        <p>Set the Security Question here for this login. It is used only when Login OTP delivery fails.</p>
+        <div class="form-grid compact-grid">
+          <div class="full-row"><label>Security Question</label><input name="securityQuestion" maxlength="240" value="${escapeAttr(u.securityQuestion || '')}" placeholder="Example: What was the name of your first school?" /></div>
+          <div><label>${u.securityFallbackConfigured ? 'New Security Answer (optional)' : 'Security Answer'}</label><input name="securityAnswer" type="password" maxlength="200" autocomplete="new-password" placeholder="${u.securityFallbackConfigured ? 'Leave blank to keep current answer' : 'Required when a question is set'}" /></div>
+          <div><label class="check danger-check"><input type="checkbox" name="clearSecurityFallback" /> Remove Security Question fallback</label></div>
+        </div>
+        <div class="notice small">The answer is stored only as a one-way password hash. Recovery requires the correct answer and the existing 6 digit secret.</div>
+      </fieldset>
       <div><label>Max Active Orders</label><input name="maxActiveOrders" type="number" value="${userItem?.maxActiveOrders || 5}" /></div>
       <div><label>Max Release Amount</label><input name="maxReleaseAmount" type="number" value="${userItem?.maxReleaseAmount || 0}" /></div>
       <div><label class="check"><input type="checkbox" name="allowNewOrders" ${userItem?.allowNewOrders === false ? '' : 'checked'} /> Allow new orders</label></div>
       <div><label class="check"><input type="checkbox" name="smsEnabled" ${userItem?.smsEnabled === false ? '' : 'checked'} /> Panel SMS on order assignment</label></div>
       <div><label class="check"><input type="checkbox" name="canRelease" ${userItem?.canRelease ? 'checked' : ''} /> Can release/final action</label></div>
-      <div class="full-row"><label>Permissions</label>${permissionChecks(selectedPerms)}</div>
-      <div class="full-row"><label>P2P API Profile Access</label>${p2pCredentialAccessChecks(u.allowedP2pCredentialIds || [])}<small>Select the API profiles this user can access.</small></div>
+      <div class="full-row profit-accounting-setting"><label class="check"><input type="checkbox" name="includeProfitInCompanyTotals" ${userItem?.includeProfitInCompanyTotals === false ? '' : 'checked'} /> Include this user's profit in company income and capital totals</label><small>Turn this off to keep the user's income visible in their individual report while excluding it from company totals.</small></div>
+      <div class="full-row"><label>Global Permissions</label>${permissionChecks(selectedPerms)}<small>A Binance account grant below never bypasses these global permissions.</small></div>
+      <div class="full-row"><label>Binance Account Permissions</label>${binanceCredentialPermissionMatrix(u.binanceCredentialPermissions || [])}<small>Grant permissions separately for each Binance account. The user can only see or manage orders, ads, chat and profile data for the selected account.</small></div>
       <div class="full-row" id="userFormMessage"></div>
       <div class="full-row"><button type="submit">${isEdit ? 'Save User' : 'Create User'}</button></div>
     </form>`);
@@ -5551,7 +5617,9 @@ function openUserModal(userItem=null) {
     const perms = rolePermissions(roleSelect.value);
     $('#loginRoleInput').value = roleSystemRole(roleSelect.value);
     $$('#userForm input[name="permissions"]').forEach(ch => { ch.checked = perms.includes(ch.value); });
+    syncBinancePermissionMatrixWithGlobalPermissions($('#userForm'));
   };
+  bindBinancePermissionMatrix($('#userForm'));
   $('#userForm').onsubmit = async e => {
     e.preventDefault();
     const obj = formObj(e.target);
@@ -5563,8 +5631,9 @@ function openUserModal(userItem=null) {
     obj.allowNewOrders = e.target.allowNewOrders.checked;
     obj.smsEnabled = e.target.smsEnabled.checked;
     obj.canRelease = e.target.canRelease.checked;
+    obj.includeProfitInCompanyTotals = e.target.includeProfitInCompanyTotals.checked;
     obj.permissions = selectedPermissions(e.target);
-    obj.allowedP2pCredentialIds = selectedP2pCredentialIds(e.target);
+    obj.binanceCredentialPermissions = selectedBinanceCredentialPermissions(e.target);
     try {
       await api(isEdit ? '/api/agents/' + userItem.id : '/api/agents', { method: isEdit ? 'PATCH' : 'POST', body: JSON.stringify(obj) });
       notify(isEdit ? 'User updated.' : 'User created.', 'ok');
@@ -5946,10 +6015,15 @@ function openAssignModal(order) {
 }
 
 
-function openBinanceOrderSyncModal() {
+function openBinanceOrderSyncModal(credentialOptions = state.orderLiveCredentialOptions || [], selectedCredentialId = state.orderCredentialId || 0) {
+  const options = (credentialOptions || []).filter(option => !option.disabled && Array.isArray(option.permissions) && option.permissions.includes('binance.sync'));
+  const selectedId = options.some(option => Number(option.id) === Number(selectedCredentialId))
+    ? Number(selectedCredentialId)
+    : Number(options[0]?.id || 0);
   modal('Sync Binance Orders', `
-    <div class="notice">Sync imports orders only; it never pays or releases.</div>
+    <div class="notice">Sync imports orders only; it never pays or releases. The selected Binance account is the only account this sync can read.</div>
     <form id="binanceOrderSyncForm" class="form-grid">
+      <div class="full-row"><label>Binance Account</label><select name="credentialId" required ${options.length ? '' : 'disabled'}><option value="">Select account</option>${options.map(option => `<option value="${Number(option.id)}" ${Number(option.id) === selectedId ? 'selected' : ''}>${escapeHtml(option.name || `API ${option.id}`)}</option>`).join('')}</select>${options.length ? '' : '<small class="danger-text">No enabled Binance account is assigned with Sync permission.</small>'}</div>
       <div><label>Page</label><input name="page" type="number" value="1" /></div>
       <div><label>Rows</label><input name="rows" type="number" value="20" max="100" /></div>
       <div><label>Trade Type</label><select name="tradeType"><option value="">All</option><option value="BUY">BUY</option><option value="SELL">SELL</option></select></div>
@@ -5957,16 +6031,20 @@ function openBinanceOrderSyncModal() {
       <div><label>Start Time</label><input name="startLocal" type="datetime-local" /></div>
       <div><label>End Time</label><input name="endLocal" type="datetime-local" /></div>
       <div class="full-row" id="binanceOrderSyncMessage"></div>
-      <div class="full-row"><button class="success" type="submit">Run Live Sync</button></div>
+      <div class="full-row"><button class="success" type="submit" ${options.length ? '' : 'disabled'}>Run Live Sync</button></div>
     </form>`);
   $('#binanceOrderSyncForm').onsubmit = async e => {
     e.preventDefault();
     const obj = formObj(e.target);
+    obj.credentialId = Number(obj.credentialId || 0);
+    if (!obj.credentialId) return setFormMessage('#binanceOrderSyncMessage', 'Select the Binance account to sync.', 'danger');
     if (e.target.startLocal.value) obj.startDate = new Date(e.target.startLocal.value).getTime();
     if (e.target.endLocal.value) obj.endDate = new Date(e.target.endLocal.value).getTime();
     delete obj.startLocal; delete obj.endLocal;
     try {
       const result = await api('/api/binance/sync/orders', { method:'POST', body: JSON.stringify(obj) });
+      state.orderCredentialId = obj.credentialId;
+      localStorage.setItem('crmOrderCredentialId', String(obj.credentialId));
       notify(`Binance sync complete. Created ${result.created}, updated ${result.updated}, detail synced ${result.detailSynced || 0}, skipped ${result.skipped}.`, 'ok');
       closeModal();
       await refreshBootstrap();
@@ -6182,12 +6260,17 @@ function openFinalActionModal(order, finalAction) {
 }
 
 
-function openCreateOrderModal(source='binance') {
+function openCreateOrderModal(source='binance', credentialOptions = state.orderLiveCredentialOptions || [], selectedCredentialId = state.orderCredentialId || 0) {
   const isOffline = source === 'offline';
+  const accountOptions = (credentialOptions || []).filter(option => !option.disabled && Array.isArray(option.permissions) && option.permissions.includes('orders.create'));
+  const selectedId = accountOptions.some(option => Number(option.id) === Number(selectedCredentialId))
+    ? Number(selectedCredentialId)
+    : Number(accountOptions[0]?.id || 0);
   modal(isOffline ? 'Create Offline Order' : 'Create Binance Order', `
-    <div class="notice">${isOffline ? 'Offline orders are local business transactions. BUY reduces balance; SELL increases balance. Updating split actual creates order-linked statement entries.' : 'Create a Binance-linked order manually when it is not synced yet. Live API actions still require API credentials, payId and approval guards.'}</div>
+    <div class="notice">${isOffline ? 'Offline orders are local business transactions. BUY reduces balance; SELL increases balance. Updating split actual creates order-linked statement entries.' : 'Create a Binance-linked order manually for one exact assigned account. Live API actions still require that account’s permissions, credentials, payId and approval guards.'}</div>
     <form id="createOrderForm" class="form-grid">
       <input type="hidden" name="orderSource" value="${isOffline ? 'offline' : 'binance'}" />
+      ${isOffline ? '' : `<div class="full-row"><label>Binance Account</label><select name="credentialId" required ${accountOptions.length ? '' : 'disabled'}><option value="">Select account</option>${accountOptions.map(option => `<option value="${Number(option.id)}" ${Number(option.id) === selectedId ? 'selected' : ''}>${escapeHtml(option.name || `API ${option.id}`)}</option>`).join('')}</select>${accountOptions.length ? '' : '<small class="danger-text">No enabled Binance account is assigned with Create Order permission.</small>'}</div>`}
       <div><label>Order No</label><input name="orderNo" value="${isOffline ? 'OFFLINE' : 'BINANCE'}-${Date.now()}" /></div>
       <div><label>Type</label><select name="type"><option value="BUY">BUY / pay out</option><option value="SELL">SELL / receive in</option></select></div>
       <div><label>Fiat Amount (BDT)</label><input name="amount" type="number" value="60000" /></div>
@@ -6198,9 +6281,28 @@ function openCreateOrderModal(source='binance') {
       <div><label>Payment Time Limit (min)</label><input name="paymentTimeLimitMinutes" type="number" value="15" /></div>
       <div><label>Counterparty</label><input name="counterpartyName" placeholder="Supplier/customer name" /></div>
       <div class="full-row"><label>Note</label><input name="sourceNote" placeholder="Why this order exists" /></div>
-      <div class="full-row"><button type="submit">Create and Auto Assign</button></div>
+      <div class="full-row" id="createOrderMessage"></div>
+      <div class="full-row"><button type="submit" ${!isOffline && !accountOptions.length ? 'disabled' : ''}>Create and Auto Assign</button></div>
     </form>`);
-  $('#createOrderForm').onsubmit = async e => { e.preventDefault(); const created = await api('/api/orders', { method:'POST', body: JSON.stringify(formObj(e.target)) }); closeModal(); setRoute('orders', { orderId: created.id }); };
+  $('#createOrderForm').onsubmit = async e => {
+    e.preventDefault();
+    const obj = formObj(e.target);
+    if (!isOffline) {
+      obj.credentialId = Number(obj.credentialId || 0);
+      if (!obj.credentialId) return setFormMessage('#createOrderMessage', 'Select the Binance account for this order.', 'danger');
+    }
+    try {
+      const created = await api('/api/orders', { method:'POST', body: JSON.stringify(obj) });
+      if (!isOffline) {
+        state.orderCredentialId = obj.credentialId;
+        localStorage.setItem('crmOrderCredentialId', String(obj.credentialId));
+      }
+      closeModal();
+      setRoute('orders', { orderId: created.id });
+    } catch (err) {
+      setFormMessage('#createOrderMessage', err.message || 'Order creation failed.', 'danger');
+    }
+  };
 }
 
 function activeAssignmentForUser(order, agentId) {

@@ -1,4 +1,4 @@
-// P2PFlow v1.0.80
+// P2PFlow v1.5.14
 // Page module: users. Edit this file for the users page UI.
 
 async function renderUsers() {
@@ -6,7 +6,10 @@ async function renderUsers() {
   const agents = await api('/api/agents');
   const accounts = await api('/api/payment-accounts');
   state.bootstrap.agents = agents.items;
-  state.p2pCredentialOptions = Array.isArray(agents.p2pCredentialOptions) ? agents.p2pCredentialOptions : [];
+  state.binanceCredentialOptions = Array.isArray(agents.binanceCredentialOptions) ? agents.binanceCredentialOptions : (Array.isArray(agents.p2pCredentialOptions) ? agents.p2pCredentialOptions : []);
+  state.p2pCredentialOptions = state.binanceCredentialOptions;
+  state.binanceAccountPermissions = Array.isArray(agents.binanceAccountPermissions) ? agents.binanceAccountPermissions : [];
+  state.binanceAccountPermissionGroups = Array.isArray(agents.binanceAccountPermissionGroups) ? agents.binanceAccountPermissionGroups : [];
   const totalBalance = sumLocal(accounts.items.map(x => x.currentBalance));
   const onlineUsers = agents.items.filter(a => a.status !== 'offline').length;
   const activeUsers = agents.items.filter(a => a.status === 'active').length;
@@ -31,13 +34,18 @@ async function renderUsers() {
       ${agents.items.map(a => {
         const aa = accounts.items.filter(x => x.agentId === a.id);
         const perms = a.user?.permissions || [];
+        const accountGrants = a.user?.binanceCredentialPermissions || [];
+        const grantedActions = accountGrants.reduce((total, row) => total + (row.permissions || []).length, 0);
         const p = a.presence || {};
         const today = a.activityToday || {};
         return `<div class="user-card">
           <div class="user-card-head"><div><b>${escapeHtml(a.name)}</b><span>${a.user ? escapeHtml(a.user.username) : 'No login yet'} · ${escapeHtml(p.page || 'no active page')}</span></div>${badge(a.status, statusClass(a.status))}</div>
           <div class="user-stats">
-            <div><span>Permissions</span><b>${perms.length}</b></div>
-            <div><span>Accounts</span><b>${aa.length}</b></div>
+            <div><span>Global Permissions</span><b>${perms.length}</b></div>
+            <div><span>Binance Accounts</span><b>${accountGrants.length} <small>(${grantedActions} grants)</small></b></div>
+            <div><span>Security Question</span><b>${a.user?.securityFallbackConfigured ? '<span class="text-ok">Set</span>' : '<span class="text-warn">Not set</span>'}</b></div>
+            <div><span>Profit Accounting</span><b>${a.includeProfitInCompanyTotals === false ? '<span class="text-warn">Individual only</span>' : '<span class="text-ok">Company total</span>'}</b></div>
+            <div><span>Payment Accounts</span><b>${aa.length}</b></div>
             <div><span>Today App Open</span><b>${activityDuration(today.openSeconds)}</b></div>
             <div><span>Today Active</span><b>${activityDuration(today.activeSeconds)}</b></div>
             <div><span>Today Engaged</span><b>${activityDuration(today.engagedSeconds)}</b></div>

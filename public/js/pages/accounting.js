@@ -1,5 +1,6 @@
-// P2PFlow v1.5.13
+// P2PFlow v1.5.14
 // Business Accounting is separated into Overview, Expenses, Income, Capital and Daily Closing pages.
+// Individual-only Agent profit remains visible but is excluded from Company income/capital totals.
 
 const ACCOUNTING_EXPENSE_CATEGORIES = [
   'Office & Administration', 'Salary & Allowance', 'Rent', 'Internet & Communication',
@@ -272,9 +273,11 @@ async function renderAccounting(options={}) {
       ${!isAgent ? `<div class="accounting-kpi-grid realtime mt">
         ${accountingMetric('Actual Binance Asset', `${accountingNumber(s.ownerActualBinanceUsd,8)} ${escapeHtml(data.settings.cryptoAsset)}`, `${binance.successfulCredentialCount || binance.accounts?.length || 0} connected account(s) synced`, 'crypto')}
         ${accountingMetric('Pending Operating Cash', accountingMoney(s.pendingOperatingCashBdt), `${accountingNumber(s.pendingEstimatedNetUsd,8)} estimated net USDT`, 'cash')}
-        ${accountingMetric('Current Business Asset', `${accountingNumber(s.ownerCurrentBusinessAssetUsd,8)} USDT`, accountingMoney(s.ownerCurrentBusinessAssetBdt), 'capital')}
+        ${accountingMetric('Actual Business Asset', `${accountingNumber(s.ownerActualBusinessAssetUsd,8)} USDT`, 'Before individual-only profit exclusion', 'crypto')}
+        ${accountingMetric('Individual-only Profit', `${accountingNumber(s.excludedUserProfitUsd,8)} USDT`, `${accountingMoney(s.excludedUserProfitBdt)} excluded from Company totals`, 'cash')}
+        ${accountingMetric('Company Recognized Asset', `${accountingNumber(s.ownerCurrentBusinessAssetUsd,8)} USDT`, accountingMoney(s.ownerCurrentBusinessAssetBdt), 'capital')}
         ${accountingMetric('Adjusted Capital Base', `${accountingNumber(s.ownerAdjustedCapitalBaseUsd,8)} USDT`, 'Opening + capital in − owner withdrawal', 'capital')}
-        ${accountingMetric('Owner Profit', `${accountingNumber(s.ownerProfitUsd,8)} USDT`, accountingMoney(s.ownerProfitBdt), accountingProfitClass(s.ownerProfitUsd))}
+        ${accountingMetric('Company Owner Profit', `${accountingNumber(s.ownerProfitUsd,8)} USDT`, accountingMoney(s.ownerProfitBdt), accountingProfitClass(s.ownerProfitUsd))}
         ${accountingMetric('Latest Actual BUY Yield', `${accountingNumber(s.latestEffectiveBuyYieldPerBdt,10)} USDT/BDT`, s.latestEffectiveBuyOrderNo ? `Order ${s.latestEffectiveBuyOrderNo}` : 'No completed BUY yet', 'cash')}
       </div>` : `<div class="accounting-kpi-grid realtime mt">
         ${accountingMetric('Actual BUY Net', `${accountingNumber(s.liveBuyCrypto,8)} ${escapeHtml(data.settings.cryptoAsset)}`, `${accountingMoney(s.buyCost)} spent`, 'cash')}
@@ -292,15 +295,21 @@ async function renderAccounting(options={}) {
             <div><span>Adjusted Capital Base</span><b>${accountingNumber(s.ownerAdjustedCapitalBaseUsd,8)} USDT</b></div>
             <div><span>All Binance Actual USDT</span><b>${accountingNumber(s.ownerActualBinanceUsd,8)} USDT</b></div>
             <div><span>Pending Estimated Net USDT</span><b>${accountingNumber(s.pendingEstimatedNetUsd,8)} USDT</b></div>
-            <div><span>Current Business Asset</span><b>${accountingNumber(s.ownerCurrentBusinessAssetUsd,8)} USDT</b></div>
-            <div><span>Owner Profit</span><b class="${accountingProfitClass(s.ownerProfitUsd)}">${accountingNumber(s.ownerProfitUsd,8)} USDT · ${accountingMoney(s.ownerProfitBdt)}</b></div>
+            <div><span>Actual Business Asset Before Exclusion</span><b>${accountingNumber(s.ownerActualBusinessAssetUsd,8)} USDT</b></div>
+            <div><span>Individual-only Profit Excluded</span><b class="${accountingProfitClass(s.excludedUserProfitUsd)}">${accountingNumber(s.excludedUserProfitUsd,8)} USDT · ${accountingMoney(s.excludedUserProfitBdt)}</b></div>
+            <div><span>Company Recognized Business Asset</span><b>${accountingNumber(s.ownerCurrentBusinessAssetUsd,8)} USDT</b></div>
+            <div><span>Actual Owner Profit Before Exclusion</span><b class="${accountingProfitClass(s.ownerActualProfitUsd)}">${accountingNumber(s.ownerActualProfitUsd,8)} USDT · ${accountingMoney(s.ownerActualProfitBdt)}</b></div>
+            <div><span>Company Owner Profit</span><b class="${accountingProfitClass(s.ownerProfitUsd)}">${accountingNumber(s.ownerProfitUsd,8)} USDT · ${accountingMoney(s.ownerProfitBdt)}</b></div>
           </div>
         </section>
         <section class="card accounting-panel">
           <div class="section-head"><div><h3>Profit Reconciliation</h3><span>Owner cash-flow and User/Agent performance remain separate.</span></div></div>
           <div class="accounting-result-list">
-            <div><span>Owner Cash-flow Profit</span><b class="${accountingProfitClass(s.ownerProfitUsd)}">${accountingNumber(s.ownerProfitUsd,8)} USDT</b></div>
-            <div><span>Sum of User/Agent Profit</span><b class="${accountingProfitClass(s.sumUserProfitUsd)}">${accountingNumber(s.sumUserProfitUsd,8)} USDT</b></div>
+            <div><span>Actual Owner Cash-flow Profit</span><b class="${accountingProfitClass(s.ownerActualProfitUsd)}">${accountingNumber(s.ownerActualProfitUsd,8)} USDT</b></div>
+            <div><span>All User/Agent Profit</span><b class="${accountingProfitClass(s.allUserProfitUsd)}">${accountingNumber(s.allUserProfitUsd,8)} USDT</b></div>
+            <div><span>Excluded Individual-only Profit</span><b class="${accountingProfitClass(s.excludedUserProfitUsd)}">${accountingNumber(s.excludedUserProfitUsd,8)} USDT</b></div>
+            <div><span>Company-counted User/Agent Profit</span><b class="${accountingProfitClass(s.sumUserProfitUsd)}">${accountingNumber(s.sumUserProfitUsd,8)} USDT</b></div>
+            <div><span>Company Owner Profit</span><b class="${accountingProfitClass(s.ownerProfitUsd)}">${accountingNumber(s.ownerProfitUsd,8)} USDT</b></div>
             <div><span>Difference / Unallocated Adjustment</span><b class="${accountingProfitClass(s.unallocatedAdjustmentUsd)}">${accountingNumber(s.unallocatedAdjustmentUsd,8)} USDT · ${accountingMoney(s.unallocatedAdjustmentBdt)}</b></div>
           </div>
         </section>
@@ -333,8 +342,8 @@ async function renderAccounting(options={}) {
 
       <section class="card accounting-panel mt">
         <div class="section-head"><div><h3>${isAgent ? 'My Performance Result' : 'Agent-wise Performance Result'}</h3><span>Actual order performance; business expenses are maintained separately.</span></div></div>
-        ${table(['Agent','Orders','BUY Net','SELL Outflow','BUY BDT','SELL BDT','Operational','Carryover','Profit USDT','Profit BDT'], (data.byAgent || []).map(item => [
-          escapeHtml(item.name), item.orders, accountingNumber(item.buyCrypto,8), accountingNumber(item.sellCrypto,8),
+        ${table(['Agent','Accounting Scope','Orders','BUY Net','SELL Outflow','BUY BDT','SELL BDT','Operational','Carryover','Profit USDT','Profit BDT'], (data.byAgent || []).map(item => [
+          escapeHtml(item.name), `<span class="badge ${item.includedInCompanyTotals === false ? 'warn' : 'ok'}">${item.includedInCompanyTotals === false ? 'Individual Only' : 'Company Total'}</span>`, item.orders, accountingNumber(item.buyCrypto,8), accountingNumber(item.sellCrypto,8),
           accountingMoney(item.buyVolume), accountingMoney(item.sellVolume), accountingNumber(item.operationalProfitUsd,8),
           accountingNumber(item.carryoverAdjustmentUsd,8), accountingNumber(item.profitUsd,8), accountingMoney(item.profitBdt)
         ]))}
@@ -470,9 +479,9 @@ async function renderAccountingCapital(options={}) {
           <div class="accounting-live-row">${accountingLiveBadge(data)}</div>
         </div>
         <div class="accounting-hero-profit capital">
-          <span>Current Business Asset</span>
+          <span>Company Recognized Asset</span>
           <b>${accountingNumber(s.ownerCurrentBusinessAssetUsd,8)} USDT</b>
-          <small>Owner Profit: ${accountingNumber(s.ownerProfitUsd,8)} USDT · ${accountingMoney(s.ownerProfitBdt)}</small>
+          <small>Actual ${accountingNumber(s.ownerActualBusinessAssetUsd,8)} − individual-only ${accountingNumber(s.excludedUserProfitUsd,8)} USDT</small>
         </div>
       </div>
       ${accountingFilterToolbar(pageId, data, p.canManage ? '<button id="accountingOpeningCapitalBtn" class="secondary">Opening Capital</button><button id="accountingCapitalInBtn">Add Capital</button><button id="accountingCapitalOutBtn" class="danger">Withdraw Capital</button>' : '')}
@@ -481,8 +490,10 @@ async function renderAccountingCapital(options={}) {
         ${accountingMetric('Capital Added', `+${accountingNumber(added,8)} USDT`, `${accountingMoney(addedBdt)} original BDT`, 'positive')}
         ${accountingMetric('Capital Withdrawn', `−${accountingNumber(withdrawn,8)} USDT`, `${accountingMoney(withdrawnBdt)} original BDT`, 'negative')}
         ${accountingMetric('Adjusted Capital Base', `${accountingNumber(s.ownerAdjustedCapitalBaseUsd,8)} USDT`, 'Current capital base', 'capital')}
-        ${accountingMetric('Current Business Asset', `${accountingNumber(s.ownerCurrentBusinessAssetUsd,8)} USDT`, accountingMoney(s.ownerCurrentBusinessAssetBdt), 'crypto')}
-        ${accountingMetric('Owner Profit', `${accountingNumber(s.ownerProfitUsd,8)} USDT`, accountingMoney(s.ownerProfitBdt), accountingProfitClass(s.ownerProfitUsd))}
+        ${accountingMetric('Actual Business Asset', `${accountingNumber(s.ownerActualBusinessAssetUsd,8)} USDT`, 'Before individual-only profit exclusion', 'crypto')}
+        ${accountingMetric('Individual-only Profit Excluded', `${accountingNumber(s.excludedUserProfitUsd,8)} USDT`, accountingMoney(s.excludedUserProfitBdt), 'cash')}
+        ${accountingMetric('Company Recognized Asset', `${accountingNumber(s.ownerCurrentBusinessAssetUsd,8)} USDT`, accountingMoney(s.ownerCurrentBusinessAssetBdt), 'crypto')}
+        ${accountingMetric('Company Owner Profit', `${accountingNumber(s.ownerProfitUsd,8)} USDT`, accountingMoney(s.ownerProfitBdt), accountingProfitClass(s.ownerProfitUsd))}
       </div>
       <div class="accounting-main-grid mt">
         <section class="card accounting-panel">
@@ -492,6 +503,11 @@ async function renderAccountingCapital(options={}) {
             <div><span>Capital Added</span><b class="positive">+${accountingNumber(s.ownerCapitalInUsd,8)} USDT</b></div>
             <div><span>Owner Withdrawal / Family Expense</span><b class="negative">−${accountingNumber(s.ownerCapitalOutUsd,8)} USDT</b></div>
             <div><span>Adjusted Capital Base</span><b>${accountingNumber(s.ownerAdjustedCapitalBaseUsd,8)} USDT</b></div>
+            <div><span>Actual Business Asset Before Exclusion</span><b>${accountingNumber(s.ownerActualBusinessAssetUsd,8)} USDT</b></div>
+            <div><span>Individual-only Profit Excluded</span><b class="${accountingProfitClass(s.excludedUserProfitUsd)}">${accountingNumber(s.excludedUserProfitUsd,8)} USDT</b></div>
+            <div><span>Company Recognized Business Asset</span><b>${accountingNumber(s.ownerCurrentBusinessAssetUsd,8)} USDT</b></div>
+            <div><span>Actual Owner Profit Before Exclusion</span><b class="${accountingProfitClass(s.ownerActualProfitUsd)}">${accountingNumber(s.ownerActualProfitUsd,8)} USDT</b></div>
+            <div><span>Company Owner Profit</span><b class="${accountingProfitClass(s.ownerProfitUsd)}">${accountingNumber(s.ownerProfitUsd,8)} USDT</b></div>
           </div>
         </section>
         <section class="card accounting-panel">
@@ -545,10 +561,13 @@ async function renderAccountingClosing(options={}) {
       </div>
       ${accountingFilterToolbar(pageId, data, `${p.canManage ? '<button id="accountingSettingsBtn" class="secondary">Settings</button>' : ''}${p.canClose ? '<button id="accountingSyncBtn" class="secondary">Sync All Binance</button><button id="accountingCloseBtn" class="dark">Close Day</button>' : ''}`)}
       <div class="accounting-kpi-grid realtime mt">
-        ${accountingMetric('Closing Asset', `${accountingNumber(s.ownerCurrentBusinessAssetUsd,8)} USDT`, accountingMoney(s.ownerCurrentBusinessAssetBdt), 'capital')}
+        ${accountingMetric('Actual Business Asset', `${accountingNumber(s.ownerActualBusinessAssetUsd,8)} USDT`, 'Before individual-only profit exclusion', 'crypto')}
+        ${accountingMetric('Individual-only Profit Excluded', `${accountingNumber(s.excludedUserProfitUsd,8)} USDT`, accountingMoney(s.excludedUserProfitBdt), 'cash')}
+        ${accountingMetric('Company Closing Asset', `${accountingNumber(s.ownerCurrentBusinessAssetUsd,8)} USDT`, accountingMoney(s.ownerCurrentBusinessAssetBdt), 'capital')}
         ${accountingMetric('Adjusted Capital Base', `${accountingNumber(s.ownerAdjustedCapitalBaseUsd,8)} USDT`, 'Capital movements already applied', 'capital')}
-        ${accountingMetric('Owner Profit', `${accountingNumber(s.ownerProfitUsd,8)} USDT`, accountingMoney(s.ownerProfitBdt), accountingProfitClass(s.ownerProfitUsd))}
-        ${accountingMetric('User/Agent Profit', `${accountingNumber(s.sumUserProfitUsd,8)} USDT`, accountingMoney(s.sumUserProfitBdt), accountingProfitClass(s.sumUserProfitUsd))}
+        ${accountingMetric('Company Owner Profit', `${accountingNumber(s.ownerProfitUsd,8)} USDT`, accountingMoney(s.ownerProfitBdt), accountingProfitClass(s.ownerProfitUsd))}
+        ${accountingMetric('All User/Agent Profit', `${accountingNumber(s.allUserProfitUsd,8)} USDT`, accountingMoney(s.allUserProfitBdt), accountingProfitClass(s.allUserProfitUsd))}
+        ${accountingMetric('Company-counted User Profit', `${accountingNumber(s.sumUserProfitUsd,8)} USDT`, accountingMoney(s.sumUserProfitBdt), accountingProfitClass(s.sumUserProfitUsd))}
         ${accountingMetric('Unallocated Difference', `${accountingNumber(s.unallocatedAdjustmentUsd,8)} USDT`, accountingMoney(s.unallocatedAdjustmentBdt), accountingProfitClass(s.unallocatedAdjustmentUsd))}
         ${accountingMetric('Saved Closes', accountingNumber((data.closes || []).length,0), 'Latest closing snapshots', 'cash')}
       </div>
@@ -558,8 +577,10 @@ async function renderAccountingClosing(options={}) {
           <div class="accounting-result-list">
             <div><span>All Binance Actual USDT</span><b>${accountingNumber(s.ownerActualBinanceUsd,8)} USDT</b></div>
             <div><span>Pending Estimated Net USDT</span><b>${accountingNumber(s.pendingEstimatedNetUsd,8)} USDT</b></div>
-            <div><span>Closing Current Business Asset</span><b>${accountingNumber(s.ownerCurrentBusinessAssetUsd,8)} USDT</b></div>
-            <div><span>Next Day Opening Capital</span><b>${accountingNumber(s.ownerCurrentBusinessAssetUsd,8)} USDT</b></div>
+            <div><span>Actual Business Asset Before Exclusion</span><b>${accountingNumber(s.ownerActualBusinessAssetUsd,8)} USDT</b></div>
+            <div><span>Individual-only Profit Excluded</span><b class="${accountingProfitClass(s.excludedUserProfitUsd)}">${accountingNumber(s.excludedUserProfitUsd,8)} USDT</b></div>
+            <div><span>Company Recognized Closing Asset</span><b>${accountingNumber(s.ownerCurrentBusinessAssetUsd,8)} USDT</b></div>
+            <div><span>Next Day Company Opening Capital</span><b>${accountingNumber(s.ownerCurrentBusinessAssetUsd,8)} USDT</b></div>
           </div>
         </section>
         <section class="card accounting-panel">
@@ -568,13 +589,26 @@ async function renderAccountingClosing(options={}) {
         </section>
       </div>
       <section class="card accounting-panel mt">
-        <div class="section-head"><div><h3>Daily Closing History</h3><span>Current asset, capital base, Owner profit and User/Agent reconciliation</span></div><b>${(data.closes || []).length}</b></div>
-        ${table(['Business Date','Closed At','Current Asset','Capital Base','Owner Profit','User Profit','Difference','Source'], (data.closes || []).map(item => [
-          escapeHtml(item.businessDate || ''), escapeHtml(fmt(item.closedAt || item.createdAt)),
-          `${accountingNumber(item.ownerCurrentBusinessAssetUsd ?? item.totalUsdEquivalent,8)} USDT`, `${accountingNumber(item.ownerAdjustedCapitalBaseUsd ?? 0,8)} USDT`,
-          `<b class="${accountingProfitClass(item.ownerProfitBdt ?? item.netProfit)}">${accountingNumber(item.ownerProfitUsd ?? 0,8)} USDT · ${accountingMoney(item.ownerProfitBdt ?? item.netProfit ?? 0)}</b>`,
-          `${accountingNumber(item.sumUserProfitUsd ?? item.replacementProfitUsd ?? 0,8)} USDT`, `${accountingNumber(item.unallocatedAdjustmentUsd ?? 0,8)} USDT`, escapeHtml(item.source || 'auto')
-        ]))}
+        <div class="section-head"><div><h3>Daily Closing History</h3><span>Actual asset, individual-only exclusion and Company-recognized closing totals</span></div><b>${(data.closes || []).length}</b></div>
+        ${table(['Business Date','Closed At','Actual Asset','Individual-only Excluded','Company Closing Asset','Capital Base','Actual Owner Profit','Company Owner Profit','All User Profit','Company User Profit','Difference','Source'], (data.closes || []).map(item => {
+          const actualAsset = Number(item.ownerActualBusinessAssetUsd ?? item.ownerCurrentBusinessAssetUsd ?? item.totalUsdEquivalent ?? 0);
+          const excludedProfit = Number(item.excludedUserProfitUsd ?? 0);
+          const companyAsset = Number(item.ownerCurrentBusinessAssetUsd ?? item.totalUsdEquivalent ?? (actualAsset - excludedProfit));
+          const capitalBase = Number(item.ownerAdjustedCapitalBaseUsd ?? 0);
+          const actualOwnerProfit = Number(item.ownerActualProfitUsd ?? (actualAsset - capitalBase));
+          const companyOwnerProfit = Number(item.ownerProfitUsd ?? (companyAsset - capitalBase));
+          const allUserProfit = Number(item.allUserProfitUsd ?? item.replacementProfitUsd ?? item.sumUserProfitUsd ?? 0);
+          const companyUserProfit = Number(item.sumUserProfitUsd ?? item.replacementProfitUsd ?? 0);
+          return [
+            escapeHtml(item.businessDate || ''), escapeHtml(fmt(item.closedAt || item.createdAt)),
+            `${accountingNumber(actualAsset,8)} USDT`, `<b class="${accountingProfitClass(excludedProfit)}">${accountingNumber(excludedProfit,8)} USDT</b>`,
+            `${accountingNumber(companyAsset,8)} USDT`, `${accountingNumber(capitalBase,8)} USDT`,
+            `<b class="${accountingProfitClass(actualOwnerProfit)}">${accountingNumber(actualOwnerProfit,8)} USDT</b>`,
+            `<b class="${accountingProfitClass(companyOwnerProfit)}">${accountingNumber(companyOwnerProfit,8)} USDT</b>`,
+            `${accountingNumber(allUserProfit,8)} USDT`, `${accountingNumber(companyUserProfit,8)} USDT`,
+            `${accountingNumber(item.unallocatedAdjustmentUsd ?? 0,8)} USDT`, escapeHtml(item.source || 'auto')
+          ];
+        }))}
       </section>`;
 
     accountingBindFilter(pageId, renderAccountingClosing);

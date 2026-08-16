@@ -42,7 +42,7 @@ loadEnv();
 applyP2PFlowEnvAliases(process.env);
 
 const APP_VERSION = String(packageInfo.version || '0.0.0');
-const APP_SCHEMA_VERSION = 28;
+const APP_SCHEMA_VERSION = 29;
 const APP_DATA_COMPATIBILITY_EPOCH = 1;
 const PORT = Number(process.env.PORT || 3000);
 const DATABASE_URL = cleanEnv(process.env.P2PFLOW_DATABASE_URL || process.env.CRM_DATABASE_URL || process.env.DATABASE_URL || '', '');
@@ -160,6 +160,32 @@ const PERMISSION_CATALOG = [
   'credentials.manage'
 ];
 
+// Binance operations are scoped twice: a user needs the normal permission and
+// an explicit grant for the exact Binance API account. Admin remains the only
+// implicit all-account role. This prevents a user who was granted Account A
+// from seeing or mutating orders/ads that belong to Account B.
+const BINANCE_ACCOUNT_PERMISSION_CATALOG = Object.freeze([
+  'orders.view',
+  'orders.create',
+  'orders.assign',
+  'orders.split',
+  'orders.final_action',
+  'orders.quick_release',
+  'binance.sync',
+  'binance.chat',
+  'p2p.profile.view',
+  'p2p.profile.sync',
+  'ads.view',
+  'ads.manage'
+]);
+
+const BINANCE_ACCOUNT_PERMISSION_GROUPS = Object.freeze([
+  { id: 'orders', label: 'Orders', permissions: ['orders.view','orders.create','orders.assign','orders.split','orders.final_action','orders.quick_release'] },
+  { id: 'sync_chat', label: 'Sync & Chat', permissions: ['binance.sync','binance.chat'] },
+  { id: 'ads', label: 'Advertisements', permissions: ['ads.view','ads.manage'] },
+  { id: 'profile', label: 'P2P Profile', permissions: ['p2p.profile.view','p2p.profile.sync'] }
+]);
+
 function waitMs(ms) {
   return new Promise(resolve => setTimeout(resolve, Math.max(0, Number(ms) || 0)));
 }
@@ -184,20 +210,6 @@ function p2pProfilePermissionsForRole(role) {
   if (['agent', 'auditor'].includes(value)) return ['p2p.profile.view'];
   return [];
 }
-
-const PRIVILEGED_ORDER_PERMISSIONS = new Set([
-  'orders.view',
-  'orders.create',
-  'orders.assign',
-  'orders.split',
-  'orders.final_action',
-  'orders.quick_release',
-  'approvals.manage',
-  'binance.sync',
-  'binance.chat',
-  'accounts.view',
-  'accounts.use'
-]);
 
 function isPrivilegedOrderOperator(user) {
   return !!user && ['admin', 'manager'].includes(user.role);
@@ -230,11 +242,145 @@ function permissionsFromRoleProfile(roleProfileId, fallbackRole, target = db) {
 function userHasPermission(user, permission) {
   if (!user) return false;
   if (user.role === 'admin') return true;
-  if (user.role === 'manager' && PRIVILEGED_ORDER_PERMISSIONS.has(permission)) return true;
   const permissions = normalizePermissions(user.permissions, user.role);
   return permissions.includes(permission);
 }
 
+function binanceAccountGlobalPermissionSet(user = {}) {
+  if (String(user.role || '').toLowerCase() === 'admin') return new Set(BINANCE_ACCOUNT_PERMISSION_CATALOG);
+  const permissions = new Set(normalizePermissions(user.permissions, user.role));
+  return new Set(BINANCE_ACCOUNT_PERMISSION_CATALOG.filter(permission => permissions.has(permission)));
+}
+
+function normalizeBinanceCredentialPermissions(value = [], user = {}, target = db) {
+  const credentials = Array.isArray(target?.apiCredentials) ? target.apiCredentials : [];
+  const knownIds = new Set(credentials.map(item => Number(item.id)).filter(Boolean));
+  const globalPermissions = binanceAccountGlobalPermissionSet(user);
+  let rows = value;
+  if (!Array.isArray(rows) && rows && typeof rows === 'object') {
+    rows = Object.entries(rows).map(([credentialId, permissions]) => ({ credentialId: Number(credentialId), permissions }));
+  }
+  if (!Array.isArray(rows)) rows = [];
+  const merged = new Map();
+  rows.forEach(row => {
+    const credentialId = Number(row?.credentialId ?? row?.id ?? 0);
+    if (!credentialId || !knownIds.has(credentialId)) return;
+    const incoming = Array.isArray(row?.permissions) ? row.permissions : String(row?.permissions || '').split(',');
+    const allowed = incoming.filter(permission => BINANCE_ACCOUNT_PERMISSION_CATALOG.includes(permission) && globalPermissions.has(permission));
+    if (!merged.has(credentialId)) merged.set(credentialId, new Set());
+    allowed.forEach(permission => merged.get(credentialId).add(permission));
+  });
+  return [...merged.entries()]
+    .map(([credentialId, permissions]) => ({ credentialId, permissions: BINANCE_ACCOUNT_PERMISSION_CATALOG.filter(permission => permissions.has(permission)) }))
+    .filter(row => row.permissions.length)
+    .sort((a, b) => a.credentialId - b.credentialId);
+}
+
+function legacyBinanceCredentialPermissions(user = {}, target = db) {
+  if (String(user.role || '').toLowerCase() === 'admin') return [];
+  const credentials = Array.isArray(target?.apiCredentials) ? target.apiCredentials : [];
+  const allIds = credentials.map(item => Number(item.id)).filter(Boolean);
+  let ids = Array.isArray(user.allowedP2pCredentialIds) ? user.allowedP2pCredentialIds.map(Number).filter(Boolean) : [];
+  // Before account-scoped RBAC, Manager implicitly operated the single active
+  // credential. Preserve that access on migration by granting every existing
+  // credential, while all new grants remain explicit.
+  if (!ids.length && String(user.role || '').toLowerCase() === 'manager') ids = allIds;
+  ids = Array.from(new Set(ids.filter(id => allIds.includes(id))));
+  const permissions = BINANCE_ACCOUNT_PERMISSION_CATALOG.filter(permission => binanceAccountGlobalPermissionSet(user).has(permission));
+  return ids.map(credentialId => ({ credentialId, permissions: permissions.slice() }));
+}
+
+function binanceCredentialPermissionRowsForUser(user = {}, target = db) {
+  const credentials = Array.isArray(target?.apiCredentials) ? target.apiCredentials : [];
+  if (String(user.role || '').toLowerCase() === 'admin') {
+    return credentials.map(item => ({ credentialId: Number(item.id), permissions: BINANCE_ACCOUNT_PERMISSION_CATALOG.slice() }));
+  }
+  return normalizeBinanceCredentialPermissions(user.binanceCredentialPermissions || [], user, target);
+}
+
+function userHasBinanceCredentialPermission(user, credentialId, permission, target = db) {
+  if (!user || !credentialId || !BINANCE_ACCOUNT_PERMISSION_CATALOG.includes(permission)) return false;
+  if (!userHasPermission(user, permission)) return false;
+  if (String(user.role || '').toLowerCase() === 'admin') return true;
+  const row = binanceCredentialPermissionRowsForUser(user, target).find(item => Number(item.credentialId) === Number(credentialId));
+  return Boolean(row && row.permissions.includes(permission));
+}
+
+function binanceCredentialIdsForUserPermission(user = {}, permission, options = {}) {
+  const target = options.target || db;
+  const includeDisabled = options.includeDisabled === true;
+  const credentials = Array.isArray(target?.apiCredentials) ? target.apiCredentials : [];
+  return credentials
+    .filter(item => includeDisabled || !item.disabled)
+    .filter(item => userHasBinanceCredentialPermission(user, item.id, permission, target))
+    .map(item => Number(item.id));
+}
+
+function binanceCredentialOptionsForUser(user = {}, permission = null, options = {}) {
+  const target = options.target || db;
+  const includeDisabled = options.includeDisabled !== false;
+  const rows = binanceCredentialPermissionRowsForUser(user, target);
+  const grants = new Map(rows.map(row => [Number(row.credentialId), row.permissions.slice()]));
+  return [...(target?.apiCredentials || [])]
+    .filter(item => includeDisabled || !item.disabled)
+    .filter(item => !permission || userHasBinanceCredentialPermission(user, item.id, permission, target))
+    .sort((a, b) => {
+      const at = Date.parse(a.createdAt || '') || 0;
+      const bt = Date.parse(b.createdAt || '') || 0;
+      return at - bt || Number(a.id || 0) - Number(b.id || 0);
+    })
+    .map(item => ({
+      id: Number(item.id),
+      name: cleanStr(item.name || `API ${item.id}`, 120),
+      status: item.disabled ? 'disabled' : cleanStr(item.status || 'saved', 40),
+      disabled: Boolean(item.disabled),
+      createdAt: item.createdAt || null,
+      permissions: grants.get(Number(item.id)) || []
+    }));
+}
+
+function resolveBinanceCredentialForUser(user = {}, requestedId = 0, permission, options = {}) {
+  const target = options.target || db;
+  const includeDisabled = options.includeDisabled === true;
+  const optionsForUser = binanceCredentialOptionsForUser(user, permission, { target, includeDisabled });
+  const wanted = Number(requestedId || 0);
+  const option = wanted ? optionsForUser.find(item => Number(item.id) === wanted) : optionsForUser[0];
+  if (!option) return null;
+  return (target.apiCredentials || []).find(item => Number(item.id) === Number(option.id)) || null;
+}
+
+function syncLegacyP2pCredentialIds(user = {}, target = db) {
+  user.allowedP2pCredentialIds = binanceCredentialPermissionRowsForUser(user, target)
+    .filter(row => row.permissions.includes('p2p.profile.view'))
+    .map(row => Number(row.credentialId));
+  return user.allowedP2pCredentialIds;
+}
+
+function validateGrantedBinanceCredentialPermissions(actor, targetUser, requestedRows, target = db) {
+  const normalized = normalizeBinanceCredentialPermissions(requestedRows, targetUser, target);
+  for (const row of normalized) {
+    for (const permission of row.permissions) {
+      if (!userHasBinanceCredentialPermission(actor, row.credentialId, permission, target)) {
+        const error = new Error(`You cannot grant ${permission} for Binance account ${row.credentialId}.`);
+        error.statusCode = 403;
+        throw error;
+      }
+    }
+  }
+  return normalized;
+}
+
+function validateGrantedGlobalPermissions(actor, requestedPermissions, role) {
+  const normalized = normalizePermissions(requestedPermissions, role);
+  if (String(actor?.role || '').toLowerCase() === 'admin') return normalized;
+  const denied = normalized.filter(permission => !userHasPermission(actor, permission));
+  if (denied.length) {
+    const error = new Error(`You cannot grant permissions you do not have: ${denied.join(', ')}`);
+    error.statusCode = 403;
+    throw error;
+  }
+  return normalized;
+}
 
 
 const sessions = new Map();
@@ -1282,6 +1428,11 @@ function migrateDb(target) {
     u.permissions = normalizePermissions(storedPermissions === null ? (profile ? profile.permissions : permissionsFromRoleProfile(u.roleProfileId, u.role, target)) : storedPermissions, u.role);
     if (!Array.isArray(u.allowedP2pCredentialIds)) u.allowedP2pCredentialIds = [];
     u.allowedP2pCredentialIds = Array.from(new Set(u.allowedP2pCredentialIds.map(Number).filter(id => target.apiCredentials.some(c => Number(c.id) === id))));
+    if (!Array.isArray(u.binanceCredentialPermissions)) {
+      u.binanceCredentialPermissions = legacyBinanceCredentialPermissions(u, target);
+    }
+    u.binanceCredentialPermissions = normalizeBinanceCredentialPermissions(u.binanceCredentialPermissions, u, target);
+    syncLegacyP2pCredentialIds(u, target);
     if (!Array.isArray(u.trustedDevices)) u.trustedDevices = [];
     u.trustedDevices = u.trustedDevices.filter(item => item && typeof item === 'object' && cleanStr(item.id || '', 128)).slice(-12).map(item => ({
       id: cleanStr(item.id || '', 128),
@@ -1309,11 +1460,35 @@ function migrateDb(target) {
     if (!u.loginSecretHash && u.role !== 'admin') u.enabled = false;
   });
   hardenLegacyDefaultCredentials(target);
-  target.orders.forEach(o => { if (!o.orderSource) o.orderSource = String(o.orderNo || '').startsWith('OFFLINE') ? 'offline' : 'binance'; ensureOrderFinancials(o); });
+  const migrationCredential = [...(target.apiCredentials || [])].sort((a, b) => {
+    const at = Date.parse(a.createdAt || '') || 0;
+    const bt = Date.parse(b.createdAt || '') || 0;
+    return at - bt || Number(a.id || 0) - Number(b.id || 0);
+  })[0] || null;
+  target.orders.forEach(o => {
+    if (!o.orderSource) o.orderSource = String(o.orderNo || '').startsWith('OFFLINE') ? 'offline' : 'binance';
+    if (o.orderSource !== 'offline' && !Number(o.credentialId || 0) && migrationCredential) {
+      o.credentialId = Number(migrationCredential.id);
+      o.credentialName = cleanStr(migrationCredential.name || `API ${migrationCredential.id}`, 120);
+    }
+    if (o.orderSource === 'offline') {
+      o.credentialId = null;
+      o.credentialName = '';
+    }
+    ensureOrderFinancials(o);
+  });
+  target.advertisements.forEach(ad => {
+    if (!Number(ad.credentialId || 0) && migrationCredential) {
+      ad.credentialId = Number(migrationCredential.id);
+      ad.credentialName = cleanStr(migrationCredential.name || `API ${migrationCredential.id}`, 120);
+    }
+  });
   target.agents.forEach(a => {
     if (a.allowNewOrders === undefined) a.allowNewOrders = true;
     if (a.mobile === undefined) a.mobile = '';
     if (a.smsEnabled === undefined) a.smsEnabled = true;
+    if (a.includeProfitInCompanyTotals === undefined) a.includeProfitInCompanyTotals = true;
+    a.includeProfitInCompanyTotals = a.includeProfitInCompanyTotals !== false;
     if (!a.status || ['online','offline','busy'].includes(String(a.status).toLowerCase())) a.status = 'dynamic';
     const linkedUser = target.users.find(u => Number(u.id) === Number(a.userId));
     if (linkedUser && linkedUser.role !== 'agent') {
@@ -1372,6 +1547,9 @@ function makeUser(id, username, password, name, role, agentId, opts = {}) {
     agentId,
     enabled: true,
     permissions: defaultPermissionsForRole(role),
+    // Explicit per-Binance-account grants. Admin receives implicit all-account
+    // access; every other role must have a row for the exact credential.
+    binanceCredentialPermissions: [],
     allowedP2pCredentialIds: [],
     trustedDevices: [],
     securityQuestion: cleanStr(opts.securityQuestion || '', 240),
@@ -1446,6 +1624,10 @@ function nextIdFor(target) {
 function nextId() { return nextIdFor(db); }
 function methodById(id) { return db.paymentMethods.find(m => m.id === Number(id)); }
 function agentById(id) { return db.agents.find(a => a.id === Number(id)); }
+function agentProfitIncludedInCompanyTotals(agentId) {
+  const agent = agentById(agentId);
+  return !agent || agent.includeProfitInCompanyTotals !== false;
+}
 function orderById(id) { return db.orders.find(o => o.id === Number(id)); }
 function accountById(id) { return db.paymentAccounts.find(a => a.id === Number(id)); }
 function proofById(id) { return db.proofFiles.find(p => p.id === Number(id)); }
@@ -1542,7 +1724,22 @@ function canUsePaymentAccount(user, accountItem) {
 function userSafe(u) {
   if (!u) return null;
   const profile = roleProfileById(u.roleProfileId);
-  return { id: u.id, username: u.username, name: u.name, role: u.role, isOwner: u.isOwner === true, roleProfileId: u.roleProfileId || null, roleName: profile ? profile.name : u.role, agentId: u.agentId, permissions: normalizePermissions(u.permissions, u.role), email: u.email || '', allowedP2pCredentialIds: Array.isArray(u.allowedP2pCredentialIds) ? u.allowedP2pCredentialIds.map(Number).filter(Boolean) : [], securityQuestion: cleanStr(u.securityQuestion || '', 240), securityFallbackConfigured: securityQuestionFallbackConfigured(u) };
+  return {
+    id: u.id,
+    username: u.username,
+    name: u.name,
+    role: u.role,
+    isOwner: u.isOwner === true,
+    roleProfileId: u.roleProfileId || null,
+    roleName: profile ? profile.name : u.role,
+    agentId: u.agentId,
+    permissions: normalizePermissions(u.permissions, u.role),
+    email: u.email || '',
+    binanceCredentialPermissions: binanceCredentialPermissionRowsForUser(u),
+    allowedP2pCredentialIds: Array.isArray(u.allowedP2pCredentialIds) ? u.allowedP2pCredentialIds.map(Number).filter(Boolean) : [],
+    securityQuestion: cleanStr(u.securityQuestion || '', 240),
+    securityFallbackConfigured: securityQuestionFallbackConfigured(u)
+  };
 }
 
 function ledgerEffect(l) {
@@ -4439,6 +4636,7 @@ function eligibleAgentRoutes(paymentMethodId, excludeAgentId = null, order = nul
     .filter(r => r.paymentMethodId === Number(paymentMethodId) && r.enabled)
     .map(r => ({ route: r, agent: agentById(r.agentId) }))
     .filter(x => x.agent && agentAvailableForAssignment(x.agent) && x.agent.id !== Number(excludeAgentId))
+    .filter(x => !order || order.orderSource === 'offline' || !Number(order.credentialId || 0) || userHasBinanceCredentialPermission(agentLoginUser(x.agent.id), order.credentialId, 'orders.view'))
     .filter(x => !order || !x.route.minOrderAmount || num(order.amount) >= num(x.route.minOrderAmount))
     .filter(x => !order || !x.route.maxOrderAmount || num(order.amount) <= num(x.route.maxOrderAmount))
     .filter(x => !x.route.maxActiveOrders || activeAssignmentCount(x.agent.id) < num(x.route.maxActiveOrders))
@@ -4481,9 +4679,24 @@ function orderLockView(lock) {
 function can(user, roles) { return roles.includes(user.role); }
 function canAccessOrder(user, order) {
   if (!order || !user) return false;
+  if (!userHasPermission(user, 'orders.view')) return false;
+  if (order.orderSource !== 'offline') {
+    const credentialId = Number(order.credentialId || 0);
+    if (!credentialId || !userHasBinanceCredentialPermission(user, credentialId, 'orders.view')) return false;
+  }
+  if (user.role === 'agent') {
+    return db.orderAgentAssignments.some(a => a.orderId === order.id && a.agentId === user.agentId && a.status !== 'left');
+  }
   if (['admin', 'manager', 'auditor'].includes(user.role)) return true;
-  if (user.role === 'agent') return userHasPermission(user, 'orders.view') && db.orderAgentAssignments.some(a => a.orderId === order.id && a.agentId === user.agentId && a.status !== 'left');
   return false;
+}
+
+function canUseOrderCredential(user, order, permission) {
+  if (!user || !order || !permission) return false;
+  if (!userHasPermission(user, permission)) return false;
+  if (order.orderSource === 'offline') return true;
+  const credentialId = Number(order.credentialId || 0);
+  return Boolean(credentialId && userHasBinanceCredentialPermission(user, credentialId, permission));
 }
 function canAccessAccount(user, accountItem) {
   if (!user || !accountItem) return false;
@@ -4589,7 +4802,9 @@ function notifyManager(type, orderId, message, severity = 'warning', extra = {})
 function notificationsForUser(user) {
   const list = (db.notifications || []).filter(n => Number(n.excludeUserId || 0) !== Number(user?.id || 0));
   if (!user) return [];
-  if (['admin', 'manager', 'auditor'].includes(user.role)) return list;
+  if (['admin', 'manager', 'auditor'].includes(user.role)) {
+    return list.filter(n => !n.orderId || canAccessOrder(user, orderById(n.orderId)));
+  }
   return list.filter(n => {
     if (n.userId && Number(n.userId) === Number(user.id)) return true;
     if (n.agentId && Number(n.agentId) === Number(user.agentId)) return true;
@@ -5236,6 +5451,93 @@ function activeBinanceCredential() {
   return creds.find(c => ['live_success','success','ready','saved'].includes(c.status)) || creds[0] || null;
 }
 
+function binanceCredentialById(id) {
+  return (db.apiCredentials || []).find(item => Number(item.id) === Number(id)) || null;
+}
+
+function binanceCredentialLabel(credential) {
+  return credential ? cleanStr(credential.name || `API ${credential.id}`, 120) : '';
+}
+
+function usableBinanceCredentialOptionsForUser(user, permission) {
+  return binanceCredentialOptionsForUser(user, permission, { includeDisabled: false })
+    .filter(option => {
+      const credential = binanceCredentialById(option.id);
+      return Boolean(credential && !credential.disabled && credential.apiKey && credential.secretKey);
+    });
+}
+
+function requireLiveBinanceCredentialForUser(req, res, user, requestedId, permission, options = {}) {
+  if (db.settings.apiMode !== 'live') {
+    sendJson(res, 422, { error: 'API Mode must be live before this Binance action can run.' }, {}, req);
+    return null;
+  }
+  if (!userHasPermission(user, permission)) {
+    sendJson(res, 403, { error: `Permission denied: ${permission}` }, {}, req);
+    return null;
+  }
+  const allowed = usableBinanceCredentialOptionsForUser(user, permission);
+  const wantedId = Number(requestedId || 0);
+  let option = wantedId ? allowed.find(item => Number(item.id) === wantedId) : null;
+  if (wantedId && !option) {
+    const exists = binanceCredentialById(wantedId);
+    sendJson(res, exists ? 403 : 404, { error: exists ? `No ${permission} access to the selected Binance account.` : 'Selected Binance account was not found.' }, {}, req);
+    return null;
+  }
+  if (!option) {
+    if (allowed.length === 1 || options.requireExplicitWhenMultiple === false) option = allowed[0] || null;
+    else if (allowed.length > 1) {
+      sendJson(res, 422, { error: 'Select the Binance account for this action.', credentialOptions: allowed }, {}, req);
+      return null;
+    }
+  }
+  if (!option) {
+    sendJson(res, 422, { error: `No enabled Binance account is assigned with ${permission} permission.` }, {}, req);
+    return null;
+  }
+  return binanceCredentialById(option.id);
+}
+
+function requireAssignedBinanceCredentialForUser(req, res, user, requestedId, permission, options = {}) {
+  if (!userHasPermission(user, permission)) {
+    sendJson(res, 403, { error: `Permission denied: ${permission}` }, {}, req);
+    return null;
+  }
+  const allowed = binanceCredentialOptionsForUser(user, permission, { includeDisabled: false });
+  const wantedId = Number(requestedId || 0);
+  let option = wantedId ? allowed.find(item => Number(item.id) === wantedId) : null;
+  if (wantedId && !option) {
+    const exists = binanceCredentialById(wantedId);
+    sendJson(res, exists ? 403 : 404, { error: exists ? `No ${permission} access to the selected Binance account.` : 'Selected Binance account was not found.' }, {}, req);
+    return null;
+  }
+  if (!option) {
+    if (allowed.length === 1 || options.requireExplicitWhenMultiple === false) option = allowed[0] || null;
+    else if (allowed.length > 1) {
+      sendJson(res, 422, { error: 'Select the Binance account for this action.', credentialOptions: allowed }, {}, req);
+      return null;
+    }
+  }
+  if (!option) {
+    sendJson(res, 422, { error: `No enabled Binance account is assigned with ${permission} permission.` }, {}, req);
+    return null;
+  }
+  return binanceCredentialById(option.id);
+}
+
+function requireOrderBinanceCredential(req, res, user, order, permission) {
+  if (!order || order.orderSource === 'offline') {
+    sendJson(res, 422, { error: 'Offline orders do not use a Binance account.' }, {}, req);
+    return null;
+  }
+  const credentialId = Number(order.credentialId || 0);
+  if (!credentialId) {
+    sendJson(res, 422, { error: 'This Binance order is not linked to an API account. Run a scoped account sync or repair the order link first.' }, {}, req);
+    return null;
+  }
+  return requireLiveBinanceCredentialForUser(req, res, user, credentialId, permission, { requireExplicitWhenMultiple: true });
+}
+
 function sortedP2pProfileCredentials() {
   return [...(db.apiCredentials || [])].sort((a, b) => {
     const at = Date.parse(a.createdAt || '') || 0;
@@ -5250,17 +5552,16 @@ function normalizeP2pCredentialIds(values = []) {
 }
 
 function p2pProfileCredentialIdsForUser(user = {}) {
-  const all = sortedP2pProfileCredentials().map(item => Number(item.id));
-  if (String(user.role || '').toLowerCase() === 'admin') return all;
-  const allowed = new Set(normalizeP2pCredentialIds(user.allowedP2pCredentialIds || []));
-  return all.filter(id => allowed.has(id));
+  return binanceCredentialIdsForUserPermission(user, 'p2p.profile.view', { includeDisabled: true });
 }
 
 function p2pProfileCredentialOptionsForUser(user = {}) {
-  const allowed = new Set(p2pProfileCredentialIdsForUser(user));
-  return sortedP2pProfileCredentials().filter(item => allowed.has(Number(item.id))).map(item => {
+  const baseOptions = new Map(binanceCredentialOptionsForUser(user, 'p2p.profile.view', { includeDisabled: true }).map(item => [Number(item.id), item]));
+  return sortedP2pProfileCredentials().filter(item => baseOptions.has(Number(item.id))).map(item => {
     const profile = (db.ownerP2pProfiles || []).find(row => Number(row.credentialId) === Number(item.id)) || null;
+    const base = baseOptions.get(Number(item.id)) || {};
     return {
+      ...base,
       id: Number(item.id),
       name: cleanStr(item.name || `API ${item.id}`, 120),
       status: item.disabled ? 'disabled' : cleanStr(item.status || 'saved', 40),
@@ -5273,11 +5574,8 @@ function p2pProfileCredentialOptionsForUser(user = {}) {
   });
 }
 
-function resolveP2pProfileCredentialForUser(user = {}, requestedId = 0) {
-  const allowed = p2pProfileCredentialOptionsForUser(user);
-  const wanted = Number(requestedId || 0);
-  if (wanted) return allowed.find(item => Number(item.id) === wanted) || null;
-  return allowed[0] || null;
+function resolveP2pProfileCredentialForUser(user = {}, requestedId = 0, permission = 'p2p.profile.view') {
+  return resolveBinanceCredentialForUser(user, requestedId, permission, { includeDisabled: false });
 }
 
 function p2pCredentialById(id) {
@@ -5300,7 +5598,7 @@ async function resolveBinancePayIdForOrder(order, body, credential) {
   try {
     const detailResp = await callSignedSapi({ apiKey: credential.apiKey, secretKey: credential.secretKey, endpointName: 'getUserOrderDetail', body: { adOrderNo: orderNumber }, clientType: credential.clientType || 'web', dryRun: false });
     const detail = unwrapBinanceData(detailResp);
-    const change = upsertBinanceOrder(detail, null);
+    const change = upsertBinanceOrder(detail, null, credential);
     const updated = change.order || order;
     updated.lastBinanceDetailSyncedAt = nowIso();
     updated.rawBinanceDetail = sanitizedBinanceResult(detail);
@@ -5433,8 +5731,16 @@ async function performLiveBinanceFinalAction(user, order, action, body) {
   if (!['paid_mark', 'release', 'quick_release'].includes(action)) {
     return { mode: 'local', skipped: true, reason: 'action_not_binance_live' };
   }
-  const credential = activeBinanceCredential();
-  if (!credential) throw new Error('Live Binance action enabled, but no API credential is saved. Add Binance API credential first.');
+  const credential = binanceCredentialById(order.credentialId);
+  if (!credential || credential.disabled || !credential.apiKey || !credential.secretKey) {
+    throw new Error('The Binance account linked to this order is unavailable. Restore or test that exact API credential first.');
+  }
+  if (!userHasBinanceCredentialPermission(user, credential.id, 'orders.final_action')) {
+    throw new Error('You do not have orders.final_action permission for this Binance account.');
+  }
+  if (action === 'quick_release' && !userHasBinanceCredentialPermission(user, credential.id, 'orders.quick_release')) {
+    throw new Error('You do not have orders.quick_release permission for this Binance account.');
+  }
   const orderNumber = binanceOrderNumberFor(order, body);
   if (!orderNumber) throw new Error('Binance order number is required for live action.');
   const clientType = cleanStr(body.clientType || credential.clientType || 'web', 40);
@@ -5478,9 +5784,7 @@ async function performLiveBinanceFinalAction(user, order, action, body) {
 
 function requireBinanceSyncPermission(req, res) {
   const user = requirePermission(req, res, 'binance.sync');
-  if (!user) return null;
-  if (!['admin', 'manager'].includes(user.role)) { sendJson(res, 403, { error: 'Only manager/admin can run Binance sync.' }, {}, req); return null; }
-  return user;
+  return user || null;
 }
 
 function requireLiveBinanceCredential(req, res) {
@@ -6145,16 +6449,19 @@ function binanceOrderFields(rawInput = {}) {
   };
 }
 
-function upsertBinanceOrder(rawOrder, user) {
+function upsertBinanceOrder(rawOrder, user, credential = null) {
   const fields = binanceOrderFields(rawOrder);
   if (!fields.orderNo) return { skipped: true, reason: 'missing_order_number' };
-  let order = db.orders.find(o => o.externalOrderNo === fields.orderNo || o.orderNo === fields.orderNo);
+  const credentialId = Number(credential?.id || 0);
+  const credentialName = binanceCredentialLabel(credential);
+  if (!credentialId) return { skipped: true, reason: 'missing_credential' };
+  let order = db.orders.find(o => Number(o.credentialId || 0) === credentialId && (o.externalOrderNo === fields.orderNo || o.orderNo === fields.orderNo));
   let before = null;
   let created = false;
   if (!order) {
     created = true;
     order = {
-      id: nextId(), orderNo: fields.orderNo, orderSource: 'binance', type: fields.type,
+      id: nextId(), orderNo: fields.orderNo, orderSource: 'binance', credentialId, credentialName, type: fields.type,
       asset: fields.asset, amount: fields.amount, fiatAmount: fields.fiatAmount, fiatUnit: fields.fiatUnit,
       rate: fields.rate, assetAmount: fields.assetAmount, commission: fields.commission, commissionRate: fields.commissionRate,
       takerAmount: fields.takerAmount, takerCommission: fields.takerCommission, takerCommissionRate: fields.takerCommissionRate,
@@ -6189,7 +6496,7 @@ function upsertBinanceOrder(rawOrder, user) {
         notifyOrderManagerQueue(order, 'binance_sync_no_agent');
       }
     }
-    logAudit(user, 'binance_order_created_from_sync', 'order', order.id, { orderNo: order.orderNo, externalStatus: order.externalStatus, assignedAgentId: order.currentAgentId || null });
+    logAudit(user, 'binance_order_created_from_sync', 'order', order.id, { orderNo: order.orderNo, credentialId, credentialName, externalStatus: order.externalStatus, assignedAgentId: order.currentAgentId || null });
   } else {
     before = {
       status: order.status,
@@ -6212,6 +6519,8 @@ function upsertBinanceOrder(rawOrder, user) {
         : { required: fields.additionalVerificationRequired, pending: fields.additionalVerificationPending, verified: fields.additionalVerificationVerified, status: fields.additionalKycVerify };
     }
     Object.assign(order, {
+      credentialId,
+      credentialName,
       type: fields.type, asset: fields.asset,
       amount: fields.amount || order.amount, fiatAmount: fields.fiatAmount || order.fiatAmount || order.amount, fiatUnit: fields.fiatUnit,
       rate: fields.rate || order.rate, assetAmount: fields.assetAmount || order.assetAmount,
@@ -6258,7 +6567,7 @@ function upsertBinanceOrder(rawOrder, user) {
       }
     }
     ensureOrderFinancials(order);
-    logAudit(user, 'binance_order_updated_from_sync', 'order', order.id, { orderNo: order.orderNo, externalStatus: order.externalStatus, paymentMethodId: order.paymentMethodId, binancePayId: order.binancePayId || null });
+    logAudit(user, 'binance_order_updated_from_sync', 'order', order.id, { orderNo: order.orderNo, credentialId, credentialName, externalStatus: order.externalStatus, paymentMethodId: order.paymentMethodId, binancePayId: order.binancePayId || null });
   }
   if (orderIsClosed(order)) clearP2pExtensionDataForClosedOrder(order);
   else queueP2pExtensionTask(order, created ? 'order_created' : 'order_updated');
@@ -6281,6 +6590,8 @@ function binanceOrderChangeView(change) {
     orderId: order.id,
     orderNo: order.orderNo,
     externalOrderNo: order.externalOrderNo || order.orderNo,
+    credentialId: Number(order.credentialId || 0) || null,
+    credentialName: cleanStr(order.credentialName || '', 120),
     created: Boolean(change.created),
     statusChanged: Boolean(change.statusChanged),
     paymentMethodChanged: Boolean(change.paymentMethodChanged),
@@ -6352,7 +6663,7 @@ async function syncBinanceOrdersWithCredential(user, credential, opts = {}) {
   let openDetailSynced = 0;
   const detailFetchedOrderIds = new Set();
   for (const row of rows) {
-    let change = upsertBinanceOrder(row, user);
+    let change = upsertBinanceOrder(row, user, credential);
     const orderNo = (change.order && (change.order.externalOrderNo || change.order.orderNo)) || binanceOrderFields(row).orderNo;
     const detailMode = opts.detailMode || 'smart';
     const shouldDetail = orderNo && opts.skipDetailSync !== true && (detailMode === 'all' || binanceOrderDetailStale(change.order, change, opts.detailMaxAgeMs || 30000));
@@ -6360,7 +6671,7 @@ async function syncBinanceOrdersWithCredential(user, credential, opts = {}) {
       try {
         const detailResp = await callSignedSapi({ apiKey: credential.apiKey, secretKey: credential.secretKey, endpointName: 'getUserOrderDetail', body: { adOrderNo: orderNo }, clientType: credential.clientType || 'web', dryRun: false });
         const detail = unwrapBinanceData(detailResp);
-        const detailChange = upsertBinanceOrder(detail, user);
+        const detailChange = upsertBinanceOrder(detail, user, credential);
         const combined = [];
         mergeBinanceOrderChange(combined, change);
         mergeBinanceOrderChange(combined, detailChange);
@@ -6385,7 +6696,7 @@ async function syncBinanceOrdersWithCredential(user, credential, opts = {}) {
     const openDetailLimit = Math.min(100, Math.max(5, positiveNum(opts.openDetailRows || db.settings.binanceOpenOrderDetailRows || 100) || 100));
     const remainingDetailSlots = Math.max(0, openDetailLimit - detailFetchedOrderIds.size);
     const openOrders = db.orders
-      .filter(order => order.orderSource !== 'offline' && !orderIsClosed(order) && cleanStr(order.externalOrderNo || order.orderNo || '', 120))
+      .filter(order => Number(order.credentialId || 0) === Number(credential.id) && order.orderSource !== 'offline' && !orderIsClosed(order) && cleanStr(order.externalOrderNo || order.orderNo || '', 120))
       .filter(order => !detailFetchedOrderIds.has(Number(order.id)))
       .sort((a, b) => (Date.parse(a.lastBinanceDetailSyncedAt || '') || 0) - (Date.parse(b.lastBinanceDetailSyncedAt || '') || 0))
       .slice(0, remainingDetailSlots);
@@ -6394,7 +6705,7 @@ async function syncBinanceOrdersWithCredential(user, credential, opts = {}) {
       try {
         const detailResp = await callSignedSapi({ apiKey: credential.apiKey, secretKey: credential.secretKey, endpointName: 'getUserOrderDetail', body: { adOrderNo: orderNo }, clientType: credential.clientType || 'web', dryRun: false });
         const detail = unwrapBinanceData(detailResp);
-        const change = upsertBinanceOrder(detail, user);
+        const change = upsertBinanceOrder(detail, user, credential);
         if (change.order) {
           detailFetchedOrderIds.add(Number(change.order.id));
           change.order.lastBinanceDetailSyncedAt = nowIso();
@@ -6419,15 +6730,29 @@ async function syncBinanceOrdersWithCredential(user, credential, opts = {}) {
     .filter(x => x.order && (x.created || x.statusChanged || x.paymentMethodChanged))
     .map(binanceOrderChangeView)
     .filter(Boolean);
-  const out = { created, updated, skipped, detailSynced, openDetailSynced, totalRows: rows.length, changedOrders, items: db.orders.map(orderListView), request: payload, result: sanitizedBinanceResult(result) };
+  const out = {
+    created,
+    updated,
+    skipped,
+    detailSynced,
+    openDetailSynced,
+    totalRows: rows.length,
+    changedOrders,
+    credentialId: Number(credential.id),
+    credentialName: binanceCredentialLabel(credential),
+    items: db.orders.filter(order => Number(order.credentialId || 0) === Number(credential.id)).map(order => orderListView(order, user)),
+    request: payload,
+    result: sanitizedBinanceResult(result)
+  };
   return out;
 }
 
 async function handleBinanceOrderSync(req, res, url) {
-  const user = requireBinanceSyncPermission(req, res); if (!user) return;
-  const credential = requireLiveBinanceCredential(req, res); if (!credential) return;
   if (req.method !== 'POST') return sendJson(res, 405, { error: 'Method not allowed' }, {}, req);
+  const user = requireBinanceSyncPermission(req, res); if (!user) return;
   const body = await readBody(req);
+  const credential = requireLiveBinanceCredentialForUser(req, res, user, body.credentialId || url.searchParams.get('credentialId'), 'binance.sync', { requireExplicitWhenMultiple: true });
+  if (!credential) return;
   const out = await syncBinanceOrdersWithCredential(user, credential, {
     page: body.page || url.searchParams.get('page') || 1,
     rows: body.rows || url.searchParams.get('rows') || 30,
@@ -6446,8 +6771,8 @@ async function handleBinanceOrderSync(req, res, url) {
   });
   logAudit(user, 'binance_orders_synced', 'binance', credential.id, { request: out.request, created: out.created, updated: out.updated, skipped: out.skipped, detailSynced: out.detailSynced, totalRows: out.totalRows, result: out.result });
   saveDb();
-  broadcast({ type: 'binance.orders.synced', created: out.created, updated: out.updated, skipped: out.skipped, detailSynced: out.detailSynced, openDetailSynced: out.openDetailSynced, totalRows: out.totalRows, changedOrders: out.changedOrders || [], at: nowIso() });
-  return sendJson(res, 200, { created: out.created, updated: out.updated, skipped: out.skipped, detailSynced: out.detailSynced, openDetailSynced: out.openDetailSynced, totalRows: out.totalRows, changedOrders: out.changedOrders || [], items: out.items }, {}, req);
+  broadcast({ type: 'binance.orders.synced', credentialId: out.credentialId, credentialName: out.credentialName, created: out.created, updated: out.updated, skipped: out.skipped, detailSynced: out.detailSynced, openDetailSynced: out.openDetailSynced, totalRows: out.totalRows, changedOrders: out.changedOrders || [], at: nowIso() });
+  return sendJson(res, 200, { credentialId: out.credentialId, credentialName: out.credentialName, created: out.created, updated: out.updated, skipped: out.skipped, detailSynced: out.detailSynced, openDetailSynced: out.openDetailSynced, totalRows: out.totalRows, changedOrders: out.changedOrders || [], items: out.items }, {}, req);
 }
 
 
@@ -6468,9 +6793,11 @@ async function syncBinancePaymentMethodsWithCredential(user, credential, reason 
 }
 
 async function handleBinancePaymentMethodSync(req, res) {
-  const user = requireBinanceSyncPermission(req, res); if (!user) return;
-  const credential = requireLiveBinanceCredential(req, res); if (!credential) return;
   if (req.method !== 'POST') return sendJson(res, 405, { error: 'Method not allowed' }, {}, req);
+  const user = requireBinanceSyncPermission(req, res); if (!user) return;
+  const body = await readBody(req);
+  const credential = requireLiveBinanceCredentialForUser(req, res, user, body.credentialId, 'binance.sync', { requireExplicitWhenMultiple: true });
+  if (!credential) return;
   const out = await syncBinancePaymentMethodsWithCredential(user, credential, 'manual_button');
   saveDb();
   broadcast({ type: 'payment.methods.synced', created: out.created, updated: out.updated, at: nowIso() });
@@ -6478,14 +6805,13 @@ async function handleBinancePaymentMethodSync(req, res) {
 }
 
 async function refreshBinanceOrderDetail(req, res, user, order) {
-  if (!userHasPermission(user, 'binance.sync')) return sendJson(res, 403, { error: 'Permission denied: binance.sync' }, {}, req);
-  const credential = requireLiveBinanceCredential(req, res); if (!credential) return;
   if (order.orderSource === 'offline') return sendJson(res, 422, { error: 'Offline orders do not have Binance details.' }, {}, req);
+  const credential = requireOrderBinanceCredential(req, res, user, order, 'binance.sync'); if (!credential) return;
   const body = await readBody(req);
   const orderNumber = binanceOrderNumberFor(order, body);
   const result = await callSignedSapi({ apiKey: credential.apiKey, secretKey: credential.secretKey, endpointName: 'getUserOrderDetail', body: { adOrderNo: orderNumber }, clientType: credential.clientType || 'web', dryRun: false });
   const detail = unwrapBinanceData(result);
-  const change = upsertBinanceOrder(detail, user);
+  const change = upsertBinanceOrder(detail, user, credential);
   const target = change.order || order;
   target.lastBinanceDetailSyncedAt = nowIso();
   target.rawBinanceDetail = sanitizedBinanceResult(detail);
@@ -7824,6 +8150,7 @@ async function buildCounterpartyStatsPayload(order, credential, orderNumber, sta
 
 async function updateManualCounterpartyFeedback(req, res, user, order) {
   if (!['admin','manager'].includes(user.role) && !userHasPermission(user, 'binance.sync')) return sendJson(res, 403, { error: 'Permission denied: counterparty feedback update' }, {}, req);
+  if (order.orderSource !== 'offline' && !canUseOrderCredential(user, order, 'binance.sync')) return sendJson(res, 403, { error: 'No binance.sync access to this order account.' }, {}, req);
   const body = await readBody(req);
   const stats = { ...emptyCounterpartyStats(), ...(order.counterpartyStats || {}) };
   const maybeNum = (v) => (v === null || v === undefined || v === '' ? null : positiveNum(v, null));
@@ -7854,9 +8181,8 @@ async function updateManualCounterpartyFeedback(req, res, user, order) {
 }
 
 async function syncBinanceCounterparty(req, res, user, order) {
-  if (!userHasPermission(user, 'binance.sync')) return sendJson(res, 403, { error: 'Permission denied: binance.sync' }, {}, req);
-  const credential = requireLiveBinanceCredential(req, res); if (!credential) return;
   if (order.orderSource === 'offline') return sendJson(res, 422, { error: 'Offline orders do not have Binance counterparty stats.' }, {}, req);
+  const credential = requireOrderBinanceCredential(req, res, user, order, 'binance.sync'); if (!credential) return;
   const body = await readBody(req);
   const orderNumber = binanceOrderNumberFor(order, body);
   try {
@@ -8111,9 +8437,8 @@ async function uploadBinanceChatImage(credential, imageName, buffer, mimeType = 
 }
 
 async function sendBinanceChatMessage(req, res, user, order) {
-  if (!userHasPermission(user, 'binance.chat') && !userHasPermission(user, 'binance.sync')) return sendJson(res, 403, { error: 'Permission denied: binance.chat' }, {}, req);
-  const credential = requireLiveBinanceCredential(req, res); if (!credential) return;
   if (order.orderSource !== 'binance' || !binanceOrderNumberFor(order, {})) return sendJson(res, 422, { error: 'This order does not have Binance C2C chat.' }, {}, req);
+  const credential = requireOrderBinanceCredential(req, res, user, order, 'binance.chat'); if (!credential) return;
   const body = await readBody(req);
   const orderNo = binanceOrderNumberFor(order, body);
   let selectedPaymentAccount = null;
@@ -8193,9 +8518,10 @@ async function sendBinanceChatMessage(req, res, user, order) {
 }
 
 async function markBinanceOrderChatRead(req, res, user, order) {
-  if (!userHasPermission(user, 'binance.chat') && !userHasPermission(user, 'binance.sync')) return sendJson(res, 403, { error: 'Permission denied: binance.chat' }, {}, req);
-  const credential = requireLiveBinanceCredential(req, res); if (!credential) return;
   if (order.orderSource !== 'binance' || !binanceOrderNumberFor(order, {})) return sendJson(res, 422, { error: 'This order does not have Binance C2C chat.' }, {}, req);
+  const accountPermission = canUseOrderCredential(user, order, 'binance.chat') ? 'binance.chat' : (canUseOrderCredential(user, order, 'binance.sync') ? 'binance.sync' : '');
+  if (!accountPermission) return sendJson(res, 403, { error: 'No Binance chat permission for this order account.' }, {}, req);
+  const credential = requireOrderBinanceCredential(req, res, user, order, accountPermission); if (!credential) return;
   const body = await readBody(req);
   const orderNo = binanceOrderNumberFor(order, body);
   const userId = positiveNum(body.userId || 0);
@@ -8236,7 +8562,7 @@ function importBinanceChatRows(order, rows = []) {
 
 async function syncBinanceChatsRoundRobin(credential, batchSize = 10) {
   const candidates = (db.orders || [])
-    .filter(order => order.orderSource === 'binance' && cleanStr(order.externalOrderNo || order.orderNo || '', 120))
+    .filter(order => Number(order.credentialId || 0) === Number(credential?.id || 0) && order.orderSource === 'binance' && cleanStr(order.externalOrderNo || order.orderNo || '', 120))
     .sort((a, b) => (Date.parse(a.lastBinanceChatSyncAttemptAt || '') || 0) - (Date.parse(b.lastBinanceChatSyncAttemptAt || '') || 0))
     .slice(0, Math.max(1, Number(batchSize || 10)));
   const results = [];
@@ -8259,9 +8585,10 @@ async function syncBinanceChatsRoundRobin(credential, batchSize = 10) {
 }
 
 async function syncBinanceChat(req, res, user, order) {
-  if (!userHasPermission(user, 'binance.sync') && !userHasPermission(user, 'orders.view')) return sendJson(res, 403, { error: 'Permission denied' }, {}, req);
-  const credential = requireLiveBinanceCredential(req, res); if (!credential) return;
   if (order.orderSource !== 'binance' || !binanceOrderNumberFor(order, {})) return sendJson(res, 422, { error: 'This order does not have Binance chat.' }, {}, req);
+  const accountPermission = canUseOrderCredential(user, order, 'binance.chat') ? 'binance.chat' : (canUseOrderCredential(user, order, 'binance.sync') ? 'binance.sync' : '');
+  if (!accountPermission) return sendJson(res, 403, { error: 'No Binance chat/sync permission for this order account.' }, {}, req);
+  const credential = requireOrderBinanceCredential(req, res, user, order, accountPermission); if (!credential) return;
   const body = await readBody(req);
   const orderNo = binanceOrderNumberFor(order, body);
   const query = { orderNo, page: positiveNum(body.page || 1), rows: Math.min(50, positiveNum(body.rows || 20) || 20), sort: cleanStr(body.sort || 'desc', 10) };
@@ -9777,18 +10104,19 @@ function adsManagerPresence() {
   return { managers, activeManagers, managerOnline: activeManagers.length > 0 };
 }
 
-function advertisementCapability(user) {
+function advertisementCapability(user, credentialId = 0) {
   const presence = adsManagerPresence();
-  const canView = userHasPermission(user, 'ads.view');
-  const hasManagePermission = userHasPermission(user, 'ads.manage');
-  const blockedByManager = Boolean(user && user.role === 'agent' && presence.managerOnline);
+  const accountId = Number(credentialId || 0);
+  const canView = userHasPermission(user, 'ads.view') && (!accountId || userHasBinanceCredentialPermission(user, accountId, 'ads.view'));
+  const hasManagePermission = userHasPermission(user, 'ads.manage') && (!accountId || userHasBinanceCredentialPermission(user, accountId, 'ads.manage'));
+  const blockedByManager = false;
   let reason = '';
   if (!hasManagePermission) reason = 'Permission denied: ads.manage';
-  else if (blockedByManager) reason = 'Manager is active. Agent advertisement create, edit, sync and status controls are locked.';
   return {
+    credentialId: accountId || null,
     canView,
     hasManagePermission,
-    canManage: hasManagePermission && !blockedByManager,
+    canManage: hasManagePermission,
     blockedByManager,
     reason,
     activeManagers: presence.activeManagers,
@@ -9796,15 +10124,21 @@ function advertisementCapability(user) {
   };
 }
 
-function requireAdvertisementManage(req, res) {
+function requireAdvertisementManage(req, res, credentialId = 0) {
   const user = requirePermission(req, res, 'ads.manage');
   if (!user) return null;
-  const capability = advertisementCapability(user);
+  const capability = advertisementCapability(user, credentialId);
   if (!capability.canManage) {
-    sendJson(res, 423, { error: capability.reason, capability }, {}, req);
+    sendJson(res, 403, { error: capability.reason, capability }, {}, req);
     return null;
   }
   return user;
+}
+
+function canAccessAdvertisement(user, item, permission = 'ads.view') {
+  if (!user || !item || !userHasPermission(user, permission)) return false;
+  const credentialId = Number(item.credentialId || 0);
+  return Boolean(credentialId && userHasBinanceCredentialPermission(user, credentialId, permission));
 }
 
 function normalizeAdvertisementTradeType(value) {
@@ -10002,8 +10336,12 @@ function advertisementView(item) {
   const editableAmount = item.surplusAmount !== undefined && item.surplusAmount !== null
     ? positiveNum(item.surplusAmount)
     : positiveNum(item.initAmount || 0);
+  const credential = binanceCredentialById(item.credentialId);
   return {
     ...item,
+    credentialId: Number(item.credentialId || 0) || null,
+    credentialName: credential ? binanceCredentialLabel(credential) : cleanStr(item.credentialName || '', 120),
+    binanceAccount: credential ? { id: Number(credential.id), name: binanceCredentialLabel(credential), status: credential.disabled ? 'disabled' : cleanStr(credential.status || 'saved', 40), disabled: Boolean(credential.disabled) } : null,
     // The generic API Trade flag is diagnostic for C2C ad creation. Hide stale
     // draft warnings from older builds and let Binance /ads/post decide access.
     apiTradePermissionRequired: false,
@@ -10017,12 +10355,23 @@ function advertisementView(item) {
   };
 }
 
-function upsertBinanceAdvertisement(raw, user = null) {
+function advertisementCredentialMeta(item = {}) {
+  const credential = binanceCredentialById(item.credentialId);
+  return {
+    credentialId: Number(item.credentialId || 0) || null,
+    credentialName: credential ? binanceCredentialLabel(credential) : cleanStr(item.credentialName || '', 120)
+  };
+}
+
+function upsertBinanceAdvertisement(raw, user = null, credential = null) {
   const incoming = advertisementFieldsFromBinance(raw);
-  let item = incoming.advNo ? (db.advertisements || []).find(ad => String(ad.advNo || '') === incoming.advNo) : null;
+  const credentialId = Number(credential?.id || 0);
+  if (!credentialId) return { item: null, created: false, changed: false, skipped: true, reason: 'missing_credential' };
+  const credentialName = binanceCredentialLabel(credential);
+  let item = incoming.advNo ? (db.advertisements || []).find(ad => Number(ad.credentialId || 0) === credentialId && String(ad.advNo || '') === incoming.advNo) : null;
   const created = !item;
   if (!item) {
-    item = { id: nextId(), createdAt: incoming.createTime || nowIso(), createdBy: user?.id || null, source: 'binance', regions: ['ALL'], region: 'ALL', termsTags: [] };
+    item = { id: nextId(), credentialId, credentialName, createdAt: incoming.createTime || nowIso(), createdBy: user?.id || null, source: 'binance', regions: ['ALL'], region: 'ALL', termsTags: [] };
     db.advertisements.push(item);
   }
   const before = created ? '' : advertisementFingerprint(item);
@@ -10033,7 +10382,7 @@ function upsertBinanceAdvertisement(raw, user = null) {
   }
   if (!incoming.paymentMethodIds?.length && Array.isArray(item.paymentMethodIds) && item.paymentMethodIds.length) delete merged.paymentMethodIds;
   const archivedState = Boolean(item.archived || item.deletedAt);
-  Object.assign(item, merged, { source: 'binance', lastSyncedAt: nowIso(), lastSyncedBy: user?.id || null });
+  Object.assign(item, merged, { credentialId, credentialName, source: 'binance', lastSyncedAt: nowIso(), lastSyncedBy: user?.id || null });
   if (archivedState) item.archived = true;
   if (!Array.isArray(item.regions) || !item.regions.length) item.regions = ['ALL'];
   item.region = item.regions.includes('ALL') ? 'ALL' : item.regions.join(',');
@@ -10420,6 +10769,7 @@ function advertisementMerchantControlState(control) {
 }
 
 const advertisementMerchantStatusRuntime = {
+  credentialId: null,
   lastCheckAt: null,
   lastSuccessAt: null,
   lastError: null,
@@ -10430,6 +10780,7 @@ const advertisementMerchantStatusRuntime = {
   ownerBusinessError: null,
   ownerProfileBusinessChanged: false,
   lastModeProbeAt: null,
+  lastModeProbeCredentialId: null,
   lastModeProbeResult: null,
   lastModeProbeError: null
 };
@@ -10666,7 +11017,10 @@ function advertisementMerchantControlSignature(controls = advertisementMerchantC
 }
 
 function advertisementMerchantControlsView() {
+  const credential = binanceCredentialById(advertisementMerchantStatusRuntime.credentialId);
   return {
+    credentialId: credential ? Number(credential.id) : (Number(advertisementMerchantStatusRuntime.credentialId || 0) || null),
+    credentialName: credential ? binanceCredentialLabel(credential) : '',
     business: advertisementMerchantControlState('business'),
     online: advertisementMerchantControlState('online'),
     break: advertisementMerchantControlState('break'),
@@ -10890,10 +11244,12 @@ async function readAdvertisementMerchantStatuses(credential, options = {}) {
   throw Object.assign(new Error('Binance merchant status is unavailable.'), { statusCode: 502, merchantStatusUnavailable: true });
 }
 
-function recentlySyncedOfflineAdvertisement(maxAgeMs = 12000) {
+function recentlySyncedOfflineAdvertisement(maxAgeMs = 12000, credentialId = 0) {
   const now = Date.now();
+  const accountId = Number(credentialId || 0);
   return (db.advertisements || []).find(item => {
     if (!item?.advNo || item.archived || item.deletedAt) return false;
+    if (accountId && Number(item.credentialId || 0) !== accountId) return false;
     const syncedAt = Date.parse(item.lastSyncedAt || '') || 0;
     if (!syncedAt || now - syncedAt > Math.max(5000, Number(maxAgeMs || 0))) return false;
     const raw = item.rawBinanceAd || {};
@@ -10904,11 +11260,13 @@ function recentlySyncedOfflineAdvertisement(maxAgeMs = 12000) {
 }
 
 async function probeAdvertisementMerchantMode(credential, rawOnlineStatus = null) {
+  const credentialId = Number(credential?.id || 0);
   const lastProbe = Date.parse(advertisementMerchantStatusRuntime.lastModeProbeAt || '') || 0;
-  if (lastProbe && Date.now() - lastProbe < 4500) return advertisementMerchantStatusRuntime.lastModeProbeResult;
-  const candidate = recentlySyncedOfflineAdvertisement();
+  if (Number(advertisementMerchantStatusRuntime.lastModeProbeCredentialId || 0) === credentialId && lastProbe && Date.now() - lastProbe < 4500) return advertisementMerchantStatusRuntime.lastModeProbeResult;
+  const candidate = recentlySyncedOfflineAdvertisement(12000, credentialId);
   if (!candidate) {
     advertisementMerchantStatusRuntime.lastModeProbeAt = nowIso();
+    advertisementMerchantStatusRuntime.lastModeProbeCredentialId = credentialId;
     advertisementMerchantStatusRuntime.lastModeProbeResult = { mode: 'unknown', reason: 'no_recent_offline_ad' };
     advertisementMerchantStatusRuntime.lastModeProbeError = null;
     return advertisementMerchantStatusRuntime.lastModeProbeResult;
@@ -10916,6 +11274,7 @@ async function probeAdvertisementMerchantMode(credential, rawOnlineStatus = null
   const probeKey = `merchant-mode-probe:${advertisementCredentialKey(credential)}:${String(candidate.advNo)}`;
   return runAdvertisementMutationOnce(probeKey, async () => {
     advertisementMerchantStatusRuntime.lastModeProbeAt = nowIso();
+    advertisementMerchantStatusRuntime.lastModeProbeCredentialId = credentialId;
     try {
       const detailResult = await callSignedSapi({
         apiKey: credential.apiKey,
@@ -10988,20 +11347,20 @@ async function probeAdvertisementMerchantMode(credential, rawOnlineStatus = null
   }, 7000);
 }
 
-function applyAdvertisementMerchantModeProbe(probe = {}) {
+function applyAdvertisementMerchantModeProbe(probe = {}, credentialId = 0) {
   const at = nowIso();
   if (probe.mode === 'business_closed') {
     setAdvertisementMerchantControlState('business', false, { at, verified: true, source: probe.source || 'mode_probe_business_closed', closeGraceMs: 15000, preserveActionAt: true });
     setAdvertisementMerchantControlState('online', false, { at, verified: true, strategy: probe.source || 'mode_probe_business_closed', preserveActionAt: true });
     setAdvertisementMerchantControlState('break', false, { at, verified: true, source: probe.source || 'mode_probe_business_closed', preserveActionAt: true });
-    applyMerchantControlImpactToAdvertisements('business', false);
+    applyMerchantControlImpactToAdvertisements('business', false, credentialId);
     return true;
   }
   if (probe.mode === 'break') {
     setAdvertisementMerchantControlState('business', true, { at, verified: true, source: probe.source || 'mode_probe_break', preserveActionAt: true });
     setAdvertisementMerchantControlState('online', false, { at, verified: true, strategy: probe.source || 'mode_probe_break', preserveActionAt: true });
     setAdvertisementMerchantControlState('break', true, { at, verified: true, source: probe.source || 'mode_probe_break', stickyMs: 15000, preserveActionAt: true });
-    applyMerchantControlImpactToAdvertisements('break', true);
+    applyMerchantControlImpactToAdvertisements('break', true, credentialId);
     return true;
   }
   if (probe.mode === 'online' || probe.mode === 'offline') {
@@ -11067,8 +11426,9 @@ function recentAdvertisementMerchantAction(maxAgeMs = 10000) {
 }
 
 function reconcileAdvertisementMerchantControlsFromAds(options = {}) {
+  const credentialId = Number(options.credentialId || 0);
   const before = advertisementMerchantControlSignature();
-  const ads = (db.advertisements || []).filter(item => !item.archived && !item.deletedAt && item.advNo && advertisementStatusFromValue(item.status || item.advStatus) !== 'closed');
+  const ads = (db.advertisements || []).filter(item => (!credentialId || Number(item.credentialId || 0) === credentialId) && !item.archived && !item.deletedAt && item.advNo && advertisementStatusFromValue(item.status || item.advStatus) !== 'closed');
   const onlineAds = ads.filter(item => advertisementStatusFromValue(item.status || item.advStatus) === 'online');
   const reasons = ads.map(item => String(item.offlineReason || item.rawBinanceAd?.offlineReason || '').toLowerCase()).filter(Boolean);
   const reasonText = reasons.join(' ');
@@ -11084,7 +11444,7 @@ function reconcileAdvertisementMerchantControlsFromAds(options = {}) {
     setAdvertisementMerchantControlState('business', true, { verified: currentBusiness.verified, preserveActionAt: true, source: currentBusiness.source });
     setAdvertisementMerchantControlState('online', false, { verified: currentOnline.verified, strategy: 'break_command_hold', preserveActionAt: true });
     setAdvertisementMerchantControlState('break', true, { verified: currentBreak.verified, preserveActionAt: true, source: db.settings.adsMerchantBreakStateSource || 'crm_command', stickyUntil: currentBreak.stickyUntil, suspendEndTime: currentBreak.suspendEndTime });
-    applyMerchantControlImpactToAdvertisements('break', true);
+    applyMerchantControlImpactToAdvertisements('break', true, credentialId);
     return {
       changed: before !== advertisementMerchantControlSignature(),
       onlineCount: 0,
@@ -11105,7 +11465,7 @@ function reconcileAdvertisementMerchantControlsFromAds(options = {}) {
       setAdvertisementMerchantControlState('business', false, { verified: true, preserveActionAt: true, source: db.settings.adsMerchantBusinessStateSource });
       setAdvertisementMerchantControlState('online', false, { verified: true, strategy: 'business_closed_hold', preserveActionAt: true });
       setAdvertisementMerchantControlState('break', false, { verified: currentBreak.verified, preserveActionAt: true, source: currentBreak.source });
-      applyMerchantControlImpactToAdvertisements('business', false);
+      applyMerchantControlImpactToAdvertisements('business', false, credentialId);
       return {
         changed: before !== advertisementMerchantControlSignature(),
         onlineCount: 0,
@@ -11144,12 +11504,14 @@ function reconcileAdvertisementMerchantControlsFromAds(options = {}) {
   };
 }
 
-function applyMerchantControlImpactToAdvertisements(control, desired) {
+function applyMerchantControlImpactToAdvertisements(control, desired, credentialId = 0) {
+  const accountId = Number(credentialId || 0);
   const shouldPause = (control === 'business' && !desired) || (control === 'online' && !desired) || (control === 'break' && desired);
   if (!shouldPause) return 0;
   let changed = 0;
   for (const item of (db.advertisements || [])) {
     if (!item.advNo || item.archived || item.deletedAt) continue;
+    if (accountId && Number(item.credentialId || 0) !== accountId) continue;
     if (advertisementStatusFromValue(item.status || item.advStatus) !== 'online') continue;
     item.status = 'offline';
     item.advStatus = 3;
@@ -11162,10 +11524,31 @@ function applyMerchantControlImpactToAdvertisements(control, desired) {
 }
 
 async function refreshAdvertisementMerchantControlVerification(credential, force = false) {
+  const credentialId = Number(credential?.id || 0);
+  let sameCredential = Number(advertisementMerchantStatusRuntime.credentialId || 0) === credentialId;
   const last = Date.parse(advertisementMerchantStatusRuntime.lastCheckAt || '') || 0;
-  if (!force && last && Date.now() - last < 3500) return advertisementMerchantControlsView();
-  if (advertisementMerchantStatusRuntime.busy) return advertisementMerchantControlsView();
+  if (!force && sameCredential && last && Date.now() - last < 3500) return advertisementMerchantControlsView();
+  if (advertisementMerchantStatusRuntime.busy) {
+    if (sameCredential) return advertisementMerchantControlsView();
+    const waitUntil = Date.now() + 2500;
+    while (advertisementMerchantStatusRuntime.busy && Date.now() < waitUntil) await waitMs(50);
+    if (advertisementMerchantStatusRuntime.busy) return advertisementMerchantControlsView();
+    sameCredential = Number(advertisementMerchantStatusRuntime.credentialId || 0) === credentialId;
+  }
+  if (!sameCredential) {
+    // Merchant Business/Online/Break state belongs to a Binance account. The
+    // legacy storage fields are shared, so never reuse the previous account's
+    // state while the newly selected account is being verified.
+    setAdvertisementMerchantControlUnknown('business', { force: true });
+    setAdvertisementMerchantControlUnknown('online', { force: true });
+    setAdvertisementMerchantControlUnknown('break', { force: true });
+    advertisementMerchantStatusRuntime.rawOnlineStatus = null;
+    advertisementMerchantStatusRuntime.ownerBusinessStatusCode = null;
+    advertisementMerchantStatusRuntime.ownerBusinessStatusSource = null;
+    advertisementMerchantStatusRuntime.ownerBusinessError = null;
+  }
   advertisementMerchantStatusRuntime.busy = true;
+  advertisementMerchantStatusRuntime.credentialId = credentialId || null;
   advertisementMerchantStatusRuntime.lastCheckAt = nowIso();
   try {
     const previousControls = advertisementMerchantControlsView();
@@ -11187,14 +11570,14 @@ async function refreshAdvertisementMerchantControlVerification(credential, force
       setAdvertisementMerchantControlState('business', true, { verified: explicitBusiness, preserveActionAt: true });
       setAdvertisementMerchantControlState('online', false, { verified: rawStatus.online !== null, strategy: 'merchant_break', preserveActionAt: true });
     }
-    reconcileAdvertisementMerchantControlsFromAds();
+    reconcileAdvertisementMerchantControlsFromAds({ credentialId: credential.id });
 
-    const activeAds = (db.advertisements || []).filter(item => item.advNo && !item.archived && !item.deletedAt && advertisementStatusFromValue(item.status || item.advStatus) !== 'closed');
+    const activeAds = (db.advertisements || []).filter(item => Number(item.credentialId || 0) === Number(credential.id) && item.advNo && !item.archived && !item.deletedAt && advertisementStatusFromValue(item.status || item.advStatus) !== 'closed');
     const onlineAds = activeAds.filter(item => advertisementStatusFromValue(item.status || item.advStatus) === 'online');
     const needsExactModeProbe = !explicitBusiness && !explicitBreak && activeAds.length > 0 && onlineAds.length === 0;
     if (needsExactModeProbe) {
       const probe = await probeAdvertisementMerchantMode(credential, rawStatus.online);
-      applyAdvertisementMerchantModeProbe(probe || {});
+      applyAdvertisementMerchantModeProbe(probe || {}, credential.id);
     } else if (rawStatus.online === 0 && !explicitBusiness && !explicitBreak && previousControls.online?.enabled === true && advertisementMerchantControlState('break').enabled !== true && !advertisementBusinessClosedHoldActive()) {
       setAdvertisementMerchantControlUnknown('business', { force: true });
       setAdvertisementMerchantControlUnknown('break', { force: true });
@@ -11235,7 +11618,7 @@ async function changeAdvertisementMerchantControl(user, credential, control, ena
   const actionAt = nowIso();
 
   try { await refreshAdvertisementMerchantControlVerification(credential, true); } catch (_) {}
-  reconcileAdvertisementMerchantControlsFromAds();
+  reconcileAdvertisementMerchantControlsFromAds({ credentialId: credential.id });
   const currentBeforeAction = advertisementMerchantControlState(control);
   if (options.force !== true && currentBeforeAction.enabled === desired) {
     const result = { ok: true, control, enabled: desired, actionAccepted: false, noOp: true, verificationAvailable: Boolean(currentBeforeAction.verified), attempts, controls: advertisementMerchantControlsView() };
@@ -11334,7 +11717,7 @@ async function changeAdvertisementMerchantControl(user, credential, control, ena
       }
     }
 
-    const pausedAdvertisements = applyMerchantControlImpactToAdvertisements(control, desired);
+    const pausedAdvertisements = applyMerchantControlImpactToAdvertisements(control, desired, credential.id);
     const result = {
       ok: true,
       control,
@@ -11735,7 +12118,7 @@ function normalizeCommissionOverview(response, requested = {}) {
 async function advertisementCommissionOverview(credential, requested = {}, force = false) {
   const fiat = cleanStr(requested.fiat || 'BDT', 20).toUpperCase();
   const asset = cleanStr(requested.asset || 'USDT', 20).toUpperCase();
-  const key = `${asset}:${fiat}`;
+  const key = `${advertisementCredentialKey(credential)}:${asset}:${fiat}`;
   const cached = advertisementFeeCache.get(key);
   if (!force && cached && Date.now() - cached.ts < 60 * 1000) return cached.data;
   const response = await callSignedSapi({ apiKey: credential.apiKey, secretKey: credential.secretKey, endpointName: 'getCommissionOverview', body: { fiat }, clientType: credential.clientType || 'web', dryRun: false });
@@ -11765,19 +12148,19 @@ async function syncBinanceAdvertisementsWithCredential(user, credential, opts = 
   if (opts.fiatUnit) payload.fiatUnit = cleanStr(opts.fiatUnit, 30).toUpperCase();
   if (opts.tradeType) payload.tradeType = normalizeAdvertisementTradeType(opts.tradeType);
   if (opts.status) payload.advStatus = advertisementStatusCode(opts.status);
-  const previousOnlineCount = (db.advertisements || []).filter(item => item.advNo && !item.archived && !item.deletedAt && advertisementStatusFromValue(item.status || item.advStatus) === 'online').length;
+  const previousOnlineCount = (db.advertisements || []).filter(item => Number(item.credentialId || 0) === Number(credential.id) && item.advNo && !item.archived && !item.deletedAt && advertisementStatusFromValue(item.status || item.advStatus) === 'online').length;
   const result = await callSignedSapi({ apiKey: credential.apiKey, secretKey: credential.secretKey, endpointName: 'listAds', body: payload, clientType: credential.clientType || 'web', dryRun: false });
   const rows = extractBinanceList(result);
   let created = 0;
   let updated = 0;
   let unchanged = 0;
   rows.forEach(row => {
-    const change = upsertBinanceAdvertisement(row, user);
+    const change = upsertBinanceAdvertisement(row, user, credential);
     if (change.created) created += 1;
     else if (change.changed) updated += 1;
     else unchanged += 1;
   });
-  const merchantEvidence = reconcileAdvertisementMerchantControlsFromAds({ previousOnlineCount });
+  const merchantEvidence = reconcileAdvertisementMerchantControlsFromAds({ previousOnlineCount, credentialId: credential.id });
   db.settings.adsLastSyncAt = nowIso();
   db.settings.adsLastSyncError = null;
   if (opts.syncCatalog) {
@@ -11794,32 +12177,52 @@ async function syncBinanceAdvertisementsWithCredential(user, credential, opts = 
     created, updated, unchanged, totalRows: rows.length,
     changed: created + updated,
     merchantEvidence,
-    items: db.advertisements.map(advertisementView), request: payload
+    credentialId: Number(credential.id),
+    credentialName: binanceCredentialLabel(credential),
+    items: db.advertisements.filter(item => Number(item.credentialId || 0) === Number(credential.id)).map(advertisementView), request: payload
   };
 }
 
 async function handleAdvertisements(req, res, url) {
   const user = requirePermission(req, res, 'ads.view');
   if (!user) return;
-  const capability = advertisementCapability(user);
+  const credentialOptions = binanceCredentialOptionsForUser(user, 'ads.view', { includeDisabled: true });
+  const requestedCredentialId = Number(url.searchParams.get('credentialId') || 0);
+  let selectedCredential = null;
+  if (requestedCredentialId) {
+    selectedCredential = resolveBinanceCredentialForUser(user, requestedCredentialId, 'ads.view', { includeDisabled: true });
+    if (!selectedCredential) return sendJson(res, 403, { error: 'No ads.view access to the selected Binance account.' }, {}, req);
+  } else if (credentialOptions.length === 1) {
+    selectedCredential = binanceCredentialById(credentialOptions[0].id);
+  }
+  const capability = advertisementCapability(user, selectedCredential?.id || 0);
   if (req.method === 'GET') {
-    const merchantCredential = db.settings.apiMode === 'live' ? activeBinanceCredential() : null;
+    const merchantCredential = db.settings.apiMode === 'live' && selectedCredential && !selectedCredential.disabled && selectedCredential.apiKey && selectedCredential.secretKey ? selectedCredential : null;
     if (merchantCredential && url.searchParams.get('refreshLive') === '1') {
-      await runBinanceAdsAutoSync('page_force');
-      await runAdvertisementMerchantStatusAutoSync('page_force');
+      try {
+        await syncBinanceAdvertisementsWithCredential(user, merchantCredential, { rows: db.settings.adsSyncRows || 50, audit: true, syncCatalog: true, forceCatalog: true });
+        await refreshAdvertisementMerchantControlVerification(merchantCredential, true);
+        saveDb({ broadcast: false });
+      } catch (error) {
+        db.settings.adsLastSyncError = cleanStr(error.message || error, 300);
+      }
     }
     if (merchantCredential) {
       const forceMerchant = url.searchParams.get('refreshMerchant') === '1';
       const lastMerchantCheck = Date.parse(advertisementMerchantStatusRuntime.lastCheckAt || '') || 0;
       if (forceMerchant) {
-        await runAdvertisementMerchantStatusAutoSync('page_force');
+        await refreshAdvertisementMerchantControlVerification(merchantCredential, true).catch(() => {});
       } else if (!lastMerchantCheck || Date.now() - lastMerchantCheck > 3500) {
-        runAdvertisementMerchantStatusAutoSync('page_background').catch(() => {});
+        refreshAdvertisementMerchantControlVerification(merchantCredential, false).catch(() => {});
       }
     }
     let apiCreateReadiness = null;
     if (merchantCredential) apiCreateReadiness = await refreshAdvertisementApiCreateReadiness(merchantCredential, url.searchParams.get('refreshLive') === '1');
-    let items = (db.advertisements || []).filter(item => !item.archived && !item.deletedAt).map(advertisementView);
+    let items = (db.advertisements || [])
+      .filter(item => !item.archived && !item.deletedAt)
+      .filter(item => canAccessAdvertisement(user, item, 'ads.view'))
+      .filter(item => !selectedCredential || Number(item.credentialId || 0) === Number(selectedCredential.id))
+      .map(advertisementView);
     const asset = cleanStr(url.searchParams.get('asset') || '', 30).toUpperCase();
     const fiat = cleanStr(url.searchParams.get('fiat') || '', 30).toUpperCase();
     const tradeType = cleanStr(url.searchParams.get('tradeType') || '', 20).toUpperCase();
@@ -11832,11 +12235,16 @@ async function handleAdvertisements(req, res, url) {
     return sendJson(res, 200, {
       items,
       capability,
+      credentialOptions,
+      selectedCredentialId: selectedCredential ? Number(selectedCredential.id) : null,
       paymentMethods: (db.paymentMethods || []).filter(method => method.enabled !== false).map(method => advertisementPaymentMethodView(method, user)),
       ...advertisementOptionLists(),
       liveMode: db.settings.apiMode === 'live',
-      credentialConfigured: Boolean(activeBinanceCredential()),
-      autoSyncEnabled: db.settings.apiMode === 'live' && Boolean(activeBinanceCredential()),
+      credentialConfigured: credentialOptions.length > 0,
+      autoSyncEnabled: db.settings.apiMode === 'live' && credentialOptions.some(option => {
+        const credential = binanceCredentialById(option.id);
+        return Boolean(credential && !credential.disabled && credential.apiKey && credential.secretKey);
+      }),
       autoSyncSeconds: Math.max(3, Number(db.settings.adsAutoSyncSeconds || 5)),
       lastSyncAt: db.settings.adsLastSyncAt || null,
       lastSyncError: db.settings.adsLastSyncError || null,
@@ -11847,25 +12255,27 @@ async function handleAdvertisements(req, res, url) {
     }, {}, req);
   }
   if (req.method === 'POST') {
-    const manager = requireAdvertisementManage(req, res);
-    if (!manager) return;
     const body = await readBody(req);
+    const manager = requirePermission(req, res, 'ads.manage');
+    if (!manager) return;
+    const credential = db.settings.apiMode === 'live'
+      ? requireLiveBinanceCredentialForUser(req, res, manager, body.credentialId, 'ads.manage', { requireExplicitWhenMultiple: true })
+      : requireAssignedBinanceCredentialForUser(req, res, manager, body.credentialId, 'ads.manage', { requireExplicitWhenMultiple: true });
+    if (!credential) return;
+    const scopedCapability = advertisementCapability(manager, credential.id);
+    if (!scopedCapability.canManage) return sendJson(res, 403, { error: scopedCapability.reason, capability: scopedCapability }, {}, req);
     const normalized = normalizeAdvertisementInput(body, {});
     // This CRM is operated by a professional P2P merchant. Keep the saved draft
     // consistent with the exact Binance create parameter confirmed by merchant CS.
     normalized.classify = 'profession';
-    const item = { id: nextId(), ...normalized, surplusAmount: normalized.initAmount, source: db.settings.apiMode === 'live' ? 'binance' : 'crm_draft', createdAt: nowIso(), updatedAt: nowIso(), createdBy: manager.id, updatedBy: manager.id };
+    const item = { id: nextId(), credentialId: Number(credential.id), credentialName: binanceCredentialLabel(credential), ...normalized, surplusAmount: normalized.initAmount, source: db.settings.apiMode === 'live' ? 'binance' : 'crm_draft', createdAt: nowIso(), updatedAt: nowIso(), createdBy: manager.id, updatedBy: manager.id };
     let binanceResult = null;
     let merchantOnlinePreflight = null;
     let createWarning = '';
     let responseStatus = 201;
     if (db.settings.apiMode === 'live') {
-      const credential = activeBinanceCredential();
-      if (!credential) {
-        createWarning = 'Live Binance mode has no active API credential. The advertisement was saved as a private draft.';
-      } else {
-        const payload = advertisementBinancePayload(normalized);
-        try {
+      const payload = advertisementBinancePayload(normalized);
+      try {
           const posted = await postAdvertisementWithOnlineRetry(manager, credential, payload, 'postAd_create');
           merchantOnlinePreflight = posted.preflight;
           item.merchantOnlinePreflightAt = nowIso();
@@ -11879,13 +12289,13 @@ async function handleAdvertisements(req, res, url) {
           if (item.advNo) {
             try {
               const detailResult = await callSignedSapi({ apiKey: credential.apiKey, secretKey: credential.secretKey, endpointName: 'getAdDetail', query: { adsNo: item.advNo }, clientType: credential.clientType || 'web', dryRun: false });
-              Object.assign(item, advertisementFieldsFromBinance(unwrapBinanceData(detailResult) || {}), { id: item.id, advNo: item.advNo, createdAt: item.createdAt, createdBy: item.createdBy, source: 'binance', lastSyncedAt: nowIso() });
+              Object.assign(item, advertisementFieldsFromBinance(unwrapBinanceData(detailResult) || {}), { id: item.id, credentialId: Number(credential.id), credentialName: binanceCredentialLabel(credential), advNo: item.advNo, createdAt: item.createdAt, createdBy: item.createdBy, source: 'binance', lastSyncedAt: nowIso() });
               if (normalized.status === 'private') { item.status = 'private'; item.advStatus = 3; }
             } catch (err) {
               item.lastSyncError = cleanStr(err.message || err, 300);
             }
           }
-        } catch (err) {
+      } catch (err) {
           createWarning = cleanStr(err.message || err, 500);
           merchantOnlinePreflight = err.merchantOnlinePreflight || merchantOnlinePreflight || null;
           item.lastPublishError = createWarning;
@@ -11902,7 +12312,6 @@ async function handleAdvertisements(req, res, url) {
           item.apiCreateReadiness = err.apiCreateReadiness || merchantOnlinePreflight?.apiCreateReadiness || null;
           item.createPrivilegeDiagnostic = err.createPrivilegeDiagnostic || null;
           item.createPermissionDeniedAfterPreflight = Boolean(item.binancePermissionRequired && merchantOnlinePreflight);
-        }
       }
       if (!item.advNo) {
         item.source = 'crm_draft';
@@ -11920,9 +12329,9 @@ async function handleAdvertisements(req, res, url) {
       responseStatus = 202;
     }
     db.advertisements.push(item);
-    logAudit(manager, 'advertisement_created', 'advertisement', item.id, { advNo: item.advNo || null, tradeType: item.tradeType, asset: item.asset, fiatUnit: item.fiatUnit, status: item.status, requestedStatus: normalized.status, live: db.settings.apiMode === 'live', warning: createWarning || null, merchantOnlinePreflight, createPrivilegeDiagnostic: item.createPrivilegeDiagnostic || null, result: sanitizedBinanceResult(binanceResult) });
+    logAudit(manager, 'advertisement_created', 'advertisement', item.id, { credentialId: item.credentialId, credentialName: item.credentialName, advNo: item.advNo || null, tradeType: item.tradeType, asset: item.asset, fiatUnit: item.fiatUnit, status: item.status, requestedStatus: normalized.status, live: db.settings.apiMode === 'live', warning: createWarning || null, merchantOnlinePreflight, createPrivilegeDiagnostic: item.createPrivilegeDiagnostic || null, result: sanitizedBinanceResult(binanceResult) });
     saveDb();
-    broadcast({ type: 'ads.created', advertisementId: item.id, advNo: item.advNo || null, status: item.status, draft: !item.advNo, at: nowIso() });
+    broadcast({ type: 'ads.created', advertisementId: item.id, credentialId: item.credentialId, advNo: item.advNo || null, status: item.status, draft: !item.advNo, at: nowIso() });
     const createdView = advertisementView(item);
     return sendJson(res, responseStatus, { ...createdView, item: createdView, warning: createWarning || null, published: Boolean(item.advNo), merchantOnlinePreflight, createPrivilegeDiagnostic: item.createPrivilegeDiagnostic || null, merchantOnline: advertisementMerchantOnlineView(), merchantControls: advertisementMerchantControlsView() }, {}, req);
   }
@@ -11973,15 +12382,16 @@ async function handleAdvertisementAssetBalance(req, res, url) {
   if (!user) return;
   if (req.method !== 'GET') return sendJson(res, 405, { error: 'Method not allowed' }, {}, req);
   const asset = cleanStr(url.searchParams.get('asset') || 'USDT', 20).toUpperCase();
-  const credential = db.settings.apiMode === 'live' ? activeBinanceCredential() : null;
-  if (!credential) {
+  if (db.settings.apiMode !== 'live') {
     return sendJson(res, 200, {
       asset,
       available: null,
       source: 'unavailable',
-      warning: 'Binance live mode and an active API credential are required to read the available sell balance.'
+      warning: 'Binance live mode is required to read the available sell balance.'
     }, {}, req);
   }
+  const credential = requireLiveBinanceCredentialForUser(req, res, user, url.searchParams.get('credentialId'), 'ads.view', { requireExplicitWhenMultiple: true });
+  if (!credential) return;
   try {
     const balance = await fetchAdvertisementAssetBalance(credential, asset, url.searchParams.get('force') === '1');
     return sendJson(res, 200, balance, {}, req);
@@ -12003,8 +12413,9 @@ async function handleAdvertisementFeeRates(req, res, url) {
   const asset = cleanStr(url.searchParams.get('asset') || 'USDT', 20).toUpperCase();
   const fiat = cleanStr(url.searchParams.get('fiat') || 'BDT', 20).toUpperCase();
   const tradeType = normalizeAdvertisementTradeType(url.searchParams.get('tradeType') || 'BUY');
+  const requestedCredentialId = Number(url.searchParams.get('credentialId') || 0);
   const defaultRate = Math.max(0, num(db.settings.adsDefaultCommissionRate || 0));
-  const matchingAd = (db.advertisements || []).find(item => String(item.asset || '').toUpperCase() === asset && String(item.fiatUnit || '').toUpperCase() === fiat && normalizeAdvertisementTradeType(item.tradeType) === tradeType);
+  const matchingAd = (db.advertisements || []).find(item => (!requestedCredentialId || Number(item.credentialId || 0) === requestedCredentialId) && canAccessAdvertisement(user, item, 'ads.view') && String(item.asset || '').toUpperCase() === asset && String(item.fiatUnit || '').toUpperCase() === fiat && normalizeAdvertisementTradeType(item.tradeType) === tradeType);
   const fallbackRate = Math.max(0, num(matchingAd?.commissionRate ?? defaultRate));
   const fallback = {
     asset, fiat, tradeType, source: 'crm', fetchedAt: nowIso(), userLevel: 0,
@@ -12021,8 +12432,9 @@ async function handleAdvertisementFeeRates(req, res, url) {
       takerSellCommissionRate: fallbackRate
     }]
   };
-  const credential = activeBinanceCredential();
-  if (db.settings.apiMode !== 'live' || !credential) return sendJson(res, 200, fallback, {}, req);
+  if (db.settings.apiMode !== 'live') return sendJson(res, 200, fallback, {}, req);
+  const credential = requireLiveBinanceCredentialForUser(req, res, user, requestedCredentialId, 'ads.view', { requireExplicitWhenMultiple: true });
+  if (!credential) return;
   try {
     const overview = await advertisementCommissionOverview(credential, { asset, fiat }, url.searchParams.get('force') === '1');
     if (!Array.isArray(overview.rates) || !overview.rates.length) {
@@ -12035,17 +12447,15 @@ async function handleAdvertisementFeeRates(req, res, url) {
 }
 
 async function handleAdvertisementSync(req, res) {
-  const user = requirePermission(req, res, 'ads.view');
-  if (!user) return;
   if (req.method !== 'POST') return sendJson(res, 405, { error: 'Method not allowed' }, {}, req);
-  const capability = advertisementCapability(user);
-  if (user.role === 'agent' && capability.blockedByManager) return sendJson(res, 423, { error: capability.reason, capability }, {}, req);
-  const credential = activeBinanceCredential();
-  if (!credential) return sendJson(res, 422, { error: 'Active Binance API credential is required to sync advertisements.' }, {}, req);
+  const user = requirePermission(req, res, 'ads.manage');
+  if (!user) return;
   const body = await readBody(req);
+  const credential = requireLiveBinanceCredentialForUser(req, res, user, body.credentialId, 'ads.manage', { requireExplicitWhenMultiple: true });
+  if (!credential) return;
   const out = await syncBinanceAdvertisementsWithCredential(user, credential, body || {});
   saveDb();
-  broadcast({ type: 'ads.synced', created: out.created, updated: out.updated, totalRows: out.totalRows, at: nowIso() });
+  broadcast({ type: 'ads.synced', credentialId: Number(credential.id), created: out.created, updated: out.updated, totalRows: out.totalRows, at: nowIso() });
   return sendJson(res, 200, out, {}, req);
 }
 
@@ -12053,29 +12463,34 @@ async function handleAdvertisementMerchantStatus(req, res, url) {
   const user = requirePermission(req, res, 'ads.view');
   if (!user) return;
   if (req.method !== 'GET') return sendJson(res, 405, { error: 'Method not allowed' }, {}, req);
-  const credential = db.settings.apiMode === 'live' ? activeBinanceCredential() : null;
+  const credential = db.settings.apiMode === 'live'
+    ? requireLiveBinanceCredentialForUser(req, res, user, url.searchParams.get('credentialId'), 'ads.view', { requireExplicitWhenMultiple: true })
+    : null;
+  if (db.settings.apiMode === 'live' && !credential) return;
   if (credential && url.searchParams.get('refresh') === '1') {
-    await runAdvertisementMerchantStatusAutoSync('client_refresh');
+    await refreshAdvertisementMerchantControlVerification(credential, true).catch(() => {});
   } else if (credential) {
     const last = Date.parse(advertisementMerchantStatusRuntime.lastCheckAt || '') || 0;
-    if (!last || Date.now() - last > 3500) runAdvertisementMerchantStatusAutoSync('client_background').catch(() => {});
+    if (!last || Date.now() - last > 3500) refreshAdvertisementMerchantControlVerification(credential, false).catch(() => {});
   }
   return sendJson(res, 200, {
     ok: true,
     liveMode: db.settings.apiMode === 'live',
     credentialConfigured: Boolean(credential),
+    credentialId: credential ? Number(credential.id) : null,
+    credentialName: credential ? binanceCredentialLabel(credential) : '',
     merchantControls: advertisementMerchantControlsView()
   }, {}, req);
 }
 
 async function handleAdvertisementMerchantControl(req, res) {
-  const manager = requireAdvertisementManage(req, res);
-  if (!manager) return;
   if (req.method !== 'POST') return sendJson(res, 405, { error: 'Method not allowed' }, {}, req);
+  const manager = requirePermission(req, res, 'ads.manage');
+  if (!manager) return;
   if (db.settings.apiMode !== 'live') return sendJson(res, 422, { error: 'Enable Binance live mode before using merchant controls.' }, {}, req);
-  const credential = activeBinanceCredential();
-  if (!credential) return sendJson(res, 422, { error: 'Active Binance API credential is required for merchant controls.' }, {}, req);
   const body = await readBody(req);
+  const credential = requireLiveBinanceCredentialForUser(req, res, manager, body.credentialId, 'ads.manage', { requireExplicitWhenMultiple: true });
+  if (!credential) return;
   const control = cleanStr(body.control || '', 20).toLowerCase();
   const enabled = body.enabled === true || body.enabled === 1 || body.enabled === '1' || String(body.enabled || '').toLowerCase() === 'true';
   if (!['business','online','break'].includes(control)) return sendJson(res, 422, { error: 'Control must be business, online or break.' }, {}, req);
@@ -12083,7 +12498,7 @@ async function handleAdvertisementMerchantControl(req, res) {
     const commandKey = `merchant-control:${advertisementCredentialKey(credential)}:${control}:${enabled ? 1 : 0}`;
     const result = await runAdvertisementMutationOnce(commandKey, () => changeAdvertisementMerchantControl(manager, credential, control, enabled, 'manual_toggle'), 1200);
     saveDb();
-    broadcast({ type: 'ads.merchant.controls', control, enabled, controls: result.controls, at: nowIso() });
+    broadcast({ type: 'ads.merchant.controls', credentialId: Number(credential.id), control, enabled, controls: result.controls, at: nowIso() });
     return sendJson(res, 200, { ok: true, result, merchantOnline: advertisementMerchantOnlineView(), merchantControls: advertisementMerchantControlsView() }, {}, req);
   } catch (error) {
     saveDb();
@@ -12101,16 +12516,17 @@ async function handleAdvertisementMerchantControl(req, res) {
 }
 
 async function handleAdvertisementMerchantOnline(req, res) {
-  const manager = requireAdvertisementManage(req, res);
-  if (!manager) return;
   if (req.method !== 'POST') return sendJson(res, 405, { error: 'Method not allowed' }, {}, req);
+  const manager = requirePermission(req, res, 'ads.manage');
+  if (!manager) return;
   if (db.settings.apiMode !== 'live') return sendJson(res, 422, { error: 'Enable Binance live mode before setting the P2P merchant online.' }, {}, req);
-  const credential = activeBinanceCredential();
-  if (!credential) return sendJson(res, 422, { error: 'Active Binance API credential is required to set the P2P merchant online.' }, {}, req);
+  const body = await readBody(req);
+  const credential = requireLiveBinanceCredentialForUser(req, res, manager, body.credentialId, 'ads.manage', { requireExplicitWhenMultiple: true });
+  if (!credential) return;
   try {
     const result = await changeAdvertisementMerchantControl(manager, credential, 'online', true, 'manual_go_online_legacy');
     saveDb();
-    broadcast({ type: 'ads.merchant.controls', control: 'online', enabled: true, controls: result.controls, at: nowIso() });
+    broadcast({ type: 'ads.merchant.controls', credentialId: Number(credential.id), control: 'online', enabled: true, controls: result.controls, at: nowIso() });
     return sendJson(res, 200, { ok: true, result, merchantOnline: advertisementMerchantOnlineView(), merchantControls: advertisementMerchantControlsView() }, {}, req);
   } catch (error) {
     saveDb();
@@ -12131,15 +12547,18 @@ async function handleAdvertisementById(req, res, parts) {
   if (!user) return;
   const item = advertisementById(parts[2]);
   if (!item) return sendJson(res, 404, { error: 'Advertisement not found.' }, {}, req);
+  if (!canAccessAdvertisement(user, item, 'ads.view')) {
+    return sendJson(res, 403, { error: 'You do not have advertisement access to this Binance account.' }, {}, req);
+  }
   const action = parts[3] || '';
-  if (!action && req.method === 'GET') return sendJson(res, 200, { item: advertisementView(item), capability: advertisementCapability(user) }, {}, req);
+  if (!action && req.method === 'GET') return sendJson(res, 200, { item: advertisementView(item), capability: advertisementCapability(user, item.credentialId) }, {}, req);
   if (!action && req.method === 'DELETE') {
-    const manager = requireAdvertisementManage(req, res);
+    const manager = requireAdvertisementManage(req, res, item.credentialId);
     if (!manager) return;
     let binanceResult = null;
     if (item.advNo && db.settings.apiMode === 'live') {
-      const credential = activeBinanceCredential();
-      if (!credential) return sendJson(res, 422, { error: 'Active Binance API credential is required to close this live advertisement before deleting it from the dashboard.' }, {}, req);
+      const credential = requireLiveBinanceCredentialForUser(req, res, manager, item.credentialId, 'ads.manage', { requireExplicitWhenMultiple: true });
+      if (!credential) return;
       try {
         binanceResult = await callSignedSapi({ apiKey: credential.apiKey, secretKey: credential.secretKey, endpointName: 'updateAdsStatus', body: { advNos: [String(item.advNo)], advStatus: 4 }, clientType: credential.clientType || 'web', dryRun: false });
       } catch (err) {
@@ -12153,18 +12572,18 @@ async function handleAdvertisementById(req, res, parts) {
     item.deletedBy = manager.id;
     item.updatedAt = nowIso();
     item.rawBinanceDeleteResult = sanitizedBinanceResult(binanceResult);
-    logAudit(manager, 'advertisement_deleted', 'advertisement', item.id, { advNo: item.advNo || null, closedOnBinance: Boolean(item.advNo && db.settings.apiMode === 'live'), result: sanitizedBinanceResult(binanceResult) });
+    logAudit(manager, 'advertisement_deleted', 'advertisement', item.id, { ...advertisementCredentialMeta(item), advNo: item.advNo || null, closedOnBinance: Boolean(item.advNo && db.settings.apiMode === 'live'), result: sanitizedBinanceResult(binanceResult) });
     saveDb();
-    broadcast({ type: 'ads.deleted', advertisementId: item.id, advNo: item.advNo || null, status: 'closed', at: nowIso() });
+    broadcast({ type: 'ads.deleted', advertisementId: item.id, ...advertisementCredentialMeta(item), advNo: item.advNo || null, status: 'closed', at: nowIso() });
     return sendJson(res, 200, { ok: true, item: advertisementView(item) }, {}, req);
   }
   if (action === 'publish' && req.method === 'POST') {
-    const manager = requireAdvertisementManage(req, res);
+    const manager = requireAdvertisementManage(req, res, item.credentialId);
     if (!manager) return;
     if (item.advNo) return sendJson(res, 409, { error: 'This advertisement is already linked to Binance.' }, {}, req);
     if (db.settings.apiMode !== 'live') return sendJson(res, 422, { error: 'Enable Binance live mode before publishing this draft.' }, {}, req);
-    const credential = activeBinanceCredential();
-    if (!credential) return sendJson(res, 422, { error: 'Active Binance API credential is required to publish this draft.' }, {}, req);
+    const credential = requireLiveBinanceCredentialForUser(req, res, manager, item.credentialId, 'ads.manage', { requireExplicitWhenMultiple: true });
+    if (!credential) return;
     let merchantOnlinePreflight = null;
     try {
       const payload = advertisementBinancePayload(item);
@@ -12191,9 +12610,9 @@ async function handleAdvertisementById(req, res, parts) {
       item.updatedAt = nowIso();
       item.updatedBy = manager.id;
       item.rawBinanceResult = sanitizedBinanceResult(result);
-      logAudit(manager, 'advertisement_published', 'advertisement', item.id, { advNo, merchantOnlinePreflight, result: sanitizedBinanceResult(result) });
+      logAudit(manager, 'advertisement_published', 'advertisement', item.id, { ...advertisementCredentialMeta(item), advNo, merchantOnlinePreflight, result: sanitizedBinanceResult(result) });
       saveDb();
-      broadcast({ type: 'ads.published', advertisementId: item.id, advNo, status: item.status, at: nowIso() });
+      broadcast({ type: 'ads.published', advertisementId: item.id, ...advertisementCredentialMeta(item), advNo, status: item.status, at: nowIso() });
       return sendJson(res, 200, { ...advertisementView(item), merchantOnlinePreflight, merchantOnline: advertisementMerchantOnlineView(), merchantControls: advertisementMerchantControlsView() }, {}, req);
     } catch (err) {
       merchantOnlinePreflight = err.merchantOnlinePreflight || merchantOnlinePreflight || null;
@@ -12228,7 +12647,7 @@ async function handleAdvertisementById(req, res, parts) {
     }
   }
   if (!action && req.method === 'PATCH') {
-    const manager = requireAdvertisementManage(req, res);
+    const manager = requireAdvertisementManage(req, res, item.credentialId);
     if (!manager) return;
     const body = await readBody(req);
     const requestedTradeType = cleanStr(body.tradeType || '', 20).toUpperCase();
@@ -12239,18 +12658,18 @@ async function handleAdvertisementById(req, res, parts) {
     const normalized = normalizeAdvertisementInput(body, item);
     let binanceResult = null;
     let amountUpdate = null;
-    const updateLockKey = String(item.advNo || `crm:${item.id}`);
+    const updateLockKey = `${Number(item.credentialId || 0)}:${String(item.advNo || `crm:${item.id}`)}`;
     if (advertisementUpdateLocks.has(updateLockKey)) {
       return sendJson(res, 409, { error: 'This advertisement update is already in progress. Please wait for it to finish.' }, {}, req);
     }
     advertisementUpdateLocks.add(updateLockKey);
     try {
       if (item.advNo && db.settings.apiMode === 'live') {
-        const credential = activeBinanceCredential();
-        if (!credential) return sendJson(res, 422, { error: 'Active Binance API credential is required to update this advertisement.' }, {}, req);
+        const credential = requireLiveBinanceCredentialForUser(req, res, manager, item.credentialId, 'ads.manage', { requireExplicitWhenMultiple: true });
+        if (!credential) return;
         // Editing an existing advertisement does not use the create-ad merchant
         // readiness gate. Status refresh is best-effort and never blocks update/edit.
-        runAdvertisementMerchantStatusAutoSync('update_background').catch(() => {});
+        refreshAdvertisementMerchantControlVerification(credential, false).catch(() => {});
         let liveDetail;
         try {
           liveDetail = await fetchLiveAdvertisementDetail(credential, item.advNo);
@@ -12404,6 +12823,7 @@ async function handleAdvertisementById(req, res, parts) {
         updatedBy: manager.id
       });
       logAudit(manager, 'advertisement_updated', 'advertisement', item.id, {
+        ...advertisementCredentialMeta(item),
         advNo: item.advNo || null,
         status: item.status,
         live: Boolean(item.advNo && db.settings.apiMode === 'live'),
@@ -12414,14 +12834,14 @@ async function handleAdvertisementById(req, res, parts) {
         result: sanitizedBinanceResult(binanceResult)
       });
       saveDb();
-      broadcast({ type: 'ads.updated', advertisementId: item.id, advNo: item.advNo || null, status: item.status, at: nowIso() });
+      broadcast({ type: 'ads.updated', advertisementId: item.id, ...advertisementCredentialMeta(item), advNo: item.advNo || null, status: item.status, at: nowIso() });
       return sendJson(res, 200, advertisementView(item), {}, req);
     } finally {
       advertisementUpdateLocks.delete(updateLockKey);
     }
   }
   if (action === 'status' && ['POST', 'PATCH'].includes(req.method)) {
-    const manager = requireAdvertisementManage(req, res);
+    const manager = requireAdvertisementManage(req, res, item.credentialId);
     if (!manager) return;
     const body = await readBody(req);
     const nextStatus = advertisementStatusFromValue(body.status || 'offline');
@@ -12432,12 +12852,13 @@ async function handleAdvertisementById(req, res, parts) {
     } else {
       if (!item.advNo) return sendJson(res, 422, { error: 'This draft has no Binance advertisement number. Save it in live mode before changing Binance status.' }, {}, req);
       if (db.settings.apiMode !== 'live') return sendJson(res, 422, { error: 'Binance live mode is required to change advertisement status.' }, {}, req);
-      const credential = activeBinanceCredential();
-      if (!credential) return sendJson(res, 422, { error: 'Active Binance API credential is required to change advertisement status.' }, {}, req);
+      const credential = requireLiveBinanceCredentialForUser(req, res, manager, item.credentialId, 'ads.manage', { requireExplicitWhenMultiple: true });
+      if (!credential) return;
+      await refreshAdvertisementMerchantControlVerification(credential, true).catch(() => {});
       const advStatus = advertisementStatusCode(nextStatus);
       if (advertisementMerchantControlState('break').enabled === true) {
         const at = nowIso();
-        applyMerchantControlImpactToAdvertisements('break', true);
+        applyMerchantControlImpactToAdvertisements('break', true, credential.id);
         item.status = 'offline';
         item.advStatus = 3;
         item.updatedAt = at;
@@ -12446,7 +12867,7 @@ async function handleAdvertisementById(req, res, parts) {
         const notice = nextStatus === 'online'
           ? 'Break mode is active. Turn Break off before activating an advertisement. No Binance status command was sent.'
           : 'Break mode is active, so this advertisement is already unavailable. No Binance status command was sent.';
-        broadcast({ type: 'ads.status.changed', advertisementId: item.id, advNo: item.advNo || null, status: 'offline', at });
+        broadcast({ type: 'ads.status.changed', advertisementId: item.id, ...advertisementCredentialMeta(item), advNo: item.advNo || null, status: 'offline', at });
         return sendJson(res, 200, { ...advertisementView(item), ok: true, notice, noticeType: 'warning', blockedByBreak: true, commandSent: false, merchantControls: advertisementMerchantControlsView() }, {}, req);
       }
       let autoStartMerchant = body.autoStartMerchant === true || body.autoStartMerchant === 1 || String(body.autoStartMerchant || '').toLowerCase() === 'true';
@@ -12473,15 +12894,15 @@ async function handleAdvertisementById(req, res, parts) {
           });
           setAdvertisementMerchantControlState('online', false, { at, verified: true, strategy: 'binance_business_closed_83229', preserveActionAt: true });
           setAdvertisementMerchantControlState('break', false, { at, verified: false, preserveActionAt: true });
-          applyMerchantControlImpactToAdvertisements('business', false);
+          applyMerchantControlImpactToAdvertisements('business', false, credential.id);
           item.status = 'offline';
           item.advStatus = 3;
           item.updatedAt = at;
           item.lastSyncedAt = at;
           item.rawBinanceStatusResult = { businessClosed: true, code: 83229, message: cleanStr(error.message || error, 500) };
           saveDb();
-          broadcast({ type: 'ads.merchant.controls', control: 'business', enabled: false, controls: advertisementMerchantControlsView(), at });
-          broadcast({ type: 'ads.status.changed', advertisementId: item.id, advNo: item.advNo || null, status: 'offline', at });
+          broadcast({ type: 'ads.merchant.controls', ...advertisementCredentialMeta(item), control: 'business', enabled: false, controls: advertisementMerchantControlsView(), at });
+          broadcast({ type: 'ads.status.changed', advertisementId: item.id, ...advertisementCredentialMeta(item), advNo: item.advNo || null, status: 'offline', at });
 
           if (nextStatus === 'online' && autoStartMerchant) {
             try {
@@ -12527,7 +12948,7 @@ async function handleAdvertisementById(req, res, parts) {
           setAdvertisementMerchantControlState('business', true, { at, verified: false, preserveActionAt: true });
           setAdvertisementMerchantControlState('online', false, { at, verified: true, strategy: 'binance_break_83230', preserveActionAt: true });
           setAdvertisementMerchantControlState('break', true, { at, verified: true, source: 'binance_83230', stickyMs: 5 * 60 * 1000, preserveActionAt: true });
-          applyMerchantControlImpactToAdvertisements('break', true);
+          applyMerchantControlImpactToAdvertisements('break', true, credential.id);
           item.status = 'offline';
           item.advStatus = 3;
           item.updatedAt = at;
@@ -12537,8 +12958,8 @@ async function handleAdvertisementById(req, res, parts) {
           const notice = nextStatus === 'online'
             ? 'Break mode is active. Turn Break off before activating an advertisement. No duplicate command was sent.'
             : 'Break mode is active, so this advertisement is already unavailable. No status command is required.';
-          broadcast({ type: 'ads.merchant.controls', control: 'break', enabled: true, controls: advertisementMerchantControlsView(), at });
-          broadcast({ type: 'ads.status.changed', advertisementId: item.id, advNo: item.advNo || null, status: 'offline', at });
+          broadcast({ type: 'ads.merchant.controls', ...advertisementCredentialMeta(item), control: 'break', enabled: true, controls: advertisementMerchantControlsView(), at });
+          broadcast({ type: 'ads.status.changed', advertisementId: item.id, ...advertisementCredentialMeta(item), advNo: item.advNo || null, status: 'offline', at });
           return sendJson(res, 200, { ...advertisementView(item), ok: true, notice, noticeType: 'warning', blockedByBreak: true, merchantControls: advertisementMerchantControlsView() }, {}, req);
         } else {
           throw error;
@@ -12551,9 +12972,9 @@ async function handleAdvertisementById(req, res, parts) {
     }
     item.updatedAt = nowIso();
     item.updatedBy = manager.id;
-    logAudit(manager, 'advertisement_status_changed', 'advertisement', item.id, { advNo: item.advNo || null, status: item.status, advStatus: item.advStatus });
+    logAudit(manager, 'advertisement_status_changed', 'advertisement', item.id, { ...advertisementCredentialMeta(item), advNo: item.advNo || null, status: item.status, advStatus: item.advStatus });
     saveDb();
-    broadcast({ type: 'ads.status.changed', advertisementId: item.id, advNo: item.advNo || null, status: item.status, at: nowIso() });
+    broadcast({ type: 'ads.status.changed', advertisementId: item.id, ...advertisementCredentialMeta(item), advNo: item.advNo || null, status: item.status, at: nowIso() });
     return sendJson(res, 200, advertisementView(item), {}, req);
   }
   return sendJson(res, 404, { error: 'Unknown advertisement action.' }, {}, req);
@@ -13959,7 +14380,7 @@ function handleBootstrap(req, res) {
   const accountUsers = userHasPermission(s.user, 'accounts.manage')
     ? db.users.filter(user => user.enabled !== false).map(user => ({ id: user.id, username: user.username, name: user.name, role: user.role, agentId: user.agentId || paymentAccountOwnerAgentId(user) || null }))
     : [];
-  return sendJson(res, 200, { user: userSafe(s.user), csrfToken: s.session.csrfToken, paymentMethods: db.paymentMethods, agents: db.agents.map(agentView), accountUsers, permissions: PERMISSION_CATALOG, userRoles: db.userRoles, settings: publicSettings(), notifications: notificationsForUser(s.user).slice(-50).reverse() }, {}, req);
+  return sendJson(res, 200, { user: userSafe(s.user), csrfToken: s.session.csrfToken, paymentMethods: db.paymentMethods, agents: db.agents.map(agent => agentView(agent, s.user)), accountUsers, permissions: PERMISSION_CATALOG, userRoles: db.userRoles, settings: publicSettings(), notifications: notificationsForUser(s.user).slice(-50).reverse() }, {}, req);
 }
 function handleDashboard(req, res) {
   const user = requirePermission(req, res, 'dashboard.view'); if (!user) return;
@@ -14036,7 +14457,11 @@ async function handleCredentialById(req, res, parts) {
     db.apiCredentials = db.apiCredentials.filter(c => Number(c.id) !== id);
     db.ownerP2pProfiles = (db.ownerP2pProfiles || []).filter(profile => Number(profile.credentialId) !== id);
     db.users.forEach(existingUser => {
-      existingUser.allowedP2pCredentialIds = normalizeP2pCredentialIds((existingUser.allowedP2pCredentialIds || []).filter(value => Number(value) !== id));
+      existingUser.binanceCredentialPermissions = normalizeBinanceCredentialPermissions(
+        (existingUser.binanceCredentialPermissions || []).filter(row => Number(row?.credentialId || 0) !== id),
+        existingUser
+      );
+      syncLegacyP2pCredentialIds(existingUser);
     });
     const firstCredential = sortedP2pProfileCredentials()[0] || null;
     db.ownerP2pProfile = firstCredential ? ownerP2pProfileBase(firstCredential.id) : { userNo: '', nickname: '', stats: emptyCounterpartyStats(), feedbackRows: { positive: [], negative: [] }, source: '', syncedAt: null, lastError: '', warnings: [] };
@@ -14112,12 +14537,28 @@ async function handleCredentialById(req, res, parts) {
   return sendJson(res, 405, { error: 'Method not allowed' }, {}, req);
 }
 
-function agentView(agent) {
-  const user = db.users.find(u => u.id === agent.userId) || null;
+function agentView(agent, viewer = null) {
+  const linkedUser = db.users.find(u => u.id === agent.userId) || null;
   const dynamicStatus = agentDynamicStatus(agent);
-  const presence = user ? userPresenceView(user.id) : { status: 'offline', isOnline: false, isAvailable: false };
-  const activityToday = user ? userActivitySummary(user.id, parseReportRange(new URL('http://localhost/?period=daily'))) : null;
-  return { ...agent, manualStatus: 'dynamic', status: dynamicStatus, isOnline: presence.isOnline, isAvailable: presence.isAvailable, presence, activityToday, user: user ? userSafe(user) : null };
+  const presence = linkedUser ? userPresenceView(linkedUser.id) : { status: 'offline', isOnline: false, isAvailable: false };
+  const activityToday = linkedUser ? userActivitySummary(linkedUser.id, parseReportRange(new URL('http://localhost/?period=daily'))) : null;
+  let linkedUserView = null;
+  if (linkedUser) {
+    const canManageUsers = Boolean(viewer && userHasPermission(viewer, 'agents.manage'));
+    const isSelf = Boolean(viewer && Number(viewer.id) === Number(linkedUser.id));
+    if (canManageUsers || isSelf) linkedUserView = userSafe(linkedUser);
+    else {
+      linkedUserView = {
+        id: linkedUser.id,
+        username: linkedUser.username,
+        name: linkedUser.name,
+        role: linkedUser.role,
+        agentId: linkedUser.agentId || null,
+        enabled: linkedUser.enabled !== false
+      };
+    }
+  }
+  return { ...agent, manualStatus: 'dynamic', status: dynamicStatus, isOnline: presence.isOnline, isAvailable: presence.isAvailable, presence, activityToday, user: linkedUserView };
 }
 
 async function handleUserRoles(req, res) {
@@ -14127,7 +14568,13 @@ async function handleUserRoles(req, res) {
   if (req.method === 'POST') {
     const body = await readBody(req);
     const systemRole = ['agent','manager','auditor'].includes(body.systemRole) ? body.systemRole : 'agent';
-    const item = { id: nextId(), name: cleanStr(body.name || 'New User Role', 100), systemRole, description: cleanStr(body.description || '', 300), locked: false, permissions: normalizePermissions(body.permissions, systemRole), createdBy: admin.id, createdAt: nowIso(), updatedAt: nowIso() };
+    let permissions;
+    try {
+      permissions = validateGrantedGlobalPermissions(admin, body.permissions, systemRole);
+    } catch (error) {
+      return sendJson(res, error.statusCode || 422, { error: error.message }, {}, req);
+    }
+    const item = { id: nextId(), name: cleanStr(body.name || 'New User Role', 100), systemRole, description: cleanStr(body.description || '', 300), locked: false, permissions, createdBy: admin.id, createdAt: nowIso(), updatedAt: nowIso() };
     db.userRoles.push(item);
     logAudit(admin, 'user_role_created', 'userRole', item.id, { name: item.name, systemRole: item.systemRole, permissions: item.permissions });
     saveDb();
@@ -14143,14 +14590,29 @@ async function handleUserRoleById(req, res, parts) {
   if (!item) return sendJson(res, 404, { error: 'User role not found' }, {}, req);
   if (req.method === 'PATCH') {
     const body = await readBody(req);
-    if (!item.locked) {
-      if (body.name !== undefined) item.name = cleanStr(body.name, 100);
-      if (body.systemRole !== undefined && ['agent','manager','auditor'].includes(body.systemRole)) item.systemRole = body.systemRole;
+    const nextSystemRole = !item.locked && body.systemRole !== undefined && ['agent','manager','auditor'].includes(body.systemRole)
+      ? body.systemRole
+      : item.systemRole;
+    let nextPermissions = normalizePermissions(item.permissions, nextSystemRole);
+    if (body.permissions !== undefined) nextPermissions = normalizePermissions(body.permissions, nextSystemRole);
+    if (body.permissions !== undefined || nextSystemRole !== item.systemRole) {
+      try {
+        nextPermissions = validateGrantedGlobalPermissions(admin, nextPermissions, nextSystemRole);
+      } catch (error) {
+        return sendJson(res, error.statusCode || 422, { error: error.message }, {}, req);
+      }
     }
+    if (!item.locked && body.name !== undefined) item.name = cleanStr(body.name, 100);
+    item.systemRole = nextSystemRole;
     if (body.description !== undefined) item.description = cleanStr(body.description, 300);
-    if (body.permissions !== undefined) item.permissions = normalizePermissions(body.permissions, item.systemRole);
+    item.permissions = nextPermissions;
     item.updatedAt = nowIso();
-    db.users.filter(u => Number(u.roleProfileId) === id).forEach(u => { u.role = item.systemRole; u.permissions = normalizePermissions(item.permissions, item.systemRole); });
+    db.users.filter(u => Number(u.roleProfileId) === id).forEach(u => {
+      u.role = item.systemRole;
+      u.permissions = normalizePermissions(item.permissions, item.systemRole);
+      u.binanceCredentialPermissions = normalizeBinanceCredentialPermissions(u.binanceCredentialPermissions || [], u);
+      syncLegacyP2pCredentialIds(u);
+    });
     logAudit(admin, 'user_role_updated', 'userRole', item.id, { name: item.name, systemRole: item.systemRole, permissions: item.permissions });
     saveDb();
     return sendJson(res, 200, item, {}, req);
@@ -14168,15 +14630,23 @@ async function handleUserRoleById(req, res, parts) {
 
 async function handleAgents(req, res) {
   const user = requireAuth(req, res); if (!user) return;
-  if (req.method === 'GET') return sendJson(res, 200, {
-    items: db.agents.map(agentView),
-    permissions: PERMISSION_CATALOG,
-    p2pCredentialOptions: userHasPermission(user, 'agents.manage') ? p2pProfileCredentialOptionsForUser(user) : []
-  }, {}, req);
+  if (req.method === 'GET') {
+    const grantOptions = userHasPermission(user, 'agents.manage')
+      ? binanceCredentialOptionsForUser(user, null, { includeDisabled: true }).filter(item => user.role === 'admin' || item.permissions.length)
+      : [];
+    return sendJson(res, 200, {
+      items: db.agents.map(agent => agentView(agent, user)),
+      permissions: PERMISSION_CATALOG,
+      binanceAccountPermissions: BINANCE_ACCOUNT_PERMISSION_CATALOG,
+      binanceAccountPermissionGroups: BINANCE_ACCOUNT_PERMISSION_GROUPS,
+      binanceCredentialOptions: grantOptions,
+      p2pCredentialOptions: grantOptions
+    }, {}, req);
+  }
   if (req.method === 'POST') {
     const admin = requirePermission(req, res, 'agents.manage'); if (!admin) return;
     const body = await readBody(req);
-    const agent = { id: nextId(), name: cleanStr(body.name || 'New Agent', 120), userId: null, status: 'dynamic', mobile: cleanStr(body.mobile || '', 40), smsEnabled: body.smsEnabled !== false, maxActiveOrders: positiveNum(body.maxActiveOrders || 5), allowNewOrders: body.allowNewOrders !== false, canRelease: !!body.canRelease, maxReleaseAmount: positiveNum(body.maxReleaseAmount || 0), createdAt: nowIso() };
+    const agent = { id: nextId(), name: cleanStr(body.name || 'New Agent', 120), userId: null, status: 'dynamic', mobile: cleanStr(body.mobile || '', 40), smsEnabled: body.smsEnabled !== false, maxActiveOrders: positiveNum(body.maxActiveOrders || 5), allowNewOrders: body.allowNewOrders !== false, canRelease: !!body.canRelease, maxReleaseAmount: positiveNum(body.maxReleaseAmount || 0), includeProfitInCompanyTotals: body.includeProfitInCompanyTotals !== false, createdAt: nowIso() };
     if (body.username && body.password) {
       const username = cleanStr(body.username, 80);
       if (db.users.some(u => u.username === username)) return sendJson(res, 422, { error: 'Username already exists' }, {}, req);
@@ -14190,11 +14660,23 @@ async function handleAgents(req, res) {
       const u = makeUser(nextId(), username, String(body.password || ''), agent.name, loginRole, agent.id, { email, secretCode: String(body.secretCode) });
       try { applySecurityQuestionFallback(u, body); } catch (error) { return sendJson(res, error.statusCode || 422, { error: error.message }, {}, req); }
       u.roleProfileId = roleProfile ? roleProfile.id : defaultRoleProfileIdFor(loginRole);
-      u.permissions = body.permissions ? normalizePermissions(body.permissions, loginRole) : permissionsFromRoleProfile(u.roleProfileId, loginRole);
-      const requestedCredentialIds = normalizeP2pCredentialIds(body.allowedP2pCredentialIds || []);
-      const assignableCredentialIds = new Set(p2pProfileCredentialIdsForUser(admin));
-      if (requestedCredentialIds.some(id => !assignableCredentialIds.has(id))) return sendJson(res, 403, { error: 'You cannot grant a P2P API profile that you are not allowed to access.' }, {}, req);
-      u.allowedP2pCredentialIds = requestedCredentialIds;
+      const requestedGlobalPermissions = body.permissions !== undefined
+        ? body.permissions
+        : permissionsFromRoleProfile(u.roleProfileId, loginRole);
+      try {
+        u.permissions = validateGrantedGlobalPermissions(admin, requestedGlobalPermissions, loginRole);
+      } catch (error) {
+        return sendJson(res, error.statusCode || 422, { error: error.message }, {}, req);
+      }
+      const requestedRows = body.binanceCredentialPermissions !== undefined
+        ? body.binanceCredentialPermissions
+        : (body.allowedP2pCredentialIds || []).map(credentialId => ({ credentialId: Number(credentialId), permissions: [...binanceAccountGlobalPermissionSet(u)] }));
+      try {
+        u.binanceCredentialPermissions = validateGrantedBinanceCredentialPermissions(admin, u, requestedRows);
+      } catch (error) {
+        return sendJson(res, error.statusCode || 422, { error: error.message }, {}, req);
+      }
+      syncLegacyP2pCredentialIds(u);
       db.users.push(u);
       agent.userId = u.id;
       if (loginRole !== 'agent') { agent.allowNewOrders = false; agent.canRelease = false; }
@@ -14202,7 +14684,7 @@ async function handleAgents(req, res) {
     db.agents.push(agent);
     logAudit(admin, 'agent_created', 'agent', agent.id, { ...agent, username: body.username ? cleanStr(body.username, 80) : null, permissions: body.permissions || null });
     saveDb();
-    return sendJson(res, 201, agentView(agent), {}, req);
+    return sendJson(res, 201, agentView(agent, admin), {}, req);
   }
   return sendJson(res, 405, { error: 'Method not allowed' }, {}, req);
 }
@@ -14212,82 +14694,126 @@ async function handleAgentById(req, res, parts) {
   const id = Number(parts[2]);
   const agent = agentById(id);
   if (!agent) return sendJson(res, 404, { error: 'Agent not found' }, {}, req);
-  if (req.method === 'GET') return sendJson(res, 200, agentView(agent), {}, req);
+  if (req.method === 'GET') return sendJson(res, 200, agentView(agent, user), {}, req);
   const admin = requirePermission(req, res, 'agents.manage'); if (!admin) return;
   if (req.method === 'PATCH') {
     const body = await readBody(req);
-    if (body.name !== undefined) agent.name = cleanStr(body.name, 120);
-    agent.status = 'dynamic';
-    if (body.maxActiveOrders !== undefined) agent.maxActiveOrders = positiveNum(body.maxActiveOrders);
-    if (body.mobile !== undefined) agent.mobile = cleanStr(body.mobile || '', 40);
-    if (body.smsEnabled !== undefined) agent.smsEnabled = !!body.smsEnabled;
-    if (body.allowNewOrders !== undefined) agent.allowNewOrders = !!body.allowNewOrders;
-    if (body.canRelease !== undefined) agent.canRelease = !!body.canRelease;
-    if (body.maxReleaseAmount !== undefined) agent.maxReleaseAmount = positiveNum(body.maxReleaseAmount);
-    let linkedUser = db.users.find(u => u.id === agent.userId) || null;
-    if (body.username && !linkedUser) {
+    const agentCandidate = { ...agent };
+    if (body.name !== undefined) agentCandidate.name = cleanStr(body.name, 120);
+    agentCandidate.status = 'dynamic';
+    if (body.maxActiveOrders !== undefined) agentCandidate.maxActiveOrders = positiveNum(body.maxActiveOrders);
+    if (body.mobile !== undefined) agentCandidate.mobile = cleanStr(body.mobile || '', 40);
+    if (body.smsEnabled !== undefined) agentCandidate.smsEnabled = !!body.smsEnabled;
+    if (body.allowNewOrders !== undefined) agentCandidate.allowNewOrders = !!body.allowNewOrders;
+    if (body.canRelease !== undefined) agentCandidate.canRelease = !!body.canRelease;
+    if (body.maxReleaseAmount !== undefined) agentCandidate.maxReleaseAmount = positiveNum(body.maxReleaseAmount);
+    if (body.includeProfitInCompanyTotals !== undefined) agentCandidate.includeProfitInCompanyTotals = body.includeProfitInCompanyTotals !== false;
+
+    const existingLinkedUser = db.users.find(u => u.id === agent.userId) || null;
+    let linkedUserCandidate = existingLinkedUser ? {
+      ...existingLinkedUser,
+      permissions: Array.isArray(existingLinkedUser.permissions) ? existingLinkedUser.permissions.slice() : existingLinkedUser.permissions,
+      binanceCredentialPermissions: Array.isArray(existingLinkedUser.binanceCredentialPermissions)
+        ? existingLinkedUser.binanceCredentialPermissions.map(row => ({ ...row, permissions: Array.isArray(row.permissions) ? row.permissions.slice() : [] }))
+        : [],
+      allowedP2pCredentialIds: Array.isArray(existingLinkedUser.allowedP2pCredentialIds) ? existingLinkedUser.allowedP2pCredentialIds.slice() : []
+    } : null;
+    let createLinkedUser = false;
+
+    if (body.username && !linkedUserCandidate) {
       const username = cleanStr(body.username, 80);
       if (db.users.some(u => u.username === username)) return sendJson(res, 422, { error: 'Username already exists' }, {}, req);
-      const requestedRole = ['agent','manager','auditor'].includes(body.loginRole) ? body.loginRole : 'agent';
-      const roleProfile = roleProfileById(body.userRoleId) || roleProfileById(defaultRoleProfileIdFor(requestedRole));
-      const loginRole = roleProfile ? roleProfile.systemRole : requestedRole;
-      
       if (!body.password) return sendJson(res, 422, { error: 'Password is required when creating a login for an existing user' }, {}, req);
       if (!/^\d{6}$/.test(String(body.secretCode || ''))) return sendJson(res, 422, { error: '6 digit secret code is required when creating a login' }, {}, req);
       const email = cleanStr(body.email || '', 160);
       if (email && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return sendJson(res, 422, { error: 'Valid email address required' }, {}, req);
-      linkedUser = makeUser(nextId(), username, String(body.password), agent.name, loginRole, agent.id, { email, secretCode: String(body.secretCode) });
-      try { applySecurityQuestionFallback(linkedUser, body); } catch (error) { return sendJson(res, error.statusCode || 422, { error: error.message }, {}, req); }
-      linkedUser.roleProfileId = roleProfile ? roleProfile.id : defaultRoleProfileIdFor(loginRole);
-      linkedUser.permissions = body.permissions ? normalizePermissions(body.permissions, loginRole) : permissionsFromRoleProfile(linkedUser.roleProfileId, loginRole);
-      const requestedCredentialIds = normalizeP2pCredentialIds(body.allowedP2pCredentialIds || []);
-      const assignableCredentialIds = new Set(p2pProfileCredentialIdsForUser(admin));
-      if (requestedCredentialIds.some(credentialId => !assignableCredentialIds.has(credentialId))) return sendJson(res, 403, { error: 'You cannot grant a P2P API profile that you are not allowed to access.' }, {}, req);
-      linkedUser.allowedP2pCredentialIds = requestedCredentialIds;
-      db.users.push(linkedUser);
-      agent.userId = linkedUser.id;
+      const requestedRole = ['agent','manager','auditor'].includes(body.loginRole) ? body.loginRole : 'agent';
+      const roleProfile = roleProfileById(body.userRoleId) || roleProfileById(defaultRoleProfileIdFor(requestedRole));
+      const loginRole = roleProfile ? roleProfile.systemRole : requestedRole;
+      linkedUserCandidate = makeUser(0, username, String(body.password), agentCandidate.name, loginRole, agent.id, { email, secretCode: String(body.secretCode) });
+      linkedUserCandidate.roleProfileId = roleProfile ? roleProfile.id : defaultRoleProfileIdFor(loginRole);
+      createLinkedUser = true;
     }
-    if (linkedUser) {
+
+    if (linkedUserCandidate) {
       if (body.username !== undefined && body.username) {
         const username = cleanStr(body.username, 80);
-        if (db.users.some(u => u.username === username && u.id !== linkedUser.id)) return sendJson(res, 422, { error: 'Username already exists' }, {}, req);
-        linkedUser.username = username;
+        if (db.users.some(u => u.username === username && u.id !== existingLinkedUser?.id)) return sendJson(res, 422, { error: 'Username already exists' }, {}, req);
+        linkedUserCandidate.username = username;
       }
-      if (body.password) linkedUser.passwordHash = hashPassword(String(body.password));
+      if (body.password) linkedUserCandidate.passwordHash = hashPassword(String(body.password));
       if (body.email !== undefined) {
         const email = cleanStr(body.email || '', 160);
         if (email && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return sendJson(res, 422, { error: 'Valid email address required' }, {}, req);
-        if (email) linkedUser.email = email;
+        if (email) linkedUserCandidate.email = email;
       }
       if (body.secretCode) {
         const secretCode = String(body.secretCode).trim();
         if (!/^\d{6}$/.test(secretCode)) return sendJson(res, 422, { error: 'Secret code must be exactly 6 digits' }, {}, req);
-        linkedUser.loginSecretHash = hashPassword(secretCode);
+        linkedUserCandidate.loginSecretHash = hashPassword(secretCode);
       }
-      linkedUser.name = agent.name;
-      linkedUser.enabled = body.enabled === undefined ? linkedUser.enabled : !!body.enabled;
+      linkedUserCandidate.name = agentCandidate.name;
+      linkedUserCandidate.enabled = body.enabled === undefined ? linkedUserCandidate.enabled : !!body.enabled;
+
       if (body.userRoleId !== undefined || body.loginRole !== undefined) {
-        const requestedRole = ['agent','manager','auditor'].includes(body.loginRole) ? body.loginRole : linkedUser.role;
+        const requestedRole = ['agent','manager','auditor'].includes(body.loginRole) ? body.loginRole : linkedUserCandidate.role;
         const roleProfile = roleProfileById(body.userRoleId) || roleProfileById(defaultRoleProfileIdFor(requestedRole));
-        linkedUser.roleProfileId = roleProfile ? roleProfile.id : linkedUser.roleProfileId;
-        linkedUser.role = roleProfile ? roleProfile.systemRole : requestedRole;
+        linkedUserCandidate.roleProfileId = roleProfile ? roleProfile.id : linkedUserCandidate.roleProfileId;
+        linkedUserCandidate.role = roleProfile ? roleProfile.systemRole : requestedRole;
       }
-      if (body.permissions !== undefined) linkedUser.permissions = normalizePermissions(body.permissions, linkedUser.role);
-      else if (body.userRoleId !== undefined || body.loginRole !== undefined) linkedUser.permissions = permissionsFromRoleProfile(linkedUser.roleProfileId, linkedUser.role);
-      if (body.allowedP2pCredentialIds !== undefined) {
-        const requestedCredentialIds = normalizeP2pCredentialIds(body.allowedP2pCredentialIds || []);
-        const assignableCredentialIds = new Set(p2pProfileCredentialIdsForUser(admin));
-        if (requestedCredentialIds.some(credentialId => !assignableCredentialIds.has(credentialId))) return sendJson(res, 403, { error: 'You cannot grant a P2P API profile that you are not allowed to access.' }, {}, req);
-        linkedUser.allowedP2pCredentialIds = requestedCredentialIds;
+
+      const globalAccessChanged = body.permissions !== undefined || body.userRoleId !== undefined || body.loginRole !== undefined || createLinkedUser;
+      const requestedGlobalPermissions = body.permissions !== undefined
+        ? body.permissions
+        : (globalAccessChanged
+          ? permissionsFromRoleProfile(linkedUserCandidate.roleProfileId, linkedUserCandidate.role)
+          : linkedUserCandidate.permissions);
+      if (globalAccessChanged) {
+        try {
+          linkedUserCandidate.permissions = validateGrantedGlobalPermissions(admin, requestedGlobalPermissions, linkedUserCandidate.role);
+        } catch (error) {
+          return sendJson(res, error.statusCode || 422, { error: error.message }, {}, req);
+        }
+      } else {
+        linkedUserCandidate.permissions = normalizePermissions(requestedGlobalPermissions, linkedUserCandidate.role);
       }
+
+      if (body.binanceCredentialPermissions !== undefined || body.allowedP2pCredentialIds !== undefined || createLinkedUser) {
+        const requestedRows = body.binanceCredentialPermissions !== undefined
+          ? body.binanceCredentialPermissions
+          : (body.allowedP2pCredentialIds || []).map(credentialId => ({ credentialId: Number(credentialId), permissions: [...binanceAccountGlobalPermissionSet(linkedUserCandidate)] }));
+        try {
+          linkedUserCandidate.binanceCredentialPermissions = validateGrantedBinanceCredentialPermissions(admin, linkedUserCandidate, requestedRows);
+        } catch (error) {
+          return sendJson(res, error.statusCode || 422, { error: error.message }, {}, req);
+        }
+      } else {
+        linkedUserCandidate.binanceCredentialPermissions = normalizeBinanceCredentialPermissions(linkedUserCandidate.binanceCredentialPermissions || [], linkedUserCandidate);
+      }
+      syncLegacyP2pCredentialIds(linkedUserCandidate);
+
       if (body.securityQuestion !== undefined || body.securityAnswer !== undefined || body.clearSecurityFallback === true) {
-        try { applySecurityQuestionFallback(linkedUser, body); } catch (error) { return sendJson(res, error.statusCode || 422, { error: error.message }, {}, req); }
+        try { applySecurityQuestionFallback(linkedUserCandidate, body); } catch (error) { return sendJson(res, error.statusCode || 422, { error: error.message }, {}, req); }
       }
-      if (linkedUser.role !== 'agent') { agent.allowNewOrders = false; agent.canRelease = false; }
+      if (linkedUserCandidate.role !== 'agent') {
+        agentCandidate.allowNewOrders = false;
+        agentCandidate.canRelease = false;
+      }
     }
-    logAudit(admin, 'agent_updated', 'agent', agent.id, { agent: agentView(agent) });
+
+    Object.assign(agent, agentCandidate);
+    if (linkedUserCandidate) {
+      if (createLinkedUser) {
+        linkedUserCandidate.id = nextId();
+        db.users.push(linkedUserCandidate);
+        agent.userId = linkedUserCandidate.id;
+      } else if (existingLinkedUser) {
+        Object.assign(existingLinkedUser, linkedUserCandidate);
+      }
+    }
+    logAudit(admin, 'agent_updated', 'agent', agent.id, { agent: agentView(agent, admin) });
     saveDb();
-    return sendJson(res, 200, agentView(agent), {}, req);
+    return sendJson(res, 200, agentView(agent, admin), {}, req);
   }
   return sendJson(res, 405, { error: 'Method not allowed' }, {}, req);
 }
@@ -14303,10 +14829,13 @@ async function handlePaymentMethods(req, res) {
     const item = { id: nextId(), code, name: cleanStr(body.name || code, 80), enabled: body.enabled !== false };
     db.paymentMethods.push(item);
     let autoSync = null;
-    const credential = activeBinanceCredential();
-    if (credential && userHasPermission(admin, 'binance.sync')) {
+    const syncOptions = usableBinanceCredentialOptionsForUser(admin, 'binance.sync');
+    if (syncOptions.length === 1) {
+      const credential = binanceCredentialById(syncOptions[0].id);
       try { autoSync = await syncBinancePaymentMethodsWithCredential(admin, credential, 'after_local_payment_method_created'); }
-      catch (err) { autoSync = { error: cleanStr(err.message || err, 220) }; }
+      catch (err) { autoSync = { credentialId: Number(credential.id), error: cleanStr(err.message || err, 220) }; }
+    } else if (syncOptions.length > 1) {
+      autoSync = { skipped: true, reason: 'multiple_assigned_accounts', message: 'Use the Binance Payment Method Sync action and select the intended account.' };
     }
     logAudit(admin, 'payment_method_created', 'paymentMethod', item.id, { ...item, autoSync });
     saveDb();
@@ -14824,7 +15353,7 @@ async function handleChatInbox(req, res) {
   const user = requirePermission(req, res, 'orders.view'); if (!user) return;
   if (req.method !== 'GET') return sendJson(res, 405, { error: 'Method not allowed' }, {}, req);
   let orders = db.orders || [];
-  if (user.role === 'agent') orders = orders.filter(order => canAccessOrder(user, order));
+  orders = orders.filter(order => canAccessOrder(user, order));
   const items = [];
   for (const order of orders) {
     const latest = latestC2cChatForOrder(order.id);
@@ -14860,7 +15389,7 @@ async function handleChatUnread(req, res) {
   const user = requirePermission(req, res, 'orders.view'); if (!user) return;
   if (req.method === 'GET') {
     let orders = db.orders || [];
-    if (user.role === 'agent') orders = orders.filter(order => canAccessOrder(user, order));
+    orders = orders.filter(order => canAccessOrder(user, order));
     const counts = {};
     const latestByOrder = {};
     let total = 0;
@@ -14878,7 +15407,7 @@ async function handleChatUnread(req, res) {
     const orderId = Number(body.orderId || 0);
     const order = orderById(orderId);
     if (!order) return sendJson(res, 404, { error: 'Order not found' }, {}, req);
-    if (!canAccessOrder(user, order) && !['admin','manager'].includes(user.role)) return sendJson(res, 403, { error: 'No access to this order' }, {}, req);
+    if (!canAccessOrder(user, order)) return sendJson(res, 403, { error: 'No access to this order' }, {}, req);
     const latest = latestIncomingChatForOrder(orderId);
     const state = chatReadStateFor(user.id, orderId, true);
     state.lastReadChatId = Number(latest?.id || state.lastReadChatId || 0);
@@ -14893,12 +15422,17 @@ async function handleChatUnread(req, res) {
 async function handleOrders(req, res, url) {
   const user = requirePermission(req, res, 'orders.view'); if (!user) return;
   if (req.method === 'GET') {
-    let orders = db.orders;
-    if (user.role === 'agent') orders = orders.filter(o => canAccessOrder(user, o));
+    let orders = db.orders.filter(order => canAccessOrder(user, order));
     const status = url.searchParams.get('status');
+    const credentialId = Number(url.searchParams.get('credentialId') || 0);
     if (status) orders = orders.filter(o => o.status === status);
+    if (credentialId) orders = orders.filter(order => Number(order.credentialId || 0) === credentialId);
     orders = orders.slice().sort((a,b) => new Date(b.createdAt || b.updatedAt || 0) - new Date(a.createdAt || a.updatedAt || 0));
-    return sendJson(res, 200, { items: orders.map(order => orderListView(order, user)) }, {}, req);
+    return sendJson(res, 200, {
+      items: orders.map(order => orderListView(order, user)),
+      credentialOptions: binanceCredentialOptionsForUser(user, 'orders.view', { includeDisabled: true }),
+      liveCredentialOptions: usableBinanceCredentialOptionsForUser(user, 'orders.view')
+    }, {}, req);
   }
   if (req.method === 'POST') {
     const manager = requirePermission(req, res, 'orders.create'); if (!manager) return;
@@ -14906,12 +15440,16 @@ async function handleOrders(req, res, url) {
     const paymentMethodId = Number(body.paymentMethodId);
     if (!methodById(paymentMethodId)) return sendJson(res, 422, { error: 'Valid payment method required' }, {}, req);
     const orderSource = cleanStr(body.orderSource || 'binance', 20) === 'offline' ? 'offline' : 'binance';
+    const credential = orderSource === 'binance'
+      ? requireLiveBinanceCredentialForUser(req, res, manager, body.credentialId, 'orders.create', { requireExplicitWhenMultiple: true })
+      : null;
+    if (orderSource === 'binance' && !credential) return;
     const createdAt = nowIso();
     const fiatAmount = positiveNum(body.amount || body.fiatAmount || 0);
     const rate = positiveNum(body.rate || (orderSource === 'offline' ? 1 : 121.50));
     const asset = cleanStr(body.asset || (orderSource === 'offline' ? 'LOCAL_GOODS' : 'USDT'), 30).toUpperCase();
     const limitMinutes = positiveNum(body.paymentTimeLimitMinutes || 15);
-    const order = { id: nextId(), orderNo: cleanStr(body.orderNo || ((orderSource === 'offline' ? 'OFFLINE-' : 'LOCAL-') + Date.now()), 80), orderSource, type: cleanStr(body.type || 'BUY', 10).toUpperCase(), asset, amount: fiatAmount, fiatAmount, fiatUnit: cleanStr(body.fiatUnit || 'BDT', 10).toUpperCase(), rate, assetAmount: positiveNum(body.assetAmount || (rate ? round2(fiatAmount / rate) : 0)), paymentTimeLimitMinutes: limitMinutes, paymentStartedAt: createdAt, paymentDeadlineAt: body.paymentDeadlineAt ? cleanStr(body.paymentDeadlineAt, 60) : addMinutesIso(createdAt, limitMinutes), paymentCompletedAt: null, paymentMethodId, status: 'new', leadAgentId: null, currentAgentId: null, createdAt, updatedAt: createdAt, externalStatus: cleanStr(body.externalStatus || (orderSource === 'offline' ? 'OFFLINE_LOCAL' : 'TRADING'), 80), counterpartyName: cleanStr(body.counterpartyName || '', 120), counterpartyRealName: cleanCounterpartyRealName(body.counterpartyRealName || ''), counterpartyStats: { ...emptyCounterpartyStats(), nickname: cleanStr(body.counterpartyName || '', 120) }, sourceNote: cleanStr(body.sourceNote || '', 300), externalOrderNo: cleanStr(body.externalOrderNo || body.orderNo || '', 100), binancePayId: positiveNum(body.binancePayId || body.payId || 0) };
+    const order = { id: nextId(), orderNo: cleanStr(body.orderNo || ((orderSource === 'offline' ? 'OFFLINE-' : 'LOCAL-') + Date.now()), 80), orderSource, credentialId: credential ? Number(credential.id) : null, credentialName: credential ? binanceCredentialLabel(credential) : '', type: cleanStr(body.type || 'BUY', 10).toUpperCase(), asset, amount: fiatAmount, fiatAmount, fiatUnit: cleanStr(body.fiatUnit || 'BDT', 10).toUpperCase(), rate, assetAmount: positiveNum(body.assetAmount || (rate ? round2(fiatAmount / rate) : 0)), paymentTimeLimitMinutes: limitMinutes, paymentStartedAt: createdAt, paymentDeadlineAt: body.paymentDeadlineAt ? cleanStr(body.paymentDeadlineAt, 60) : addMinutesIso(createdAt, limitMinutes), paymentCompletedAt: null, paymentMethodId, status: 'new', leadAgentId: null, currentAgentId: null, createdAt, updatedAt: createdAt, externalStatus: cleanStr(body.externalStatus || (orderSource === 'offline' ? 'OFFLINE_LOCAL' : 'TRADING'), 80), counterpartyName: cleanStr(body.counterpartyName || '', 120), counterpartyRealName: cleanCounterpartyRealName(body.counterpartyRealName || ''), counterpartyStats: { ...emptyCounterpartyStats(), nickname: cleanStr(body.counterpartyName || '', 120) }, sourceNote: cleanStr(body.sourceNote || '', 300), externalOrderNo: cleanStr(body.externalOrderNo || body.orderNo || '', 100), binancePayId: positiveNum(body.binancePayId || body.payId || 0) };
     ensureOrderFinancials(order);
     if (!['BUY','SELL'].includes(order.type) || order.amount <= 0) return sendJson(res, 422, { error: 'Order type BUY/SELL and positive amount required' }, {}, req);
     db.orders.push(order);
@@ -14920,15 +15458,15 @@ async function handleOrders(req, res, url) {
       order.status = 'assigned'; order.leadAgentId = agent.id; order.currentAgentId = agent.id;
       db.orderAgentAssignments.push({ id: nextId(), orderId: order.id, agentId: agent.id, role: 'lead', assignedAmount: order.amount, actualAmount: 0, direction: order.type === 'BUY' ? 'send' : 'receive', status: 'assigned', assignedBy: 'system', createdAt: nowIso() });
       notifyOrderAssigned(order, agent, 'new_order_auto_assignment');
-      logAudit(manager, 'order_created_and_assigned', 'order', order.id, { toAgentId: agent.id });
+      logAudit(manager, 'order_created_and_assigned', 'order', order.id, { toAgentId: agent.id, credentialId: order.credentialId || null });
     } else {
       order.status = 'manager_queue';
       notifyOrderManagerQueue(order, 'no_agent_available');
-      logAudit(manager, 'order_created_no_agent', 'order', order.id, {});
+      logAudit(manager, 'order_created_no_agent', 'order', order.id, { credentialId: order.credentialId || null });
     }
     saveDb();
-    broadcast({ type: 'order.created', orderId: order.id, orderNo: order.orderNo, externalOrderNo: order.externalOrderNo || order.orderNo, status: order.status, externalStatus: order.externalStatus, source: order.orderSource || 'manual_create', at: nowIso() });
-    return sendJson(res, 201, orderListView(order), {}, req);
+    broadcast({ type: 'order.created', orderId: order.id, orderNo: order.orderNo, externalOrderNo: order.externalOrderNo || order.orderNo, credentialId: order.credentialId || null, credentialName: order.credentialName || '', status: order.status, externalStatus: order.externalStatus, source: order.orderSource || 'manual_create', at: nowIso() });
+    return sendJson(res, 201, orderListView(order, user), {}, req);
   }
   return sendJson(res, 405, { error: 'Method not allowed' }, {}, req);
 }
@@ -14938,21 +15476,23 @@ function orderListView(order, user = null) {
   const summary = orderSummary(order.id);
   const viewerSummary = viewerOrderSummary(order, user);
   const assetSummary = deriveOrderAssetSummary(order);
-  return { ...order, method: methodById(order.paymentMethodId), leadAgent: agentById(order.leadAgentId), assignments: db.orderAgentAssignments.filter(a => a.orderId === order.id).map(a => ({ ...a, agent: agentById(a.agentId) })), summary, viewerSummary, assetSummary };
+  const credential = order.orderSource === 'offline' ? null : binanceCredentialById(order.credentialId);
+  return { ...order, credentialName: credential ? binanceCredentialLabel(credential) : cleanStr(order.credentialName || '', 120), binanceAccount: credential ? { id: Number(credential.id), name: binanceCredentialLabel(credential), status: credential.disabled ? 'disabled' : cleanStr(credential.status || 'saved', 40), disabled: Boolean(credential.disabled) } : null, method: methodById(order.paymentMethodId), leadAgent: agentById(order.leadAgentId), assignments: db.orderAgentAssignments.filter(a => a.orderId === order.id).map(a => ({ ...a, agent: agentById(a.agentId) })), summary, viewerSummary, assetSummary };
 }
 
 
 async function autoSyncBinanceOrderBundle(req, res, user, order) {
-  if (!userHasPermission(user, 'binance.sync') && !userHasPermission(user, 'orders.final_action')) return sendJson(res, 403, { error: 'Permission denied: Binance order live sync' }, {}, req);
-  const credential = requireLiveBinanceCredential(req, res); if (!credential) return;
   if (order.orderSource === 'offline') return sendJson(res, 422, { error: 'Offline orders do not have Binance live sync.' }, {}, req);
+  const accountPermission = canUseOrderCredential(user, order, 'binance.sync') ? 'binance.sync' : (canUseOrderCredential(user, order, 'orders.final_action') ? 'orders.final_action' : '');
+  if (!accountPermission) return sendJson(res, 403, { error: 'No Binance sync/final-action permission for this order account.' }, {}, req);
+  const credential = requireOrderBinanceCredential(req, res, user, order, accountPermission); if (!credential) return;
   const body = await readBody(req);
   const orderNumber = binanceOrderNumberFor(order, body);
   const out = { detailSynced: false, statsSynced: false, chatSynced: false, errors: [] };
   try {
     const detailResp = await callSignedSapi({ apiKey: credential.apiKey, secretKey: credential.secretKey, endpointName: 'getUserOrderDetail', body: { adOrderNo: orderNumber }, clientType: credential.clientType || 'web', dryRun: false });
     const detail = unwrapBinanceData(detailResp);
-    const change = upsertBinanceOrder(detail, user);
+    const change = upsertBinanceOrder(detail, user, credential);
     order = change.order || order;
     order.lastBinanceDetailSyncedAt = nowIso();
     order.rawBinanceDetail = sanitizedBinanceResult(detail);
@@ -14975,7 +15515,7 @@ async function autoSyncBinanceOrderBundle(req, res, user, order) {
     out.errors.push({ step: 'stats', message: cleanStr(msg, 300) });
   }
   try {
-    if (userHasPermission(user, 'binance.chat')) {
+    if (userHasBinanceCredentialPermission(user, credential.id, 'binance.chat')) {
       const chatResp = await callSignedSapi({ apiKey: credential.apiKey, secretKey: credential.secretKey, endpointName: 'retrieveChatMessages', query: { orderNo: binanceOrderNumberFor(order, body), page: 1, rows: 50, sort: 'desc' }, clientType: credential.clientType || 'web', dryRun: false });
       const rows = extractBinanceList(chatResp);
       let imported = 0;
@@ -15001,14 +15541,13 @@ async function autoSyncBinanceOrderBundle(req, res, user, order) {
 }
 
 async function verifyBinanceAdditionalKyc(req, res, user, order) {
-  if (!userHasPermission(user, 'orders.final_action') && !userHasPermission(user, 'binance.sync')) {
-    return sendJson(res, 403, { error: 'Permission denied: orders.final_action' }, {}, req);
-  }
+  const accountPermission = canUseOrderCredential(user, order, 'orders.final_action') ? 'orders.final_action' : (canUseOrderCredential(user, order, 'binance.sync') ? 'binance.sync' : '');
+  if (!accountPermission) return sendJson(res, 403, { error: 'No Additional Verification permission for this Binance account.' }, {}, req);
   if (user.role === 'agent' && Number(order.leadAgentId || order.currentAgentId || 0) !== Number(user.agentId || 0)) {
     return sendJson(res, 403, { error: 'Only the lead agent can verify this order. Manager/Admin can override.' }, {}, req);
   }
-  const credential = requireLiveBinanceCredential(req, res); if (!credential) return;
   if (order.orderSource === 'offline') return sendJson(res, 422, { error: 'Offline orders do not use Binance Additional Verification.' }, {}, req);
+  const credential = requireOrderBinanceCredential(req, res, user, order, accountPermission); if (!credential) return;
   const currentState = additionalKycStateForOrder(order);
   if (currentState.verified) return sendJson(res, 200, { ...fullOrderView(order, user), additionalKycAction: { alreadyVerified: true } }, {}, req);
   if (!currentState.required) return sendJson(res, 422, { error: 'This order does not currently require Additional Verification. Refresh Binance order details and try again.' }, {}, req);
@@ -15050,7 +15589,7 @@ async function verifyBinanceAdditionalKyc(req, res, user, order) {
   try {
     const detailResp = await callSignedSapi({ apiKey: credential.apiKey, secretKey: credential.secretKey, endpointName: 'getUserOrderDetail', body: { adOrderNo: orderNumber }, clientType: credential.clientType || 'web', dryRun: false });
     const detail = unwrapBinanceData(detailResp);
-    const change = upsertBinanceOrder(detail, user);
+    const change = upsertBinanceOrder(detail, user, credential);
     order = change.order || order;
     order.lastBinanceDetailSyncedAt = nowIso();
     order.rawBinanceDetail = sanitizedBinanceResult(detail);
@@ -15071,7 +15610,7 @@ async function handleOrderById(req, res, parts) {
   const action = parts[3];
   const order = orderById(id);
   if (!order) return sendJson(res, 404, { error: 'Order not found' }, {}, req);
-  if (!canAccessOrder(user, order) && !(user.role === 'manager' || user.role === 'admin')) return sendJson(res, 403, { error: 'No access to this order' }, {}, req);
+  if (!canAccessOrder(user, order)) return sendJson(res, 403, { error: 'No access to this order' }, {}, req);
 
   if (req.method === 'GET' && !action) return sendJson(res, 200, fullOrderView(order, user), {}, req);
   if (req.method === 'POST' && action === 'heartbeat') return heartbeat(user, order, res, req);
@@ -15198,10 +15737,14 @@ async function leaveOrder(req, res, user, order) {
 
 async function managerAssign(req, res, user, order) {
   if (!userHasPermission(user, 'orders.assign') || !['admin', 'manager'].includes(user.role)) return sendJson(res, 403, { error: 'Permission denied: orders.assign' }, {}, req);
+  if (order.orderSource !== 'offline' && !canUseOrderCredential(user, order, 'orders.assign')) return sendJson(res, 403, { error: 'No orders.assign access to this Binance account.' }, {}, req);
   const body = await readBody(req);
   const agentId = Number(body.agentId);
   const agent = agentById(agentId);
   if (!agent) return sendJson(res, 404, { error: 'Agent not found' }, {}, req);
+  if (order.orderSource !== 'offline' && !userHasBinanceCredentialPermission(agentLoginUser(agentId), order.credentialId, 'orders.view')) {
+    return sendJson(res, 422, { error: 'That user is not assigned orders.view permission for this Binance account.' }, {}, req);
+  }
   const lock = activeLock(order.id);
   if (lock && body.forceLeaveCurrent && lock.agentId !== agentId) {
     const lockOwner = orderLockView(lock);
@@ -15234,11 +15777,12 @@ async function managerAssign(req, res, user, order) {
 
 async function requestCoAgent(req, res, user, order) {
   if (!userHasPermission(user, 'orders.split') && !userHasPermission(user, 'orders.assign')) return sendJson(res, 403, { error: 'Permission denied: orders.split' }, {}, req);
+  if (order.orderSource !== 'offline' && !canUseOrderCredential(user, order, 'orders.split') && !canUseOrderCredential(user, order, 'orders.assign')) return sendJson(res, 403, { error: 'No split/assignment permission for this Binance account.' }, {}, req);
   const body = await readBody(req);
   const requiredAmount = positiveNum(body.requiredAmount || orderSummary(order.id).remaining || 0);
   const request = { id: nextId(), orderId: order.id, requestedByAgentId: user.agentId || null, requiredAmount, paymentMethodId: order.paymentMethodId, reason: cleanStr(body.reason || 'need co-agent', 300), status: 'pending', assignedAgentId: null, createdAt: nowIso() };
   db.coAgentRequests.push(request);
-  let agents = eligibleAgents(order.paymentMethodId, user.agentId || null);
+  let agents = eligibleAgents(order.paymentMethodId, user.agentId || null, order);
   agents = agents.filter(agent => {
     const accounts = db.paymentAccounts.filter(a => accountAssignedToAgent(a, agent.id) && a.paymentMethodId === order.paymentMethodId && a.status === 'active').map(accountView);
     const cap = order.type === 'BUY' ? sum(accounts.map(a => a.sendAvailable)) : sum(accounts.map(a => a.receiveAvailable));
@@ -15263,6 +15807,7 @@ async function requestCoAgent(req, res, user, order) {
 
 async function addSplit(req, res, user, order) {
   if (!userHasPermission(user, 'orders.split')) return sendJson(res, 403, { error: 'Permission denied: orders.split' }, {}, req);
+  if (order.orderSource !== 'offline' && !canUseOrderCredential(user, order, 'orders.split')) return sendJson(res, 403, { error: 'No orders.split access to this Binance account.' }, {}, req);
   if (['completed','released','paid_marked','cancelled'].includes(order.status)) return sendJson(res, 422, { error: 'Order is already finalized' }, {}, req);
   const body = await readBody(req);
   const direction = cleanStr(body.direction || (order.type === 'BUY' ? 'send' : 'receive'), 20);
@@ -15327,8 +15872,9 @@ async function handleSplitById(req, res, parts) {
   const split = db.paymentSplits.find(s => s.id === id);
   if (!split) return sendJson(res, 404, { error: 'Split not found' }, {}, req);
   const order = orderById(split.orderId);
-  if (!canAccessOrder(user, order) && !['admin', 'manager'].includes(user.role)) return sendJson(res, 403, { error: 'No access' }, {}, req);
+  if (!canAccessOrder(user, order)) return sendJson(res, 403, { error: 'No access' }, {}, req);
   if (!canWriteSplit(user, split) || !userHasPermission(user, 'orders.split')) return sendJson(res, 403, { error: 'Only the assigned split agent or manager with orders.split can update this split' }, {}, req);
+  if (order.orderSource !== 'offline' && !canUseOrderCredential(user, order, 'orders.split')) return sendJson(res, 403, { error: 'No orders.split access to this Binance account.' }, {}, req);
   if (req.method === 'PATCH') {
     const body = await readBody(req);
     const accountItem = accountById(split.paymentAccountId);
@@ -15455,6 +16001,7 @@ function applySplitCompletionEvidence(order, assignment, user, body = {}) {
 
 async function completeAgentTask(req, res, user, order) {
   if (!userHasPermission(user, 'orders.split')) return sendJson(res, 403, { error: 'Permission denied: orders.split' }, {}, req);
+  if (order.orderSource !== 'offline' && !canUseOrderCredential(user, order, 'orders.split')) return sendJson(res, 403, { error: 'No orders.split access to this Binance account.' }, {}, req);
   const body = await readBody(req);
   const agentId = ['admin','manager'].includes(user.role) && body.agentId ? Number(body.agentId) : user.agentId;
   if (!agentId) return sendJson(res, 422, { error: 'Agent id required' }, {}, req);
@@ -15527,8 +16074,11 @@ async function completeAction(req, res, user, order) {
   const beforeStatus = order.status;
   if (!['paid_mark', 'release', 'quick_release', 'complete'].includes(action)) return sendJson(res, 422, { error: 'Invalid action' }, {}, req);
   if (!userHasPermission(user, 'orders.final_action')) return sendJson(res, 403, { error: 'Permission denied: orders.final_action' }, {}, req);
+  if (order.orderSource !== 'offline' && !canUseOrderCredential(user, order, 'orders.final_action')) {
+    return sendJson(res, 403, { error: 'No orders.final_action access to this Binance account.' }, {}, req);
+  }
   if (order.orderSource !== 'offline' && additionalKycStateForOrder(order).pending) return sendJson(res, 422, { error: 'Additional Verification is pending. Verify the order first; Mark as Paid and Release remain hidden until Binance confirms verification.' }, {}, req);
-  if (action === 'quick_release' && !canQuickReleaseUser(user)) return sendJson(res, 403, { error: 'Permission denied: orders.quick_release' }, {}, req);
+  if (action === 'quick_release' && (!canQuickReleaseUser(user) || (order.orderSource !== 'offline' && !canUseOrderCredential(user, order, 'orders.quick_release')))) return sendJson(res, 403, { error: 'Permission denied: orders.quick_release for this Binance account' }, {}, req);
   if (action === 'release' && order.orderSource !== 'offline' && !binanceOrderPaidMarked(order)) {
     return sendJson(res, 422, { error: 'Release is locked until the customer marks the Binance order as paid. Use Quick Release only if you have orders.quick_release permission.' }, {}, req);
   }
@@ -16591,14 +17141,24 @@ function accountingSummaryForRange(range, viewer, options = {}) {
   const latestBuyYield = accountingLatestCrmBuyYield(asOf);
   const pendingYield = positiveNum(latestBuyYield.netYieldPerBdt || 0);
   const pendingEstimatedNetUsd = pendingYield > 0 ? num(cashBalance) * pendingYield : 0;
-  const ownerCurrentBusinessAssetUsd = actualBinanceUsd + pendingEstimatedNetUsd;
+  // Actual assets remain visible for reconciliation, while profit marked
+  // “individual only” is ring-fenced from company income and capital totals.
+  const ownerActualBusinessAssetUsd = actualBinanceUsd + pendingEstimatedNetUsd;
+  const allUserProfitUsd = num(replacementProfit.totals.profitUsd || 0);
+  const excludedUserProfitUsd = sum((replacementProfit.agentTotals || [])
+    .filter(item => !agentProfitIncludedInCompanyTotals(item.agentId))
+    .map(item => num(item.profitUsd || 0)));
+  const sumUserProfitUsd = allUserProfitUsd - excludedUserProfitUsd;
+  const ownerCurrentBusinessAssetUsd = ownerActualBusinessAssetUsd - excludedUserProfitUsd;
   const openingCapitalInfo = accountingOpeningCapitalForRange(range, asOf, companyDollarRate);
   const ownerOpeningCapitalUsd = num(openingCapitalInfo.amount || 0);
   const ownerAdjustedCapitalBaseUsd = ownerOpeningCapitalUsd + capitalInUsd - capitalOutUsd;
+  const ownerActualProfitUsd = ownerActualBusinessAssetUsd - ownerAdjustedCapitalBaseUsd;
   const ownerProfitUsd = ownerCurrentBusinessAssetUsd - ownerAdjustedCapitalBaseUsd;
   const ownerProfitBdt = ownerProfitUsd * companyDollarRate;
-  const sumUserProfitUsd = num(replacementProfit.totals.profitUsd || 0);
   const sumUserProfitBdt = sumUserProfitUsd * companyDollarRate;
+  const allUserProfitBdt = allUserProfitUsd * companyDollarRate;
+  const excludedUserProfitBdt = excludedUserProfitUsd * companyDollarRate;
   const unallocatedAdjustmentUsd = ownerProfitUsd - sumUserProfitUsd;
   const unallocatedAdjustmentBdt = unallocatedAdjustmentUsd * companyDollarRate;
   const buyRateInfo = accountingEffectiveP2pBuyRate(asOf);
@@ -16657,6 +17217,8 @@ function accountingSummaryForRange(range, viewer, options = {}) {
     operationalProfitUsd: roundAsset(item.operationalProfitUsd), carryoverAdjustmentUsd: roundAsset(item.carryoverAdjustmentUsd),
     profitUsd: roundAsset(item.profitUsd), operationalProfitBdt: round2(item.operationalProfitUsd * companyDollarRate),
     carryoverAdjustmentBdt: round2(item.carryoverAdjustmentUsd * companyDollarRate),
+    includedInCompanyTotals: agentProfitIncludedInCompanyTotals(item.agentId),
+    accountingScope: agentProfitIncludedInCompanyTotals(item.agentId) ? 'company' : 'individual_only',
     grossProfit: round2(item.profitUsd * companyDollarRate), profitBdt: round2(item.profitUsd * companyDollarRate),
     otherIncome: round2(item.income), expenses: round2(item.expenses),
     netContribution: round2(item.profitUsd * companyDollarRate)
@@ -16665,6 +17227,8 @@ function accountingSummaryForRange(range, viewer, options = {}) {
     agentId: Number(viewer.agentId || 0), name: viewer.name || viewer.username || 'Agent', orders: 0,
     buyVolume: 0, buyCrypto: 0, sellVolume: 0, sellCrypto: 0, operationalProfitUsd: 0,
     carryoverAdjustmentUsd: 0, profitUsd: 0, operationalProfitBdt: 0, carryoverAdjustmentBdt: 0,
+    includedInCompanyTotals: agentProfitIncludedInCompanyTotals(viewer.agentId),
+    accountingScope: agentProfitIncludedInCompanyTotals(viewer.agentId) ? 'company' : 'individual_only',
     profitBdt: 0, grossProfit: 0, otherIncome: 0, expenses: 0, netContribution: 0
   } : null;
   if (scopeAgent) byAgent = [scopeAgent];
@@ -16764,9 +17328,14 @@ function accountingSummaryForRange(range, viewer, options = {}) {
       ownerOpeningCapitalSource: openingCapitalInfo.source,
       ownerCapitalInUsd: roundAsset(capitalInUsd), ownerCapitalOutUsd: roundAsset(capitalOutUsd),
       ownerAdjustedCapitalBaseUsd: roundAsset(ownerAdjustedCapitalBaseUsd),
+      ownerActualBusinessAssetUsd: roundAsset(ownerActualBusinessAssetUsd),
+      ownerActualBusinessAssetBdt: round2(ownerActualBusinessAssetUsd * companyDollarRate),
       ownerCurrentBusinessAssetUsd: roundAsset(ownerCurrentBusinessAssetUsd),
       ownerCurrentBusinessAssetBdt: round2(ownerCurrentBusinessAssetUsd * companyDollarRate),
+      ownerActualProfitUsd: roundAsset(ownerActualProfitUsd), ownerActualProfitBdt: round2(ownerActualProfitUsd * companyDollarRate),
       ownerProfitUsd: roundAsset(ownerProfitUsd), ownerProfitBdt: round2(ownerProfitBdt),
+      allUserProfitUsd: roundAsset(allUserProfitUsd), allUserProfitBdt: round2(allUserProfitBdt),
+      excludedUserProfitUsd: roundAsset(excludedUserProfitUsd), excludedUserProfitBdt: round2(excludedUserProfitBdt),
       sumUserProfitUsd: roundAsset(sumUserProfitUsd), sumUserProfitBdt: round2(sumUserProfitBdt),
       unallocatedAdjustmentUsd: roundAsset(unallocatedAdjustmentUsd), unallocatedAdjustmentBdt: round2(unallocatedAdjustmentBdt),
       otherIncome: scopedOtherIncome, expenses: scopedExpenses, netProfit: scopedNetProfit,
@@ -16931,11 +17500,19 @@ async function closeAccountingBusinessDay(dateText, user = null, source = 'manua
     ownerCapitalInUsd: summaryData.summary.ownerCapitalInUsd,
     ownerCapitalOutUsd: summaryData.summary.ownerCapitalOutUsd,
     ownerAdjustedCapitalBaseUsd: summaryData.summary.ownerAdjustedCapitalBaseUsd,
+    ownerActualBusinessAssetUsd: summaryData.summary.ownerActualBusinessAssetUsd,
+    ownerActualBusinessAssetBdt: summaryData.summary.ownerActualBusinessAssetBdt,
     ownerCurrentBusinessAssetUsd: summaryData.summary.ownerCurrentBusinessAssetUsd,
     ownerClosingCapitalUsd: summaryData.summary.ownerCurrentBusinessAssetUsd,
     ownerCurrentBusinessAssetBdt: summaryData.summary.ownerCurrentBusinessAssetBdt,
+    ownerActualProfitUsd: summaryData.summary.ownerActualProfitUsd,
+    ownerActualProfitBdt: summaryData.summary.ownerActualProfitBdt,
     ownerProfitUsd: summaryData.summary.ownerProfitUsd,
     ownerProfitBdt: summaryData.summary.ownerProfitBdt,
+    allUserProfitUsd: summaryData.summary.allUserProfitUsd,
+    allUserProfitBdt: summaryData.summary.allUserProfitBdt,
+    excludedUserProfitUsd: summaryData.summary.excludedUserProfitUsd,
+    excludedUserProfitBdt: summaryData.summary.excludedUserProfitBdt,
     sumUserProfitUsd: summaryData.summary.sumUserProfitUsd,
     sumUserProfitBdt: summaryData.summary.sumUserProfitBdt,
     unallocatedAdjustmentUsd: summaryData.summary.unallocatedAdjustmentUsd,
@@ -17588,7 +18165,7 @@ async function handleNotificationCenter(req, res) {
       count: 1
     }));
   let orders = db.orders || [];
-  if (user.role === 'agent') orders = orders.filter(order => canAccessOrder(user, order));
+  orders = orders.filter(order => canAccessOrder(user, order));
   const chatItems = [];
   let chatTotal = 0;
   for (const order of orders) {
@@ -17659,50 +18236,69 @@ let binanceAutoPaymentMethodSyncLastAt = 0;
 
 async function runBinanceAutoOrderSync(reason = 'timer') {
   if (maintenanceMode.enabled) return { skipped: true, reason: 'maintenance' };
-  if (binanceAutoSyncBusy) return;
-  if (db.settings.apiMode !== 'live') return;
-  const credential = activeBinanceCredential();
-  if (!credential || credential.disabled || !credential.apiKey || !credential.secretKey) return;
+  if (binanceAutoSyncBusy) return { skipped: true, reason: 'busy' };
+  if (db.settings.apiMode !== 'live') return { skipped: true, reason: 'live_mode_disabled' };
+  const credentials = (db.apiCredentials || []).filter(item => !item.disabled && item.apiKey && item.secretKey);
+  if (!credentials.length) return { skipped: true, reason: 'credential_missing' };
   const intervalMs = Math.max(15, positiveNum(db.settings.binanceAutoSyncSeconds || 30)) * 1000;
-  if (Date.now() - binanceAutoSyncLastAt < intervalMs) return;
+  if (Date.now() - binanceAutoSyncLastAt < intervalMs) return { skipped: true, reason: 'interval' };
   binanceAutoSyncBusy = true;
   binanceAutoSyncLastAt = Date.now();
+  const aggregate = { created: 0, updated: 0, detailSynced: 0, openDetailSynced: 0, totalRows: 0, changedOrders: [], chatResults: [], credentials: [] };
   try {
-    let out = { created: 0, updated: 0, detailSynced: 0, openDetailSynced: 0, totalRows: 0, changedOrders: [] };
-    if (db.settings.binanceAutoOrderSync !== false) {
-      try {
-        out = await syncBinanceOrdersWithCredential(systemBinanceSyncUser(), credential, { reason, rows: db.settings.binanceAutoSyncRows || 30, detailMode: 'smart', detailMaxAgeMs: 12000, reconcileOpenOrders: true, openDetailRows: db.settings.binanceOpenOrderDetailRows || 100 });
-        db.settings.lastBinanceAutoOrderSyncError = '';
-      } catch (orderSyncError) {
-        db.settings.lastBinanceAutoOrderSyncError = cleanStr(orderSyncError.message || orderSyncError, 300);
+    const errors = [];
+    for (const credential of credentials) {
+      let out = { created: 0, updated: 0, detailSynced: 0, openDetailSynced: 0, totalRows: 0, changedOrders: [] };
+      if (db.settings.binanceAutoOrderSync !== false) {
+        try {
+          out = await syncBinanceOrdersWithCredential(systemBinanceSyncUser(), credential, { reason, rows: db.settings.binanceAutoSyncRows || 30, detailMode: 'smart', detailMaxAgeMs: 12000, reconcileOpenOrders: true, openDetailRows: db.settings.binanceOpenOrderDetailRows || 100 });
+        } catch (orderSyncError) {
+          errors.push(`${binanceCredentialLabel(credential)}: ${cleanStr(orderSyncError.message || orderSyncError, 240)}`);
+        }
       }
+      let chatOut = { results: [] };
+      try {
+        chatOut = await syncBinanceChatsRoundRobin(credential, 10);
+      } catch (chatError) {
+        errors.push(`${binanceCredentialLabel(credential)} chat: ${cleanStr(chatError.message || chatError, 220)}`);
+      }
+      aggregate.created += Number(out.created || 0);
+      aggregate.updated += Number(out.updated || 0);
+      aggregate.detailSynced += Number(out.detailSynced || 0);
+      aggregate.openDetailSynced += Number(out.openDetailSynced || 0);
+      aggregate.totalRows += Number(out.totalRows || 0);
+      aggregate.changedOrders.push(...(out.changedOrders || []));
+      aggregate.chatResults.push(...(chatOut.results || []));
+      aggregate.credentials.push({ credentialId: Number(credential.id), credentialName: binanceCredentialLabel(credential), created: out.created || 0, updated: out.updated || 0, totalRows: out.totalRows || 0 });
+      if (out.created) logAudit(null, 'binance_orders_auto_synced', 'binance', credential.id, { created: out.created, updated: out.updated, detailSynced: out.detailSynced, totalRows: out.totalRows });
     }
-    const chatOut = await syncBinanceChatsRoundRobin(credential, 10);
+    db.settings.lastBinanceAutoOrderSyncError = errors.join(' | ');
     db.settings.lastBinanceAutoOrderSyncAt = nowIso();
     db.settings.lastBinanceAutoChatSyncAt = nowIso();
     saveDb({ broadcast: false });
-    if (out.created || out.detailSynced || out.totalRows) {
-      broadcast({ type: 'binance.orders.auto_synced', created: out.created, updated: out.updated, detailSynced: out.detailSynced, openDetailSynced: out.openDetailSynced, totalRows: out.totalRows, changedOrders: out.changedOrders || [], at: nowIso() });
-      if (out.created) logAudit(null, 'binance_orders_auto_synced', 'binance', credential.id, { created: out.created, updated: out.updated, detailSynced: out.detailSynced, totalRows: out.totalRows });
+    if (aggregate.created || aggregate.detailSynced || aggregate.totalRows) {
+      broadcast({ type: 'binance.orders.auto_synced', created: aggregate.created, updated: aggregate.updated, detailSynced: aggregate.detailSynced, openDetailSynced: aggregate.openDetailSynced, totalRows: aggregate.totalRows, changedOrders: aggregate.changedOrders, credentials: aggregate.credentials, at: nowIso() });
     }
-    for (const item of chatOut.results || []) {
+    for (const item of aggregate.chatResults) {
       if (Number(item.incomingImported || 0) <= 0) continue;
-      broadcast({ type: 'chat.message.received', orderId: item.order.id, orderNo: item.order.orderNo, externalOrderNo: item.order.externalOrderNo || item.order.orderNo, imported: item.imported, incomingImported: item.incomingImported, latestMessageId: item.latestIncomingChatId, status: item.order.status, externalStatus: item.order.externalStatus, at: nowIso() });
+      broadcast({ type: 'chat.message.received', orderId: item.order.id, orderNo: item.order.orderNo, externalOrderNo: item.order.externalOrderNo || item.order.orderNo, credentialId: item.order.credentialId || null, imported: item.imported, incomingImported: item.incomingImported, latestMessageId: item.latestIncomingChatId, status: item.order.status, externalStatus: item.order.externalStatus, at: nowIso() });
     }
-    // Payment methods do not need polling every few seconds; refresh periodically in case new Binance method is added.
+    // Payment methods are shared CRM metadata; refresh with the first usable account periodically.
     if (Date.now() - binanceAutoPaymentMethodSyncLastAt > 5 * 60 * 1000) {
       binanceAutoPaymentMethodSyncLastAt = Date.now();
       try {
-        const pm = await syncBinancePaymentMethodsWithCredential(null, credential, 'auto_periodic');
+        const pm = await syncBinancePaymentMethodsWithCredential(null, credentials[0], 'auto_periodic');
         db.settings.lastBinancePaymentMethodAutoSyncAt = nowIso();
         if (pm.created || pm.updated) { saveDb(); broadcast({ type: 'payment.methods.auto_synced', created: pm.created, updated: pm.updated, at: nowIso() }); }
       } catch (err) {
         db.settings.lastBinancePaymentMethodAutoSyncError = cleanStr(err.message || err, 300);
       }
     }
+    return aggregate;
   } catch (err) {
     db.settings.lastBinanceAutoOrderSyncError = cleanStr(err.message || err, 300);
     db.settings.lastBinanceAutoOrderSyncAt = nowIso();
+    return { ...aggregate, error: db.settings.lastBinanceAutoOrderSyncError };
   } finally {
     binanceAutoSyncBusy = false;
   }
@@ -17753,34 +18349,82 @@ async function runBinanceAdsAutoSync(reason = 'timer') {
   if (maintenanceMode.enabled) return { skipped: true, reason: 'maintenance' };
   if (binanceAdsAutoSyncBusy) return { skipped: true, reason: 'busy' };
   if (!db || db.settings.apiMode !== 'live') return { skipped: true, reason: 'live_mode_disabled' };
-  const credential = activeBinanceCredential();
-  if (!credential) return { skipped: true, reason: 'credential_missing' };
+  const credentials = (db.apiCredentials || []).filter(item => !item.disabled && item.apiKey && item.secretKey);
+  if (!credentials.length) return { skipped: true, reason: 'credential_missing' };
   binanceAdsAutoSyncBusy = true;
+  const aggregate = { created: 0, updated: 0, unchanged: 0, totalRows: 0, changed: 0, accounts: [], errors: [] };
   const beforeError = cleanStr(db.settings.adsLastSyncError || '', 300);
   const beforeCatalog = JSON.stringify([db.settings.adsAssetOptions || [], db.settings.adsFiatOptions || [], db.settings.adsCatalogLastSyncAt || '']);
   try {
-    const beforeMerchantSignature = advertisementMerchantControlSignature();
-    const out = await syncBinanceAdvertisementsWithCredential(null, credential, {
-      rows: db.settings.adsSyncRows || 50,
-      audit: false,
-      syncCatalog: true
-    });
-    const merchantChanged = beforeMerchantSignature !== advertisementMerchantControlSignature();
+    let merchantChanged = false;
+    for (const credential of credentials) {
+      const beforeMerchantSignature = advertisementMerchantControlSignature();
+      try {
+        const out = await syncBinanceAdvertisementsWithCredential(null, credential, {
+          rows: db.settings.adsSyncRows || 50,
+          audit: false,
+          syncCatalog: true
+        });
+        const accountMerchantChanged = beforeMerchantSignature !== advertisementMerchantControlSignature();
+        merchantChanged = merchantChanged || accountMerchantChanged;
+        aggregate.created += Number(out.created || 0);
+        aggregate.updated += Number(out.updated || 0);
+        aggregate.unchanged += Number(out.unchanged || 0);
+        aggregate.totalRows += Number(out.totalRows || 0);
+        aggregate.changed += Number(out.changed || 0);
+        aggregate.accounts.push({
+          credentialId: Number(credential.id),
+          credentialName: binanceCredentialLabel(credential),
+          created: Number(out.created || 0),
+          updated: Number(out.updated || 0),
+          unchanged: Number(out.unchanged || 0),
+          totalRows: Number(out.totalRows || 0),
+          changed: Number(out.changed || 0),
+          merchantChanged: accountMerchantChanged
+        });
+      } catch (error) {
+        const message = cleanStr(error.message || error, 300);
+        aggregate.errors.push(`${binanceCredentialLabel(credential)}: ${message}`);
+        aggregate.accounts.push({
+          credentialId: Number(credential.id),
+          credentialName: binanceCredentialLabel(credential),
+          created: 0,
+          updated: 0,
+          unchanged: 0,
+          totalRows: 0,
+          changed: 0,
+          error: message
+        });
+      }
+    }
+    db.settings.adsLastSyncError = aggregate.errors.join(' | ');
     db.settings.adsLastAutoSyncAt = nowIso();
     db.settings.adsLastAutoSyncReason = cleanStr(reason, 40);
     const catalogChanged = beforeCatalog !== JSON.stringify([db.settings.adsAssetOptions || [], db.settings.adsFiatOptions || [], db.settings.adsCatalogLastSyncAt || '']);
-    const shouldPersist = out.changed > 0 || merchantChanged || catalogChanged || beforeError !== cleanStr(db.settings.adsLastSyncError || '', 300) || Date.now() - adsLastPersistAt > 60000;
+    const shouldPersist = aggregate.changed > 0 || merchantChanged || catalogChanged || beforeError !== cleanStr(db.settings.adsLastSyncError || '', 300) || Date.now() - adsLastPersistAt > 60000;
     if (shouldPersist) {
       saveDb({ broadcast: false });
       adsLastPersistAt = Date.now();
     }
-    if (out.changed > 0 || merchantChanged) {
+    if (aggregate.changed > 0 || merchantChanged) {
       broadcast({
-        type: 'ads.auto_synced', created: out.created, updated: out.updated, merchantChanged,
-        unchanged: out.unchanged, totalRows: out.totalRows, controls: advertisementMerchantControlsView(), reason, at: nowIso()
+        type: 'ads.auto_synced',
+        created: aggregate.created,
+        updated: aggregate.updated,
+        unchanged: aggregate.unchanged,
+        totalRows: aggregate.totalRows,
+        changed: aggregate.changed,
+        merchantChanged,
+        accounts: aggregate.accounts,
+        controls: advertisementMerchantControlsView(),
+        reason,
+        at: nowIso()
       });
     }
-    return out;
+    if (aggregate.errors.length && beforeError !== db.settings.adsLastSyncError) {
+      broadcast({ type: 'ads.sync_error', error: db.settings.adsLastSyncError, accounts: aggregate.accounts, reason, at: nowIso() });
+    }
+    return aggregate;
   } catch (err) {
     const nextError = cleanStr(err.message || err, 300);
     const errorChanged = nextError !== beforeError;
@@ -17791,7 +18435,7 @@ async function runBinanceAdsAutoSync(reason = 'timer') {
       adsLastPersistAt = Date.now();
     }
     if (errorChanged) broadcast({ type: 'ads.sync_error', error: nextError, reason, at: nowIso() });
-    return { error: nextError };
+    return { ...aggregate, error: nextError };
   } finally {
     binanceAdsAutoSyncBusy = false;
   }
@@ -17801,31 +18445,66 @@ async function runAdvertisementMerchantStatusAutoSync(reason = 'timer') {
   if (maintenanceMode.enabled) return { skipped: true, reason: 'maintenance' };
   if (advertisementMerchantStatusBusy) return { skipped: true, reason: 'busy' };
   if (!db || db.settings.apiMode !== 'live') return { skipped: true, reason: 'live_mode_disabled' };
-  const credential = activeBinanceCredential();
-  if (!credential) return { skipped: true, reason: 'credential_missing' };
+  const credentials = (db.apiCredentials || []).filter(item => !item.disabled && item.apiKey && item.secretKey);
+  if (!credentials.length) return { skipped: true, reason: 'credential_missing' };
   advertisementMerchantStatusBusy = true;
-  const before = advertisementMerchantControlSignature();
+  const aggregate = { changed: false, profileBusinessChanged: false, accounts: [], errors: [] };
   try {
-    const force = /page_force|client_refresh|manual|startup/i.test(String(reason || ''));
-    const controls = await refreshAdvertisementMerchantControlVerification(credential, force);
-    const after = advertisementMerchantControlSignature(controls);
-    const changed = before !== after;
-    const profileBusinessChanged = Boolean(advertisementMerchantStatusRuntime.ownerProfileBusinessChanged);
-    advertisementMerchantStatusRuntime.ownerProfileBusinessChanged = false;
-    if (changed || profileBusinessChanged) saveDb({ broadcast: false });
-    if (changed) broadcast({ type: 'ads.merchant.controls.synced', controls, reason, at: nowIso() });
-    if (profileBusinessChanged) {
-      const profile = ownerP2pProfileRecord(credential.id);
-      broadcast({
-        type: 'p2p.owner_profile.updated',
-        credentialId: credential.id,
-        userNo: profile?.userNo || '',
-        businessStatus: profile?.account?.businessStatus ?? null,
-        source: profile?.businessStatusSource || controls.businessStatusSource || 'merchant_realtime',
-        at: nowIso()
-      });
+    for (const credential of credentials) {
+      const before = advertisementMerchantControlSignature();
+      try {
+        // Force is intentional here: the runtime cache is shared, and every account must be
+        // checked independently during a multi-account cycle.
+        const controls = await refreshAdvertisementMerchantControlVerification(credential, true);
+        const after = advertisementMerchantControlSignature(controls);
+        const changed = before !== after;
+        const profileBusinessChanged = Boolean(advertisementMerchantStatusRuntime.ownerProfileBusinessChanged);
+        advertisementMerchantStatusRuntime.ownerProfileBusinessChanged = false;
+        aggregate.changed = aggregate.changed || changed;
+        aggregate.profileBusinessChanged = aggregate.profileBusinessChanged || profileBusinessChanged;
+        aggregate.accounts.push({
+          credentialId: Number(credential.id),
+          credentialName: binanceCredentialLabel(credential),
+          changed,
+          profileBusinessChanged,
+          controls
+        });
+        if (changed) {
+          broadcast({
+            type: 'ads.merchant.controls.synced',
+            credentialId: Number(credential.id),
+            credentialName: binanceCredentialLabel(credential),
+            controls,
+            reason,
+            at: nowIso()
+          });
+        }
+        if (profileBusinessChanged) {
+          const profile = ownerP2pProfileRecord(credential.id);
+          broadcast({
+            type: 'p2p.owner_profile.updated',
+            credentialId: Number(credential.id),
+            credentialName: binanceCredentialLabel(credential),
+            userNo: profile?.userNo || '',
+            businessStatus: profile?.account?.businessStatus ?? null,
+            source: profile?.businessStatusSource || controls.businessStatusSource || 'merchant_realtime',
+            at: nowIso()
+          });
+        }
+      } catch (error) {
+        const message = cleanStr(error.message || error, 300);
+        aggregate.errors.push(`${binanceCredentialLabel(credential)}: ${message}`);
+        aggregate.accounts.push({
+          credentialId: Number(credential.id),
+          credentialName: binanceCredentialLabel(credential),
+          changed: false,
+          profileBusinessChanged: false,
+          error: message
+        });
+      }
     }
-    return { changed, profileBusinessChanged, controls };
+    if (aggregate.changed || aggregate.profileBusinessChanged || aggregate.errors.length) saveDb({ broadcast: false });
+    return aggregate;
   } finally {
     advertisementMerchantStatusBusy = false;
   }

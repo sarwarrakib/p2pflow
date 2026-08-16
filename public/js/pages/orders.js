@@ -1,16 +1,59 @@
-// P2PFlow v1.0.120
+// P2PFlow v1.5.14
 // Page module: orders. Edit this file for the orders page UI.
+
+function orderAccountOptions(data = {}) {
+  return Array.isArray(data.credentialOptions) ? data.credentialOptions : [];
+}
+
+function orderAccountHasPermission(option, permission) {
+  return Boolean(option && !option.disabled && Array.isArray(option.permissions) && option.permissions.includes(permission));
+}
+
+function orderAccountBadgeHtml(order = {}) {
+  if (order.orderSource === 'offline') return '<span class="binance-account-badge offline">Local / Offline</span>';
+  const name = order.binanceAccount?.name || order.credentialName || (order.credentialId ? `API ${order.credentialId}` : 'Unassigned account');
+  return `<span class="binance-account-badge" title="Binance account">${escapeHtml(name)}</span>`;
+}
 
 async function renderOrders(opts={}) {
   setTitle('Orders');
-  const [data, unreadData] = await Promise.all([
-    api('/api/orders', { autoReloadOnChallenge: true }),
-    api('/api/chat-unread', { silent:true, noAutoReload:true }).catch(() => ({ counts:{}, total:0 }))
-  ]);
-  const canCreate = ['admin','manager'].includes(state.user.role);
-  const canSyncBinance = hasPerm('binance.sync') && ['admin','manager'].includes(state.user.role);
+  let requestedCredentialId = Number(state.orderCredentialId || 0);
+  const orderUrl = () => `/api/orders${requestedCredentialId ? `?credentialId=${encodeURIComponent(requestedCredentialId)}` : ''}`;
+  let data;
+  try {
+    data = await api(orderUrl(), { autoReloadOnChallenge: true });
+  } catch (error) {
+    if (!requestedCredentialId) throw error;
+    requestedCredentialId = 0;
+    state.orderCredentialId = 0;
+    localStorage.removeItem('crmOrderCredentialId');
+    data = await api('/api/orders', { autoReloadOnChallenge: true });
+  }
+  const unreadData = await api('/api/chat-unread', { silent:true, noAutoReload:true }).catch(() => ({ counts:{}, total:0 }));
+  const credentialOptions = orderAccountOptions(data);
+  const liveCredentialOptions = Array.isArray(data.liveCredentialOptions) ? data.liveCredentialOptions : [];
+  if (requestedCredentialId && !credentialOptions.some(option => Number(option.id) === requestedCredentialId)) {
+    requestedCredentialId = 0;
+    state.orderCredentialId = 0;
+    localStorage.removeItem('crmOrderCredentialId');
+  }
+  if (!requestedCredentialId && credentialOptions.length === 1) {
+    requestedCredentialId = Number(credentialOptions[0].id || 0);
+    state.orderCredentialId = requestedCredentialId;
+    localStorage.setItem('crmOrderCredentialId', String(requestedCredentialId));
+  }
+  state.orderCredentialOptions = credentialOptions;
+  state.orderLiveCredentialOptions = liveCredentialOptions;
+  const selectedCredential = credentialOptions.find(option => Number(option.id) === Number(requestedCredentialId)) || null;
+  const selectedLiveCredential = liveCredentialOptions.find(option => Number(option.id) === Number(requestedCredentialId)) || null;
+  const canCreateOffline = hasPerm('orders.create');
+  const canCreateBinance = orderAccountHasPermission(selectedLiveCredential || selectedCredential, 'orders.create') && Boolean(selectedLiveCredential);
+  const canSyncBinance = orderAccountHasPermission(selectedLiveCredential, 'binance.sync');
   const unreadCounts = unreadData?.counts || {};
-  const items = [...(data.items || [])].map(order => ({ ...order, unreadMessageCount: Number(unreadCounts[String(order.id)] || 0) }));
+  const visibleOrderItems = requestedCredentialId
+    ? (data.items || []).filter(order => Number(order.credentialId || 0) === Number(requestedCredentialId))
+    : (data.items || []);
+  const items = [...visibleOrderItems].map(order => ({ ...order, unreadMessageCount: Number(unreadCounts[String(order.id)] || 0) }));
   // Keep the background refresh interval even though its visual status line is intentionally hidden.
   const autoSyncSeconds = Math.max(15, Number(state.bootstrap?.settings?.binanceAutoSyncSeconds || 30));
   const group = state.orderGroup === 'fulfilled' ? 'fulfilled' : 'ongoing';
@@ -21,6 +64,7 @@ async function renderOrders(opts={}) {
     return { rowClass: rowMeta.rowClass, openOrderId: o.id, cells: [
       orderNumberLabelHtml(o),
       badge(o.orderSource || 'binance', o.orderSource === 'offline' ? 'warn' : 'blue'),
+      orderAccountBadgeHtml(o),
       badge(o.type, o.type==='BUY'?'blue':'ok'),
       methodLabelHtml(o),
       `${money(o.amount)}<br/><span class="sub">${assetFmt(o.assetAmount, o.asset)}</span>`,
@@ -32,7 +76,7 @@ async function renderOrders(opts={}) {
       orderChatButtonHtml(o)
     ]};
   });
-  const tableHead = ['Order','Source','Type','Method','Fiat / USDT','Rate','Time','Status','Lead','Actual','Chat'];
+  const tableHead = ['Order','Source','Binance Account','Type','Method','Fiat / USDT','Rate','Time','Status','Lead','Actual','Chat'];
   const ongoingTabs = [
     ['all','All', items.filter(o => isOngoingOrder(o))],
     ['unpaid','Unpaid', items.filter(o => isOngoingOrder(o) && orderPayGroup(o) === 'unpaid')],
@@ -48,9 +92,9 @@ async function renderOrders(opts={}) {
   if (!selectedTabs.some(t => t[0] === state.orderActiveTabs[group])) state.orderActiveTabs[group] = 'all';
   const activeTabKey = state.orderActiveTabs[group] || 'all';
   const orderMenuItems = [
-    canCreate ? '<button id="newOrderBtn" type="button"><span aria-hidden="true">＋</span><span>Create Binance Order</span></button>' : '',
-    canCreate ? '<button id="newOfflineOrderBtn" type="button"><span aria-hidden="true">▣</span><span>Create Offline Order</span></button>' : '',
-    canSyncBinance ? '<button id="syncBinanceOrdersBtn" type="button"><span aria-hidden="true">↻</span><span>Sync Binance Orders</span></button>' : '',
+    canCreateBinance ? '<button id="newOrderBtn" type="button"><span aria-hidden="true">＋</span><span>Create Binance Order</span></button>' : '',
+    canCreateOffline ? '<button id="newOfflineOrderBtn" type="button"><span aria-hidden="true">▣</span><span>Create Offline Order</span></button>' : '',
+    canSyncBinance ? '<button id="syncBinanceOrdersBtn" type="button"><span aria-hidden="true">↻</span><span>Sync Selected Account</span></button>' : '',
     '<button id="refreshBtn" type="button"><span aria-hidden="true">⟳</span><span>Refresh</span></button>'
   ].filter(Boolean).join('');
   const section = (tabs, scope) => `
@@ -58,7 +102,16 @@ async function renderOrders(opts={}) {
       <div class="order-tabs">${tabs.map(t => `<button class="order-tab ${t[0]===activeTabKey?'active':''}" data-tab-scope="${scope}" data-tab-key="${t[0]}">${t[1]} <b>${t[2].length}</b></button>`).join('')}</div>
       ${tabs.map(t => `<div class="order-tab-panel ${t[0]===activeTabKey?'active':''}" data-panel-scope="${scope}" data-panel-key="${t[0]}">${t[2].length ? `<div class="order-desktop-view">${table(tableHead, orderRows(t[2]))}</div><div class="order-mobile-view">${renderOrderMobileList(t[2], previousSnapshot, nextSnapshot)}</div>` : '<div class="empty-state">No orders in this tab.</div>'}</div>`).join('')}
     </div>`;
+  const accountContext = selectedCredential
+    ? `Showing only <b>${escapeHtml(selectedCredential.name || `API ${selectedCredential.id}`)}</b>. Actions are limited to this account’s assigned permissions.`
+    : credentialOptions.length
+      ? 'Showing all assigned accounts. Select one exact account before creating or syncing Binance orders.'
+      : 'No Binance account is assigned with Orders View permission.';
   $('#content').innerHTML = `
+    <div class="page-account-strip order-account-strip">
+      <label class="binance-account-selector"><span>Binance Account</span><select id="orderCredentialFilter"><option value="0" ${requestedCredentialId ? '' : 'selected'}>All assigned accounts</option>${credentialOptions.map(option => `<option value="${Number(option.id)}" ${Number(option.id) === Number(requestedCredentialId) ? 'selected' : ''}>${escapeHtml(option.name || `API ${option.id}`)}${option.disabled ? ' · Disabled' : ''}</option>`).join('')}</select></label>
+      <small>${accountContext}</small>
+    </div>
     <div class="order-group-switch order-group-switch-with-menu">
       <div class="order-group-tabs">
         <button class="order-group-btn ${group==='ongoing'?'active':''}" data-order-group="ongoing">Ongoing <b>${ongoingTabs[0][2].length}</b></button>
@@ -71,12 +124,17 @@ async function renderOrders(opts={}) {
     </div>
     ${section(selectedTabs, group)}`;
   state.orderSnapshot = nextSnapshot;
+  $('#orderCredentialFilter').onchange = () => {
+    state.orderCredentialId = Number($('#orderCredentialFilter').value || 0);
+    if (state.orderCredentialId) localStorage.setItem('crmOrderCredentialId', String(state.orderCredentialId));
+    else localStorage.removeItem('crmOrderCredentialId');
+    state.orderSnapshot = null;
+    renderOrders();
+  };
   $('#refreshBtn').onclick = () => refreshOrdersFromButton($('#refreshBtn'));
-  if (canSyncBinance && $('#syncBinanceOrdersBtn')) $('#syncBinanceOrdersBtn').onclick = () => openBinanceOrderSyncModal();
-  if (canCreate) {
-    $('#newOrderBtn').onclick = () => openCreateOrderModal('binance');
-    $('#newOfflineOrderBtn').onclick = () => openCreateOrderModal('offline');
-  }
+  if (canSyncBinance && $('#syncBinanceOrdersBtn')) $('#syncBinanceOrdersBtn').onclick = () => openBinanceOrderSyncModal(liveCredentialOptions, requestedCredentialId);
+  if (canCreateBinance && $('#newOrderBtn')) $('#newOrderBtn').onclick = () => openCreateOrderModal('binance', liveCredentialOptions, requestedCredentialId);
+  if (canCreateOffline && $('#newOfflineOrderBtn')) $('#newOfflineOrderBtn').onclick = () => openCreateOrderModal('offline', liveCredentialOptions, requestedCredentialId);
   bindOrderPageMenu();
   $$('[data-order-group]').forEach(btn => btn.onclick = () => {
     state.orderGroup = btn.dataset.orderGroup || 'ongoing';
@@ -202,6 +260,7 @@ function renderOrderMobileCard(o, previousSnapshot, nextSnapshot) {
     </div>
     <div class="order-mobile-context">
       <span class="order-mobile-source">${sourceBadge}</span>
+      ${orderAccountBadgeHtml(o)}
       <span class="order-mobile-method">${escapeHtml(paymentText || 'N/A')}</span>
       ${leadName ? `<span class="order-mobile-mini-sub">Lead: <b>${escapeHtml(leadName)}</b></span>` : ''}
     </div>
