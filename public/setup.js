@@ -7,6 +7,23 @@ const steps = [...document.querySelectorAll('[data-step]')];
 
 function value(id) { return $(id)?.value?.trim() || ''; }
 function checked(id) { return Boolean($(id)?.checked); }
+function escapeHtml(value) { return String(value ?? '').replace(/[&<>'"]/g, char => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', "'":'&#39;', '"':'&quot;' }[char])); }
+function safePublicBaseUrl(raw) {
+  let parsed;
+  try { parsed = new URL(String(raw || '').trim()); } catch { return ''; }
+  if (parsed.protocol !== 'https:' || !parsed.hostname || parsed.username || parsed.password || parsed.search || parsed.hash || (parsed.pathname && parsed.pathname !== '/')) return '';
+  const hostname = parsed.hostname.toLowerCase();
+  if (['localhost', 'localhost.localdomain', '127.0.0.1', '::1'].includes(hostname) || hostname.startsWith('127.')) return '';
+  return parsed.origin;
+}
+function safeClaimUrl(raw) {
+  try {
+    const claim = new URL(String(raw || ''));
+    const expected = new URL(safePublicBaseUrl(value('publicBaseUrl')));
+    if (claim.protocol !== 'https:' || claim.origin !== expected.origin || claim.pathname !== '/setup/claim' || !claim.searchParams.get('token')) return '';
+    return claim.href;
+  } catch { return ''; }
+}
 function show(el, visible = true) { if (el) el.classList.toggle('hidden', !visible); }
 function setBusy(button, busy, label) {
   if (!button) return;
@@ -67,17 +84,22 @@ function validateStep() {
     if ($('ownerPassword').value !== $('ownerPasswordConfirm').value) throw new Error('দুইটি পাসওয়ার্ড মিলছে না।');
     if (!/^\d{6}$/.test($('ownerSecretCode').value) || /^(\d)\1{5}$/.test($('ownerSecretCode').value) || ['123456','654321','012345','543210'].includes($('ownerSecretCode').value)) throw new Error('ব্যক্তিগত ও ধারাবাহিক নয় এমন ৬ ডিজিট সিক্রেট দিন।');
   }
+  if (state.step === 4 && !safePublicBaseUrl(value('publicBaseUrl'))) {
+    throw new Error('ডোমেইনের root HTTPS URL দিন, যেমন https://panel.example.com।');
+  }
 }
 function renderReview() {
   const p = payload();
+  const databaseLabel = p.databaseUrl ? 'Database URL দেওয়া হয়েছে' : `${p.databaseHost}:${p.databasePort}/${p.databaseName}`;
+  const ownerLabel = state.existingState && !p.importLegacy ? 'ডাটাবেস থেকে রাখা হবে' : `${p.ownerUsername} / ${p.ownerEmail}`;
   $('reviewBox').innerHTML = `<dl>
     <dt>ডাটাবেস ধরন</dt><dd>${p.databaseProvider === 'postgres' ? 'PostgreSQL' : 'MariaDB / MySQL'}</dd>
-    <dt>ডাটাবেস</dt><dd>${p.databaseUrl ? 'Database URL দেওয়া হয়েছে' : `${p.databaseHost}:${p.databasePort}/${p.databaseName}`}</dd>
-    <dt>ডাটাবেস টেবিল</dt><dd>${p.databaseTable || 'p2pflow_state'}</dd>
+    <dt>ডাটাবেস</dt><dd>${escapeHtml(databaseLabel)}</dd>
+    <dt>ডাটাবেস টেবিল</dt><dd>${escapeHtml(p.databaseTable || 'p2pflow_state')}</dd>
     <dt>ডাটা মোড</dt><dd>${p.importLegacy ? 'পুরোনো ডাটা import' : (state.existingState ? 'বর্তমান ডাটা ব্যবহার' : 'নতুন encrypted database')}</dd>
-    <dt>Owner</dt><dd>${state.existingState && !p.importLegacy ? 'ডাটাবেস থেকে রাখা হবে' : `${p.ownerUsername} / ${p.ownerEmail}`}</dd>
-    <dt>ইমেইল মেথড</dt><dd>${p.mailDriver || 'local'}</dd>
-    <dt>ওয়েবসাইট URL</dt><dd>${p.publicBaseUrl || 'নিজে শনাক্ত হবে'}</dd>
+    <dt>Owner</dt><dd>${escapeHtml(ownerLabel)}</dd>
+    <dt>ইমেইল মেথড</dt><dd>${escapeHtml(p.mailDriver || 'local')}</dd>
+    <dt>ওয়েবসাইট URL</dt><dd>${escapeHtml(safePublicBaseUrl(p.publicBaseUrl) || '-')}</dd>
   </dl>`;
 }
 async function testDatabase() {
@@ -139,11 +161,14 @@ async function install(event) {
     $('setupForm').classList.add('hidden');
     document.querySelector('.steps').classList.add('hidden');
     show($('completePanel'), true);
+    const database = data.database || {};
     const applicationKeyRow = data.applicationKey
-      ? `<dt>Permanent Application Key</dt><dd><code class="key-value">${data.applicationKey}</code><br><strong>কীটি password manager ও offline backup-এ সেভ করুন।</strong></dd>`
+      ? `<dt>Permanent Application Key</dt><dd><code class="key-value">${escapeHtml(data.applicationKey)}</code><br><strong>কীটি password manager ও offline backup-এ সেভ করুন।</strong></dd>`
       : '';
-    $('completeDetails').innerHTML = `<dl><dt>ডাটাবেস ধরন</dt><dd>${data.database.provider === 'postgres' ? 'PostgreSQL' : 'MariaDB / MySQL'}</dd><dt>ডাটাবেস</dt><dd>${data.database.name}</dd><dt>ডাটাবেস ইউজার</dt><dd>${data.database.user}</dd><dt>টেবিল</dt><dd>${data.database.table}</dd><dt>ডাটা মোড</dt><dd>${data.importedLegacy ? 'পুরোনো ডাটা import হয়েছে' : (data.existingState ? 'বর্তমান ডাটা রাখা হয়েছে' : 'নতুন Owner ও ডাটাবেস')}</dd>${applicationKeyRow}</dl>`;
-    if (state.claimUrl) { $('claimOwnerLink').href = state.claimUrl; show($('claimOwnerLink'), true); }
+    $('completeDetails').innerHTML = `<dl><dt>ডাটাবেস ধরন</dt><dd>${database.provider === 'postgres' ? 'PostgreSQL' : 'MariaDB / MySQL'}</dd><dt>ডাটাবেস</dt><dd>${escapeHtml(database.name || '-')}</dd><dt>ডাটাবেস ইউজার</dt><dd>${escapeHtml(database.user || '-')}</dd><dt>টেবিল</dt><dd>${escapeHtml(database.table || '-')}</dd><dt>ডাটা মোড</dt><dd>${data.importedLegacy ? 'পুরোনো ডাটা import হয়েছে' : (data.existingState ? 'বর্তমান ডাটা রাখা হয়েছে' : 'নতুন Owner ও ডাটাবেস')}</dd>${applicationKeyRow}</dl>`;
+    const claimUrl = safeClaimUrl(state.claimUrl);
+    if (claimUrl) { $('claimOwnerLink').href = claimUrl; show($('claimOwnerLink'), true); }
+    else { state.claimUrl = ''; show($('claimOwnerLink'), false); }
     waitForRestart();
   } catch (error) {
     message(error.message, 'error');

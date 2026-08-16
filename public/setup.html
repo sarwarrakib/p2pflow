@@ -3,8 +3,9 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="robots" content="noindex,nofollow,noarchive" />
   <title>P2PFlow সেটআপ</title>
-  <link rel="stylesheet" href="/setup.css?v=1.5.14" />
+  <link rel="stylesheet" href="/setup.css?v=1.5.15" />
 </head>
 <body>
   <main class="setup-shell">
@@ -113,7 +114,7 @@
           <label class="check"><input id="smtpSecure" type="checkbox" /> Direct TLS / SSL</label>
           <label class="check"><input id="smtpStarttls" type="checkbox" checked /> STARTTLS</label>
         </div>
-        <label class="full">ওয়েবসাইট URL<input id="publicBaseUrl" name="publicBaseUrl" placeholder="https://panel.example.com" /></label>
+        <label class="full">ওয়েবসাইট URL <small>Production domain-এর root HTTPS URL দিন।</small><input id="publicBaseUrl" name="publicBaseUrl" type="url" inputmode="url" autocomplete="url" placeholder="https://panel.example.com" required /></label>
       </section>
 
       <section class="panel" data-panel="5">
@@ -139,6 +140,6 @@
       <p class="muted">না খুললে Hosting Node panel থেকে একবার Restart করুন।</p>
     </section>
   </main>
-  <script src="/setup.js?v=1.5.14"></script>
+  <script src="/setup.js?v=1.5.15"></script>
 </body>
 </html>

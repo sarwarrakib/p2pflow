@@ -206,7 +206,7 @@ function generateReleaseSigningKey() {
       <div class="form-grid">
         <div class="full-row"><label>GitHub Secret Name</label><input value="${escapeAttr(result.githubSecretName || 'UPDATE_SIGNING_PRIVATE_KEY')}" readonly /></div>
         <div class="full-row"><label>Private Signing Key</label><textarea id="generatedSigningPrivateKey" rows="9" readonly>${escapeHtml(result.privateKey || '')}</textarea></div>
-        <div class="full-row actions"><button id="copySigningPrivateKeyBtn" type="button">Copy Key</button><a class="button secondary" href="${escapeAttr(secretUrl)}" target="_blank" rel="noopener">Open GitHub Secret</a><button class="secondary close-signing-key-modal" type="button">Done</button></div>
+        <div class="full-row actions"><button id="copySigningPrivateKeyBtn" type="button">Copy Key</button><a class="button secondary" href="${escapeAttr(safeWebUrl(secretUrl, { allowRelative:false }))}" target="_blank" rel="noopener noreferrer">Open GitHub Secret</a><button class="secondary close-signing-key-modal" type="button">Done</button></div>
       </div>`);
     $('#copySigningPrivateKeyBtn').onclick = async () => {
       await navigator.clipboard.writeText(result.privateKey || '');

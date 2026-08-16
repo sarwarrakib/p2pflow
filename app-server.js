@@ -10,6 +10,7 @@ const os = require('os');
 const zlib = require('zlib');
 const { URL } = require('url');
 const { spawn } = require('child_process');
+const { AsyncLocalStorage } = require('async_hooks');
 const { isMainThread, parentPort, workerData } = require('worker_threads');
 const packageInfo = require('./package.json');
 const { createStateStore, normalizeDatabaseProvider, databaseProviderLabel } = require('./lib/databaseProvider');
@@ -42,9 +43,10 @@ loadEnv();
 applyP2PFlowEnvAliases(process.env);
 
 const APP_VERSION = String(packageInfo.version || '0.0.0');
-const APP_SCHEMA_VERSION = 29;
+const APP_SCHEMA_VERSION = 30;
 const APP_DATA_COMPATIBILITY_EPOCH = 1;
 const PORT = Number(process.env.PORT || 3000);
+const BIND_HOST = cleanEnv(process.env.P2PFLOW_BIND_HOST || process.env.CRM_BIND_HOST || '', '');
 const DATABASE_URL = cleanEnv(process.env.P2PFLOW_DATABASE_URL || process.env.CRM_DATABASE_URL || process.env.DATABASE_URL || '', '');
 const DATABASE_PROVIDER = normalizeDatabaseProvider(process.env.P2PFLOW_DATABASE_PROVIDER || process.env.CRM_DATABASE_PROVIDER || '', DATABASE_URL);
 const DATABASE_TABLE = cleanEnv(process.env.P2PFLOW_DATABASE_TABLE || process.env.P2PFLOW_MYSQL_TABLE || process.env.P2PFLOW_POSTGRES_TABLE || process.env.CRM_DATABASE_TABLE || process.env.CRM_MYSQL_TABLE || process.env.CRM_POSTGRES_TABLE || 'p2pflow_state', 'p2pflow_state').replace(/[^a-zA-Z0-9_]/g, '_') || 'p2pflow_state';
@@ -73,10 +75,12 @@ function syncManagedPublicMirrorFrom(releaseDirectory = __dirname) {
 const SESSION_TTL_MS = Number(process.env.CRM_SESSION_TTL_MINUTES || 120) * 60 * 1000;
 const SESSION_PERSIST_EVERY_MS = Number(process.env.CRM_SESSION_PERSIST_EVERY_MINUTES || 5) * 60 * 1000;
 const SESSION_COOKIE_SAMESITE = cleanEnv(process.env.CRM_SESSION_COOKIE_SAMESITE || 'Strict', 'Strict');
-const SESSION_COOKIE_NAME = cleanEnv(process.env.CRM_SESSION_COOKIE_NAME || 'sid', 'sid');
+const SESSION_COOKIE_NAME_RAW = cleanEnv(process.env.CRM_SESSION_COOKIE_NAME || 'sid', 'sid');
+const SESSION_COOKIE_NAME = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(SESSION_COOKIE_NAME_RAW) ? SESSION_COOKIE_NAME_RAW : 'sid';
 const MAX_BODY_BYTES = Math.max(8, Number(process.env.CRM_MAX_BODY_MB || 12) || 12) * 1024 * 1024;
-const LOGIN_WINDOW_MS = 15 * 60 * 1000;
-const LOGIN_MAX_ATTEMPTS = 12;
+const LOGIN_WINDOW_MS = Math.max(60_000, Number(process.env.P2PFLOW_LOGIN_WINDOW_MS || process.env.CRM_LOGIN_WINDOW_MS || 15 * 60 * 1000) || 15 * 60 * 1000);
+const LOGIN_MAX_ATTEMPTS = Math.max(4, Math.min(100, Number(process.env.P2PFLOW_LOGIN_MAX_ATTEMPTS || process.env.CRM_LOGIN_MAX_ATTEMPTS || 12) || 12));
+const AUTH_RATE_LIMIT_MAX_KEYS = Math.max(500, Math.min(50_000, Number(process.env.P2PFLOW_AUTH_RATE_LIMIT_MAX_KEYS || 5000) || 5000));
 const OWNER_EMAIL = cleanEnv(process.env.P2PFLOW_OWNER_EMAIL || process.env.CRM_OWNER_EMAIL || process.env.CRM_INITIAL_ADMIN_EMAIL || '', '');
 const OWNER_USERNAME = cleanEnv(process.env.P2PFLOW_OWNER_USERNAME || process.env.CRM_OWNER_USERNAME || process.env.CRM_INITIAL_ADMIN_USERNAME || OWNER_EMAIL, '');
 const OWNER_DISPLAY_NAME = cleanEnv(process.env.P2PFLOW_OWNER_NAME || process.env.CRM_OWNER_NAME || 'Owner', 'Owner');
@@ -113,6 +117,12 @@ const SMTP_USER = process.env.P2PFLOW_SMTP_USER || process.env.CRM_SMTP_USER || 
 const SMTP_PASS = process.env.P2PFLOW_SMTP_PASS || process.env.CRM_SMTP_PASS || '';
 const SMTP_HELO = process.env.P2PFLOW_SMTP_HELO || process.env.CRM_SMTP_HELO || 'localhost';
 const PUBLIC_BASE_URL = cleanEnv(process.env.P2PFLOW_PUBLIC_BASE_URL || process.env.CRM_PUBLIC_BASE_URL || '', '');
+const NODE_ENVIRONMENT = cleanEnv(process.env.NODE_ENV || 'production', 'production').toLowerCase();
+const TRUST_PROXY_SETTING = cleanEnv(process.env.P2PFLOW_TRUST_PROXY || process.env.CRM_TRUST_PROXY || 'loopback', 'loopback').toLowerCase();
+const ALLOWED_HOSTS_SETTING = cleanEnv(process.env.P2PFLOW_ALLOWED_HOSTS || process.env.CRM_ALLOWED_HOSTS || '', '');
+const PUBLIC_HEALTH_DETAILS = String(process.env.P2PFLOW_PUBLIC_HEALTH_DETAILS || 'false').toLowerCase() === 'true';
+const MAX_SSE_CONNECTIONS_PER_USER = Math.max(1, Math.min(20, Number(process.env.P2PFLOW_MAX_SSE_CONNECTIONS_PER_USER || 5) || 5));
+const PRODUCTION_STRICT = String(process.env.P2PFLOW_PRODUCTION_STRICT || process.env.CRM_PRODUCTION_STRICT || 'false').toLowerCase() === 'true';
 const SMS_DRIVER = String(process.env.CRM_SMS_DRIVER || 'panel').toLowerCase();
 const SMS_WEBHOOK_URL = cleanEnv(process.env.CRM_SMS_WEBHOOK_URL || '', '');
 const SMS_WEBHOOK_TOKEN = process.env.CRM_SMS_WEBHOOK_TOKEN || '';
@@ -126,6 +136,17 @@ const DEFAULT_ACCOUNTING_EXPENSE_CATEGORIES = Object.freeze([
   'Bank / Wallet Charge', 'Tax & Compliance', 'Food & Hospitality', 'Other Expense'
 ]);
 let runtimePublicOrigin = '';
+let configuredPublicBaseUrl = null;
+try {
+  if (PUBLIC_BASE_URL) configuredPublicBaseUrl = new URL(PUBLIC_BASE_URL);
+} catch {
+  configuredPublicBaseUrl = null;
+}
+const CONFIGURED_ALLOWED_HOSTS = new Set([
+  configuredPublicBaseUrl?.host || '',
+  configuredPublicBaseUrl?.hostname || '',
+  ...ALLOWED_HOSTS_SETTING.split(',')
+].map(normalizeHostHeader).filter(Boolean));
 try { dns.setDefaultResultOrder('ipv4first'); } catch {}
 
 const PERMISSION_CATALOG = [
@@ -511,6 +532,65 @@ function ensureOrderFinancials(order) {
   return order;
 }
 
+const ADVERTISEMENT_MERCHANT_SETTING_KEYS = Object.freeze([
+  'adsMerchantOnlineStatus',
+  'adsMerchantOnlineVerified',
+  'adsMerchantOnlineLastAttemptAt',
+  'adsMerchantOnlineLastSuccessAt',
+  'adsMerchantOnlineLastVerifiedAt',
+  'adsMerchantOnlineLastStrategy',
+  'adsMerchantOnlineLastError',
+  'adsMerchantBusinessStatus',
+  'adsMerchantBusinessVerified',
+  'adsMerchantBusinessLastActionAt',
+  'adsMerchantBusinessLastError',
+  'adsMerchantBusinessStateSource',
+  'adsMerchantBusinessCloseGraceUntil',
+  'adsMerchantBusinessAuditRecoveryDone',
+  'adsMerchantBreakStatus',
+  'adsMerchantBreakVerified',
+  'adsMerchantBreakLastActionAt',
+  'adsMerchantBreakLastError',
+  'adsMerchantBreakStateSource',
+  'adsMerchantBreakStickyUntil',
+  'adsMerchantBreakSuspendEndTime'
+]);
+
+function defaultAdvertisementMerchantSettings() {
+  return {
+    adsMerchantOnlineStatus: 'unknown',
+    adsMerchantOnlineVerified: false,
+    adsMerchantOnlineLastAttemptAt: null,
+    adsMerchantOnlineLastSuccessAt: null,
+    adsMerchantOnlineLastVerifiedAt: null,
+    adsMerchantOnlineLastStrategy: null,
+    adsMerchantOnlineLastError: null,
+    adsMerchantBusinessStatus: 'unknown',
+    adsMerchantBusinessVerified: false,
+    adsMerchantBusinessLastActionAt: null,
+    adsMerchantBusinessLastError: null,
+    adsMerchantBusinessStateSource: null,
+    adsMerchantBusinessCloseGraceUntil: null,
+    adsMerchantBusinessAuditRecoveryDone: false,
+    adsMerchantBreakStatus: 'unknown',
+    adsMerchantBreakVerified: false,
+    adsMerchantBreakLastActionAt: null,
+    adsMerchantBreakLastError: null,
+    adsMerchantBreakStateSource: null,
+    adsMerchantBreakStickyUntil: null,
+    adsMerchantBreakSuspendEndTime: null
+  };
+}
+
+function normalizedAdvertisementMerchantSettings(source = {}) {
+  const input = source && typeof source === 'object' && !Array.isArray(source) ? source : {};
+  const output = defaultAdvertisementMerchantSettings();
+  for (const key of ADVERTISEMENT_MERCHANT_SETTING_KEYS) {
+    if (Object.prototype.hasOwnProperty.call(input, key)) output[key] = input[key];
+  }
+  return output;
+}
+
 function defaultSettings() {
   return {
     appName: 'P2PFlow',
@@ -572,26 +652,10 @@ function defaultSettings() {
     adsAutoSyncSeconds: 5,
     adsDefaultCommissionRate: 0,
     adsLastSyncAt: null,
-    adsMerchantOnlineStatus: 'unknown',
-    adsMerchantOnlineVerified: false,
-    adsMerchantOnlineLastAttemptAt: null,
-    adsMerchantOnlineLastSuccessAt: null,
-    adsMerchantOnlineLastVerifiedAt: null,
-    adsMerchantOnlineLastStrategy: null,
-    adsMerchantOnlineLastError: null,
-    adsMerchantBusinessStatus: 'unknown',
-    adsMerchantBusinessVerified: false,
-    adsMerchantBusinessLastActionAt: null,
-    adsMerchantBusinessLastError: null,
-    adsMerchantBusinessStateSource: null,
-    adsMerchantBusinessCloseGraceUntil: null,
-    adsMerchantBreakStatus: 'unknown',
-    adsMerchantBreakVerified: false,
-    adsMerchantBreakLastActionAt: null,
-    adsMerchantBreakLastError: null,
-    adsMerchantBreakStateSource: null,
-    adsMerchantBreakStickyUntil: null,
-    adsMerchantBreakSuspendEndTime: null,
+    // Legacy fields are retained as a mirror of the oldest account so a safe
+    // rollback can still start. Production logic reads the per-credential map.
+    ...defaultAdvertisementMerchantSettings(),
+    adsMerchantControlsByCredential: {},
     adsAssetOptions: ['USDT','BTC','ETH','BNB','FDUSD'],
     adsFiatOptions: ['BDT','USD','EUR','GBP','INR','PKR','NGN','TRY','AED','SAR'],
     adsCatalogLastSyncAt: null,
@@ -1296,6 +1360,28 @@ function migrateDb(target) {
     if (c.ownerP2pNickname === undefined) c.ownerP2pNickname = '';
     if (c.ownerP2pProfileLastSyncAt === undefined) c.ownerP2pProfileLastSyncAt = null;
   });
+  // Schema 30: merchant Business / Online / Break state is owned by the exact
+  // Binance credential. The previous shared fields could make account B inherit
+  // account A's state during multi-account sync or concurrent operator requests.
+  const validMerchantCredentialIds = new Set((target.apiCredentials || []).map(item => Number(item.id || 0)).filter(Boolean));
+  const existingMerchantMap = target.settings.adsMerchantControlsByCredential && typeof target.settings.adsMerchantControlsByCredential === 'object' && !Array.isArray(target.settings.adsMerchantControlsByCredential)
+    ? target.settings.adsMerchantControlsByCredential
+    : {};
+  const normalizedMerchantMap = {};
+  for (const [rawId, rawRecord] of Object.entries(existingMerchantMap)) {
+    const credentialId = Number(rawId || 0);
+    if (!credentialId || !validMerchantCredentialIds.has(credentialId)) continue;
+    normalizedMerchantMap[String(credentialId)] = normalizedAdvertisementMerchantSettings(rawRecord);
+  }
+  const oldestMerchantCredential = [...(target.apiCredentials || [])].sort((a, b) => {
+    const at = Date.parse(a.createdAt || '') || 0;
+    const bt = Date.parse(b.createdAt || '') || 0;
+    return at - bt || Number(a.id || 0) - Number(b.id || 0);
+  })[0] || null;
+  if (previousSchemaVersion < 30 && oldestMerchantCredential && !normalizedMerchantMap[String(oldestMerchantCredential.id)]) {
+    normalizedMerchantMap[String(oldestMerchantCredential.id)] = normalizedAdvertisementMerchantSettings(target.settings);
+  }
+  target.settings.adsMerchantControlsByCredential = normalizedMerchantMap;
   if (!target.userRoles.length) target.userRoles = defaultUserRoles();
   // v1.0.116 / schema 13: advertisement permissions were previously referenced by
   // the Ads APIs/UI but were missing from the central permission catalog. Apply
@@ -1531,14 +1617,29 @@ function migrateDb(target) {
   target.meta.nextId = Math.max(Number(target.meta.nextId || 0), maxId);
 }
 
+const MIN_LOGIN_PASSWORD_LENGTH = 12;
+const MAX_LOGIN_PASSWORD_LENGTH = 200;
+
+function validateLoginPassword(value, label = 'Password') {
+  const password = String(value ?? '');
+  if (password.length < MIN_LOGIN_PASSWORD_LENGTH || password.length > MAX_LOGIN_PASSWORD_LENGTH) {
+    throw Object.assign(new Error(`${label} must be between ${MIN_LOGIN_PASSWORD_LENGTH} and ${MAX_LOGIN_PASSWORD_LENGTH} characters.`), { statusCode: 422 });
+  }
+  if (/^[\s]+$/.test(password) || /[\u0000-\u001f\u007f]/.test(password)) {
+    throw Object.assign(new Error(`${label} contains unsupported characters.`), { statusCode: 422 });
+  }
+  return password;
+}
+
 function makeUser(id, username, password, name, role, agentId, opts = {}) {
   if (!/^\d{6}$/.test(String(opts.secretCode || ''))) throw new Error('6 digit secret code is required for user login creation');
   const secretCode = String(opts.secretCode);
+  const validatedPassword = validateLoginPassword(password);
   return {
     id,
     username,
     email: cleanEnv(opts.email || (role === 'admin' ? OWNER_EMAIL : ''), ''),
-    passwordHash: hashPassword(password),
+    passwordHash: hashPassword(validatedPassword),
     loginSecretHash: hashPassword(secretCode),
     name,
     role,
@@ -1578,12 +1679,13 @@ function securityQuestionFallbackConfigured(user) {
 }
 function validateSecurityQuestionValue(value) {
   const question = cleanStr(value || '', 240);
-  if (question.length < 4) throw Object.assign(new Error('Security question must be at least 4 characters.'), { statusCode: 422 });
+  if (question.length < 8) throw Object.assign(new Error('Security question must be at least 8 characters.'), { statusCode: 422 });
   return question;
 }
 function validateSecurityAnswerValue(value) {
   const answer = String(value ?? '').trim();
-  if (answer.length < 2 || answer.length > 200) throw Object.assign(new Error('Security answer must be between 2 and 200 characters.'), { statusCode: 422 });
+  if (answer.length < 8 || answer.length > 200) throw Object.assign(new Error('Security answer must be between 8 and 200 characters.'), { statusCode: 422 });
+  if (/[\u0000-\u001f\u007f]/.test(answer)) throw Object.assign(new Error('Security answer contains unsupported characters.'), { statusCode: 422 });
   return answer;
 }
 function applySecurityQuestionFallback(user, body = {}, options = {}) {
@@ -4490,7 +4592,7 @@ async function handleP2pExtensionAdminList(req, res) {
   cleanupP2pExtensionCache();
   return sendJson(res, 200, {
     ok: true,
-    serverUrlHint: `${req.headers['x-forwarded-proto'] || 'http'}://${req.headers.host}`,
+    serverUrlHint: publicBaseUrl(req),
     token: p2pExtensionToken(),
     enabled: db.settings.p2pExtensionEnabled !== false,
     pollSeconds: positiveNum(db.settings.p2pExtensionPollSeconds || 5),
@@ -4576,6 +4678,11 @@ async function handleP2pExtensionAdminDelete(req, res, type = 'cache') {
 }
 
 async function handleP2pExtension(req, res, url) {
+  const adminRoute = url.pathname === '/api/p2p-extension/admin' || url.pathname.startsWith('/api/p2p-extension/admin/');
+  if (adminRoute) {
+    if (!sameOriginOk(req)) return sendJson(res, 403, { error: 'Cross-origin write blocked' }, {}, req);
+    if (!checkCsrf(req, res)) return;
+  }
   if (req.method === 'OPTIONS') {
     res.writeHead(204, secureHeaders(p2pExtensionHeaders(req), req));
     res.end();
@@ -4586,7 +4693,7 @@ async function handleP2pExtension(req, res, url) {
     if (!user) return;
     return sendJson(res, 200, {
       ok: true,
-      serverUrlHint: `${req.headers['x-forwarded-proto'] || 'http'}://${req.headers.host}`,
+      serverUrlHint: publicBaseUrl(req),
       token: p2pExtensionToken(),
       enabled: db.settings.p2pExtensionEnabled !== false,
       pollSeconds: positiveNum(db.settings.p2pExtensionPollSeconds || 5),
@@ -4820,15 +4927,191 @@ function agentLoginUser(agentId) {
   return db.users.find(u => Number(u.id) === Number(agent.userId) && u.enabled) || null;
 }
 
+function normalizeNetworkIp(value) {
+  let ip = String(value || '').trim().replace(/^\[|\]$/g, '').split('%')[0];
+  if (ip.toLowerCase().startsWith('::ffff:') && net.isIP(ip.slice(7)) === 4) ip = ip.slice(7);
+  return net.isIP(ip) ? ip.toLowerCase() : '';
+}
+
+function isLoopbackIp(value) {
+  const ip = normalizeNetworkIp(value);
+  if (!ip) return false;
+  if (ip === '::1') return true;
+  if (net.isIP(ip) === 4) return ip.split('.')[0] === '127';
+  return false;
+}
+
+function isPrivateIp(value) {
+  const ip = normalizeNetworkIp(value);
+  if (!ip) return false;
+  if (isLoopbackIp(ip)) return true;
+  if (net.isIP(ip) === 4) {
+    const parts = ip.split('.').map(Number);
+    return parts[0] === 10
+      || (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31)
+      || (parts[0] === 192 && parts[1] === 168)
+      || (parts[0] === 169 && parts[1] === 254);
+  }
+  return ip.startsWith('fc') || ip.startsWith('fd') || ip.startsWith('fe8') || ip.startsWith('fe9') || ip.startsWith('fea') || ip.startsWith('feb');
+}
+
+function isNonPublicNetworkIp(value) {
+  const ip = normalizeNetworkIp(value);
+  if (!ip) return true;
+  if (net.isIP(ip) === 4) {
+    const [a, b] = ip.split('.').map(Number);
+    return a === 0
+      || a === 10
+      || a === 127
+      || (a === 100 && b >= 64 && b <= 127)
+      || (a === 169 && b === 254)
+      || (a === 172 && b >= 16 && b <= 31)
+      || (a === 192 && b === 0)
+      || (a === 192 && b === 168)
+      || (a === 198 && (b === 18 || b === 19))
+      || a >= 224;
+  }
+  const compact = ip.replace(/:/g, '').toLowerCase();
+  return ip === '::'
+    || ip === '::1'
+    || ip.startsWith('fc')
+    || ip.startsWith('fd')
+    || /^fe[89ab]/.test(ip)
+    || ip.startsWith('ff')
+    || ip.startsWith('2001:db8:')
+    || compact === '';
+}
+
+function parseOutboundHttpsUrl(value, label = 'Outbound URL') {
+  let target;
+  try { target = new URL(String(value || '').trim()); }
+  catch { throw new Error(`${label} is invalid.`); }
+  if (target.protocol !== 'https:') throw new Error(`${label} must use HTTPS.`);
+  if (target.username || target.password) throw new Error(`${label} must not contain credentials.`);
+  if (target.hash) throw new Error(`${label} must not contain a URL fragment.`);
+  const hostname = target.hostname.toLowerCase().replace(/\.$/, '');
+  if (!hostname || hostname === 'localhost' || hostname.endsWith('.localhost') || hostname.endsWith('.local')) {
+    throw new Error(`${label} must use a public hostname.`);
+  }
+  if (net.isIP(hostname) && isNonPublicNetworkIp(hostname)) throw new Error(`${label} resolves to a non-public address.`);
+  return target;
+}
+
+async function assertPublicOutboundUrl(value, label = 'Outbound URL') {
+  const target = parseOutboundHttpsUrl(value, label);
+  const addresses = await dns.promises.lookup(target.hostname, { all: true, verbatim: true });
+  if (!Array.isArray(addresses) || !addresses.length) throw new Error(`${label} hostname did not resolve.`);
+  if (addresses.some(entry => isNonPublicNetworkIp(entry?.address))) throw new Error(`${label} resolved to a non-public address.`);
+  return target.toString();
+}
+
+function trustedProxyTokens() {
+  return TRUST_PROXY_SETTING.split(',').map(value => value.trim().toLowerCase()).filter(Boolean);
+}
+
+function isTrustedProxyAddress(value) {
+  const ip = normalizeNetworkIp(value);
+  if (!ip) return false;
+  const tokens = trustedProxyTokens();
+  if (!tokens.length || tokens.includes('none') || tokens.includes('false') || tokens.includes('0')) return false;
+  if (tokens.includes('all')) return true;
+  if (tokens.includes('loopback') && isLoopbackIp(ip)) return true;
+  if (tokens.includes('private') && isPrivateIp(ip)) return true;
+  return tokens.some(token => normalizeNetworkIp(token) === ip);
+}
+
+function proxyPeerIp(req) {
+  return normalizeNetworkIp(req?.socket?.remoteAddress || req?.connection?.remoteAddress || '');
+}
+
+function isTrustedProxyPeer(req) {
+  return isTrustedProxyAddress(proxyPeerIp(req));
+}
+
+function trustedForwardedHeader(req, name) {
+  if (!isTrustedProxyPeer(req)) return '';
+  return cleanEnv(req?.headers?.[name] || '', '');
+}
+
+function normalizeHostHeader(value) {
+  const raw = String(value || '').split(',')[0].trim().toLowerCase();
+  if (!raw || /[\/\s@\u0000-\u001f\u007f]/.test(raw)) return '';
+  try {
+    const parsed = new URL(`http://${raw}`);
+    if (!parsed.hostname) return '';
+    return parsed.host.toLowerCase();
+  } catch {
+    return '';
+  }
+}
+
+function hostnameFromHost(value) {
+  const host = normalizeHostHeader(value);
+  if (!host) return '';
+  try { return new URL(`http://${host}`).hostname.toLowerCase(); } catch { return ''; }
+}
+
+function requestHost(req) {
+  const forwarded = trustedForwardedHeader(req, 'x-forwarded-host');
+  return normalizeHostHeader(forwarded || req?.headers?.host || '');
+}
+
+function requestHostAllowed(req) {
+  const host = requestHost(req);
+  if (!host) return false;
+  const hostname = hostnameFromHost(host);
+  if (isLoopbackIp(proxyPeerIp(req)) && ['localhost', '127.0.0.1', '::1'].includes(hostname)) return true;
+  if (!CONFIGURED_ALLOWED_HOSTS.size) return !PUBLIC_BASE_URL || Boolean(configuredPublicBaseUrl);
+  return CONFIGURED_ALLOWED_HOSTS.has(host) || CONFIGURED_ALLOWED_HOSTS.has(hostname);
+}
+
+function requestProtocol(req) {
+  if (req?.socket?.encrypted) return 'https';
+  const proto = trustedForwardedHeader(req, 'x-forwarded-proto').split(',')[0].trim().toLowerCase();
+  if (proto === 'https' || proto === 'http') return proto;
+  const ssl = trustedForwardedHeader(req, 'x-forwarded-ssl').toLowerCase();
+  return ssl === 'on' ? 'https' : 'http';
+}
+
+function requestOrigin(req) {
+  if (configuredPublicBaseUrl) return configuredPublicBaseUrl.origin;
+  const host = requestHost(req);
+  return host ? `${requestProtocol(req)}://${host}` : '';
+}
+
+function requestIdFor(req) {
+  if (!req) return crypto.randomBytes(12).toString('hex');
+  if (!req._requestId) req._requestId = crypto.randomBytes(12).toString('hex');
+  return req._requestId;
+}
+
+function validateRuntimeSecurityConfiguration() {
+  if (NODE_ENVIRONMENT !== 'production' || !PRODUCTION_STRICT) return;
+  if (!configuredPublicBaseUrl) throw new Error('P2PFLOW_PUBLIC_BASE_URL must be a valid HTTPS URL when P2PFLOW_PRODUCTION_STRICT=true.');
+  if (configuredPublicBaseUrl.protocol !== 'https:') throw new Error('P2PFLOW_PUBLIC_BASE_URL must use HTTPS in production.');
+  if (configuredPublicBaseUrl.username || configuredPublicBaseUrl.password || configuredPublicBaseUrl.search || configuredPublicBaseUrl.hash) {
+    throw new Error('P2PFLOW_PUBLIC_BASE_URL must not contain credentials, query parameters or a fragment.');
+  }
+  if (configuredPublicBaseUrl.pathname && configuredPublicBaseUrl.pathname !== '/') throw new Error('P2PFLOW_PUBLIC_BASE_URL must point to the domain root, without a path.');
+  if (['localhost', '127.0.0.1', '::1'].includes(configuredPublicBaseUrl.hostname.toLowerCase())) throw new Error('P2PFLOW_PUBLIC_BASE_URL cannot use a loopback hostname in production.');
+  if (TRUST_PROXY_SETTING.split(',').map(value => value.trim()).includes('all')) throw new Error('P2PFLOW_TRUST_PROXY=all is not allowed in strict production mode. Trust only loopback, private proxies, or explicit proxy IP addresses.');
+  if (!CONFIGURED_ALLOWED_HOSTS.has(configuredPublicBaseUrl.host.toLowerCase()) && !CONFIGURED_ALLOWED_HOSTS.has(configuredPublicBaseUrl.hostname.toLowerCase())) {
+    throw new Error('P2PFLOW_ALLOWED_HOSTS must include the hostname from P2PFLOW_PUBLIC_BASE_URL.');
+  }
+}
+
 function rememberPublicOrigin(req) {
-  const host = safeMailHeader(req?.headers?.host || '', 240);
-  if (!host) return;
-  const proto = isHttps(req) ? 'https' : 'http';
-  runtimePublicOrigin = `${proto}://${host}`;
+  if (configuredPublicBaseUrl) {
+    runtimePublicOrigin = configuredPublicBaseUrl.origin;
+    return;
+  }
+  if (!requestHostAllowed(req)) return;
+  const origin = requestOrigin(req);
+  if (origin) runtimePublicOrigin = origin;
 }
 function publicBaseUrl(req) {
   rememberPublicOrigin(req);
-  if (PUBLIC_BASE_URL) return PUBLIC_BASE_URL.replace(/\/$/, '');
+  if (configuredPublicBaseUrl) return configuredPublicBaseUrl.toString().replace(/\/$/, '');
   return runtimePublicOrigin || `http://localhost:${PORT}`;
 }
 
@@ -4961,6 +5244,14 @@ function getPhpMailBridgeSecret() {
   if (!APP_KEY) return '';
   return crypto.createHmac('sha256', APP_KEY).update('php-mail-bridge:v1').digest('hex');
 }
+function normalizePhpMailBridgeUrl(value) {
+  let url;
+  try { url = new URL(String(value || '')); } catch { return null; }
+  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.hash) return null;
+  const isLoopback = ['localhost', '127.0.0.1', '::1'].includes(url.hostname.toLowerCase());
+  if (NODE_ENVIRONMENT === 'production' && PRODUCTION_STRICT && url.protocol !== 'https:' && !isLoopback) return null;
+  return url;
+}
 function phpMailBridgeUrlCandidates() {
   const values = [PHP_MAIL_URL, ...PHP_MAIL_URLS.split(',')];
   if (PHP_MAIL_AUTO_URL) {
@@ -4972,9 +5263,7 @@ function phpMailBridgeUrlCandidates() {
       } catch {}
     }
   }
-  return uniqueValues(values).filter(value => {
-    try { const url = new URL(value); return url.protocol === 'http:' || url.protocol === 'https:'; } catch { return false; }
-  });
+  return uniqueValues(values).map(value => normalizePhpMailBridgeUrl(value)?.toString() || '').filter(Boolean);
 }
 function parseJsonProcessOutput(output) {
   let text = String(output || '').trim();
@@ -4995,8 +5284,8 @@ function parseJsonProcessOutput(output) {
 }
 function phpMailBridgeRequest(urlValue, payload, redirectCount = 0) {
   return new Promise((resolve, reject) => {
-    let target;
-    try { target = new URL(urlValue); } catch (err) { return reject(err); }
+    const target = normalizePhpMailBridgeUrl(urlValue);
+    if (!target) return reject(new Error('PHP web mail bridge URL is not allowed.'));
     const raw = JSON.stringify(payload);
     const timestamp = String(Math.floor(Date.now() / 1000));
     const nonce = crypto.randomBytes(16).toString('hex');
@@ -5025,8 +5314,11 @@ function phpMailBridgeRequest(urlValue, payload, redirectCount = 0) {
         const status = Number(response.statusCode || 0);
         if ([301,302,303,307,308].includes(status) && response.headers.location && redirectCount < 3) {
           let next;
-          try { next = new URL(response.headers.location, target).toString(); } catch (err) { return reject(err); }
-          return phpMailBridgeRequest(next, payload, redirectCount + 1).then(resolve, reject);
+          try { next = new URL(response.headers.location, target); } catch (err) { return reject(err); }
+          if (!normalizePhpMailBridgeUrl(next.toString())) return reject(new Error('PHP web mail bridge refused an unsafe redirect.'));
+          if (next.origin !== target.origin) return reject(new Error('PHP web mail bridge refused a cross-origin redirect.'));
+          if (target.protocol === 'https:' && next.protocol !== 'https:') return reject(new Error('PHP web mail bridge refused an HTTPS downgrade redirect.'));
+          return phpMailBridgeRequest(next.toString(), payload, redirectCount + 1).then(resolve, reject);
         }
         const parsed = parseJsonProcessOutput(body);
         if (status >= 200 && status < 300 && parsed?.ok) return resolve({ ...parsed, url: target.toString() });
@@ -8418,16 +8710,28 @@ async function handlePublicMedia(req, res, token) {
 async function uploadBinanceChatImage(credential, imageName, buffer, mimeType = 'image/jpeg') {
   const presign = await callSignedSapi({ apiKey: credential.apiKey, secretKey: credential.secretKey, endpointName: 'getChatImagePreSignedUrl', body: { imageName }, clientType: credential.clientType || 'web', dryRun: false });
   const data = unwrapBinanceData(presign) || {};
-  const preSignedUrl = data.preSignedUrl || data.presignedUrl || data.preSignedURL || data.uploadUrl || data.putUrl || data.url;
-  const imageUrl = data.imageUrl || data.fileUrl || data.downloadUrl || data.viewUrl;
-  if (!preSignedUrl || !imageUrl) throw new Error('Binance image pre-signed response is missing preSignedUrl/uploadUrl or imageUrl.');
+  const rawPreSignedUrl = data.preSignedUrl || data.presignedUrl || data.preSignedURL || data.uploadUrl || data.putUrl || data.url;
+  const rawImageUrl = data.imageUrl || data.fileUrl || data.downloadUrl || data.viewUrl;
+  if (!rawPreSignedUrl || !rawImageUrl) throw new Error('Binance image pre-signed response is missing preSignedUrl/uploadUrl or imageUrl.');
+  const preSignedUrl = await assertPublicOutboundUrl(rawPreSignedUrl, 'Binance image upload URL');
+  const imageUrl = parseOutboundHttpsUrl(rawImageUrl, 'Binance chat image URL').toString();
   const attempts = [
     { label: 'headerless', options: { method: 'PUT', body: buffer } },
     { label: 'content-type', options: { method: 'PUT', body: buffer, headers: { 'Content-Type': mimeType } } }
   ];
   let last = null;
   for (const attempt of attempts) {
-    const res = await fetch(preSignedUrl, attempt.options);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 30_000);
+    let res;
+    try {
+      res = await fetch(preSignedUrl, { ...attempt.options, redirect: 'error', signal: controller.signal });
+    } catch (error) {
+      if (error?.name === 'AbortError') throw new Error('Binance image upload timed out after 30 seconds.');
+      throw error;
+    } finally {
+      clearTimeout(timer);
+    }
     if (res.ok) return { imageUrl, preSignedUrlReceived: true, statusCode: res.status, uploadMode: attempt.label };
     const txt = await res.text().catch(() => '');
     last = `${res.status} ${res.statusText || ''} ${txt.slice(0, 200)}`.trim();
@@ -8613,18 +8917,22 @@ function secureHeaders(extra = {}, req = null) {
   const headers = {
     'X-Content-Type-Options': 'nosniff',
     'X-Frame-Options': 'DENY',
+    'X-Permitted-Cross-Domain-Policies': 'none',
+    'X-Robots-Tag': 'noindex, nofollow, noarchive',
     'Referrer-Policy': 'no-referrer',
-    'Permissions-Policy': 'camera=(), microphone=(), geolocation=(), payment=()',
-    'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; media-src 'self' data: blob: https:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'",
+    'Permissions-Policy': 'camera=(), microphone=(), geolocation=(), payment=(), usb=(), serial=(), browsing-topics=()',
+    'Cross-Origin-Opener-Policy': 'same-origin',
+    'Origin-Agent-Cluster': '?1',
+    'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; media-src 'self' data: blob: https:; connect-src 'self'; worker-src 'self' blob:; manifest-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'",
     'Cache-Control': 'no-store',
+    ...(req ? { 'X-Request-Id': requestIdFor(req) } : {}),
     ...extra
   };
   if (req && isHttps(req)) headers['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains';
   return headers;
 }
 function isHttps(req) {
-  const proto = String(req.headers['x-forwarded-proto'] || '').toLowerCase();
-  return !!req.socket.encrypted || proto.split(',').map(x => x.trim()).includes('https') || String(req.headers['x-forwarded-ssl'] || '').toLowerCase() === 'on';
+  return requestProtocol(req) === 'https';
 }
 function cookieFlags(req) {
   const sameSite = ['Strict','Lax','None'].includes(SESSION_COOKIE_SAMESITE) ? SESSION_COOKIE_SAMESITE : 'Lax';
@@ -8715,17 +9023,62 @@ function readBody(req) {
 }
 
 
-function getIp(req) { return String(req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim(); }
-function throttleLogin(req) {
-  const key = getIp(req);
-  const now = Date.now();
-  const entry = loginAttempts.get(key) || { count: 0, resetAt: now + LOGIN_WINDOW_MS };
-  if (now > entry.resetAt) { entry.count = 0; entry.resetAt = now + LOGIN_WINDOW_MS; }
-  entry.count += 1;
-  loginAttempts.set(key, entry);
-  return entry.count <= LOGIN_MAX_ATTEMPTS;
+let loginAttemptLastPruneAt = 0;
+function getIp(req) {
+  let current = proxyPeerIp(req);
+  if (!current) return '';
+  if (!isTrustedProxyAddress(current)) return current;
+  const forwarded = trustedForwardedHeader(req, 'x-forwarded-for');
+  if (!forwarded) return current;
+  const chain = forwarded.split(',').map(normalizeNetworkIp).filter(Boolean);
+  for (let index = chain.length - 1; index >= 0; index -= 1) {
+    if (!isTrustedProxyAddress(current)) break;
+    current = chain[index];
+  }
+  return current;
 }
-function resetLoginThrottle(req) { loginAttempts.delete(getIp(req)); }
+function authRateLimitHash(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (!normalized) return '';
+  const key = APP_KEY.length >= 32 ? APP_KEY : 'p2pflow-auth-rate-limit-v1';
+  return crypto.createHmac('sha256', key).update(normalized).digest('hex').slice(0, 32);
+}
+function pruneLoginAttempts(now = Date.now()) {
+  if (now - loginAttemptLastPruneAt < 30_000 && loginAttempts.size <= AUTH_RATE_LIMIT_MAX_KEYS) return;
+  loginAttemptLastPruneAt = now;
+  for (const [key, entry] of loginAttempts.entries()) {
+    if (!entry || Number(entry.resetAt || 0) <= now) loginAttempts.delete(key);
+  }
+  if (loginAttempts.size <= AUTH_RATE_LIMIT_MAX_KEYS) return;
+  const oldest = [...loginAttempts.entries()].sort((a, b) => Number(a[1]?.updatedAt || 0) - Number(b[1]?.updatedAt || 0));
+  for (const [key] of oldest.slice(0, loginAttempts.size - AUTH_RATE_LIMIT_MAX_KEYS)) loginAttempts.delete(key);
+}
+function incrementLoginAttempt(key, maxAttempts, now = Date.now()) {
+  const entry = loginAttempts.get(key) || { count: 0, resetAt: now + LOGIN_WINDOW_MS, updatedAt: now };
+  if (now >= Number(entry.resetAt || 0)) {
+    entry.count = 0;
+    entry.resetAt = now + LOGIN_WINDOW_MS;
+  }
+  entry.count += 1;
+  entry.updatedAt = now;
+  loginAttempts.set(key, entry);
+  return entry.count <= maxAttempts;
+}
+function throttleLogin(req, identity = '', scope = 'login', maxAttempts = LOGIN_MAX_ATTEMPTS) {
+  const now = Date.now();
+  pruneLoginAttempts(now);
+  const normalizedScope = cleanStr(scope || 'login', 40).toLowerCase().replace(/[^a-z0-9_-]/g, '') || 'login';
+  const ip = getIp(req) || 'unknown';
+  const identityHash = authRateLimitHash(identity);
+  const ipAllowed = incrementLoginAttempt(`${normalizedScope}:ip:${ip}`, Math.max(30, Number(maxAttempts || LOGIN_MAX_ATTEMPTS) * 5), now);
+  const identityAllowed = identityHash ? incrementLoginAttempt(`${normalizedScope}:identity:${identityHash}`, Math.max(1, Number(maxAttempts || LOGIN_MAX_ATTEMPTS)), now) : true;
+  return ipAllowed && identityAllowed;
+}
+function resetLoginThrottle(req, identity = '', scope = 'login') {
+  const normalizedScope = cleanStr(scope || 'login', 40).toLowerCase().replace(/[^a-z0-9_-]/g, '') || 'login';
+  const identityHash = authRateLimitHash(identity);
+  if (identityHash) loginAttempts.delete(`${normalizedScope}:identity:${identityHash}`);
+}
 
 function requestUserAgent(req) {
   return cleanStr(req?.headers?.['user-agent'] || '', 600);
@@ -9613,19 +9966,38 @@ function checkCsrf(req, res) {
   return true;
 }
 function sameOriginOk(req) {
-  if (!['POST','PATCH','PUT','DELETE'].includes(req.method)) return true;
-  const origin = req.headers.origin;
+  if (!['POST','PATCH','PUT','DELETE'].includes(String(req.method || '').toUpperCase())) return true;
+  const fetchSite = String(req.headers['sec-fetch-site'] || '').trim().toLowerCase();
+  if (fetchSite === 'cross-site') return false;
+  const origin = String(req.headers.origin || '').trim();
   if (!origin) return true;
-  try { return new URL(origin).host === req.headers.host; } catch { return false; }
+  if (origin === 'null') return false;
+  const expectedOrigin = requestOrigin(req);
+  if (!expectedOrigin) return false;
+  try { return new URL(origin).origin === expectedOrigin; } catch { return false; }
 }
 
 function serveStatic(req, res) {
-  const requestUrl = new URL(req.url, `http://${req.headers.host}`);
-  let pathname = decodeURIComponent(requestUrl.pathname);
+  if (!['GET', 'HEAD'].includes(String(req.method || '').toUpperCase())) {
+    return sendText(res, 405, 'Method not allowed', 'text/plain; charset=utf-8', req);
+  }
+  let requestUrl;
+  let pathname;
+  try {
+    requestUrl = new URL(req.url, 'http://localhost');
+    pathname = decodeURIComponent(requestUrl.pathname);
+  } catch {
+    return sendText(res, 400, 'Bad request', 'text/plain; charset=utf-8', req);
+  }
+  if (pathname.includes('\0')) return sendText(res, 400, 'Bad request', 'text/plain; charset=utf-8', req);
   if (pathname === '/login' || pathname === '/login/') pathname = '/login.html';
   if (pathname === '/') pathname = '/index.html';
-  const filePath = path.normalize(path.join(PUBLIC_DIR, pathname));
-  if (!filePath.startsWith(PUBLIC_DIR)) return sendText(res, 403, 'Forbidden', 'text/plain; charset=utf-8', req);
+  const relativePath = pathname.replace(/^\/+/, '');
+  const filePath = path.resolve(PUBLIC_DIR, relativePath);
+  const relative = path.relative(PUBLIC_DIR, filePath);
+  if (!relative || relative.startsWith('..' + path.sep) || relative === '..' || path.isAbsolute(relative) || relative.split(path.sep).some(part => part.startsWith('.'))) {
+    return sendText(res, 403, 'Forbidden', 'text/plain; charset=utf-8', req);
+  }
   const ext = path.extname(filePath).toLowerCase();
   // PHP sidecar files must be executed by the hosting PHP handler, never exposed as source by Node static serving.
   if (ext === '.php') return sendText(res, 404, 'Not found', 'text/plain; charset=utf-8', req);
@@ -9677,7 +10049,7 @@ function serveStatic(req, res) {
     }
     fs.readFile(filePath, (err, data) => {
       if (err) return sendText(res, 404, 'Not found', 'text/plain; charset=utf-8', req);
-      const baseHeaders = { 'Content-Type': type, 'Cache-Control': cache, 'ETag': etag, 'X-P2PFlow-Version': APP_VERSION };
+      const baseHeaders = { 'Content-Type': type, 'Cache-Control': cache, 'ETag': etag, 'X-P2PFlow-Version': APP_VERSION, ...(isCompressible ? { 'Vary': 'Accept-Encoding' } : {}) };
       if (isVideo) baseHeaders['Accept-Ranges'] = 'bytes';
       if (req.method === 'HEAD') {
         baseHeaders['Content-Length'] = String(data.length);
@@ -9692,7 +10064,7 @@ function serveStatic(req, res) {
             res.writeHead(200, secureHeaders(headers, req));
             return res.end(data);
           }
-          const headers = { ...baseHeaders, 'Content-Encoding': 'gzip', 'Vary': 'Accept-Encoding', 'Content-Length': String(compressed.length) };
+          const headers = { ...baseHeaders, 'Content-Encoding': 'gzip', 'Content-Length': String(compressed.length) };
           res.writeHead(200, secureHeaders(headers, req));
           res.end(compressed);
         });
@@ -9704,11 +10076,161 @@ function serveStatic(req, res) {
   });
 }
 
-function broadcast(event) {
-  const payload = `data: ${JSON.stringify(event)}\n\n`;
-  for (const client of Array.from(sseClients)) {
-    try { client.write(payload); } catch { sseClients.delete(client); }
+function realtimeUserHasAnyCredentialPermission(user, permission) {
+  return binanceCredentialIdsForUserPermission(user, permission, { includeDisabled: true }).length > 0;
+}
+
+function realtimeOrderFromReference(reference = {}) {
+  const direct = Number(reference.orderId || reference.id || 0);
+  if (direct) {
+    const found = orderById(direct);
+    if (found) return found;
   }
+  const orderNo = cleanStr(reference.orderNo || reference.externalOrderNo || '', 120);
+  if (!orderNo) return null;
+  const credentialId = Number(reference.credentialId || 0);
+  return (db.orders || []).find(item => {
+    if (credentialId && Number(item.credentialId || 0) !== credentialId) return false;
+    return [item.orderNo, item.externalOrderNo, item.binanceOrderNo].some(value => String(value || '') === orderNo);
+  }) || null;
+}
+
+function realtimeAdvertisementCredentialId(event = {}) {
+  const direct = Number(event.credentialId || 0);
+  if (direct) return direct;
+  const advertisement = event.advertisementId ? advertisementById(event.advertisementId) : null;
+  return Number(advertisement?.credentialId || 0);
+}
+
+function realtimeFilteredAccounts(accounts, user, permission) {
+  return (Array.isArray(accounts) ? accounts : []).filter(item => {
+    const credentialId = Number(item?.credentialId || item?.id || 0);
+    return credentialId && userHasBinanceCredentialPermission(user, credentialId, permission);
+  });
+}
+
+function realtimeEventForUser(event, user) {
+  if (!event || typeof event !== 'object' || !user || user.enabled === false) return null;
+  const type = cleanStr(event.type || '', 120);
+  if (!type) return null;
+  if (['connected', 'heartbeat', 'db_updated'].includes(type)) return { ...event, type };
+
+  if (type === 'system.update.available') return user.isOwner === true ? { ...event, type } : null;
+
+  if (type === 'notification.created') {
+    const notificationId = Number(event.notification?.id || 0);
+    if (!notificationId) return null;
+    const visible = notificationsForUser(user).some(item => Number(item.id) === notificationId);
+    return visible ? { ...event, type } : null;
+  }
+
+  if (type === 'activity.presence.updated') {
+    if (userHasPermission(user, 'activity.view')) return { ...event, type };
+    if (realtimeUserHasAnyCredentialPermission(user, 'ads.view')) {
+      return { type, status: event.status || 'unknown', changed: Boolean(event.changed), at: event.at || nowIso() };
+    }
+    return null;
+  }
+
+  if (type.startsWith('accounting.')) return userHasPermission(user, 'accounting.view') ? { ...event, type } : null;
+
+  if (type.startsWith('ads.')) {
+    const credentialId = realtimeAdvertisementCredentialId(event);
+    if (credentialId) {
+      if (!userHasBinanceCredentialPermission(user, credentialId, 'ads.view')) return null;
+      return { ...event, type };
+    }
+    const accounts = realtimeFilteredAccounts(event.accounts, user, 'ads.view');
+    if (!accounts.length) return null;
+    const output = { ...event, type, accounts };
+    if (type === 'ads.auto_synced') {
+      output.created = accounts.reduce((sum, item) => sum + Number(item.created || 0), 0);
+      output.updated = accounts.reduce((sum, item) => sum + Number(item.updated || 0), 0);
+      output.unchanged = accounts.reduce((sum, item) => sum + Number(item.unchanged || 0), 0);
+      output.totalRows = accounts.reduce((sum, item) => sum + Number(item.totalRows || 0), 0);
+      output.changed = accounts.reduce((sum, item) => sum + Number(item.changed || 0), 0);
+      if (output.controls && !userHasBinanceCredentialPermission(user, Number(output.controls.credentialId || 0), 'ads.view')) delete output.controls;
+    }
+    if (type === 'ads.sync_error') {
+      output.error = accounts.map(item => item.error ? `${cleanStr(item.credentialName || 'Assigned account', 120)}: ${cleanStr(item.error, 240)}` : '').filter(Boolean).join(' | ') || 'Advertisement synchronization failed for an assigned Binance account.';
+    }
+    return output;
+  }
+
+  if (type === 'p2p.owner_profile.updated') {
+    const credentialId = Number(event.credentialId || 0);
+    if (credentialId) return userHasBinanceCredentialPermission(user, credentialId, 'p2p.profile.view') ? { ...event, type } : null;
+    if (!realtimeUserHasAnyCredentialPermission(user, 'p2p.profile.view')) return null;
+    const output = { ...event, type };
+    delete output.userNo;
+    return output;
+  }
+
+  const order = realtimeOrderFromReference(event);
+  if (order) return canAccessOrder(user, order) ? { ...event, type } : null;
+  if (event.orderId || event.orderNo || event.externalOrderNo) return user.role === 'admin' ? { ...event, type } : null;
+
+  if (Array.isArray(event.changedOrders) || type.startsWith('binance.orders.')) {
+    const changedOrders = (Array.isArray(event.changedOrders) ? event.changedOrders : []).filter(change => {
+      const changedOrder = realtimeOrderFromReference(change);
+      return changedOrder && canAccessOrder(user, changedOrder);
+    });
+    const credentials = realtimeFilteredAccounts(event.credentials, user, 'orders.view');
+    const credentialId = Number(event.credentialId || 0);
+    if (credentialId && !userHasBinanceCredentialPermission(user, credentialId, 'orders.view')) return null;
+    if (!credentialId && !changedOrders.length && !credentials.length) return null;
+    const output = { ...event, type, changedOrders };
+    if (Array.isArray(event.credentials)) {
+      output.credentials = credentials;
+      output.created = credentials.reduce((sum, item) => sum + Number(item.created || 0), 0);
+      output.updated = credentials.reduce((sum, item) => sum + Number(item.updated || 0), 0);
+      output.totalRows = credentials.reduce((sum, item) => sum + Number(item.totalRows || 0), 0);
+      output.detailSynced = changedOrders.length;
+      output.openDetailSynced = changedOrders.length;
+    }
+    return output;
+  }
+
+  if (type.startsWith('p2p.extension.')) return realtimeUserHasAnyCredentialPermission(user, 'p2p.profile.view') ? { type, at: event.at || nowIso() } : null;
+  if (type.startsWith('payment.method') || type.startsWith('payment.account')) return userHasPermission(user, 'accounts.view') ? { ...event, type } : null;
+  if (type.startsWith('approval.')) return userHasPermission(user, 'approvals.manage') ? { ...event, type } : null;
+
+  return user.role === 'admin' ? { ...event, type } : null;
+}
+
+function realtimeClientUser(client) {
+  if (!client || !client.sid || !client.userId) return null;
+  const session = sessions.get(client.sid);
+  if (!session || Number(session.userId) !== Number(client.userId) || Number(session.expiresAt || 0) <= Date.now()) return null;
+  return (db.users || []).find(item => Number(item.id) === Number(client.userId) && item.enabled) || null;
+}
+
+function closeRealtimeClient(client) {
+  if (!client) return;
+  sseClients.delete(client);
+  if (client.heartbeat) clearInterval(client.heartbeat);
+  try { if (!client.res.writableEnded) client.res.end(); } catch {}
+}
+
+function writeRealtimeEvent(client, event) {
+  const user = realtimeClientUser(client);
+  if (!user) {
+    closeRealtimeClient(client);
+    return false;
+  }
+  const filtered = realtimeEventForUser(event, user);
+  if (!filtered) return true;
+  try {
+    client.res.write(`data: ${JSON.stringify(filtered)}\n\n`);
+    return true;
+  } catch {
+    closeRealtimeClient(client);
+    return false;
+  }
+}
+
+function broadcast(event) {
+  for (const client of Array.from(sseClients)) writeRealtimeEvent(client, event);
 }
 
 
@@ -10727,8 +11249,137 @@ function normalizedMerchantSetting(value) {
   return value === 1 || value === '1' || value === true ? 1 : (value === 0 || value === '0' || value === false ? 0 : null);
 }
 
-function advertisementMerchantControlState(control) {
-  const settings = db.settings || {};
+const advertisementMerchantContext = new AsyncLocalStorage();
+const advertisementMerchantStatusRuntimes = new Map();
+const advertisementCreateReadinessRuntimes = new Map();
+
+function advertisementMerchantCredentialId(explicitCredentialId = 0) {
+  const direct = Number(explicitCredentialId || 0);
+  if (direct) return direct;
+  const contextual = Number(advertisementMerchantContext.getStore()?.credentialId || 0);
+  if (contextual) return contextual;
+  const available = (db?.apiCredentials || []).map(item => Number(item.id || 0)).filter(Boolean);
+  return available.length === 1 ? available[0] : 0;
+}
+
+function withAdvertisementMerchantCredential(credentialOrId, worker) {
+  const credentialId = Number(credentialOrId?.id || credentialOrId || 0);
+  if (typeof worker !== 'function') return undefined;
+  if (!credentialId) return worker();
+  if (Number(advertisementMerchantContext.getStore()?.credentialId || 0) === credentialId) return worker();
+  return advertisementMerchantContext.run({ credentialId }, worker);
+}
+
+function oldestBinanceCredentialId(targetDb = db) {
+  return Number([...(targetDb?.apiCredentials || [])].sort((a, b) => {
+    const at = Date.parse(a.createdAt || '') || 0;
+    const bt = Date.parse(b.createdAt || '') || 0;
+    return at - bt || Number(a.id || 0) - Number(b.id || 0);
+  })[0]?.id || 0);
+}
+
+function syncLegacyAdvertisementMerchantSettings(record, credentialId = 0) {
+  if (!db?.settings || !record) return;
+  const accountId = advertisementMerchantCredentialId(credentialId);
+  if (!accountId || accountId !== oldestBinanceCredentialId()) return;
+  for (const key of ADVERTISEMENT_MERCHANT_SETTING_KEYS) db.settings[key] = record[key];
+}
+
+function advertisementMerchantSettingsRecord(explicitCredentialId = 0, create = true) {
+  const credentialId = advertisementMerchantCredentialId(explicitCredentialId);
+  if (!db?.settings || !credentialId) return defaultAdvertisementMerchantSettings();
+  if (!db.settings.adsMerchantControlsByCredential || typeof db.settings.adsMerchantControlsByCredential !== 'object' || Array.isArray(db.settings.adsMerchantControlsByCredential)) {
+    db.settings.adsMerchantControlsByCredential = {};
+  }
+  const key = String(credentialId);
+  const existing = db.settings.adsMerchantControlsByCredential[key];
+  if (!existing) {
+    if (!create) return defaultAdvertisementMerchantSettings();
+    db.settings.adsMerchantControlsByCredential[key] = normalizedAdvertisementMerchantSettings(
+      credentialId === oldestBinanceCredentialId() ? db.settings : {}
+    );
+  } else {
+    db.settings.adsMerchantControlsByCredential[key] = normalizedAdvertisementMerchantSettings(existing);
+  }
+  return db.settings.adsMerchantControlsByCredential[key];
+}
+
+function advertisementMerchantRuntime(explicitCredentialId = 0) {
+  const credentialId = advertisementMerchantCredentialId(explicitCredentialId);
+  const key = String(credentialId || 0);
+  if (!advertisementMerchantStatusRuntimes.has(key)) {
+    advertisementMerchantStatusRuntimes.set(key, {
+      credentialId: credentialId || null,
+      lastCheckAt: null,
+      lastSuccessAt: null,
+      lastError: null,
+      busy: false,
+      rawOnlineStatus: null,
+      ownerBusinessStatusCode: null,
+      ownerBusinessStatusSource: null,
+      ownerBusinessError: null,
+      ownerProfileBusinessChanged: false,
+      lastModeProbeAt: null,
+      lastModeProbeCredentialId: credentialId || null,
+      lastModeProbeResult: null,
+      lastModeProbeError: null
+    });
+  }
+  return advertisementMerchantStatusRuntimes.get(key);
+}
+
+// Existing merchant-control code reads this object throughout long asynchronous flows.
+// The proxy keeps those reads account-local without risking cross-request state leakage.
+const advertisementMerchantStatusRuntime = new Proxy({}, {
+  get(_target, property) { return advertisementMerchantRuntime()[property]; },
+  set(_target, property, value) { advertisementMerchantRuntime()[property] = value; return true; },
+  ownKeys() { return Reflect.ownKeys(advertisementMerchantRuntime()); },
+  getOwnPropertyDescriptor() { return { enumerable: true, configurable: true }; }
+});
+
+function advertisementCreateReadinessRuntimeFor(credentialOrId = 0) {
+  const credentialId = Number(credentialOrId?.id || credentialOrId || advertisementMerchantCredentialId() || 0);
+  const key = String(credentialId || 0);
+  if (!advertisementCreateReadinessRuntimes.has(key)) {
+    advertisementCreateReadinessRuntimes.set(key, {
+      credentialId: credentialId || null,
+      credentialKey: null,
+      checkedAt: null,
+      lastSuccessAt: null,
+      permission: null,
+      tradingStatus: null,
+      accountStatus: null,
+      error: null,
+      busy: false
+    });
+  }
+  return advertisementCreateReadinessRuntimes.get(key);
+}
+
+function removeAdvertisementMerchantCredentialState(credentialOrId = 0) {
+  const credentialId = Number(credentialOrId?.id || credentialOrId || 0);
+  if (!credentialId) return false;
+  const key = String(credentialId);
+  let changed = false;
+  if (db?.settings?.adsMerchantControlsByCredential && Object.prototype.hasOwnProperty.call(db.settings.adsMerchantControlsByCredential, key)) {
+    delete db.settings.adsMerchantControlsByCredential[key];
+    changed = true;
+  }
+  advertisementMerchantStatusRuntimes.delete(key);
+  advertisementCreateReadinessRuntimes.delete(key);
+  for (const cacheKey of [...advertisementAssetBalanceCache.keys()]) {
+    if (String(cacheKey).includes(`:${credentialId}:`) || String(cacheKey) === key) advertisementAssetBalanceCache.delete(cacheKey);
+  }
+  const nextOldestId = oldestBinanceCredentialId();
+  const nextRecord = nextOldestId ? advertisementMerchantSettingsRecord(nextOldestId, true) : defaultAdvertisementMerchantSettings();
+  if (db?.settings) {
+    for (const settingKey of ADVERTISEMENT_MERCHANT_SETTING_KEYS) db.settings[settingKey] = nextRecord[settingKey];
+  }
+  return changed;
+}
+
+function advertisementMerchantControlState(control, explicitCredentialId = 0) {
+  const settings = advertisementMerchantSettingsRecord(explicitCredentialId, false);
   if (control === 'business') {
     const value = normalizedMerchantSetting(settings.adsMerchantBusinessStatus);
     return {
@@ -10767,34 +11418,6 @@ function advertisementMerchantControlState(control) {
     lastError: settings.adsMerchantOnlineLastError || null
   };
 }
-
-const advertisementMerchantStatusRuntime = {
-  credentialId: null,
-  lastCheckAt: null,
-  lastSuccessAt: null,
-  lastError: null,
-  busy: false,
-  rawOnlineStatus: null,
-  ownerBusinessStatusCode: null,
-  ownerBusinessStatusSource: null,
-  ownerBusinessError: null,
-  ownerProfileBusinessChanged: false,
-  lastModeProbeAt: null,
-  lastModeProbeCredentialId: null,
-  lastModeProbeResult: null,
-  lastModeProbeError: null
-};
-
-const advertisementCreateReadinessRuntime = {
-  credentialKey: null,
-  checkedAt: null,
-  lastSuccessAt: null,
-  permission: null,
-  tradingStatus: null,
-  accountStatus: null,
-  error: null,
-  busy: false
-};
 
 function advertisementApiPermissionBoolean(response = {}, keys = []) {
   for (const key of keys) {
@@ -10835,33 +11458,36 @@ function advertisementAccountStatusSnapshot(response = {}) {
   return { status: status || null, normal: status ? /normal|active|ok/i.test(status) : null };
 }
 
-function advertisementCreateReadinessView() {
+function advertisementCreateReadinessView(credentialOrId = 0) {
+  const runtime = advertisementCreateReadinessRuntimeFor(credentialOrId);
   return {
-    checkedAt: advertisementCreateReadinessRuntime.checkedAt,
-    lastSuccessAt: advertisementCreateReadinessRuntime.lastSuccessAt,
-    permission: advertisementCreateReadinessRuntime.permission,
-    tradingStatus: advertisementCreateReadinessRuntime.tradingStatus,
-    accountStatus: advertisementCreateReadinessRuntime.accountStatus,
-    error: advertisementCreateReadinessRuntime.error
+    credentialId: runtime.credentialId || null,
+    checkedAt: runtime.checkedAt,
+    lastSuccessAt: runtime.lastSuccessAt,
+    permission: runtime.permission,
+    tradingStatus: runtime.tradingStatus,
+    accountStatus: runtime.accountStatus,
+    error: runtime.error
   };
 }
 
 async function refreshAdvertisementApiCreateReadiness(credential, force = false) {
   if (!credential || !credential.apiKey || !credential.secretKey || credential.disabled) {
-    return { ...advertisementCreateReadinessView(), error: 'Active Binance API credential is required.' };
+    return { ...advertisementCreateReadinessView(credential), error: 'Active Binance API credential is required.' };
   }
+  const runtime = advertisementCreateReadinessRuntimeFor(credential);
   const credentialKey = advertisementCredentialKey(credential);
-  const last = Date.parse(advertisementCreateReadinessRuntime.checkedAt || '') || 0;
-  if (!force && advertisementCreateReadinessRuntime.credentialKey === credentialKey && last && Date.now() - last < 60000) {
-    return advertisementCreateReadinessView();
+  const last = Date.parse(runtime.checkedAt || '') || 0;
+  if (!force && runtime.credentialKey === credentialKey && last && Date.now() - last < 60000) {
+    return advertisementCreateReadinessView(credential);
   }
-  if (advertisementCreateReadinessRuntime.busy && advertisementCreateReadinessRuntime.credentialKey === credentialKey) {
-    return advertisementCreateReadinessView();
+  if (runtime.busy && runtime.credentialKey === credentialKey) {
+    return advertisementCreateReadinessView(credential);
   }
-  advertisementCreateReadinessRuntime.busy = true;
-  advertisementCreateReadinessRuntime.credentialKey = credentialKey;
-  advertisementCreateReadinessRuntime.checkedAt = nowIso();
-  advertisementCreateReadinessRuntime.error = null;
+  runtime.busy = true;
+  runtime.credentialKey = credentialKey;
+  runtime.checkedAt = nowIso();
+  runtime.error = null;
   try {
     const permissionResult = assertSuccessfulSapiResponse(await callSignedSapi({
       apiKey: credential.apiKey,
@@ -10871,7 +11497,7 @@ async function refreshAdvertisementApiCreateReadiness(credential, force = false)
       dryRun: false,
       timeoutMs: 12000
     }), 'getApiKeyPermission');
-    advertisementCreateReadinessRuntime.permission = advertisementApiKeyPermissionSnapshot(permissionResult);
+    runtime.permission = advertisementApiKeyPermissionSnapshot(permissionResult);
 
     try {
       const tradingResult = assertSuccessfulSapiResponse(await callSignedSapi({
@@ -10882,9 +11508,9 @@ async function refreshAdvertisementApiCreateReadiness(credential, force = false)
         dryRun: false,
         timeoutMs: 12000
       }), 'getApiTradingStatus');
-      advertisementCreateReadinessRuntime.tradingStatus = advertisementApiTradingStatusSnapshot(tradingResult);
+      runtime.tradingStatus = advertisementApiTradingStatusSnapshot(tradingResult);
     } catch (error) {
-      advertisementCreateReadinessRuntime.tradingStatus = { locked: null, error: cleanStr(error.message || error, 300) };
+      runtime.tradingStatus = { locked: null, error: cleanStr(error.message || error, 300) };
     }
 
     try {
@@ -10896,19 +11522,19 @@ async function refreshAdvertisementApiCreateReadiness(credential, force = false)
         dryRun: false,
         timeoutMs: 12000
       }), 'getAccountStatus');
-      advertisementCreateReadinessRuntime.accountStatus = advertisementAccountStatusSnapshot(accountResult);
+      runtime.accountStatus = advertisementAccountStatusSnapshot(accountResult);
     } catch (error) {
-      advertisementCreateReadinessRuntime.accountStatus = { status: null, normal: null, error: cleanStr(error.message || error, 300) };
+      runtime.accountStatus = { status: null, normal: null, error: cleanStr(error.message || error, 300) };
     }
 
-    advertisementCreateReadinessRuntime.lastSuccessAt = advertisementCreateReadinessRuntime.checkedAt;
+    runtime.lastSuccessAt = runtime.checkedAt;
   } catch (error) {
-    advertisementCreateReadinessRuntime.permission = null;
-    advertisementCreateReadinessRuntime.error = cleanStr(error.message || error, 500);
+    runtime.permission = null;
+    runtime.error = cleanStr(error.message || error, 500);
   } finally {
-    advertisementCreateReadinessRuntime.busy = false;
+    runtime.busy = false;
   }
-  return advertisementCreateReadinessView();
+  return advertisementCreateReadinessView(credential);
 }
 
 function advertisementApiTradePermissionError(readiness = {}) {
@@ -10962,44 +11588,59 @@ function runAdvertisementMutationOnce(key, worker, cacheMs = 1200) {
   return promise;
 }
 
-function advertisementBreakStickyActive() {
-  const breakState = advertisementMerchantControlState('break');
-  const until = Date.parse(db.settings?.adsMerchantBreakStickyUntil || '') || 0;
+function advertisementBreakStickyActive(explicitCredentialId = 0) {
+  const credentialId = advertisementMerchantCredentialId(explicitCredentialId);
+  const settings = advertisementMerchantSettingsRecord(credentialId, false);
+  const breakState = advertisementMerchantControlState('break', credentialId);
+  const until = Date.parse(settings.adsMerchantBreakStickyUntil || '') || 0;
   return breakState.enabled === true && until > Date.now();
 }
 
-function recoverAdvertisementBusinessCloseFromAudit() {
-  if (db.settings?.adsMerchantBusinessAuditRecoveryDone === true) return;
-  db.settings.adsMerchantBusinessAuditRecoveryDone = true;
-  if (db.settings?.adsMerchantBusinessStateSource) return;
-  const latest = [...(db.auditLogs || [])].reverse().find(entry =>
-    entry?.action === 'binance_merchant_control_changed' &&
-    entry?.entityType === 'advertisement' &&
-    entry?.details?.control === 'business'
-  );
-  if (!latest || latest.details?.enabled !== false) return;
-  db.settings.adsMerchantBusinessStatus = 0;
-  db.settings.adsMerchantBusinessVerified = true;
-  db.settings.adsMerchantBusinessStateSource = 'audit_close_recovery';
-  db.settings.adsMerchantBusinessCloseGraceUntil = new Date(Date.now() + 15000).toISOString();
+function recoverAdvertisementBusinessCloseFromAudit(explicitCredentialId = 0) {
+  const credentialId = advertisementMerchantCredentialId(explicitCredentialId);
+  if (!credentialId) return;
+  const settings = advertisementMerchantSettingsRecord(credentialId, true);
+  if (settings.adsMerchantBusinessAuditRecoveryDone === true) return;
+  settings.adsMerchantBusinessAuditRecoveryDone = true;
+  if (settings.adsMerchantBusinessStateSource) {
+    syncLegacyAdvertisementMerchantSettings(settings, credentialId);
+    return;
+  }
+  const latest = [...(db.auditLogs || [])].reverse().find(entry => {
+    if (entry?.action !== 'binance_merchant_control_changed' || entry?.entityType !== 'advertisement' || entry?.details?.control !== 'business') return false;
+    const auditCredentialId = Number(entry.entityId || entry.targetId || entry.details?.credentialId || 0);
+    return auditCredentialId === credentialId;
+  });
+  if (latest && latest.details?.enabled === false) {
+    settings.adsMerchantBusinessStatus = 0;
+    settings.adsMerchantBusinessVerified = true;
+    settings.adsMerchantBusinessStateSource = 'audit_close_recovery';
+    settings.adsMerchantBusinessCloseGraceUntil = new Date(Date.now() + 15000).toISOString();
+  }
+  syncLegacyAdvertisementMerchantSettings(settings, credentialId);
 }
 
-function advertisementBusinessClosedHoldActive() {
-  recoverAdvertisementBusinessCloseFromAudit();
-  const businessState = advertisementMerchantControlState('business');
-  const source = String(db.settings?.adsMerchantBusinessStateSource || '');
+function advertisementBusinessClosedHoldActive(explicitCredentialId = 0) {
+  const credentialId = advertisementMerchantCredentialId(explicitCredentialId);
+  recoverAdvertisementBusinessCloseFromAudit(credentialId);
+  const settings = advertisementMerchantSettingsRecord(credentialId, false);
+  const businessState = advertisementMerchantControlState('business', credentialId);
+  const source = String(settings.adsMerchantBusinessStateSource || '');
   return businessState.enabled === false && /close|closed|83229|business_off|offline_transition/i.test(source);
 }
 
-function advertisementBusinessCloseGraceActive() {
-  const until = Date.parse(db.settings?.adsMerchantBusinessCloseGraceUntil || '') || 0;
-  return advertisementBusinessClosedHoldActive() && until > Date.now();
+function advertisementBusinessCloseGraceActive(explicitCredentialId = 0) {
+  const credentialId = advertisementMerchantCredentialId(explicitCredentialId);
+  const settings = advertisementMerchantSettingsRecord(credentialId, false);
+  const until = Date.parse(settings.adsMerchantBusinessCloseGraceUntil || '') || 0;
+  return advertisementBusinessClosedHoldActive(credentialId) && until > Date.now();
 }
 
-function advertisementMerchantModeView() {
-  const business = advertisementMerchantControlState('business');
-  const online = advertisementMerchantControlState('online');
-  const breakState = advertisementMerchantControlState('break');
+function advertisementMerchantModeView(explicitCredentialId = 0) {
+  const credentialId = advertisementMerchantCredentialId(explicitCredentialId);
+  const business = advertisementMerchantControlState('business', credentialId);
+  const online = advertisementMerchantControlState('online', credentialId);
+  const breakState = advertisementMerchantControlState('break', credentialId);
   if (breakState.enabled === true) return { id: 'break', label: 'Break Mode', tone: 'break', verified: Boolean(breakState.verified), detail: 'Advertisement actions are paused.' };
   if (business.enabled === false) return { id: 'business_closed', label: 'Business Closed', tone: 'closed', verified: Boolean(business.verified), detail: 'Advertisements are unavailable until Business is started.' };
   if (business.enabled === true && online.enabled === true) return { id: 'online', label: 'Business Online', tone: 'online', verified: Boolean(business.verified || online.verified), detail: 'Merchant and advertisements can operate.' };
@@ -11007,110 +11648,125 @@ function advertisementMerchantModeView() {
   return { id: 'unknown', label: 'Checking Binance status', tone: 'unknown', verified: false, detail: 'Business and Break state are being verified.' };
 }
 
-function advertisementMerchantControlSignature(controls = advertisementMerchantControlsView()) {
+function advertisementMerchantControlSignature(controls = null, explicitCredentialId = 0) {
+  const value = controls || advertisementMerchantControlsView(explicitCredentialId);
   return JSON.stringify({
-    business: [controls.business?.enabled, controls.business?.verified, controls.business?.lastError || ''],
-    online: [controls.online?.enabled, controls.online?.verified, controls.online?.lastError || ''],
-    break: [controls.break?.enabled, controls.break?.verified, controls.break?.lastError || ''],
-    mode: controls.mode?.id || 'unknown'
+    business: [value.business?.enabled, value.business?.verified, value.business?.lastError || ''],
+    online: [value.online?.enabled, value.online?.verified, value.online?.lastError || ''],
+    break: [value.break?.enabled, value.break?.verified, value.break?.lastError || ''],
+    mode: value.mode?.id || 'unknown'
   });
 }
 
-function advertisementMerchantControlsView() {
-  const credential = binanceCredentialById(advertisementMerchantStatusRuntime.credentialId);
+function advertisementMerchantControlsView(explicitCredentialId = 0) {
+  const credentialId = advertisementMerchantCredentialId(explicitCredentialId);
+  const runtime = advertisementMerchantRuntime(credentialId);
+  const credential = binanceCredentialById(credentialId);
   return {
-    credentialId: credential ? Number(credential.id) : (Number(advertisementMerchantStatusRuntime.credentialId || 0) || null),
+    credentialId: credential ? Number(credential.id) : (credentialId || null),
     credentialName: credential ? binanceCredentialLabel(credential) : '',
-    business: advertisementMerchantControlState('business'),
-    online: advertisementMerchantControlState('online'),
-    break: advertisementMerchantControlState('break'),
-    mode: advertisementMerchantModeView(),
-    checkedAt: advertisementMerchantStatusRuntime.lastCheckAt || null,
-    lastSuccessAt: advertisementMerchantStatusRuntime.lastSuccessAt || null,
-    syncError: advertisementMerchantStatusRuntime.lastError || null,
-    businessStatusCode: advertisementMerchantStatusRuntime.ownerBusinessStatusCode,
-    businessStatusSource: advertisementMerchantStatusRuntime.ownerBusinessStatusSource || null,
-    businessStatusError: advertisementMerchantStatusRuntime.ownerBusinessError || null,
-    modeProbeAt: advertisementMerchantStatusRuntime.lastModeProbeAt || null,
-    modeProbeResult: advertisementMerchantStatusRuntime.lastModeProbeResult || null,
-    modeProbeError: advertisementMerchantStatusRuntime.lastModeProbeError || null
+    business: advertisementMerchantControlState('business', credentialId),
+    online: advertisementMerchantControlState('online', credentialId),
+    break: advertisementMerchantControlState('break', credentialId),
+    mode: advertisementMerchantModeView(credentialId),
+    checkedAt: runtime.lastCheckAt || null,
+    lastSuccessAt: runtime.lastSuccessAt || null,
+    syncError: runtime.lastError || null,
+    businessStatusCode: runtime.ownerBusinessStatusCode,
+    businessStatusSource: runtime.ownerBusinessStatusSource || null,
+    businessStatusError: runtime.ownerBusinessError || null,
+    modeProbeAt: runtime.lastModeProbeAt || null,
+    modeProbeResult: runtime.lastModeProbeResult || null,
+    modeProbeError: runtime.lastModeProbeError || null
   };
 }
 
-function advertisementMerchantOnlineView() {
-  return advertisementMerchantControlState('online');
+function advertisementMerchantOnlineView(explicitCredentialId = 0) {
+  return advertisementMerchantControlState('online', explicitCredentialId);
 }
 
 function setAdvertisementMerchantControlUnknown(control, options = {}) {
+  const credentialId = advertisementMerchantCredentialId(options.credentialId || 0);
+  if (!credentialId) return;
+  const settings = advertisementMerchantSettingsRecord(credentialId, true);
   if (control === 'business') {
-    if (advertisementBusinessClosedHoldActive() && options.force !== true) return;
-    db.settings.adsMerchantBusinessStatus = null;
-    db.settings.adsMerchantBusinessVerified = false;
-    db.settings.adsMerchantBusinessStateSource = null;
-    db.settings.adsMerchantBusinessCloseGraceUntil = null;
-    if (options.error !== undefined) db.settings.adsMerchantBusinessLastError = options.error || null;
+    if (advertisementBusinessClosedHoldActive(credentialId) && options.force !== true) return;
+    settings.adsMerchantBusinessStatus = null;
+    settings.adsMerchantBusinessVerified = false;
+    settings.adsMerchantBusinessStateSource = null;
+    settings.adsMerchantBusinessCloseGraceUntil = null;
+    if (options.error !== undefined) settings.adsMerchantBusinessLastError = options.error || null;
+    syncLegacyAdvertisementMerchantSettings(settings, credentialId);
     return;
   }
   if (control === 'break') {
-    if (advertisementBreakStickyActive() && options.force !== true) return;
-    db.settings.adsMerchantBreakStatus = null;
-    db.settings.adsMerchantBreakVerified = false;
-    db.settings.adsMerchantBreakStateSource = null;
-    db.settings.adsMerchantBreakStickyUntil = null;
-    db.settings.adsMerchantBreakSuspendEndTime = null;
-    if (options.error !== undefined) db.settings.adsMerchantBreakLastError = options.error || null;
+    if (advertisementBreakStickyActive(credentialId) && options.force !== true) return;
+    settings.adsMerchantBreakStatus = null;
+    settings.adsMerchantBreakVerified = false;
+    settings.adsMerchantBreakStateSource = null;
+    settings.adsMerchantBreakStickyUntil = null;
+    settings.adsMerchantBreakSuspendEndTime = null;
+    if (options.error !== undefined) settings.adsMerchantBreakLastError = options.error || null;
+    syncLegacyAdvertisementMerchantSettings(settings, credentialId);
     return;
   }
-  db.settings.adsMerchantOnlineStatus = null;
-  db.settings.adsMerchantOnlineVerified = false;
-  if (options.error !== undefined) db.settings.adsMerchantOnlineLastError = options.error || null;
+  settings.adsMerchantOnlineStatus = null;
+  settings.adsMerchantOnlineVerified = false;
+  if (options.error !== undefined) settings.adsMerchantOnlineLastError = options.error || null;
+  syncLegacyAdvertisementMerchantSettings(settings, credentialId);
 }
 
 function setAdvertisementMerchantControlState(control, enabled, options = {}) {
+  const credentialId = advertisementMerchantCredentialId(options.credentialId || 0);
+  if (!credentialId) return;
+  const settings = advertisementMerchantSettingsRecord(credentialId, true);
   const value = enabled ? 1 : 0;
   const at = options.at || nowIso();
   const preserveActionAt = Boolean(options.preserveActionAt);
   if (control === 'business') {
-    db.settings.adsMerchantBusinessStatus = value;
-    db.settings.adsMerchantBusinessVerified = Boolean(options.verified);
-    if (!preserveActionAt) db.settings.adsMerchantBusinessLastActionAt = at;
-    db.settings.adsMerchantBusinessLastError = options.error || null;
+    settings.adsMerchantBusinessStatus = value;
+    settings.adsMerchantBusinessVerified = Boolean(options.verified);
+    if (!preserveActionAt) settings.adsMerchantBusinessLastActionAt = at;
+    settings.adsMerchantBusinessLastError = options.error || null;
     if (enabled) {
-      db.settings.adsMerchantBusinessStateSource = options.source || null;
-      db.settings.adsMerchantBusinessCloseGraceUntil = null;
+      settings.adsMerchantBusinessStateSource = options.source || null;
+      settings.adsMerchantBusinessCloseGraceUntil = null;
     } else {
-      if (options.source !== undefined) db.settings.adsMerchantBusinessStateSource = options.source || null;
-      if (options.closeGraceUntil !== undefined) db.settings.adsMerchantBusinessCloseGraceUntil = options.closeGraceUntil || null;
-      else if (Number(options.closeGraceMs || 0) > 0) db.settings.adsMerchantBusinessCloseGraceUntil = new Date(Date.now() + Number(options.closeGraceMs)).toISOString();
+      if (options.source !== undefined) settings.adsMerchantBusinessStateSource = options.source || null;
+      if (options.closeGraceUntil !== undefined) settings.adsMerchantBusinessCloseGraceUntil = options.closeGraceUntil || null;
+      else if (Number(options.closeGraceMs || 0) > 0) settings.adsMerchantBusinessCloseGraceUntil = new Date(Date.now() + Number(options.closeGraceMs)).toISOString();
     }
+    syncLegacyAdvertisementMerchantSettings(settings, credentialId);
     return;
   }
   if (control === 'break') {
-    db.settings.adsMerchantBreakStatus = value;
-    db.settings.adsMerchantBreakVerified = Boolean(options.verified);
-    if (!preserveActionAt) db.settings.adsMerchantBreakLastActionAt = at;
-    db.settings.adsMerchantBreakLastError = options.error || null;
+    settings.adsMerchantBreakStatus = value;
+    settings.adsMerchantBreakVerified = Boolean(options.verified);
+    if (!preserveActionAt) settings.adsMerchantBreakLastActionAt = at;
+    settings.adsMerchantBreakLastError = options.error || null;
     if (enabled) {
-      if (options.source !== undefined) db.settings.adsMerchantBreakStateSource = options.source || null;
-      if (options.stickyUntil !== undefined) db.settings.adsMerchantBreakStickyUntil = options.stickyUntil || null;
-      else if (Number(options.stickyMs || 0) > 0) db.settings.adsMerchantBreakStickyUntil = new Date(Date.now() + Number(options.stickyMs)).toISOString();
-      if (options.suspendEndTime !== undefined) db.settings.adsMerchantBreakSuspendEndTime = options.suspendEndTime || null;
+      if (options.source !== undefined) settings.adsMerchantBreakStateSource = options.source || null;
+      if (options.stickyUntil !== undefined) settings.adsMerchantBreakStickyUntil = options.stickyUntil || null;
+      else if (Number(options.stickyMs || 0) > 0) settings.adsMerchantBreakStickyUntil = new Date(Date.now() + Number(options.stickyMs)).toISOString();
+      if (options.suspendEndTime !== undefined) settings.adsMerchantBreakSuspendEndTime = options.suspendEndTime || null;
     } else {
-      db.settings.adsMerchantBreakStateSource = options.source || null;
-      db.settings.adsMerchantBreakStickyUntil = null;
-      db.settings.adsMerchantBreakSuspendEndTime = null;
+      settings.adsMerchantBreakStateSource = options.source || null;
+      settings.adsMerchantBreakStickyUntil = null;
+      settings.adsMerchantBreakSuspendEndTime = null;
     }
+    syncLegacyAdvertisementMerchantSettings(settings, credentialId);
     return;
   }
-  db.settings.adsMerchantOnlineStatus = value;
-  db.settings.adsMerchantOnlineVerified = Boolean(options.verified);
+  settings.adsMerchantOnlineStatus = value;
+  settings.adsMerchantOnlineVerified = Boolean(options.verified);
   if (!preserveActionAt) {
-    db.settings.adsMerchantOnlineLastAttemptAt = at;
-    db.settings.adsMerchantOnlineLastSuccessAt = options.success === false ? db.settings.adsMerchantOnlineLastSuccessAt : at;
+    settings.adsMerchantOnlineLastAttemptAt = at;
+    settings.adsMerchantOnlineLastSuccessAt = options.success === false ? settings.adsMerchantOnlineLastSuccessAt : at;
   }
-  db.settings.adsMerchantOnlineLastVerifiedAt = options.verified ? at : null;
-  if (options.strategy !== undefined) db.settings.adsMerchantOnlineLastStrategy = options.strategy || null;
-  db.settings.adsMerchantOnlineLastError = options.error || null;
+  settings.adsMerchantOnlineLastVerifiedAt = options.verified ? at : null;
+  if (options.strategy !== undefined) settings.adsMerchantOnlineLastStrategy = options.strategy || null;
+  settings.adsMerchantOnlineLastError = options.error || null;
+  syncLegacyAdvertisementMerchantSettings(settings, credentialId);
 }
 
 function advertisementKnownMerchantNumbers(credential = {}) {
@@ -11261,6 +11917,9 @@ function recentlySyncedOfflineAdvertisement(maxAgeMs = 12000, credentialId = 0) 
 
 async function probeAdvertisementMerchantMode(credential, rawOnlineStatus = null) {
   const credentialId = Number(credential?.id || 0);
+  if (credentialId && advertisementMerchantCredentialId() !== credentialId) {
+    return withAdvertisementMerchantCredential(credentialId, () => probeAdvertisementMerchantMode(credential, rawOnlineStatus));
+  }
   const lastProbe = Date.parse(advertisementMerchantStatusRuntime.lastModeProbeAt || '') || 0;
   if (Number(advertisementMerchantStatusRuntime.lastModeProbeCredentialId || 0) === credentialId && lastProbe && Date.now() - lastProbe < 4500) return advertisementMerchantStatusRuntime.lastModeProbeResult;
   const candidate = recentlySyncedOfflineAdvertisement(12000, credentialId);
@@ -11348,6 +12007,10 @@ async function probeAdvertisementMerchantMode(credential, rawOnlineStatus = null
 }
 
 function applyAdvertisementMerchantModeProbe(probe = {}, credentialId = 0) {
+  const accountId = Number(credentialId || 0);
+  if (accountId && advertisementMerchantCredentialId() !== accountId) {
+    return withAdvertisementMerchantCredential(accountId, () => applyAdvertisementMerchantModeProbe(probe, accountId));
+  }
   const at = nowIso();
   if (probe.mode === 'business_closed') {
     setAdvertisementMerchantControlState('business', false, { at, verified: true, source: probe.source || 'mode_probe_business_closed', closeGraceMs: 15000, preserveActionAt: true });
@@ -11427,7 +12090,10 @@ function recentAdvertisementMerchantAction(maxAgeMs = 10000) {
 
 function reconcileAdvertisementMerchantControlsFromAds(options = {}) {
   const credentialId = Number(options.credentialId || 0);
-  const before = advertisementMerchantControlSignature();
+  if (credentialId && advertisementMerchantCredentialId() !== credentialId) {
+    return withAdvertisementMerchantCredential(credentialId, () => reconcileAdvertisementMerchantControlsFromAds(options));
+  }
+  const before = advertisementMerchantControlSignature(null, credentialId);
   const ads = (db.advertisements || []).filter(item => (!credentialId || Number(item.credentialId || 0) === credentialId) && !item.archived && !item.deletedAt && item.advNo && advertisementStatusFromValue(item.status || item.advStatus) !== 'closed');
   const onlineAds = ads.filter(item => advertisementStatusFromValue(item.status || item.advStatus) === 'online');
   const reasons = ads.map(item => String(item.offlineReason || item.rawBinanceAd?.offlineReason || '').toLowerCase()).filter(Boolean);
@@ -11443,7 +12109,7 @@ function reconcileAdvertisementMerchantControlsFromAds(options = {}) {
     const currentBreak = advertisementMerchantControlState('break');
     setAdvertisementMerchantControlState('business', true, { verified: currentBusiness.verified, preserveActionAt: true, source: currentBusiness.source });
     setAdvertisementMerchantControlState('online', false, { verified: currentOnline.verified, strategy: 'break_command_hold', preserveActionAt: true });
-    setAdvertisementMerchantControlState('break', true, { verified: currentBreak.verified, preserveActionAt: true, source: db.settings.adsMerchantBreakStateSource || 'crm_command', stickyUntil: currentBreak.stickyUntil, suspendEndTime: currentBreak.suspendEndTime });
+    setAdvertisementMerchantControlState('break', true, { verified: currentBreak.verified, preserveActionAt: true, source: currentBreak.source || 'crm_command', stickyUntil: currentBreak.stickyUntil, suspendEndTime: currentBreak.suspendEndTime });
     applyMerchantControlImpactToAdvertisements('break', true, credentialId);
     return {
       changed: before !== advertisementMerchantControlSignature(),
@@ -11462,7 +12128,7 @@ function reconcileAdvertisementMerchantControlsFromAds(options = {}) {
       setAdvertisementMerchantControlState('break', false, { verified: true, preserveActionAt: true, source: 'online_ad_evidence' });
     } else {
       const currentBreak = advertisementMerchantControlState('break');
-      setAdvertisementMerchantControlState('business', false, { verified: true, preserveActionAt: true, source: db.settings.adsMerchantBusinessStateSource });
+      setAdvertisementMerchantControlState('business', false, { verified: true, preserveActionAt: true, source: advertisementMerchantControlState('business').source });
       setAdvertisementMerchantControlState('online', false, { verified: true, strategy: 'business_closed_hold', preserveActionAt: true });
       setAdvertisementMerchantControlState('break', false, { verified: currentBreak.verified, preserveActionAt: true, source: currentBreak.source });
       applyMerchantControlImpactToAdvertisements('business', false, credentialId);
@@ -11523,10 +12189,14 @@ function applyMerchantControlImpactToAdvertisements(control, desired, credential
   return changed;
 }
 
-async function refreshAdvertisementMerchantControlVerification(credential, force = false) {
+async function refreshAdvertisementMerchantControlVerification(credential, force = false, options = {}) {
   const credentialId = Number(credential?.id || 0);
+  const allowMutationProbe = options?.allowMutationProbe === true;
+  if (credentialId && advertisementMerchantCredentialId() !== credentialId) {
+    return withAdvertisementMerchantCredential(credentialId, () => refreshAdvertisementMerchantControlVerification(credential, force, options));
+  }
   let sameCredential = Number(advertisementMerchantStatusRuntime.credentialId || 0) === credentialId;
-  const last = Date.parse(advertisementMerchantStatusRuntime.lastCheckAt || '') || 0;
+  const last = Date.parse(advertisementMerchantRuntime(credential.id).lastCheckAt || '') || 0;
   if (!force && sameCredential && last && Date.now() - last < 3500) return advertisementMerchantControlsView();
   if (advertisementMerchantStatusRuntime.busy) {
     if (sameCredential) return advertisementMerchantControlsView();
@@ -11565,7 +12235,7 @@ async function refreshAdvertisementMerchantControlVerification(credential, force
     }
     if (status.online !== null) setAdvertisementMerchantControlState('online', status.online === 1, { verified: true, strategy: status.break === 1 ? 'user_base_detail_break' : 'getMerchantAdDetails', preserveActionAt: true });
     if (status.business !== null) setAdvertisementMerchantControlState('business', status.business === 1, { verified: explicitBusiness || advertisementBusinessClosedHoldActive(), preserveActionAt: true, source: rawStatus.businessStatusSource || undefined });
-    if (status.break !== null) setAdvertisementMerchantControlState('break', status.break === 1, { verified: explicitBreak, preserveActionAt: true, source: rawStatus.businessStatusSource || (explicitBreak ? 'merchant_details' : db.settings.adsMerchantBreakStateSource) });
+    if (status.break !== null) setAdvertisementMerchantControlState('break', status.break === 1, { verified: explicitBreak, preserveActionAt: true, source: rawStatus.businessStatusSource || (explicitBreak ? 'merchant_details' : advertisementMerchantControlState('break').source) });
     if (status.break === 1) {
       setAdvertisementMerchantControlState('business', true, { verified: explicitBusiness, preserveActionAt: true });
       setAdvertisementMerchantControlState('online', false, { verified: rawStatus.online !== null, strategy: 'merchant_break', preserveActionAt: true });
@@ -11575,9 +12245,18 @@ async function refreshAdvertisementMerchantControlVerification(credential, force
     const activeAds = (db.advertisements || []).filter(item => Number(item.credentialId || 0) === Number(credential.id) && item.advNo && !item.archived && !item.deletedAt && advertisementStatusFromValue(item.status || item.advStatus) !== 'closed');
     const onlineAds = activeAds.filter(item => advertisementStatusFromValue(item.status || item.advStatus) === 'online');
     const needsExactModeProbe = !explicitBusiness && !explicitBreak && activeAds.length > 0 && onlineAds.length === 0;
-    if (needsExactModeProbe) {
+    // The exact-mode probe sends an idempotent updateAdsStatus command to an
+    // already-offline ad. Never allow that mutation from GET/read-only status
+    // refreshes, background verification, or page loads. Only an explicit
+    // user-initiated mutation workflow may opt in.
+    if (needsExactModeProbe && allowMutationProbe) {
       const probe = await probeAdvertisementMerchantMode(credential, rawStatus.online);
       applyAdvertisementMerchantModeProbe(probe || {}, credential.id);
+    } else if (needsExactModeProbe) {
+      setAdvertisementMerchantControlUnknown('business', { force: true });
+      setAdvertisementMerchantControlUnknown('break', { force: true });
+      advertisementMerchantStatusRuntime.lastModeProbeResult = { mode: 'unknown', reason: 'mutation_probe_not_allowed' };
+      advertisementMerchantStatusRuntime.lastModeProbeError = null;
     } else if (rawStatus.online === 0 && !explicitBusiness && !explicitBreak && previousControls.online?.enabled === true && advertisementMerchantControlState('break').enabled !== true && !advertisementBusinessClosedHoldActive()) {
       setAdvertisementMerchantControlUnknown('business', { force: true });
       setAdvertisementMerchantControlUnknown('break', { force: true });
@@ -11609,6 +12288,10 @@ async function executeMerchantControlEndpoint(credential, endpointName, attempts
 }
 
 async function changeAdvertisementMerchantControl(user, credential, control, enabled, reason = 'manual', options = {}) {
+  const credentialId = Number(credential?.id || 0);
+  if (credentialId && advertisementMerchantCredentialId() !== credentialId) {
+    return withAdvertisementMerchantCredential(credentialId, () => changeAdvertisementMerchantControl(user, credential, control, enabled, reason, options));
+  }
   if (!credential || !credential.apiKey || !credential.secretKey || credential.disabled) {
     throw new Error('Active Binance API credential is required for merchant controls.');
   }
@@ -11617,7 +12300,7 @@ async function changeAdvertisementMerchantControl(user, credential, control, ena
   const attempts = [];
   const actionAt = nowIso();
 
-  try { await refreshAdvertisementMerchantControlVerification(credential, true); } catch (_) {}
+  try { await refreshAdvertisementMerchantControlVerification(credential, true, { allowMutationProbe: true }); } catch (_) {}
   reconcileAdvertisementMerchantControlsFromAds({ credentialId: credential.id });
   const currentBeforeAction = advertisementMerchantControlState(control);
   if (options.force !== true && currentBeforeAction.enabled === desired) {
@@ -11732,9 +12415,11 @@ async function changeAdvertisementMerchantControl(user, credential, control, ena
     return result;
   } catch (error) {
     const message = cleanStr(error.message || error, 500);
-    if (control === 'business') db.settings.adsMerchantBusinessLastError = message;
-    else if (control === 'break') db.settings.adsMerchantBreakLastError = message;
-    else db.settings.adsMerchantOnlineLastError = message;
+    const merchantSettings = advertisementMerchantSettingsRecord(credential.id, true);
+    if (control === 'business') merchantSettings.adsMerchantBusinessLastError = message;
+    else if (control === 'break') merchantSettings.adsMerchantBreakLastError = message;
+    else merchantSettings.adsMerchantOnlineLastError = message;
+    syncLegacyAdvertisementMerchantSettings(merchantSettings, credential.id);
     logAudit(user, 'binance_merchant_control_failed', 'advertisement', credential.id, { reason, control, enabled: desired, error: message, attempts });
     error.merchantControlAttempts = error.merchantControlAttempts || attempts;
     throw error;
@@ -11742,10 +12427,14 @@ async function changeAdvertisementMerchantControl(user, credential, control, ena
 }
 
 async function ensureAdvertisementMerchantOnline(user, credential, reason = 'advertisement_publish') {
+  const credentialId = Number(credential?.id || 0);
+  if (credentialId && advertisementMerchantCredentialId() !== credentialId) {
+    return withAdvertisementMerchantCredential(credentialId, () => ensureAdvertisementMerchantOnline(user, credential, reason));
+  }
   if (!credential || !credential.apiKey || !credential.secretKey || credential.disabled) {
     throw new Error('Active Binance API credential is required to set the merchant online.');
   }
-  if (advertisementMerchantControlState('break').enabled === true) {
+  if (advertisementMerchantControlState('break', credential.id).enabled === true) {
     const error = Object.assign(new Error('Break mode is ON. Turn Break off before creating, publishing or activating an advertisement.'), { statusCode: 409 });
     error.merchantOnlineAttempts = [];
     throw error;
@@ -11753,7 +12442,7 @@ async function ensureAdvertisementMerchantOnline(user, credential, reason = 'adv
 
   const attempts = [];
   try {
-    const controls = await refreshAdvertisementMerchantControlVerification(credential, true);
+    const controls = await refreshAdvertisementMerchantControlVerification(credential, true, { allowMutationProbe: true });
     attempts.push({ endpoint: 'merchantStatusAutoVerify', ok: true, label: 'before', mode: controls.mode?.id || 'unknown', onlineStatus: controls.online?.enabled === true ? 1 : (controls.online?.enabled === false ? 0 : null) });
     if (controls.mode?.id === 'online' && controls.business?.enabled === true && controls.break?.enabled !== true) {
       const result = { online: true, onlineStatus: 1, verified: true, strategy: 'already_online_verified', actionAccepted: false, noOp: true, settledMs: 0, attempts };
@@ -11789,14 +12478,18 @@ async function ensureAdvertisementMerchantOnline(user, credential, reason = 'adv
       settledMs,
       attempts
     };
-    db.settings.adsMerchantOnlineLastError = null;
+    const merchantSettings = advertisementMerchantSettingsRecord(credential.id, true);
+    merchantSettings.adsMerchantOnlineLastError = null;
+    syncLegacyAdvertisementMerchantSettings(merchantSettings, credential.id);
     logAudit(user, 'binance_merchant_online', 'advertisement', credential.id, { reason, ...result });
     return result;
   } catch (error) {
     const allAttempts = [...attempts, ...(error.merchantControlAttempts || [])];
-    db.settings.adsMerchantOnlineLastError = cleanStr(error.message || error, 500);
+    const merchantSettings = advertisementMerchantSettingsRecord(credential.id, true);
+    merchantSettings.adsMerchantOnlineLastError = cleanStr(error.message || error, 500);
+    syncLegacyAdvertisementMerchantSettings(merchantSettings, credential.id);
     error.merchantOnlineAttempts = allAttempts;
-    logAudit(user, 'binance_merchant_online_failed', 'advertisement', credential.id, { reason, error: db.settings.adsMerchantOnlineLastError, attempts: allAttempts });
+    logAudit(user, 'binance_merchant_online_failed', 'advertisement', credential.id, { reason, error: merchantSettings.adsMerchantOnlineLastError, attempts: allAttempts });
     throw error;
   }
 }
@@ -11832,6 +12525,10 @@ function advertisementMerchantCommandFallback(merchantOnlinePreflight = {}, cont
 }
 
 async function ensureAdvertisementCreateReady(user, credential, reason = 'advertisement_create') {
+  const credentialId = Number(credential?.id || 0);
+  if (credentialId && advertisementMerchantCredentialId() !== credentialId) {
+    return withAdvertisementMerchantCredential(credentialId, () => ensureAdvertisementCreateReady(user, credential, reason));
+  }
   const apiCreateReadiness = await requireAdvertisementApiTradePermission(credential, true);
   let merchantOnlinePreflight = null;
   try {
@@ -11878,6 +12575,10 @@ async function ensureAdvertisementCreateReady(user, credential, reason = 'advert
 }
 
 async function forceAdvertisementMerchantOnlineSettlement(user, credential, reason = 'advertisement_privilege_retry') {
+  const credentialId = Number(credential?.id || 0);
+  if (credentialId && advertisementMerchantCredentialId() !== credentialId) {
+    return withAdvertisementMerchantCredential(credentialId, () => forceAdvertisementMerchantOnlineSettlement(user, credential, reason));
+  }
   const attempts = [];
   const business = await changeAdvertisementMerchantControl(user, credential, 'business', true, `${reason}:startBusiness`, { force: true });
   attempts.push(...(business.attempts || []));
@@ -11961,6 +12662,10 @@ function advertisementCreateSupportDiagnostic({ error, preflight = null, forcedR
 }
 
 async function postAdvertisementWithOnlineRetry(user, credential, payload, reason = 'postAd') {
+  const credentialId = Number(credential?.id || 0);
+  if (credentialId && advertisementMerchantCredentialId() !== credentialId) {
+    return withAdvertisementMerchantCredential(credentialId, () => postAdvertisementWithOnlineRetry(user, credential, payload, reason));
+  }
   let preflight = null;
   let forcedRetry = null;
   const postAttempts = [];
@@ -11972,7 +12677,7 @@ async function postAdvertisementWithOnlineRetry(user, credential, payload, reaso
     error.merchantOnlinePreflight = error.merchantOnlinePreflight || {
       ready: false,
       verified: false,
-      apiCreateReadiness: error.apiCreateReadiness || advertisementCreateReadinessView(),
+      apiCreateReadiness: error.apiCreateReadiness || advertisementCreateReadinessView(credential),
       merchantStatus: error.merchantStatus || null,
       attempts: error.merchantOnlineAttempts || []
     };
@@ -12137,6 +12842,10 @@ function advertisementOptionLists() {
 }
 
 async function syncBinanceAdvertisementsWithCredential(user, credential, opts = {}) {
+  const credentialId = Number(credential?.id || 0);
+  if (credentialId && advertisementMerchantCredentialId() !== credentialId) {
+    return withAdvertisementMerchantCredential(credentialId, () => syncBinanceAdvertisementsWithCredential(user, credential, opts));
+  }
   if (!credential || !credential.apiKey || !credential.secretKey || credential.disabled) throw new Error('Active Binance API credential is required.');
   const payload = {
     page: Math.max(1, positiveNum(opts.page || 1) || 1),
@@ -12209,7 +12918,7 @@ async function handleAdvertisements(req, res, url) {
     }
     if (merchantCredential) {
       const forceMerchant = url.searchParams.get('refreshMerchant') === '1';
-      const lastMerchantCheck = Date.parse(advertisementMerchantStatusRuntime.lastCheckAt || '') || 0;
+      const lastMerchantCheck = Date.parse(advertisementMerchantRuntime(merchantCredential.id).lastCheckAt || '') || 0;
       if (forceMerchant) {
         await refreshAdvertisementMerchantControlVerification(merchantCredential, true).catch(() => {});
       } else if (!lastMerchantCheck || Date.now() - lastMerchantCheck > 3500) {
@@ -12249,8 +12958,8 @@ async function handleAdvertisements(req, res, url) {
       lastSyncAt: db.settings.adsLastSyncAt || null,
       lastSyncError: db.settings.adsLastSyncError || null,
       defaultCommissionRate: positiveNum(db.settings.adsDefaultCommissionRate || 0),
-      merchantOnline: advertisementMerchantOnlineView(),
-      merchantControls: advertisementMerchantControlsView(),
+      merchantOnline: advertisementMerchantOnlineView(selectedCredential?.id || 0),
+      merchantControls: advertisementMerchantControlsView(selectedCredential?.id || 0),
       apiCreateReadiness
     }, {}, req);
   }
@@ -12333,7 +13042,7 @@ async function handleAdvertisements(req, res, url) {
     saveDb();
     broadcast({ type: 'ads.created', advertisementId: item.id, credentialId: item.credentialId, advNo: item.advNo || null, status: item.status, draft: !item.advNo, at: nowIso() });
     const createdView = advertisementView(item);
-    return sendJson(res, responseStatus, { ...createdView, item: createdView, warning: createWarning || null, published: Boolean(item.advNo), merchantOnlinePreflight, createPrivilegeDiagnostic: item.createPrivilegeDiagnostic || null, merchantOnline: advertisementMerchantOnlineView(), merchantControls: advertisementMerchantControlsView() }, {}, req);
+    return sendJson(res, responseStatus, { ...createdView, item: createdView, warning: createWarning || null, published: Boolean(item.advNo), merchantOnlinePreflight, createPrivilegeDiagnostic: item.createPrivilegeDiagnostic || null, merchantOnline: advertisementMerchantOnlineView(credential.id), merchantControls: advertisementMerchantControlsView(credential.id) }, {}, req);
   }
   return sendJson(res, 405, { error: 'Method not allowed' }, {}, req);
 }
@@ -12470,7 +13179,7 @@ async function handleAdvertisementMerchantStatus(req, res, url) {
   if (credential && url.searchParams.get('refresh') === '1') {
     await refreshAdvertisementMerchantControlVerification(credential, true).catch(() => {});
   } else if (credential) {
-    const last = Date.parse(advertisementMerchantStatusRuntime.lastCheckAt || '') || 0;
+    const last = Date.parse(advertisementMerchantRuntime(credential.id).lastCheckAt || '') || 0;
     if (!last || Date.now() - last > 3500) refreshAdvertisementMerchantControlVerification(credential, false).catch(() => {});
   }
   return sendJson(res, 200, {
@@ -12479,7 +13188,7 @@ async function handleAdvertisementMerchantStatus(req, res, url) {
     credentialConfigured: Boolean(credential),
     credentialId: credential ? Number(credential.id) : null,
     credentialName: credential ? binanceCredentialLabel(credential) : '',
-    merchantControls: advertisementMerchantControlsView()
+    merchantControls: advertisementMerchantControlsView(credential?.id || 0)
   }, {}, req);
 }
 
@@ -12499,15 +13208,15 @@ async function handleAdvertisementMerchantControl(req, res) {
     const result = await runAdvertisementMutationOnce(commandKey, () => changeAdvertisementMerchantControl(manager, credential, control, enabled, 'manual_toggle'), 1200);
     saveDb();
     broadcast({ type: 'ads.merchant.controls', credentialId: Number(credential.id), control, enabled, controls: result.controls, at: nowIso() });
-    return sendJson(res, 200, { ok: true, result, merchantOnline: advertisementMerchantOnlineView(), merchantControls: advertisementMerchantControlsView() }, {}, req);
+    return sendJson(res, 200, { ok: true, result, merchantOnline: advertisementMerchantOnlineView(credential.id), merchantControls: advertisementMerchantControlsView(credential.id) }, {}, req);
   } catch (error) {
     saveDb();
     return sendJson(res, Number(error.statusCode || 502), {
       error: cleanStr(error.message || error, 500),
       noticeOnly: Boolean(error.noticeOnly),
-      merchantOnline: advertisementMerchantOnlineView(),
-      merchantControls: advertisementMerchantControlsView(),
-      apiCreateReadiness: error.apiCreateReadiness || advertisementCreateReadinessView(),
+      merchantOnline: advertisementMerchantOnlineView(credential.id),
+      merchantControls: advertisementMerchantControlsView(credential.id),
+      apiCreateReadiness: error.apiCreateReadiness || advertisementCreateReadinessView(credential),
       apiTradePermissionRequired: Boolean(error.apiTradePermissionRequired),
       apiTradingLocked: Boolean(error.apiTradingLocked),
       attempts: Array.isArray(error.merchantControlAttempts) ? error.merchantControlAttempts : []
@@ -12527,14 +13236,14 @@ async function handleAdvertisementMerchantOnline(req, res) {
     const result = await changeAdvertisementMerchantControl(manager, credential, 'online', true, 'manual_go_online_legacy');
     saveDb();
     broadcast({ type: 'ads.merchant.controls', credentialId: Number(credential.id), control: 'online', enabled: true, controls: result.controls, at: nowIso() });
-    return sendJson(res, 200, { ok: true, result, merchantOnline: advertisementMerchantOnlineView(), merchantControls: advertisementMerchantControlsView() }, {}, req);
+    return sendJson(res, 200, { ok: true, result, merchantOnline: advertisementMerchantOnlineView(credential.id), merchantControls: advertisementMerchantControlsView(credential.id) }, {}, req);
   } catch (error) {
     saveDb();
     return sendJson(res, Number(error.statusCode || 502), {
       error: cleanStr(error.message || error, 500),
-      merchantOnline: advertisementMerchantOnlineView(),
-      merchantControls: advertisementMerchantControlsView(),
-      apiCreateReadiness: error.apiCreateReadiness || advertisementCreateReadinessView(),
+      merchantOnline: advertisementMerchantOnlineView(credential.id),
+      merchantControls: advertisementMerchantControlsView(credential.id),
+      apiCreateReadiness: error.apiCreateReadiness || advertisementCreateReadinessView(credential),
       apiTradePermissionRequired: Boolean(error.apiTradePermissionRequired),
       apiTradingLocked: Boolean(error.apiTradingLocked),
       attempts: Array.isArray(error.merchantControlAttempts) ? error.merchantControlAttempts : []
@@ -12613,7 +13322,7 @@ async function handleAdvertisementById(req, res, parts) {
       logAudit(manager, 'advertisement_published', 'advertisement', item.id, { ...advertisementCredentialMeta(item), advNo, merchantOnlinePreflight, result: sanitizedBinanceResult(result) });
       saveDb();
       broadcast({ type: 'ads.published', advertisementId: item.id, ...advertisementCredentialMeta(item), advNo, status: item.status, at: nowIso() });
-      return sendJson(res, 200, { ...advertisementView(item), merchantOnlinePreflight, merchantOnline: advertisementMerchantOnlineView(), merchantControls: advertisementMerchantControlsView() }, {}, req);
+      return sendJson(res, 200, { ...advertisementView(item), merchantOnlinePreflight, merchantOnline: advertisementMerchantOnlineView(item.credentialId), merchantControls: advertisementMerchantControlsView(item.credentialId) }, {}, req);
     } catch (err) {
       merchantOnlinePreflight = err.merchantOnlinePreflight || merchantOnlinePreflight || null;
       item.publishPending = true;
@@ -12643,7 +13352,7 @@ async function handleAdvertisementById(req, res, parts) {
             : (item.binancePermissionRequired
               ? 'Binance rejected the Create Advertisement privilege (83749) after Trade permission and active merchant preflight. The draft was preserved; Binance CS must enable or repair the /ads/post privilege for this merchant account.'
               : 'Binance publish failed: ' + item.lastPublishError)));
-      return sendJson(res, Number(err.statusCode || 502), { error: errorMessage, draftPreserved: true, permissionRequired: item.binancePermissionRequired, apiTradePermissionRequired: item.apiTradePermissionRequired, apiTradingLocked: item.apiTradingLocked, merchantStatusRequired: item.merchantStatusRequired, merchantOnlineRequired: item.merchantOnlineRequired, apiCreateReadiness: item.apiCreateReadiness || null, merchantOnlinePreflight, createPrivilegeDiagnostic: item.createPrivilegeDiagnostic || null, merchantOnline: advertisementMerchantOnlineView(), merchantControls: advertisementMerchantControlsView() }, {}, req);
+      return sendJson(res, Number(err.statusCode || 502), { error: errorMessage, draftPreserved: true, permissionRequired: item.binancePermissionRequired, apiTradePermissionRequired: item.apiTradePermissionRequired, apiTradingLocked: item.apiTradingLocked, merchantStatusRequired: item.merchantStatusRequired, merchantOnlineRequired: item.merchantOnlineRequired, apiCreateReadiness: item.apiCreateReadiness || null, merchantOnlinePreflight, createPrivilegeDiagnostic: item.createPrivilegeDiagnostic || null, merchantOnline: advertisementMerchantOnlineView(item.credentialId), merchantControls: advertisementMerchantControlsView(item.credentialId) }, {}, req);
     }
   }
   if (!action && req.method === 'PATCH') {
@@ -12854,9 +13563,9 @@ async function handleAdvertisementById(req, res, parts) {
       if (db.settings.apiMode !== 'live') return sendJson(res, 422, { error: 'Binance live mode is required to change advertisement status.' }, {}, req);
       const credential = requireLiveBinanceCredentialForUser(req, res, manager, item.credentialId, 'ads.manage', { requireExplicitWhenMultiple: true });
       if (!credential) return;
-      await refreshAdvertisementMerchantControlVerification(credential, true).catch(() => {});
+      await refreshAdvertisementMerchantControlVerification(credential, true, { allowMutationProbe: true }).catch(() => {});
       const advStatus = advertisementStatusCode(nextStatus);
-      if (advertisementMerchantControlState('break').enabled === true) {
+      if (advertisementMerchantControlState('break', credential.id).enabled === true) {
         const at = nowIso();
         applyMerchantControlImpactToAdvertisements('break', true, credential.id);
         item.status = 'offline';
@@ -12868,7 +13577,7 @@ async function handleAdvertisementById(req, res, parts) {
           ? 'Break mode is active. Turn Break off before activating an advertisement. No Binance status command was sent.'
           : 'Break mode is active, so this advertisement is already unavailable. No Binance status command was sent.';
         broadcast({ type: 'ads.status.changed', advertisementId: item.id, ...advertisementCredentialMeta(item), advNo: item.advNo || null, status: 'offline', at });
-        return sendJson(res, 200, { ...advertisementView(item), ok: true, notice, noticeType: 'warning', blockedByBreak: true, commandSent: false, merchantControls: advertisementMerchantControlsView() }, {}, req);
+        return sendJson(res, 200, { ...advertisementView(item), ok: true, notice, noticeType: 'warning', blockedByBreak: true, commandSent: false, merchantControls: advertisementMerchantControlsView(item.credentialId) }, {}, req);
       }
       let autoStartMerchant = body.autoStartMerchant === true || body.autoStartMerchant === 1 || String(body.autoStartMerchant || '').toLowerCase() === 'true';
       if (nextStatus === 'online') {
@@ -12890,10 +13599,11 @@ async function handleAdvertisementById(req, res, parts) {
             verified: true,
             source: 'binance_83229_business_closed',
             closeGraceMs: 15000,
-            preserveActionAt: true
+            preserveActionAt: true,
+            credentialId: credential.id
           });
-          setAdvertisementMerchantControlState('online', false, { at, verified: true, strategy: 'binance_business_closed_83229', preserveActionAt: true });
-          setAdvertisementMerchantControlState('break', false, { at, verified: false, preserveActionAt: true });
+          setAdvertisementMerchantControlState('online', false, { at, verified: true, strategy: 'binance_business_closed_83229', preserveActionAt: true, credentialId: credential.id });
+          setAdvertisementMerchantControlState('break', false, { at, verified: false, preserveActionAt: true, credentialId: credential.id });
           applyMerchantControlImpactToAdvertisements('business', false, credential.id);
           item.status = 'offline';
           item.advStatus = 3;
@@ -12901,7 +13611,7 @@ async function handleAdvertisementById(req, res, parts) {
           item.lastSyncedAt = at;
           item.rawBinanceStatusResult = { businessClosed: true, code: 83229, message: cleanStr(error.message || error, 500) };
           saveDb();
-          broadcast({ type: 'ads.merchant.controls', ...advertisementCredentialMeta(item), control: 'business', enabled: false, controls: advertisementMerchantControlsView(), at });
+          broadcast({ type: 'ads.merchant.controls', ...advertisementCredentialMeta(item), control: 'business', enabled: false, controls: advertisementMerchantControlsView(item.credentialId), at });
           broadcast({ type: 'ads.status.changed', advertisementId: item.id, ...advertisementCredentialMeta(item), advNo: item.advNo || null, status: 'offline', at });
 
           if (nextStatus === 'online' && autoStartMerchant) {
@@ -12923,7 +13633,7 @@ async function handleAdvertisementById(req, res, parts) {
                 noticeOnly: true,
                 businessClosed: true,
                 canAutoStart: true,
-                merchantControls: advertisementMerchantControlsView()
+                merchantControls: advertisementMerchantControlsView(item.credentialId)
               }, {}, req);
             }
           } else {
@@ -12940,14 +13650,14 @@ async function handleAdvertisementById(req, res, parts) {
               businessClosed: true,
               canAutoStart: nextStatus === 'online',
               commandSent: true,
-              merchantControls: advertisementMerchantControlsView()
+              merchantControls: advertisementMerchantControlsView(item.credentialId)
             }, {}, req);
           }
         } else if (binanceBreakModeError(error)) {
           const at = nowIso();
-          setAdvertisementMerchantControlState('business', true, { at, verified: false, preserveActionAt: true });
-          setAdvertisementMerchantControlState('online', false, { at, verified: true, strategy: 'binance_break_83230', preserveActionAt: true });
-          setAdvertisementMerchantControlState('break', true, { at, verified: true, source: 'binance_83230', stickyMs: 5 * 60 * 1000, preserveActionAt: true });
+          setAdvertisementMerchantControlState('business', true, { at, verified: false, preserveActionAt: true, credentialId: credential.id });
+          setAdvertisementMerchantControlState('online', false, { at, verified: true, strategy: 'binance_break_83230', preserveActionAt: true, credentialId: credential.id });
+          setAdvertisementMerchantControlState('break', true, { at, verified: true, source: 'binance_83230', stickyMs: 5 * 60 * 1000, preserveActionAt: true, credentialId: credential.id });
           applyMerchantControlImpactToAdvertisements('break', true, credential.id);
           item.status = 'offline';
           item.advStatus = 3;
@@ -12958,9 +13668,9 @@ async function handleAdvertisementById(req, res, parts) {
           const notice = nextStatus === 'online'
             ? 'Break mode is active. Turn Break off before activating an advertisement. No duplicate command was sent.'
             : 'Break mode is active, so this advertisement is already unavailable. No status command is required.';
-          broadcast({ type: 'ads.merchant.controls', ...advertisementCredentialMeta(item), control: 'break', enabled: true, controls: advertisementMerchantControlsView(), at });
+          broadcast({ type: 'ads.merchant.controls', ...advertisementCredentialMeta(item), control: 'break', enabled: true, controls: advertisementMerchantControlsView(item.credentialId), at });
           broadcast({ type: 'ads.status.changed', advertisementId: item.id, ...advertisementCredentialMeta(item), advNo: item.advNo || null, status: 'offline', at });
-          return sendJson(res, 200, { ...advertisementView(item), ok: true, notice, noticeType: 'warning', blockedByBreak: true, merchantControls: advertisementMerchantControlsView() }, {}, req);
+          return sendJson(res, 200, { ...advertisementView(item), ok: true, notice, noticeType: 'warning', blockedByBreak: true, merchantControls: advertisementMerchantControlsView(item.credentialId) }, {}, req);
         } else {
           throw error;
         }
@@ -13618,8 +14328,17 @@ function startSystemUpdateCheckLoop() {
   if (typeof interval.unref === 'function') interval.unref();
 }
 
+function redactErrorForLog(value) {
+  return String(value || '')
+    .replace(/([?&](?:signature|token|listenToken|apiKey|secretKey|password)=)[^&\s]+/gi, '$1[REDACTED]')
+    .replace(/("(?:signature|token|listenToken|apiKey|secretKey|password)"\s*:\s*")[^"]+/gi, '$1[REDACTED]')
+    .slice(0, 8000);
+}
+
 async function handleApi(req, res) {
-  const url = new URL(req.url, `http://${req.headers.host}`);
+  let url;
+  try { url = new URL(req.url, 'http://localhost'); }
+  catch { return sendJson(res, 400, { error: 'Bad request', requestId: requestIdFor(req) }, {}, req); }
   const parts = url.pathname.split('/').filter(Boolean);
   const mutating = ['POST','PATCH','PUT','DELETE'].includes(String(req.method || '').toUpperCase());
   const updateRoute = url.pathname.startsWith('/api/system-update');
@@ -13637,7 +14356,11 @@ async function handleApi(req, res) {
     if (!checkCsrf(req, res)) return;
 
     if (url.pathname === '/api/events') return handleEvents(req, res);
-    if (req.method === 'GET' && url.pathname === '/api/public-health/binance') return sendJson(res, 200, await binanceNetworkHealth(), {}, req);
+    if (req.method === 'GET' && url.pathname === '/api/public-health/binance') {
+      const healthUser = requirePermission(req, res, 'settings.manage');
+      if (!healthUser) return;
+      return sendJson(res, 200, await binanceNetworkHealth(), {}, req);
+    }
     if (req.method === 'GET' && url.pathname === '/api/login/device/legacy') return handleLegacySessionStatus(req, res);
     if (req.method === 'POST' && url.pathname === '/api/login/device/upgrade') return await handleLegacySessionUpgrade(req, res);
     if (req.method === 'POST' && url.pathname === '/api/login/device/challenge') return await handleTrustedDeviceChallenge(req, res);
@@ -13702,8 +14425,14 @@ async function handleApi(req, res) {
 
     return sendJson(res, 404, { error: 'Unknown API route' }, {}, req);
   } catch (err) {
-    console.error(err);
-    return sendJson(res, err.statusCode || 500, { error: err.message || 'Server error' }, {}, req);
+    const requestId = requestIdFor(req);
+    const status = Math.max(400, Math.min(599, Number(err?.statusCode || 500) || 500));
+    const method = cleanStr(req.method || '', 12);
+    const pathname = cleanStr(url?.pathname || String(req.url || '').split('?')[0], 240);
+    const detail = redactErrorForLog(err?.stack || err?.message || err);
+    console.error(`[request:${requestId}] ${method} ${pathname} failed with ${status}: ${detail}`);
+    const publicMessage = status >= 500 ? 'The server could not complete this request.' : cleanStr(err?.message || 'Request failed', 500);
+    return sendJson(res, status, { error: publicMessage, requestId }, {}, req);
   }
 }
 
@@ -13737,6 +14466,7 @@ async function handleOwnerBootstrapClaim(req, res) {
   }
   const url = new URL(req.url, 'http://localhost');
   const token = String(url.searchParams.get('token') || '');
+  if (!throttleLogin(req, token, 'owner-bootstrap', 8)) return sendText(res, 429, 'Too many Owner access attempts. Try again later.', 'text/plain; charset=utf-8', req);
   let claim;
   try { claim = beginBootstrapClaim(HOSTING_SETUP_PATHS, token); }
   catch (error) { return sendText(res, 403, error.message || 'This one-time Owner access link is invalid or expired.', 'text/plain; charset=utf-8', req); }
@@ -13754,6 +14484,7 @@ async function handleOwnerBootstrapClaim(req, res) {
     return sendText(res, 503, `Owner access could not be saved: ${error.message}`, 'text/plain; charset=utf-8', req);
   }
   finishBootstrapClaim(claim.claimPath);
+  resetLoginThrottle(req, token, 'owner-bootstrap');
   res.writeHead(302, secureHeaders({ 'Location': '/', 'Set-Cookie': sessionCookieHeader(session.sid, req) }, req));
   res.end();
 }
@@ -13762,6 +14493,7 @@ async function handleTrustedDeviceChallenge(req, res) {
   if (req.method !== 'POST') return sendJson(res, 405, { error: 'Method not allowed' }, {}, req);
   const body = await readBody(req);
   const deviceId = cleanStr(body.deviceId || requestDeviceId(req), 128);
+  if (!throttleLogin(req, deviceId, 'trusted-device-challenge', 12)) return sendJson(res, 429, { error: 'Too many trusted-device requests. Try again later.' }, { 'Retry-After': String(Math.ceil(LOGIN_WINDOW_MS / 1000)) }, req);
   const found = findTrustedDeviceOwner(deviceId);
   if (!found) {
     return sendJson(res, 200, { trustedDevice: false, fullLoginRequired: true, message: 'Full login is required on this browser.' }, {}, req);
@@ -13780,10 +14512,11 @@ async function handleTrustedDeviceChallenge(req, res) {
 
 async function handleTrustedDeviceLogin(req, res) {
   if (req.method !== 'POST') return sendJson(res, 405, { error: 'Method not allowed' }, {}, req);
-  if (!throttleLogin(req)) return sendJson(res, 429, { error: 'Too many login attempts. Try again later.' }, {}, req);
   const body = await readBody(req);
   const deviceId = cleanStr(body.deviceId || requestDeviceId(req), 128);
   const challengeId = cleanStr(body.challengeId || '', 160);
+  const throttleIdentity = deviceId || challengeId;
+  if (!throttleLogin(req, throttleIdentity, 'trusted-device-login')) return sendJson(res, 429, { error: 'Too many login attempts. Try again later.' }, { 'Retry-After': String(Math.ceil(LOGIN_WINDOW_MS / 1000)) }, req);
   const pending = pendingDeviceChallenges.get(challengeId);
   if (!pending || pending.expiresAt <= Date.now() || pending.deviceId !== deviceId) {
     pendingDeviceChallenges.delete(challengeId);
@@ -13814,7 +14547,8 @@ async function handleTrustedDeviceLogin(req, res) {
   }
 
   pendingDeviceChallenges.delete(challengeId);
-  resetLoginThrottle(req);
+  resetLoginThrottle(req, throttleIdentity, 'trusted-device-login');
+  resetLoginThrottle(req, deviceId, 'trusted-device-challenge');
   device.lastSeenAt = nowIso();
   device.lastIpPrefix = requestIpPrefix(req);
   device.lastUaHash = requestUaHash(req);
@@ -13838,10 +14572,11 @@ function handleLegacySessionStatus(req, res) {
 }
 async function handleLegacySessionUpgrade(req, res) {
   if (req.method !== 'POST') return sendJson(res, 405, { error: 'Method not allowed' }, {}, req);
-  if (!throttleLogin(req)) return sendJson(res, 429, { error: 'Too many upgrade attempts. Try again later.' }, {}, req);
   const legacy = legacySessionFromCookie(req);
   if (!legacy) return sendJson(res, 401, { error: 'No upgradeable session remains. Use full login or email recovery.' }, {}, req);
   const body = await readBody(req);
+  const throttleIdentity = legacy.user.username || legacy.user.email || String(legacy.user.id || '');
+  if (!throttleLogin(req, throttleIdentity, 'legacy-session-upgrade')) return sendJson(res, 429, { error: 'Too many upgrade attempts. Try again later.' }, { 'Retry-After': String(Math.ceil(LOGIN_WINDOW_MS / 1000)) }, req);
   if (!verifyPassword(String(body.secretCode || ''), legacy.user.loginSecretHash || '')) {
     sendLoginFailedAlert(legacy.user, 'legacy_session_upgrade_invalid_secret', req);
     return sendJson(res, 401, { error: '6 digit secret code is incorrect.' }, {}, req);
@@ -13853,7 +14588,7 @@ async function handleLegacySessionUpgrade(req, res) {
   legacy.session.authLevel = 'legacy_session_upgraded';
   legacy.session.expiresAt = Date.now() + SESSION_TTL_MS;
   legacy.session.lastPersistedAt = Date.now();
-  resetLoginThrottle(req);
+  resetLoginThrottle(req, throttleIdentity, 'legacy-session-upgrade');
   syncPersistentSessions();
   logAudit(legacy.user, 'legacy_session_upgraded', 'user', legacy.user.id, { deviceId: trustedDevice.id, ip: getIp(req), emailOtpSent: false });
   saveDb();
@@ -13862,9 +14597,9 @@ async function handleLegacySessionUpgrade(req, res) {
 
 async function handleLoginEmailRecovery(req, res) {
   if (req.method !== 'POST') return sendJson(res, 405, { error: 'Method not allowed' }, {}, req);
-  if (!throttleLogin(req)) return sendJson(res, 429, { error: 'Too many recovery attempts. Try again later.' }, {}, req);
   const body = await readBody(req);
   const identity = cleanStr(body.username || body.identity || '', 80);
+  if (!throttleLogin(req, identity, 'email-recovery')) return sendJson(res, 429, { error: 'Too many recovery attempts. Try again later.' }, { 'Retry-After': String(Math.ceil(LOGIN_WINDOW_MS / 1000)) }, req);
   const newEmail = validEmailAddress(body.newEmail || '');
   const user = (db.users || []).find(item => item.enabled && (item.username === identity || item.email === identity));
   const credentialsOk = user
@@ -13974,7 +14709,7 @@ async function handleLoginEmailRecovery(req, res) {
   const session = trustedDevice ? createAuthenticatedSession(user, req, 'email_recovery', { deviceId: trustedDevice.id, authLevel: pending.mode === 'hosting' ? 'owner_hosting_recovery' : 'email_recovery_verified' }) : null;
   logAudit(user, 'login_email_recovered', 'user', user.id, { oldEmail: maskEmail(oldEmail), newEmail: maskEmail(newEmail), mode: pending.mode, revokedDevices, invalidatedSessions, trustedDeviceEnrolled: Boolean(trustedDevice), ip: getIp(req) });
   addNotification('security_email_recovered', `Login email corrected for ${user.username}. Previous trusted devices and sessions were reset.`, 'warning', { userId: user.id, audience: 'manager' });
-  resetLoginThrottle(req);
+  resetLoginThrottle(req, identity, 'email-recovery');
   saveDb();
   if (session) {
     return sendJson(res, 200, {
@@ -14018,9 +14753,9 @@ function handleTrustedDeviceRevoke(req, res, parts) {
 }
 
 async function handleLogin(req, res) {
-  if (!throttleLogin(req)) return sendJson(res, 429, { error: 'Too many login attempts. Try again later.' }, {}, req);
   const body = await readBody(req);
   const username = cleanStr(body.username, 80);
+  if (!throttleLogin(req, username, 'login')) return sendJson(res, 429, { error: 'Too many login attempts. Try again later.' }, { 'Retry-After': String(Math.ceil(LOGIN_WINDOW_MS / 1000)) }, req);
   const user = db.users.find(u => (u.username === username || u.email === username) && u.enabled);
   if (!user || !verifyPassword(body.password || '', user.passwordHash)) {
     if (user) sendLoginFailedAlert(user, 'invalid_password', req);
@@ -14133,7 +14868,7 @@ async function handleLogin(req, res) {
     return sendJson(res, response.status, response.payload, {}, req);
   }
 
-  resetLoginThrottle(req);
+  resetLoginThrottle(req, username, 'login');
   pendingOtps.delete(user.id);
   for (const [id, item] of pendingSecurityQuestionChallenges.entries()) if (Number(item?.userId) === Number(user.id)) pendingSecurityQuestionChallenges.delete(id);
   for (const [id, item] of pendingOwnerMailOutageChallenges.entries()) if (Number(item?.userId) === Number(user.id)) pendingOwnerMailOutageChallenges.delete(id);
@@ -14259,8 +14994,9 @@ async function handleMeSecurity(req, res) {
       if (email && email !== user.email) { changeSet.email = email; summary.push('email'); }
     }
     if (body.newPassword) {
-      const pw = String(body.newPassword);
-      if (pw.length < 8) return sendJson(res, 422, { error: 'New password must be at least 8 characters' }, {}, req);
+      let pw;
+      try { pw = validateLoginPassword(body.newPassword, 'New password'); }
+      catch (error) { return sendJson(res, error.statusCode || 422, { error: error.message }, {}, req); }
       changeSet.newPassword = pw;
       summary.push('password');
     }
@@ -14351,12 +15087,17 @@ async function handleMeSecurity(req, res) {
 function handleSecurityRevert(req, res, parts) {
   if (req.method !== 'GET' && req.method !== 'POST') return sendJson(res, 405, { error: 'Method not allowed' }, {}, req);
   const token = cleanStr(parts[3] || '', 200);
+  if (!/^[a-f0-9]{64}$/i.test(token)) return sendText(res, 404, 'Revert link is invalid or already used.', 'text/plain; charset=utf-8', req);
   const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
   const item = (db.securityRevertTokens || []).find(t => t.tokenHash === tokenHash);
   if (!item || item.usedAt) return sendText(res, 404, 'Revert link is invalid or already used.', 'text/plain; charset=utf-8', req);
   if (new Date(item.expiresAt).getTime() < Date.now()) return sendText(res, 410, 'Revert link expired.', 'text/plain; charset=utf-8', req);
   const user = db.users.find(u => Number(u.id) === Number(item.userId));
   if (!user) return sendText(res, 404, 'User not found.', 'text/plain; charset=utf-8', req);
+  if (req.method === 'GET') {
+    const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Confirm security revert</title></head><body><main><h1>Confirm security revert</h1><p>This will restore the previous email, password and secret code for this account and revoke active sessions.</p><form method="post" action="/api/security/revert/${token}"><button type="submit">Confirm security revert</button></form><p>You may close this page to keep the current security settings.</p></main></body></html>`;
+    return sendText(res, 200, html, 'text/html; charset=utf-8', req);
+  }
   user.email = item.previous.email || user.email;
   user.passwordHash = item.previous.passwordHash || user.passwordHash;
   user.loginSecretHash = item.previous.loginSecretHash || user.loginSecretHash;
@@ -14393,11 +15134,47 @@ function handleDashboard(req, res) {
 }
 
 function handleEvents(req, res) {
-  const user = requireAuth(req, res); if (!user) return;
-  res.writeHead(200, secureHeaders({ 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache, no-transform', 'Connection': 'keep-alive' }, req));
-  res.write(`data: ${JSON.stringify({ type: 'connected', at: nowIso() })}\n\n`);
-  sseClients.add(res);
-  req.on('close', () => sseClients.delete(res));
+  if (req.method !== 'GET') return sendJson(res, 405, { error: 'Method not allowed' }, {}, req);
+  const authenticated = getSession(req);
+  if (!authenticated) return sendJson(res, 401, { error: 'Not authenticated' }, {}, req);
+  const user = authenticated.user;
+  const existing = [...sseClients]
+    .filter(client => Number(client.userId) === Number(user.id))
+    .sort((a, b) => Number(a.connectedAt || 0) - Number(b.connectedAt || 0));
+  while (existing.length >= MAX_SSE_CONNECTIONS_PER_USER) closeRealtimeClient(existing.shift());
+
+  res.writeHead(200, secureHeaders({
+    'Content-Type': 'text/event-stream; charset=utf-8',
+    'Cache-Control': 'no-cache, no-transform',
+    'Connection': 'keep-alive',
+    'X-Accel-Buffering': 'no',
+    'Content-Encoding': 'identity'
+  }, req));
+  if (typeof res.flushHeaders === 'function') res.flushHeaders();
+  try {
+    req.socket.setTimeout(0);
+    req.socket.setNoDelay(true);
+    req.socket.setKeepAlive(true, 30_000);
+  } catch {}
+
+  const client = {
+    res,
+    sid: authenticated.sid,
+    userId: user.id,
+    connectedAt: Date.now(),
+    heartbeat: null
+  };
+  sseClients.add(client);
+  writeRealtimeEvent(client, { type: 'connected', at: nowIso() });
+  client.heartbeat = setInterval(() => {
+    if (!realtimeClientUser(client)) return closeRealtimeClient(client);
+    try { client.res.write(`: heartbeat ${Date.now()}\n\n`); } catch { closeRealtimeClient(client); }
+  }, 25_000);
+  if (typeof client.heartbeat.unref === 'function') client.heartbeat.unref();
+  const cleanup = () => closeRealtimeClient(client);
+  req.once('close', cleanup);
+  req.once('aborted', cleanup);
+  res.once('close', cleanup);
 }
 
 
@@ -14423,6 +15200,7 @@ async function handleCredentials(req, res) {
     if (!name || !apiKey || !secretKey) return sendJson(res, 422, { error: 'name, apiKey and secretKey are required' }, {}, req);
     const item = { id: nextId(), name, apiKey, secretKey, clientType: cleanStr(body.clientType || 'web', 40), status: 'saved', disabled: false, lastTestedAt: null, ownerP2pUserNo: '', ownerP2pMerchantNo: '', ownerP2pNickname: '', ownerP2pProfileLastSyncAt: null, createdAt: nowIso(), updatedAt: nowIso() };
     db.apiCredentials.push(item);
+    advertisementMerchantSettingsRecord(item.id, true);
     logAudit(user, 'api_credential_created', 'apiCredential', item.id, { name: item.name, apiKeyMasked: mask(item.apiKey) });
     saveDb();
     return sendJson(res, 201, { id: item.id, apiKeyMasked: mask(item.apiKey), status: item.status }, {}, req);
@@ -14455,6 +15233,7 @@ async function handleCredentialById(req, res, parts) {
     const active = activeBinanceCredential();
     const inUse = active && Number(active.id) === id;
     db.apiCredentials = db.apiCredentials.filter(c => Number(c.id) !== id);
+    removeAdvertisementMerchantCredentialState(id);
     db.ownerP2pProfiles = (db.ownerP2pProfiles || []).filter(profile => Number(profile.credentialId) !== id);
     db.users.forEach(existingUser => {
       existingUser.binanceCredentialPermissions = normalizeBinanceCredentialPermissions(
@@ -14741,7 +15520,10 @@ async function handleAgentById(req, res, parts) {
         if (db.users.some(u => u.username === username && u.id !== existingLinkedUser?.id)) return sendJson(res, 422, { error: 'Username already exists' }, {}, req);
         linkedUserCandidate.username = username;
       }
-      if (body.password) linkedUserCandidate.passwordHash = hashPassword(String(body.password));
+      if (body.password) {
+        try { linkedUserCandidate.passwordHash = hashPassword(validateLoginPassword(body.password, 'New password')); }
+        catch (error) { return sendJson(res, error.statusCode || 422, { error: error.message }, {}, req); }
+      }
       if (body.email !== undefined) {
         const email = cleanStr(body.email || '', 160);
         if (email && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return sendJson(res, 422, { error: 'Valid email address required' }, {}, req);
@@ -18358,14 +19140,14 @@ async function runBinanceAdsAutoSync(reason = 'timer') {
   try {
     let merchantChanged = false;
     for (const credential of credentials) {
-      const beforeMerchantSignature = advertisementMerchantControlSignature();
+      const beforeMerchantSignature = advertisementMerchantControlSignature(null, credential.id);
       try {
         const out = await syncBinanceAdvertisementsWithCredential(null, credential, {
           rows: db.settings.adsSyncRows || 50,
           audit: false,
           syncCatalog: true
         });
-        const accountMerchantChanged = beforeMerchantSignature !== advertisementMerchantControlSignature();
+        const accountMerchantChanged = beforeMerchantSignature !== advertisementMerchantControlSignature(null, credential.id);
         merchantChanged = merchantChanged || accountMerchantChanged;
         aggregate.created += Number(out.created || 0);
         aggregate.updated += Number(out.updated || 0);
@@ -18380,7 +19162,8 @@ async function runBinanceAdsAutoSync(reason = 'timer') {
           unchanged: Number(out.unchanged || 0),
           totalRows: Number(out.totalRows || 0),
           changed: Number(out.changed || 0),
-          merchantChanged: accountMerchantChanged
+          merchantChanged: accountMerchantChanged,
+          controls: advertisementMerchantControlsView(credential.id)
         });
       } catch (error) {
         const message = cleanStr(error.message || error, 300);
@@ -18416,7 +19199,7 @@ async function runBinanceAdsAutoSync(reason = 'timer') {
         changed: aggregate.changed,
         merchantChanged,
         accounts: aggregate.accounts,
-        controls: advertisementMerchantControlsView(),
+        controlsByCredential: aggregate.accounts.filter(item => item.controls).map(item => ({ credentialId: item.credentialId, credentialName: item.credentialName, controls: item.controls })),
         reason,
         at: nowIso()
       });
@@ -18451,15 +19234,16 @@ async function runAdvertisementMerchantStatusAutoSync(reason = 'timer') {
   const aggregate = { changed: false, profileBusinessChanged: false, accounts: [], errors: [] };
   try {
     for (const credential of credentials) {
-      const before = advertisementMerchantControlSignature();
+      const before = advertisementMerchantControlSignature(null, credential.id);
       try {
-        // Force is intentional here: the runtime cache is shared, and every account must be
-        // checked independently during a multi-account cycle.
+        // Force is intentional here so every enabled account is independently verified
+        // during each multi-account cycle.
         const controls = await refreshAdvertisementMerchantControlVerification(credential, true);
         const after = advertisementMerchantControlSignature(controls);
         const changed = before !== after;
-        const profileBusinessChanged = Boolean(advertisementMerchantStatusRuntime.ownerProfileBusinessChanged);
-        advertisementMerchantStatusRuntime.ownerProfileBusinessChanged = false;
+        const runtime = advertisementMerchantRuntime(credential.id);
+        const profileBusinessChanged = Boolean(runtime.ownerProfileBusinessChanged);
+        runtime.ownerProfileBusinessChanged = false;
         aggregate.changed = aggregate.changed || changed;
         aggregate.profileBusinessChanged = aggregate.profileBusinessChanged || profileBusinessChanged;
         aggregate.accounts.push({
@@ -18553,34 +19337,48 @@ function startBinanceAutoSyncLoop() {
   if (typeof timer.unref === 'function') timer.unref();
 }
 
-function handlePublicReady(req, res) {
-  const healthy = Boolean(db && stateStore && !gracefulShutdownStarted && !maintenanceMode.enabled);
-  return sendJson(res, healthy ? 200 : 503, {
-    ok: healthy,
-    status: maintenanceMode.enabled ? 'maintenance' : (healthy ? 'ready' : 'starting'),
-    app: 'P2PFlow',
-    version: APP_VERSION,
-    schemaVersion: Number(db?.meta?.schemaVersion || 0),
-    storageProvider: DATABASE_PROVIDER,
-    databaseRevision: Number(stateStore?.currentRevision || 0),
-    maintenance: maintenanceMode,
-    uptimeSeconds: Math.round(process.uptime()),
-    generatedAt: nowIso()
-  }, {}, req);
+function handlePublicHealth(req, res, pathname = '/ready') {
+  const isLiveness = pathname === '/healthz' || pathname === '/api/healthz';
+  const alive = !gracefulShutdownStarted;
+  const ready = Boolean(db && stateStore && alive && !maintenanceMode.enabled);
+  const ok = isLiveness ? alive : ready;
+  const status = !alive ? 'stopping' : (maintenanceMode.enabled ? 'maintenance' : (ready ? 'ready' : 'starting'));
+  const payload = { ok, status: isLiveness && alive ? 'alive' : status };
+  if (PUBLIC_HEALTH_DETAILS) {
+    payload.app = 'P2PFlow';
+    payload.version = APP_VERSION;
+    payload.schemaVersion = Number(db?.meta?.schemaVersion || 0);
+    payload.storageProvider = DATABASE_PROVIDER;
+    payload.databaseRevision = Number(stateStore?.currentRevision || 0);
+    payload.uptimeSeconds = Math.round(process.uptime());
+    payload.generatedAt = nowIso();
+  }
+  return sendJson(res, ok ? 200 : 503, payload, {}, req);
 }
 
-const server = http.createServer((req, res) => {
+const server = http.createServer({ maxHeaderSize: 16 * 1024 }, (req, res) => {
+  requestIdFor(req);
+  if (!requestHostAllowed(req)) {
+    console.warn(`[request:${requestIdFor(req)}] Rejected unrecognized Host header from ${proxyPeerIp(req) || 'unknown peer'}.`);
+    return sendJson(res, 421, { error: 'Misdirected request', requestId: requestIdFor(req) }, {}, req);
+  }
   rememberPublicOrigin(req);
   const pathname = String(req.url || '').split('?')[0];
   if ((req.method === 'GET' || req.method === 'HEAD') && pathname.startsWith('/public-media/')) {
-    return handlePublicMedia(req, res, decodeURIComponent(pathname.slice('/public-media/'.length))).catch(error => {
-      console.error('Public database media failed:', error);
+    let token = '';
+    try { token = decodeURIComponent(pathname.slice('/public-media/'.length)); }
+    catch { return sendText(res, 400, 'Bad request', 'text/plain; charset=utf-8', req); }
+    return handlePublicMedia(req, res, token).catch(error => {
+      console.error(`[request:${requestIdFor(req)}] Public database media failed: ${redactErrorForLog(error?.stack || error)}`);
       if (!res.headersSent) sendText(res, 500, 'Media unavailable', 'text/plain; charset=utf-8', req);
       else res.destroy();
     });
   }
-  if (req.method === 'GET' && ['/healthz','/ready','/api/healthz','/api/ready'].includes(pathname)) return handlePublicReady(req, res);
-  if (pathname === '/setup/claim') return handleOwnerBootstrapClaim(req, res).catch(error => sendText(res, 500, error.message || 'Owner access failed', 'text/plain; charset=utf-8', req));
+  if (req.method === 'GET' && ['/healthz','/ready','/api/healthz','/api/ready'].includes(pathname)) return handlePublicHealth(req, res, pathname);
+  if (pathname === '/setup/claim') return handleOwnerBootstrapClaim(req, res).catch(error => {
+    console.error(`[request:${requestIdFor(req)}] Owner bootstrap claim failed: ${redactErrorForLog(error?.stack || error)}`);
+    return sendText(res, 500, 'Owner access failed. Reference: ' + requestIdFor(req), 'text/plain; charset=utf-8', req);
+  });
   if (pathname === '/setup' || pathname === '/setup/' || pathname.startsWith('/setup/api/')) {
     if (pathname.startsWith('/setup/api/')) return sendJson(res, 410, { error: 'First-run setup is complete. Software updates are managed by the Owner in Control Panel → System Update.' }, {}, req);
     res.writeHead(302, { Location: '/', 'Cache-Control': 'no-store' });
@@ -18589,6 +19387,11 @@ const server = http.createServer((req, res) => {
   if (req.url.startsWith('/api/')) return handleApi(req, res);
   return serveStatic(req, res);
 });
+
+server.requestTimeout = 30_000;
+server.headersTimeout = 35_000;
+server.keepAliveTimeout = 5_000;
+server.maxRequestsPerSocket = 1_000;
 
 function createUpdateManager(overrides = {}) {
   const configuration = systemUpdateStoredConfiguration(overrides);
@@ -18611,13 +19414,14 @@ function createUpdateManager(overrides = {}) {
 }
 
 async function startServer() {
+  validateRuntimeSecurityConfiguration();
   db = await initDb();
   updateManager = createUpdateManager();
   restorePersistentSessions();
   const publicMirror = syncManagedPublicMirrorFrom(__dirname);
   if (publicMirror.synced) console.log(`P2PFlow ${APP_VERSION} public UI mirror synchronized (${publicMirror.files} files).`);
-  server.listen(PORT, () => {
-    console.log(`P2PFlow ${APP_VERSION} running on http://localhost:${PORT}`);
+  server.listen(PORT, BIND_HOST || undefined, () => {
+    console.log(`P2PFlow ${APP_VERSION} running on http://${BIND_HOST || '0.0.0.0'}:${PORT}`);
     console.log(`Storage provider: ${databaseProviderLabel(DATABASE_PROVIDER)} / table ${DATABASE_TABLE}`);
     console.log('Public login hints are disabled. Email OTP delivery is required.');
     try {
@@ -18941,6 +19745,130 @@ function runAccountingSelfTest() {
     db = previousDb;
   }
 }
+
+async function runAdsMerchantAccountIsolationSelfTest() {
+  const previousDb = db;
+  const previousMerchantRuntimeEntries = [...advertisementMerchantStatusRuntimes.entries()];
+  const previousReadinessEntries = [...advertisementCreateReadinessRuntimes.entries()];
+  try {
+    advertisementMerchantStatusRuntimes.clear();
+    advertisementCreateReadinessRuntimes.clear();
+    db = {
+      meta: { nextId: 1000, schemaVersion: APP_SCHEMA_VERSION },
+      settings: { ...defaultSettings(), adsMerchantControlsByCredential: {} },
+      apiCredentials: [
+        { id: 101, name: 'Primary Binance', apiKey: 'primary-key', secretKey: 'primary-secret', createdAt: '2026-01-01T00:00:00.000Z' },
+        { id: 202, name: 'Secondary Binance', apiKey: 'secondary-key', secretKey: 'secondary-secret', createdAt: '2026-01-02T00:00:00.000Z' }
+      ],
+      advertisements: [],
+      auditLogs: [],
+      ownerP2pProfiles: [],
+      ownerP2pProfile: { userNo: '', nickname: '', stats: emptyCounterpartyStats(), feedbackRows: { positive: [], negative: [] }, source: '', syncedAt: null, lastError: '', warnings: [] }
+    };
+
+    await Promise.all([
+      withAdvertisementMerchantCredential(101, async () => {
+        await waitMs(5);
+        setAdvertisementMerchantControlState('business', true, { verified: true, source: 'self_test_primary' });
+        setAdvertisementMerchantControlState('online', true, { verified: true, strategy: 'self_test_primary' });
+        setAdvertisementMerchantControlState('break', false, { verified: true, source: 'self_test_primary' });
+        advertisementMerchantStatusRuntime.lastCheckAt = '2026-02-01T00:00:00.000Z';
+        const readiness = advertisementCreateReadinessRuntimeFor();
+        readiness.checkedAt = '2026-02-01T00:00:01.000Z';
+        readiness.permission = { tradeEnabled: true };
+      }),
+      withAdvertisementMerchantCredential(202, async () => {
+        setAdvertisementMerchantControlState('business', false, { verified: true, source: 'self_test_secondary_closed' });
+        setAdvertisementMerchantControlState('online', false, { verified: true, strategy: 'self_test_secondary' });
+        setAdvertisementMerchantControlState('break', true, { verified: true, source: 'self_test_secondary_break', stickyMs: 60000 });
+        advertisementMerchantStatusRuntime.lastCheckAt = '2026-02-02T00:00:00.000Z';
+        const readiness = advertisementCreateReadinessRuntimeFor();
+        readiness.checkedAt = '2026-02-02T00:00:01.000Z';
+        readiness.permission = { tradeEnabled: false };
+        await waitMs(5);
+      })
+    ]);
+
+    const primary = advertisementMerchantControlsView(101);
+    const secondary = advertisementMerchantControlsView(202);
+    if (primary.business.enabled !== true || primary.online.enabled !== true || primary.break.enabled !== false || primary.mode.id !== 'online') {
+      throw new Error(`Primary account merchant state leaked or was not preserved: ${JSON.stringify(primary)}`);
+    }
+    if (secondary.business.enabled !== false || secondary.online.enabled !== false || secondary.break.enabled !== true || secondary.mode.id !== 'break') {
+      throw new Error(`Secondary account merchant state leaked or was not preserved: ${JSON.stringify(secondary)}`);
+    }
+    if (primary.checkedAt === secondary.checkedAt || primary.checkedAt !== '2026-02-01T00:00:00.000Z' || secondary.checkedAt !== '2026-02-02T00:00:00.000Z') {
+      throw new Error('Per-account merchant runtime state is not isolated.');
+    }
+    const primaryReadiness = advertisementCreateReadinessView(101);
+    const secondaryReadiness = advertisementCreateReadinessView(202);
+    if (primaryReadiness.permission?.tradeEnabled !== true || secondaryReadiness.permission?.tradeEnabled !== false) {
+      throw new Error('Per-account advertisement readiness cache is not isolated.');
+    }
+    if (!db.settings.adsMerchantControlsByCredential['101'] || !db.settings.adsMerchantControlsByCredential['202']) {
+      throw new Error('Per-account merchant settings were not persisted under both credential IDs.');
+    }
+
+    setAdvertisementMerchantControlState('online', false, { credentialId: 101, verified: true, strategy: 'self_test_primary_offline' });
+    if (advertisementMerchantControlState('break', 202).enabled !== true || advertisementMerchantControlState('business', 202).enabled !== false) {
+      throw new Error('Changing the primary account mutated the secondary account.');
+    }
+
+    db.apiCredentials = db.apiCredentials.filter(item => Number(item.id) !== 101);
+    removeAdvertisementMerchantCredentialState(101);
+    if (db.settings.adsMerchantControlsByCredential['101'] || advertisementMerchantStatusRuntimes.has('101') || advertisementCreateReadinessRuntimes.has('101')) {
+      throw new Error('Deleted credential merchant state or runtime cache was not removed.');
+    }
+    const remaining = advertisementMerchantSettingsRecord(202, false);
+    for (const key of ADVERTISEMENT_MERCHANT_SETTING_KEYS) {
+      if (db.settings[key] !== remaining[key]) throw new Error(`Legacy rollback mirror did not move to the remaining credential: ${key}`);
+    }
+
+    const migrationTarget = {
+      meta: { nextId: 5000, schemaVersion: 29 },
+      settings: {
+        ...defaultSettings(),
+        adsMerchantControlsByCredential: {},
+        adsMerchantBusinessStatus: 1,
+        adsMerchantBusinessVerified: true,
+        adsMerchantOnlineStatus: 0,
+        adsMerchantOnlineVerified: true,
+        adsMerchantBreakStatus: 0,
+        adsMerchantBreakVerified: true,
+        adsMerchantBusinessStateSource: 'legacy_shared_state'
+      },
+      apiCredentials: [
+        { id: 301, name: 'Oldest', apiKey: 'a', secretKey: 'b', createdAt: '2025-01-01T00:00:00.000Z' },
+        { id: 302, name: 'Newer', apiKey: 'c', secretKey: 'd', createdAt: '2025-01-02T00:00:00.000Z' }
+      ]
+    };
+    migrateDb(migrationTarget);
+    if (migrationTarget.meta.schemaVersion !== APP_SCHEMA_VERSION) throw new Error(`Merchant migration schema mismatch: ${migrationTarget.meta.schemaVersion}`);
+    if (migrationTarget.settings.adsMerchantControlsByCredential['301']?.adsMerchantBusinessStatus !== 1) {
+      throw new Error('Legacy shared merchant state was not migrated to the oldest Binance account.');
+    }
+    if (migrationTarget.settings.adsMerchantControlsByCredential['302']) {
+      throw new Error('Legacy shared merchant state was incorrectly copied to every Binance account.');
+    }
+
+    console.log(JSON.stringify({
+      ok: true,
+      schemaVersion: APP_SCHEMA_VERSION,
+      primary: { credentialId: primary.credentialId, mode: primary.mode.id, checkedAt: primary.checkedAt },
+      secondary: { credentialId: secondary.credentialId, mode: secondary.mode.id, checkedAt: secondary.checkedAt },
+      readinessIsolated: true,
+      deletionCleanup: true,
+      legacyMigrationCredentialId: 301
+    }, null, 2));
+  } finally {
+    db = previousDb;
+    advertisementMerchantStatusRuntimes.clear();
+    advertisementCreateReadinessRuntimes.clear();
+    for (const [key, value] of previousMerchantRuntimeEntries) advertisementMerchantStatusRuntimes.set(key, value);
+    for (const [key, value] of previousReadinessEntries) advertisementCreateReadinessRuntimes.set(key, value);
+  }
+}
+
 async function runMailCommandMode() {
   if (!db) db = await initDb();
   if (process.argv.includes('--mail-probe')) {
@@ -18964,6 +19892,11 @@ Version: ${APP_VERSION}`);
 if (process.argv.includes('--accounting-self-test')) {
   try { runAccountingSelfTest(); process.exit(0); }
   catch (err) { console.error(`Accounting self-test failed: ${err.message}`); process.exit(1); }
+} else if (process.argv.includes('--ads-merchant-account-self-test')) {
+  runAdsMerchantAccountIsolationSelfTest().then(() => process.exit(0)).catch(err => {
+    console.error(`Ads merchant account isolation self-test failed: ${err.message}`);
+    process.exit(1);
+  });
 } else if (process.argv.includes('--mail-test') || process.argv.includes('--mail-probe')) {
   runMailCommandMode().catch(err => {
     console.error(`Mail command failed: ${err.message}`);
@@ -18998,253 +19931,3 @@ if (process.argv.includes('--accounting-self-test')) {
     process.exit(1);
   });
 }
-
-
-/* ================= ENTERPRISE CORE v1.0.45 ================= */
-
-// SSE CLIENTS
-const SSE_CLIENTS = [];
-
-// STATE MACHINE
-function nextState(current, action) {
-  const flow = {
-    CREATED: { pay: 'WAITING_PAYMENT' },
-    WAITING_PAYMENT: { paid: 'PAID', cancel: 'CANCELLED' },
-    PAID: { release: 'RELEASE_PENDING' },
-    RELEASE_PENDING: { released: 'RELEASED' },
-    RELEASED: { done: 'COMPLETED' }
-  };
-  return (flow[current] && flow[current][action]) ? flow[current][action] : current;
-}
-
-// GLOBAL EVENT PUSH
-function pushEvent(type, data) {
-  const msg = `event: ${type}\ndata: ${JSON.stringify(data)}\n\n`;
-  SSE_CLIENTS.forEach(c => c.write(msg));
-}
-
-global.pushEvent = pushEvent;
-global.SSE_CLIENTS = SSE_CLIENTS;
-
-
-/* ================= v1.0.46 FULL CONTROL SYSTEM ================= */
-
-// simple risk scoring
-function calcRisk(order){
-  let score = 0;
-  if(!order) return 0;
-  if(order.amount > 1000) score += 20;
-  if(order.paymentMethod && order.paymentMethod.includes("bank")) score += 10;
-  if(order.trades && order.trades < 10) score += 30;
-  return Math.min(100, score);
-}
-
-function addAudit(action, data){
-  if (!db) return null;
-  const item = {
-    id: typeof nextId === 'function' ? nextId() : Date.now(),
-    action: cleanStr(action || 'legacy_audit', 120),
-    entityType: 'system',
-    entityId: null,
-    userId: null,
-    userName: 'System',
-    role: 'system',
-    details: data || {},
-    createdAt: nowIso()
-  };
-  db.auditLogs = Array.isArray(db.auditLogs) ? db.auditLogs : [];
-  db.auditLogs.push(item);
-  saveDb({ reason: 'legacy_audit' });
-  return item;
-}
-
-Object.defineProperty(global, 'auditLog', { configurable: true, get: () => (db && Array.isArray(db.auditLogs) ? db.auditLogs : []) });
-global.calcRisk = calcRisk;
-global.addAudit = addAudit;
-
-/* OPTIONAL WEBSOCKET LAYER */
-try {
-  const WebSocket = require('ws');
-  const wss = new WebSocket.Server({ noServer: true });
-
-  global.wss = wss;
-
-  wss.on('connection', (ws) => {
-    ws.on('message', (msg) => {
-      try {
-        const data = JSON.parse(msg);
-        if(data.type === 'ping') ws.send(JSON.stringify({type:'pong'}));
-      } catch(e){}
-    });
-  });
-
-} catch(e) {
-  // ws not installed, ignore safely
-}
-
-
-/* ================= GOD MODE v1.0.47 ================= */
-
-// ADVANCED LEDGER COMPATIBILITY VIEW
-// No second in-memory ledger is allowed: authoritative rows stay in db.* and are
-// persisted by the main database state store.
-const ledger = {};
-Object.defineProperties(ledger, {
-  orders: { enumerable: true, get: () => new Map(((db && db.orders) || []).map(item => [String(item.id || item.orderNo || ''), item])) },
-  users: { enumerable: true, get: () => new Map(((db && db.users) || []).map(item => [String(item.id || item.username || ''), item])) },
-  transactions: { enumerable: true, get: () => ((db && db.ledgers) || []) }
-});
-
-// FRAUD ENGINE
-function fraudScore(order){
-  let s = 0;
-  if(!order) return 0;
-
-  if(order.amount > 5000) s += 30;
-  if(order.paymentMethod === "crypto") s += 20;
-  if(order.riskScore > 60) s += 40;
-  if(order.tradeCount < 5) s += 25;
-
-  return Math.min(100, s);
-}
-
-// QUEUE SYSTEM (lightweight)
-const queue = [];
-
-function pushQueue(job){
-  queue.push(job);
-  processQueue();
-}
-
-function processQueue(){
-  while(queue.length){
-    const job = queue.shift();
-    try {
-      job();
-    } catch(e){}
-  }
-}
-
-// GLOBAL CONTROL
-global.ledger = ledger;
-global.fraudScore = fraudScore;
-global.pushQueue = pushQueue;
-
-/* ================= GOD MODE EVENT BROADCAST ================= */
-function broadcast(type, data){
-  // v1.0.50: compatible with the core code that calls broadcast({ type, ...payload })
-  // and with legacy helpers that call broadcast('event_name', payload).
-  try{
-    const event = (arguments.length === 1 && type && typeof type === 'object')
-      ? type
-      : { type: String(type || 'message'), ...(data && typeof data === 'object' ? data : { data }) };
-    const msg = `data: ${JSON.stringify(event)}\n\n`;
-    if (typeof sseClients !== 'undefined') {
-      for (const c of Array.from(sseClients)) {
-        try { c.write(msg); } catch(e) { try { sseClients.delete(c); } catch(_){} }
-      }
-    }
-    if(global.SSE_CLIENTS){
-      global.SSE_CLIENTS.forEach(c=>{ try { c.write(msg); } catch(e){} });
-    }
-    if(global.wss){
-      global.wss.clients.forEach(ws=>{
-        try{ ws.send(JSON.stringify(event)); }catch(e){}
-      });
-    }
-  }catch(e){}
-}
-
-global.broadcast = broadcast;
-
-
-/* ================= FINAL BOSS MODE v1.0.48 SAFE PATCH =================
-   Base: v1.0.47 working core.
-   Purpose: bring the v1.0.48 helper features without redeclaring fs/path and
-   without creating a second JSON database that can split production data.
-*/
-
-function stablePayment(order) {
-  if (!order) return 'Unknown';
-  const id = String(order.id || order.orderNo || order.externalOrderNo || '');
-  const method = String(
-    order.paymentMethodName ||
-    order.payMethodSnapshot?.name ||
-    order.payMethodSnapshot?.methodName ||
-    order.payMethodSnapshot?.identifier ||
-    order.method?.name ||
-    order.payType ||
-    order.paymentMethod ||
-    ''
-  ).trim();
-  return method || 'Unknown';
-}
-
-function loadDB() {
-  return db || { orders: [], users: [], ledgers: [], auditLogs: [] };
-}
-
-function saveDB(nextDb) {
-  if (nextDb && nextDb !== db && Array.isArray(nextDb.orders)) db = nextDb;
-  saveDb();
-  return db;
-}
-
-function finalBossLogAudit(action, payload) {
-  const target = loadDB();
-  const item = {
-    id: typeof nextId === 'function' ? nextId() : Date.now(),
-    at: nowIso(),
-    action: cleanStr(action || 'final_boss_action', 120),
-    entityType: 'system',
-    entityId: null,
-    userId: null,
-    username: 'system',
-    payload: payload || {}
-  };
-  target.auditLogs = Array.isArray(target.auditLogs) ? target.auditLogs : [];
-  target.auditLogs.unshift(item);
-  saveDB(target);
-  return item;
-}
-
-function updateOrder(orderId, patch) {
-  const target = loadDB();
-  const id = String(orderId || '');
-  const order = (target.orders || []).find(o =>
-    String(o.id) === id || String(o.orderNo || '') === id || String(o.externalOrderNo || '') === id
-  );
-  if (!order) return null;
-  Object.assign(order, patch || {}, { updatedAt: nowIso() });
-  stablePayment(order);
-  saveDB(target);
-  emit('order_update', { orderId: order.id, orderNo: order.orderNo, status: order.status, at: nowIso() });
-  return order;
-}
-
-function emit(type, data) {
-  try {
-    const eventName = typeof type === 'string' ? type : (type && type.type) || 'message';
-    const payload = data !== undefined ? data : (type && typeof type === 'object' ? type : {});
-    const msg = `event: ${eventName}\ndata: ${JSON.stringify(payload)}\n\n`;
-    if (global.SSE_CLIENTS && Array.isArray(global.SSE_CLIENTS)) {
-      global.SSE_CLIENTS.forEach(c => { try { c.write(msg); } catch {} });
-    }
-    if (typeof sseClients !== 'undefined') {
-      for (const c of Array.from(sseClients)) {
-        try { c.write(`data: ${JSON.stringify({ type: eventName, ...payload })}\n\n`); } catch { sseClients.delete(c); }
-      }
-    }
-    if (global.wss && global.wss.clients) {
-      global.wss.clients.forEach(ws => { try { ws.send(JSON.stringify({ type: eventName, data: payload })); } catch {} });
-    }
-  } catch {}
-}
-
-global.emit = emit;
-global.stablePayment = stablePayment;
-global.loadDB = loadDB;
-global.saveDB = saveDB;
-global.updateOrder = updateOrder;
-global.logAudit = logAudit;
-global.finalBossLogAudit = finalBossLogAudit;

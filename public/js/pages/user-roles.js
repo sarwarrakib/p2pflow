@@ -12,7 +12,7 @@ async function renderUserRoles() {
         <div class="user-card-head"><div><b>${escapeHtml(r.name)}</b><span>${escapeHtml(r.description || '')}</span></div>${badge(r.systemRole, r.systemRole==='agent'?'blue':r.systemRole==='manager'?'ok':'warn')}</div>
         <div class="user-stats"><div><span>Permissions</span><b>${(r.permissions || []).length}</b></div><div><span>Locked</span><b>${r.locked ? 'Yes' : 'No'}</b></div></div>
         <div class="perm-preview">${(r.permissions || []).slice(0,8).map(p => `<span>${escapeHtml(PERMISSION_LABELS[p] || p)}</span>`).join('')}${(r.permissions||[]).length>8?'<span>...</span>':''}</div>
-        <div class="actions"><button data-edit-role="${r.id}">Edit Role</button>${r.locked ? '' : `<button class="warn" data-del-role="${r.id}">Delete</button>`}</div>
+        <div class="actions"><button data-edit-role="${Number(r.id || 0)}">Edit Role</button>${r.locked ? '' : `<button class="warn" data-del-role="${Number(r.id || 0)}">Delete</button>`}</div>
       </div>`).join('')}
     </div>`;
   $('#addRoleBtn').onclick = () => openRoleModal();

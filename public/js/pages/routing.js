@@ -12,15 +12,15 @@ async function renderRouting() {
     </div>
     <div class="card mt"><h3>Routing Example</h3><div class="route-flow"><span>New bKash order ৳60,000</span><b>→</b><span>bKash rules only</span><b>→</b><span>Priority 1 user</span><b>→</b><span>Capacity/limit ok?</span><b>→</b><span>Assign</span></div><div class="notice">Capacity Guard checks active account limits.</div></div>
     <div class="card mt">${table(['Method','User','Priority','Amount Range','Capacity Guard','Max Active','Enabled','Note','Action'], data.items.map(r => [
-      r.method?.name || '',
-      r.agent?.name || '',
-      `<b>${r.priority}</b><br/><span class="sub">${Number(r.priority)===1?'first choice':'fallback'}</span>`,
+      escapeHtml(r.method?.name || ''),
+      escapeHtml(r.agent?.name || ''),
+      `<b>${Number(r.priority || 0)}</b><br/><span class="sub">${Number(r.priority)===1?'first choice':'fallback'}</span>`,
       `${money(r.minOrderAmount || 0)} - ${r.maxOrderAmount ? money(r.maxOrderAmount) : 'No max'}`,
       badge(r.capacityGuard ? 'ON: check capacity' : 'OFF: route only', r.capacityGuard ? 'ok' : 'warn'),
       r.maxActiveOrders || 'No limit',
       badge(r.enabled?'enabled':'disabled', r.enabled?'ok':'warn'),
       escapeHtml(r.note || ''),
-      `<div class="actions"><button data-edit-route="${r.id}">Edit</button><button class="danger" data-del-route="${r.id}">Delete</button></div>`
+      `<div class="actions"><button data-edit-route="${Number(r.id || 0)}">Edit</button><button class="danger" data-del-route="${Number(r.id || 0)}">Delete</button></div>`
     ]))}</div>`;
   $('#addRouteBtn').onclick = () => openRouteModal();
   $$('[data-edit-route]').forEach(b => b.onclick = () => openRouteModal(data.items.find(r => r.id === Number(b.dataset.editRoute))));

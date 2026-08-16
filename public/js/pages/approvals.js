@@ -11,7 +11,7 @@ async function renderApprovals() {
       a.order ? `${badge(a.order.type, a.order.type==='BUY'?'blue':'ok')} ${money(a.order.amount)}<br/><span class="sub">Actual ${money(a.summarySnapshot?.relevantActual || a.order.summary?.relevantActual || 0)}</span>` : '-',
       issues || '-',
       `<b>${escapeHtml(a.requestedByName || a.requestedByUser?.name || '-')}</b><br/><span class="sub">${fmt(a.requestedAt)}</span>`,
-      `<button data-open-order="${a.orderId}" class="secondary">Open Order</button> <button data-approve="${a.id}" class="success">Approve</button> <button data-reject="${a.id}" class="danger">Reject</button>`
+      `<button data-open-order="${Number(a.orderId || 0)}" class="secondary">Open Order</button> <button data-approve="${Number(a.id || 0)}" class="success">Approve</button> <button data-reject="${Number(a.id || 0)}" class="danger">Reject</button>`
     ];
   });
   $('#content').innerHTML = `

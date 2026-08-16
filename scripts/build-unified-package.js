@@ -23,7 +23,7 @@ const sensitiveNames = new Set([
 
 function isSensitive(relative) {
   const parts = relative.split('/');
-  return parts.some(part => sensitiveNames.has(part)) || parts.includes('shared') || parts.includes('releases') || parts.includes('.p2pflow');
+  return parts.some(part => sensitiveNames.has(part) || /\.bak(?:\.|$)/i.test(part) || part.endsWith('~')) || parts.includes('shared') || parts.includes('releases') || parts.includes('.p2pflow');
 }
 function copySafe(src, dst, relative = '') {
   const stat = fs.lstatSync(src);
@@ -47,6 +47,7 @@ fs.rmSync(outDir, { recursive:true, force:true });
 fs.mkdirSync(stage, { recursive:true });
 const currentReleaseNotes = `P2PFlow_v${pkg.version}_RELEASE_NOTES_BN.md`;
 function isTopLevelPackageClutter(name) {
+  if (/^P2PFlow_v\d+\.\d+\.\d+_/i.test(name) && !name.startsWith(`P2PFlow_v${pkg.version}_`)) return true;
   if (/^P2PFlow_v.*_TEST_REPORT\.txt$/i.test(name)) return true;
   if (/^P2PFlow_v.*_RELEASE_NOTES_BN\.md$/i.test(name) && name !== currentReleaseNotes) return true;
   return false;
@@ -58,7 +59,7 @@ for (const name of fs.readdirSync(root)) {
   copySafe(path.join(root, name), path.join(stage, name), name);
 }
 
-const packageType = `P2PFlow UNIFIED PACKAGE\nVersion: ${pkg.version}\n\nONE ZIP FOR ALL USES\n- Fresh server: extract to Node application root, npm ci, npm start.\n- Existing server: backup persistent data, extract/overwrite application files, npm ci, restart.\n- GitHub: extract the same ZIP into the repository root, commit and push.\n- Future updates: System Update checks signed GitHub Releases and installs them without replacing database records.\n\nNever copy runtime .env/.p2pflow/shared/database files into GitHub.\n`;
+const packageType = `P2PFlow UNIFIED PACKAGE\nVersion: ${pkg.version}\n\nONE ZIP FOR ALL USES\n- Fresh server: extract to the Node application root; run npm ci --omit=dev --ignore-scripts, npm run build, npm test, then npm start and complete /setup.\n- Existing server: back up and preserve .env, .p2pflow, shared/ and the database; replace only application files; run the exact production dependency install, build/test/preflight, then restart.\n- GitHub: extract the same ZIP into the repository root, review the diff, commit and push without runtime secrets or persistent data.\n- Future updates: System Update checks signed GitHub Releases and installs them without replacing database records.\n\nComplete P2PFlow_v${pkg.version}_LAUNCH_CHECKLIST_BN.md before public traffic is enabled.\nNever copy runtime .env/.p2pflow/shared/database files into GitHub.\n`;
 fs.writeFileSync(path.join(stage, 'PACKAGE_TYPE.txt'), packageType);
 
 const zip = spawnSync('zip', ['-q','-r',zipPath,'.'], { cwd:stage, stdio:'inherit' });

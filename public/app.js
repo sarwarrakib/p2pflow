@@ -1,5 +1,5 @@
-// v1.5.14: account-scoped Binance RBAC, visible security recovery setup and individual-only profit accounting.
-// v1.5.14: first-run recovery reuses the saved Application Key and software updates are Owner-only from Control Panel.
+// v1.5.15: account-scoped Binance RBAC, visible security recovery setup and individual-only profit accounting.
+// v1.5.15: first-run recovery reuses the saved Application Key and software updates are Owner-only from Control Panel.
 // v1.0.137: Diagnose and harden Binance P2P Create Advertisement privilege flow.
 // v1.0.128: lightweight Ads UI, cached reloads and realtime Binance merchant-status sync.
 // v1.0.117: Stop order countdowns immediately after completed or cancelled status sync.
@@ -736,12 +736,14 @@ function chatMessageHtml(c, context={}) {
   } else {
     actorLabel = senderName || 'System';
   }
-  const isImage = (type === 'image' || /\.(png|jpe?g|webp)(\?|$)/i.test(msg)) && /^(https?:\/\/|data:image\/|blob:|\/)/i.test(msg);
-  const isVideo = (type === 'video' || /\.(mp4|webm|mov)(\?|$)/i.test(msg)) && /^(https?:\/\/|data:video\/|blob:|\/)/i.test(msg);
+  const imageSrc = safeMediaUrl(msg, 'image');
+  const videoSrc = safeMediaUrl(msg, 'video');
+  const isImage = Boolean(imageSrc && (type === 'image' || /\.(png|jpe?g|gif|webp|avif)(\?|$)/i.test(msg) || /^data:image\//i.test(msg)));
+  const isVideo = Boolean(videoSrc && (type === 'video' || /\.(mp4|webm)(\?|$)/i.test(msg) || /^data:video\//i.test(msg)));
   const body = isImage
-    ? `<button class="chat-image-button" type="button" data-chat-image-src="${escapeAttr(msg)}" aria-label="Open image full screen"><img class="chat-image" src="${escapeAttr(msg)}" alt="Chat image" loading="lazy"></button>`
+    ? `<button class="chat-image-button" type="button" data-chat-image-src="${escapeAttr(imageSrc)}" aria-label="Open image full screen"><img class="chat-image" src="${escapeAttr(imageSrc)}" alt="Chat image" loading="lazy"></button>`
     : isVideo
-      ? `<video class="chat-video" src="${escapeAttr(msg)}" controls playsinline preload="metadata"></video>`
+      ? `<video class="chat-video" src="${escapeAttr(videoSrc)}" controls playsinline preload="metadata"></video>`
       : escapeHtml(msg).replace(/\n/g, '<br>');
   return `<div class="chat-row ${isMine ? 'me' : 'them'}">
     <div class="chat-bubble">
@@ -752,8 +754,8 @@ function chatMessageHtml(c, context={}) {
   </div>`;
 }
 function openChatImageViewer(src='') {
-  const safeSrc = String(src || '').trim();
-  if (!/^(https?:\/\/|data:image\/|blob:|\/)/i.test(safeSrc)) return;
+  const safeSrc = safeMediaUrl(src, 'image');
+  if (!safeSrc) return;
   closeChatImageViewer();
   const viewer = document.createElement('dialog');
   viewer.className = 'chat-image-viewer';
@@ -4260,7 +4262,7 @@ function renderNav() {
   // legacy flat menu while this marker is absent, the browser/proxy is serving
   // stale frontend JavaScript rather than the active release.
   nav.dataset.navigationModel = 'grouped-control-center';
-  nav.dataset.uiRelease = '1.5.14';
+  nav.dataset.uiRelease = '1.5.15';
   nav.innerHTML = '';
   const visible = visiblePages();
   const visibleIds = new Set(visible.map(([id]) => id));
@@ -4548,7 +4550,39 @@ function orderNumberLabelHtml(o) {
   return `<b>${escapeHtml(o.orderNo)}</b>${payId ? `<br/><span class="sub">Pay ID ${escapeHtml(payId)}</span>` : ''}<br/><span class="sub">${escapeHtml(o.externalStatus || '')}</span>`;
 }
 
-function isLikelyUrl(v) { return /^https?:\/\//i.test(String(v || '')); }
+function safeWebUrl(value, options={}) {
+  const raw = String(value || '').trim();
+  if (!raw || /[\u0000-\u001f\u007f\\]/.test(raw)) return '';
+  const allowRelative = options.allowRelative !== false;
+  if (allowRelative && raw.startsWith('/') && !raw.startsWith('//')) return raw;
+  let parsed;
+  try { parsed = new URL(raw); } catch { return ''; }
+  if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password) return '';
+  return parsed.toString();
+}
+function safeBinanceUrl(value, fallback='https://p2p.binance.com/en') {
+  const candidate = safeWebUrl(value, { allowRelative:false });
+  if (candidate) {
+    try {
+      const parsed = new URL(candidate);
+      const host = parsed.hostname.toLowerCase();
+      if (parsed.protocol === 'https:' && (host === 'binance.com' || host.endsWith('.binance.com'))) return parsed.toString();
+    } catch {}
+  }
+  return fallback ? safeWebUrl(fallback, { allowRelative:false }) : '';
+}
+function safeMediaUrl(value, kind='image') {
+  const raw = String(value || '').trim();
+  const web = safeWebUrl(raw, { allowRelative:true });
+  if (web) return web;
+  if (raw.startsWith('blob:')) {
+    try { const parsed = new URL(raw); return parsed.origin === location.origin ? parsed.toString() : ''; } catch { return ''; }
+  }
+  if (kind === 'image' && /^data:image\/(?:png|jpe?g|gif|webp|avif);base64,[a-z0-9+/=\s]+$/i.test(raw)) return raw;
+  if (kind === 'video' && /^data:video\/(?:mp4|webm);base64,[a-z0-9+/=\s]+$/i.test(raw)) return raw;
+  return '';
+}
+function isLikelyUrl(v) { return Boolean(safeWebUrl(v, { allowRelative:true })); }
 function firstPaymentValue(...values) {
   for (const value of values) {
     if (value !== undefined && value !== null && String(value).trim()) return String(value).trim();
@@ -4695,7 +4729,8 @@ function customerPaymentDetailsCard(o) {
     paymentDetailRowHtml('Remarks', remark, { wide:true }),
     paymentDetailRowHtml('Reference / Pay ID', referenceValue)
   ].filter(Boolean).join('');
-  const qr = qrCodePath ? `<div class="pay-qr payment-detail-qr">${isLikelyUrl(qrCodePath) ? `<a href="${escapeAttr(qrCodePath)}" target="_blank" rel="noopener"><img src="${escapeAttr(qrCodePath)}" alt="Payment QR" onerror="this.style.display='none'"/><span>Open QR / payment image</span></a>` : `<span>${escapeHtml(qrCodePath)}</span>`}</div>` : '';
+  const qrUrl = safeMediaUrl(qrCodePath, 'image');
+  const qr = qrCodePath ? `<div class="pay-qr payment-detail-qr">${qrUrl ? `<a href="${escapeAttr(qrUrl)}" target="_blank" rel="noopener noreferrer"><img src="${escapeAttr(qrUrl)}" alt="Payment QR"/><span>Open QR / payment image</span></a>` : `<span>${escapeHtml(qrCodePath)}</span>`}</div>` : '';
   const err = o.lastBinancePaymentDetailError || o.lastBinanceDetailError || '';
   const errHtml = err && !hasDestination ? `<div class="notice danger-note mt-sm"><b>Payment detail sync error:</b> ${escapeHtml(err)}</div>` : '';
   const heading = isBuy ? `Transfer via: ${methodName}` : 'My Payment Method';
@@ -5261,7 +5296,7 @@ async function loadOrderDetail(id, showLoading=true, fromRoute=false) {
         <div class="quick-number-list">${visible.length ? visible.map(account => {
           const isMatch = accountMatchesOrderMethod(account, o);
           const isSelected = Number(account.id) === Number(o.selectedPaymentAccountId || o.selectedPaymentAccount?.id || 0);
-          return `<button class="quick-number-row${isSelected ? ' is-selected' : ''}" type="button" data-quick-payment-account="${account.id}">
+          return `<button class="quick-number-row${isSelected ? ' is-selected' : ''}" type="button" data-quick-payment-account="${Number(account.id) || 0}">
             <span class="quick-number-main"><b>${escapeHtml(account.method?.name || 'Payment account')}</b><strong>${escapeHtml(account.accountNumber || '-')}</strong><small>${escapeHtml(account.accountName || account.agent?.name || '')}</small></span>
             <span class="quick-number-meta"><em>${escapeHtml(accountTypeLabel(account.accountType))}</em>${isMatch ? '<i>MATCHED METHOD</i>' : ''}${isSelected ? '<i>SELECTED</i>' : ''}</span>
           </button>`;
@@ -5589,20 +5624,20 @@ function openUserModal(userItem=null) {
       <div><label>Username</label><input name="username" value="${escapeAttr(u.username || '')}" ${isEdit && u.username ? '' : 'required'} /></div>
       <div><label>Email for OTP</label><input name="email" type="email" value="${escapeAttr(u.email || '')}" placeholder="user@example.com" /></div>
       <div><label>Mobile / SMS Number</label><input name="mobile" value="${escapeAttr(userItem?.mobile || '')}" placeholder="optional" /></div>
-      <div><label>${isEdit ? 'New Password (optional)' : 'Password'}</label><input name="password" type="password" ${isEdit ? '' : 'required'} /></div>
+      <div><label>${isEdit ? 'New Password (optional)' : 'Password'}</label><input name="password" type="password" minlength="12" maxlength="200" autocomplete="new-password" placeholder="Minimum 12 characters" ${isEdit ? '' : 'required'} /></div>
       <div><label>${isEdit ? 'New 6 Digit Secret (optional)' : '6 Digit Secret Code'}</label><input name="secretCode" inputmode="numeric" maxlength="6" ${isEdit ? 'placeholder="optional"' : 'required'} /></div>
       <fieldset class="full-row security-recovery-panel">
         <legend>Login Security & Recovery ${u.securityFallbackConfigured ? badge('Configured', 'ok') : badge('Not configured', 'warn')}</legend>
         <p>Set the Security Question here for this login. It is used only when Login OTP delivery fails.</p>
         <div class="form-grid compact-grid">
-          <div class="full-row"><label>Security Question</label><input name="securityQuestion" maxlength="240" value="${escapeAttr(u.securityQuestion || '')}" placeholder="Example: What was the name of your first school?" /></div>
-          <div><label>${u.securityFallbackConfigured ? 'New Security Answer (optional)' : 'Security Answer'}</label><input name="securityAnswer" type="password" maxlength="200" autocomplete="new-password" placeholder="${u.securityFallbackConfigured ? 'Leave blank to keep current answer' : 'Required when a question is set'}" /></div>
+          <div class="full-row"><label>Security Question</label><input name="securityQuestion" minlength="8" maxlength="240" value="${escapeAttr(u.securityQuestion || '')}" placeholder="Example: What was the name of your first school?" /></div>
+          <div><label>${u.securityFallbackConfigured ? 'New Security Answer (optional)' : 'Security Answer'}</label><input name="securityAnswer" type="password" minlength="8" maxlength="200" autocomplete="new-password" placeholder="${u.securityFallbackConfigured ? 'Leave blank to keep current answer' : 'Required when a question is set'}" /></div>
           <div><label class="check danger-check"><input type="checkbox" name="clearSecurityFallback" /> Remove Security Question fallback</label></div>
         </div>
         <div class="notice small">The answer is stored only as a one-way password hash. Recovery requires the correct answer and the existing 6 digit secret.</div>
       </fieldset>
-      <div><label>Max Active Orders</label><input name="maxActiveOrders" type="number" value="${userItem?.maxActiveOrders || 5}" /></div>
-      <div><label>Max Release Amount</label><input name="maxReleaseAmount" type="number" value="${userItem?.maxReleaseAmount || 0}" /></div>
+      <div><label>Max Active Orders</label><input name="maxActiveOrders" type="number" min="0" step="1" value="${Number.isFinite(Number(userItem?.maxActiveOrders)) ? Number(userItem.maxActiveOrders) : 5}" /></div>
+      <div><label>Max Release Amount</label><input name="maxReleaseAmount" type="number" min="0" step="0.01" value="${Number.isFinite(Number(userItem?.maxReleaseAmount)) ? Number(userItem.maxReleaseAmount) : 0}" /></div>
       <div><label class="check"><input type="checkbox" name="allowNewOrders" ${userItem?.allowNewOrders === false ? '' : 'checked'} /> Allow new orders</label></div>
       <div><label class="check"><input type="checkbox" name="smsEnabled" ${userItem?.smsEnabled === false ? '' : 'checked'} /> Panel SMS on order assignment</label></div>
       <div><label class="check"><input type="checkbox" name="canRelease" ${userItem?.canRelease ? 'checked' : ''} /> Can release/final action</label></div>
@@ -5623,10 +5658,11 @@ function openUserModal(userItem=null) {
   $('#userForm').onsubmit = async e => {
     e.preventDefault();
     const obj = formObj(e.target);
+    if (obj.password && String(obj.password).length < 12) { setFormMessage('#userFormMessage', 'Password must be at least 12 characters.', 'danger'); return; }
     if (obj.secretCode && !/^\d{6}$/.test(obj.secretCode)) { setFormMessage('#userFormMessage', 'Secret code must be exactly 6 digits.', 'danger'); return; }
     obj.clearSecurityFallback = e.target.clearSecurityFallback.checked;
     if (!obj.clearSecurityFallback && !u.securityFallbackConfigured && (String(obj.securityQuestion || '').trim() || String(obj.securityAnswer || '').trim())) {
-      if (String(obj.securityQuestion || '').trim().length < 4 || String(obj.securityAnswer || '').trim().length < 2) { setFormMessage('#userFormMessage', 'Security Question and Security Answer are both required when enabling fallback.', 'danger'); return; }
+      if (String(obj.securityQuestion || '').trim().length < 8 || String(obj.securityAnswer || '').trim().length < 8) { setFormMessage('#userFormMessage', 'Security Question and Security Answer must both be at least 8 characters.', 'danger'); return; }
     }
     obj.allowNewOrders = e.target.allowNewOrders.checked;
     obj.smsEnabled = e.target.smsEnabled.checked;
@@ -5649,10 +5685,10 @@ function openRouteModal(route=null) {
     <form id="routeForm" class="form-grid">
       <div><label>Payment Method</label>${methodSelect(route?.paymentMethodId)}</div>
       <div><label>User / Employee</label>${agentSelect(route?.agentId)}</div>
-      <div><label>Priority</label><input name="priority" type="number" value="${route?.priority || 1}" /></div>
-      <div><label>Max Active Orders</label><input name="maxActiveOrders" type="number" value="${route?.maxActiveOrders || 0}" /></div>
-      <div><label>Min Order Amount</label><input name="minOrderAmount" type="number" value="${route?.minOrderAmount || 0}" /></div>
-      <div><label>Max Order Amount</label><input name="maxOrderAmount" type="number" value="${route?.maxOrderAmount || 0}" /></div>
+      <div><label>Priority</label><input name="priority" type="number" min="1" step="1" value="${Number.isFinite(Number(route?.priority)) ? Number(route.priority) : 1}" /></div>
+      <div><label>Max Active Orders</label><input name="maxActiveOrders" type="number" min="0" step="1" value="${Number.isFinite(Number(route?.maxActiveOrders)) ? Number(route.maxActiveOrders) : 0}" /></div>
+      <div><label>Min Order Amount</label><input name="minOrderAmount" type="number" min="0" step="0.01" value="${Number.isFinite(Number(route?.minOrderAmount)) ? Number(route.minOrderAmount) : 0}" /></div>
+      <div><label>Max Order Amount</label><input name="maxOrderAmount" type="number" min="0" step="0.01" value="${Number.isFinite(Number(route?.maxOrderAmount)) ? Number(route.maxOrderAmount) : 0}" /></div>
       <div><label class="check"><input type="checkbox" name="capacityGuard" ${route?.capacityGuard ? 'checked' : ''}/> Capacity guard</label></div>
       <div><label class="check"><input type="checkbox" name="enabled" ${route?.enabled === false ? '' : 'checked'}/> Enabled</label></div>
       <div class="full-row"><label>Note</label><input name="note" value="${escapeAttr(route?.note || '')}" /></div>
@@ -6417,7 +6453,7 @@ function openUpdateSplitModal(order, splitId) {
   const direction = split.direction;
   modal('Update Amount', `
     <div class="kv"><b>Account</b><span>${escapeHtml(split.account.accountNumber)}</span><b>Current Amount</b><span>${money(split.actualAmount)}</span></div>
-    ${split.hasProof ? `<div class="okbox"><a href="${escapeAttr(split.proofUrl)}" target="_blank" rel="noopener">Existing proof attached</a></div>` : '<div class="notice">Proof is required before the final action.</div>'}
+    ${split.hasProof && safeWebUrl(split.proofUrl) ? `<div class="okbox"><a href="${escapeAttr(safeWebUrl(split.proofUrl))}" target="_blank" rel="noopener noreferrer">Existing proof attached</a></div>` : '<div class="notice">Proof is required before the final action.</div>'}
     <div class="live-remaining" id="splitPreview"></div>
     <form id="updateSplitForm" class="form-grid">
       <div class="full-row"><label>Amount</label><input name="amount" type="number" min="0.01" step="0.01" value="${split.actualAmount || split.plannedAmount}" /></div>
@@ -6654,11 +6690,11 @@ function p2pInfoRow(label, valueHtml, sub='') {
 }
 function p2pTabBtn(label, tab, activeTab, extra='') {
   const active = tab === activeTab;
-  return `<button type="button" class="p2p-tab-btn ${active ? 'active' : ''}" onclick="setP2pInfoTab('${escapeAttr(tab)}')">${escapeHtml(label)}${extra ? ` ${extra}` : ''}</button>`;
+  return `<button type="button" class="p2p-tab-btn ${active ? 'active' : ''}" data-p2p-info-tab="${escapeAttr(tab)}">${escapeHtml(label)}${extra ? ` ${extra}` : ''}</button>`;
 }
 function p2pFeedbackTypeBtn(label, type, activeType, count) {
   const active = type === activeType;
-  return `<button type="button" class="p2p-feedback-type ${active ? 'active' : ''} ${type}" onclick="setP2pFeedbackTab('${escapeAttr(type)}')">${escapeHtml(label)} (${fmtDash(count)})</button>`;
+  return `<button type="button" class="p2p-feedback-type ${active ? 'active' : ''} ${type}" data-p2p-feedback-tab="${escapeAttr(type)}">${escapeHtml(label)} (${fmtDash(count)})</button>`;
 }
 function setP2pInfoTab(tab) {
   state.p2pInfoTab = tab === 'feedback' ? 'feedback' : (tab === 'ads' ? 'ads' : 'info');
@@ -6748,7 +6784,7 @@ function counterpartyCard(o) {
   const positive = comments.filter(x => x.type === 'positive').slice(0, 50);
   const negative = comments.filter(x => x.type === 'negative').slice(0, 50);
   const localState = p2pLocalWaitState(o, c);
-  const manualBtn = `<button class="ghost mini" onclick="editCounterpartyFeedback(${Number(o.id || 0)})">Manual Feedback</button>`;
+  const manualBtn = `<button type="button" class="ghost mini" data-edit-counterparty-feedback="${Number(o.id || 0)}">Manual Feedback</button>`;
   const nick = c.nickname || o.counterpartyName || '-';
   const following = p2pSocialValue(c.followingCount, localState);
   const followers = p2pSocialValue(c.followersCount, localState);
@@ -6837,8 +6873,7 @@ async function editCounterpartyFeedback(orderId) {
   try {
     const updated = await api(`/api/orders/${orderId}/counterparty-feedback-manual`, { method:'POST', body: JSON.stringify({ positiveFeedback: p.value, negativeFeedback: n.value, feedbackTotalCount: t.value, positiveFeedbackRate: pr.value, negativeFeedbackRate: nr.value }) });
     state.currentOrder = updated;
-    const box = document.querySelector('.p2p-info-modal');
-    if (box) box.innerHTML = counterpartyCard(updated);
+    renderP2pInfoIntoModal(updated);
     notify('Manual feedback saved.', 'ok');
   } catch (err) {
     notify(err.message || 'Could not save manual feedback.', 'danger');
@@ -6856,11 +6891,24 @@ function p2pExtensionStatusHtml(o) {
   return '<div class="p2p-collecting-note">Please wait, collecting missing P2P data...</div>';
 }
 
+function bindP2pInfoModalActions(box) {
+  $$('[data-p2p-info-tab]', box).forEach(button => {
+    button.onclick = () => setP2pInfoTab(button.dataset.p2pInfoTab || 'info');
+  });
+  $$('[data-p2p-feedback-tab]', box).forEach(button => {
+    button.onclick = () => setP2pFeedbackTab(button.dataset.p2pFeedbackTab || 'negative');
+  });
+  $$('[data-edit-counterparty-feedback]', box).forEach(button => {
+    button.onclick = () => editCounterpartyFeedback(Number(button.dataset.editCounterpartyFeedback || 0));
+  });
+}
+
 function renderP2pInfoIntoModal(order) {
   const box = document.querySelector('.p2p-info-modal');
   if (!box) return;
   state.currentOrder = order;
   box.innerHTML = p2pExtensionStatusHtml(order) + counterpartyCard(order);
+  bindP2pInfoModalActions(box);
 }
 
 async function pollP2pExtensionResult(orderId, taskId) {
@@ -6967,21 +7015,77 @@ function agentTaskAction(a, order) {
   return `<button class="success" data-complete-agent="${a.agentId}">Done</button>`;
 }
 
+let modalSequence = 0;
+const modalFocusStack = [];
+function modalFocusable(dialog) {
+  return [...dialog.querySelectorAll('a[href], button:not([disabled]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])')]
+    .filter(element => !element.hidden && element.getAttribute('aria-hidden') !== 'true' && element.getClientRects().length > 0);
+}
 function modal(title, html) {
   const tpl = $('#modalTemplate').content.cloneNode(true);
-  tpl.querySelector('h3').textContent = title;
+  const backdrop = tpl.querySelector('.modal-backdrop');
+  const dialog = tpl.querySelector('.modal');
+  const heading = tpl.querySelector('h3');
+  const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  const headingId = `p2pflow-modal-title-${++modalSequence}`;
+  heading.id = headingId;
+  heading.textContent = title;
+  dialog.setAttribute('aria-labelledby', headingId);
   tpl.querySelector('.modal-body').innerHTML = html;
-  tpl.querySelector('.close-modal').onclick = closeModal;
-  tpl.querySelector('.modal-backdrop').addEventListener('click', e => { if (e.target.classList.contains('modal-backdrop')) closeModal(); });
+  const record = { backdrop, dialog, previousFocus, keydown: null };
+  record.keydown = event => {
+    const top = modalFocusStack[modalFocusStack.length - 1];
+    if (top !== record) return;
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      closeModal(backdrop);
+      return;
+    }
+    if (event.key !== 'Tab') return;
+    const focusable = modalFocusable(dialog);
+    if (!focusable.length) {
+      event.preventDefault();
+      dialog.focus();
+      return;
+    }
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  };
+  tpl.querySelector('.close-modal').onclick = () => closeModal(backdrop);
+  backdrop.addEventListener('click', event => { if (event.target === backdrop) closeModal(backdrop); });
   document.body.appendChild(tpl);
+  modalFocusStack.push(record);
+  document.addEventListener('keydown', record.keydown);
   document.body.classList.add('modal-open');
-  applyLanguage(document.querySelector('.modal-backdrop:last-child') || document);
+  applyLanguage(backdrop);
+  requestAnimationFrame(() => (modalFocusable(dialog)[0] || dialog).focus());
 }
-function closeModal() {
-  $$('.modal-backdrop').forEach(x => x.remove());
-  document.body.classList.remove('modal-open');
-  if (typeof closeAdsSheet === 'function') closeAdsSheet();
-  if (state.pendingAdsRefresh && state.page === 'ads') {
+function closeModal(targetBackdrop = null) {
+  const index = targetBackdrop
+    ? modalFocusStack.findIndex(record => record.backdrop === targetBackdrop)
+    : modalFocusStack.length - 1;
+  const record = index >= 0 ? modalFocusStack[index] : null;
+  if (record) {
+    document.removeEventListener('keydown', record.keydown);
+    modalFocusStack.splice(index, 1);
+    record.backdrop.remove();
+  } else {
+    const fallback = document.querySelector('.modal-backdrop:last-of-type');
+    if (fallback) fallback.remove();
+  }
+  document.body.classList.toggle('modal-open', modalFocusStack.length > 0 || Boolean(document.querySelector('.modal-backdrop')));
+  const next = modalFocusStack[modalFocusStack.length - 1];
+  const restore = next?.dialog || record?.previousFocus;
+  if (restore && document.contains(restore) && typeof restore.focus === 'function') requestAnimationFrame(() => restore.focus());
+  if (!modalFocusStack.length && typeof closeAdsSheet === 'function') closeAdsSheet();
+  if (!modalFocusStack.length && state.pendingAdsRefresh && state.page === 'ads') {
     state.pendingAdsRefresh = false;
     scheduleSmoothRefresh(80);
   }
@@ -7031,212 +7135,13 @@ function exportReportCsv(data) {
   URL.revokeObjectURL(a.href);
 }
 
-function badge(text, cls='') { return `<span class="badge ${cls}">${escapeHtml(String(text || ''))}</span>`; }
+function badge(text, cls='') {
+  const safeClass = String(cls || '').split(/\s+/).filter(token => /^[a-z0-9_-]{1,40}$/i.test(token)).join(' ');
+  return `<span class="badge ${safeClass}">${escapeHtml(String(text || ''))}</span>`;
+}
 function statusClass(s) { return ['completed','released','paid_marked','success','active','assigned','ready','online'].includes(s) ? 'ok' : ['manager_queue','partial','partial_completed','short','busy','planned','idle','away'].includes(s) ? 'warn' : ['failed','cancelled','left','offline'].includes(s) ? 'danger' : 'blue'; }
 function escapeHtml(s) { return String(s ?? '').replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c])); }
 function escapeAttr(s) { return escapeHtml(s); }
 function sumLocal(arr) { return arr.reduce((a,b)=>a+Number(b||0),0); }
 
 init();
-
-
-/* ===== PAYMENT METHOD UI IMPROVEMENT ===== */
-function getPaymentIcon(type='') {
-  type = (type || '').toLowerCase();
-  if (type.includes('bank')) return '🏦';
-  if (type.includes('bkash')) return '📱';
-  if (type.includes('nagad')) return '🟠';
-  if (type.includes('binance')) return '🟡';
-  return '💳';
-}
-
-function renderPaymentBadge(order) {
-  const method = order.paymentMethodName || order.payType || order.paymentMethod || 'Unknown';
-  const icon = getPaymentIcon(method);
-  return `<span class="payment-badge">${icon} ${method}</span>`;
-}
-
-/* NOTE: integrate renderPaymentBadge(order) inside order card rendering function */
-
-
-/* ================= ENTERPRISE EVENT SYSTEM ================= */
-window.CRM_EVENT_BUS = {
-  listeners: {},
-  emit(event, data) {
-    (this.listeners[event] || []).forEach(cb => cb(data));
-  },
-  on(event, cb) {
-    if (!this.listeners[event]) this.listeners[event] = [];
-    this.listeners[event].push(cb);
-  }
-};
-
-/* ================= FIX: ORDER RENDER FLICKER ================= */
-let __lastPaymentRender = {};
-
-function stablePaymentMethod(orderId, method) {
-  if (!method && __lastPaymentRender[orderId]) {
-    return __lastPaymentRender[orderId];
-  }
-  __lastPaymentRender[orderId] = method;
-  return method;
-}
-
-/* ================= ENTERPRISE NOTIFICATION SYSTEM ================= */
-function crmNotify(message, type='info') {
-  const el = document.createElement('div');
-  el.className = 'crm-toast ' + type;
-  el.innerText = message;
-  document.body.appendChild(el);
-  setTimeout(() => el.classList.add('show'), 10);
-  setTimeout(() => {
-    el.classList.remove('show');
-    setTimeout(()=>el.remove(), 300);
-  }, 3000);
-}
-
-/* ================= BINANCE ORDER EVENT HOOKS ================= */
-window.CRM_EVENT_BUS.on('order_update', (order) => {
-  crmNotify(`Order ${order.orderNo} updated`, 'ok');
-});
-
-window.CRM_EVENT_BUS.on('order_new', (order) => {
-  crmNotify(`New Order ${order.orderNo}`, 'info');
-});
-
-window.CRM_EVENT_BUS.on('order_status', (order) => {
-  crmNotify(`Status: ${order.orderNo} -> ${order.status}`, 'warn');
-});
-
-/* ================= CRITICAL UI FIX HOOK ================= */
-function emitOrderUpdate(order) {
-  window.CRM_EVENT_BUS.emit('order_update', order);
-}
-
-
-/* ================= SSE CLIENT ================= */
-let es;
-
-function initStream(){
-  // v1.0.50: disabled duplicate legacy SSE. Core startEvents() already handles realtime updates after login.
-  return;
-  try {
-    es = new EventSource('/api/events');
-
-    es.addEventListener('order_new', e=>{
-      const d = JSON.parse(e.data);
-      crmNotify('New Order ' + d.orderNo,'info');
-    });
-
-    es.addEventListener('order_update', e=>{
-      const d = JSON.parse(e.data);
-      crmNotify('Update ' + d.orderNo,'ok');
-    });
-
-    es.addEventListener('order_status', e=>{
-      const d = JSON.parse(e.data);
-      crmNotify(d.orderNo+' '+d.status,'warn');
-    });
-  } catch(e){}
-}
-
-document.addEventListener('DOMContentLoaded', initStream);
-
-/* stable payment */
-window.__payCache = window.__payCache || {};
-function stablePay(order){
-  if(!window.__payCache[order.id]) window.__payCache[order.id] = order.paymentMethodName;
-  return window.__payCache[order.id];
-}
-
-
-/* ================= v1.0.46 CONTROL CLIENT ================= */
-
-let ws;
-
-function initControlStream(){
-  // v1.0.50: disabled by default to avoid an extra failed websocket on every page load.
-  if(!window.CRM_ENABLE_LEGACY_WS) return;
-  try{
-    ws = new WebSocket(location.origin.replace("http","ws"));
-
-    ws.onmessage = (e)=>{
-      try{
-        const msg = JSON.parse(e.data);
-
-        if(msg.type === "order_new"){
-          crmNotify("NEW "+msg.orderNo,"info");
-        }
-
-        if(msg.type === "order_update"){
-          crmNotify("UPDATE "+msg.orderNo,"ok");
-        }
-
-        if(msg.type === "risk_alert"){
-          crmNotify("RISK "+msg.orderNo,"warn");
-        }
-
-      }catch(e){}
-    }
-  }catch(e){}
-}
-
-function getRiskBadge(order){
-  const r = order.riskScore || 0;
-  if(r > 70) return "🔴 HIGH RISK";
-  if(r > 40) return "🟠 MEDIUM";
-  return "🟢 LOW";
-}
-
-document.addEventListener("DOMContentLoaded", initControlStream);
-
-
-/* ================= GOD MODE CLIENT ================= */
-
-function getFraudBadge(score){
-  if(score > 70) return "🔴 FRAUD RISK";
-  if(score > 40) return "🟠 SUSPICIOUS";
-  return "🟢 SAFE";
-}
-
-function attachOrderIntelligence(order){
-  order.fraud = order.fraudScore || 0;
-  order.risk = order.riskScore || 0;
-  return order;
-}
-
-function renderGodMode(order){
-  const f = order.fraudScore || 0;
-  return `
-    <div class="god-panel">
-      <span>Risk: ${order.riskScore}</span>
-      <span>Fraud: ${getFraudBadge(f)}</span>
-    </div>
-  `;
-}
-
-
-/* ================= FINAL BOSS UI v1.0.48 SAFE PATCH ================= */
-function fixFlicker(order) {
-  window.__paymentCache = window.__paymentCache || Object.create(null);
-  if (!order) return 'Unknown';
-  const key = String(order.id || order.orderNo || order.externalOrderNo || '');
-  const value = displayPaymentMethodName(order) || order.paymentMethodName || order.payType || order.paymentMethod || '';
-  if (value && value !== '-' && key) window.__paymentCache[key] = value;
-  return (key && window.__paymentCache[key]) || value || 'Unknown';
-}
-
-function renderFinalOrder(order) {
-  const risk = Number(order?.riskScore || order?.risk || 0);
-  const pay = fixFlicker(order || {});
-  return `
-  <div class="order-card final">
-    <div class="row">
-      <b>Order:</b> ${escapeHtml(order?.orderNo || order?.externalOrderNo || order?.id || '-')}
-    </div>
-    <div class="row">
-      <span class="pay">💳 ${escapeHtml(pay)}</span>
-      <span class="risk">${risk > 70 ? '🔴 HIGH' : risk > 40 ? '🟠 MID' : '🟢 LOW'}</span>
-    </div>
-  </div>`;
-}

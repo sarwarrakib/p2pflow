@@ -9,7 +9,7 @@ async function renderNotifications() {
     escapeHtml(n.type || ''),
     escapeHtml(n.message || ''),
     escapeHtml(n.smsChannel || n.audience || ''),
-    n.orderId ? `<button onclick="setRoute('orders',{orderId:${Number(n.orderId)}})">Open Order</button>` : ''
+    n.orderId ? `<button type="button" data-open-notification-order="${Number(n.orderId)}">Open Order</button>` : ''
   ]);
   $('#content').innerHTML = `<div class="card admin-card">
     <div class="section-head"><h3>Panel SMS / Alerts</h3><button id="markAlertsReadBtn" class="ghost">Mark all read</button></div>
@@ -17,5 +17,8 @@ async function renderNotifications() {
   </div>`;
   const btn = $('#markAlertsReadBtn');
   if (btn) btn.onclick = async () => { await api('/api/notifications', { method:'POST', body: JSON.stringify({ markRead: true, includeChats: true }) }); notify('All notifications marked read.', 'ok'); scheduleHeaderNotificationRefresh(50); renderNotifications(); };
+  $$('[data-open-notification-order]').forEach(button => {
+    button.onclick = () => setRoute('orders', { orderId: Number(button.dataset.openNotificationOrder || 0) });
+  });
 }
 

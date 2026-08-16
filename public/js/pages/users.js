@@ -1,4 +1,4 @@
-// P2PFlow v1.5.14
+// P2PFlow v1.5.15
 // Page module: users. Edit this file for the users page UI.
 
 async function renderUsers() {
@@ -53,7 +53,7 @@ async function renderUsers() {
             <div><span>Cash</span><b>${money(sumLocal(aa.map(x=>x.currentBalance)))}</b></div>
             <div><span>Last Seen</span><b class="activity-small-value">${escapeHtml(fmt(p.lastSeenAt))}</b></div>
           </div>
-          <button data-edit-agent="${a.id}">Edit User / Permissions</button>
+          <button data-edit-agent="${Number(a.id || 0)}">Edit User / Permissions</button>
         </div>`;
       }).join('') || '<div class="empty-state">No users</div>'}
     </div>`;

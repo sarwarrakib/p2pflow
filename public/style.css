@@ -4923,7 +4923,7 @@ tr:hover td{background:#fbfbfc}
   .order-mobile-time { font-size: 9px; }
 }
 
-/* v1.5.14 - login recovery, account-scoped Binance RBAC and account context */
+/* v1.5.15 - login recovery, account-scoped Binance RBAC and account context */
 .text-ok{color:var(--ok-text,#166534)!important}
 .text-warn{color:var(--warn-text,#92400e)!important}
 .security-recovery-panel{

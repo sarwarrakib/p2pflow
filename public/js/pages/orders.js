@@ -1,4 +1,4 @@
-// P2PFlow v1.5.14
+// P2PFlow v1.5.15
 // Page module: orders. Edit this file for the orders page UI.
 
 function orderAccountOptions(data = {}) {
@@ -306,7 +306,7 @@ function statementFeed(ledgers=[]) {
 
 function renderSplit(s) {
   const proof = s.hasProof
-    ? `<br/><a class="pill-link" href="${escapeAttr(s.proofUrl)}" target="_blank" rel="noopener">View proof</a>`
+    ? `<br/><a class="pill-link" href="${escapeAttr(safeWebUrl(s.proofUrl))}" target="_blank" rel="noopener noreferrer">View proof</a>`
     : s.hasTransactionReference
       ? '<br/><span class="badge ok">Transaction ID saved</span>'
       : '<br/><span class="badge warn">No evidence</span>';

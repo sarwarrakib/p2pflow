@@ -1,4 +1,4 @@
-// P2PFlow v1.5.14
+// P2PFlow v1.5.15
 // Payment accounts: centrally managed, agent-scoped access, compact box-based bulk add.
 
 
@@ -34,9 +34,9 @@ async function renderAccounts() {
         ? assigned.map(agent => `<span class="account-agent-pill">${escapeHtml(agent.name || `Agent ${agent.id}`)}</span>`).join('')
         : '<span class="sub">Admin / Manager only</span>';
     const actionButtons = [];
-    if (canAdjust) actionButtons.push(`<button data-adjust-account="${account.id}">Offline Txn</button>`);
-    if (canViewStatement) actionButtons.push(`<button class="secondary" data-statement-account="${account.id}">Statement</button>`);
-    if (canManage) actionButtons.push(`<button class="secondary" data-edit-account="${account.id}">Edit / Access</button>`);
+    if (canAdjust) actionButtons.push(`<button data-adjust-account="${Number(account.id || 0)}">Offline Txn</button>`);
+    if (canViewStatement) actionButtons.push(`<button class="secondary" data-statement-account="${Number(account.id || 0)}">Statement</button>`);
+    if (canManage) actionButtons.push(`<button class="secondary" data-edit-account="${Number(account.id || 0)}">Edit / Access</button>`);
     const owner = account.ownerUser || null;
     const ownerHtml = owner
       ? `<b>${escapeHtml(owner.name || owner.username || `User ${owner.id}`)}</b><br><span class="sub">${escapeHtml(owner.username || '')}${owner.username ? ' · ' : ''}${escapeHtml(owner.role || '')}</span>`

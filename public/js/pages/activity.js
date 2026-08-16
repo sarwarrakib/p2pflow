@@ -50,7 +50,7 @@ async function renderActivityMonitor(options={}) {
         </select>
         <input name="start" type="date" value="${escapeAttr(filter.start || '')}" />
         <input name="end" type="date" value="${escapeAttr(filter.end || '')}" />
-        <select name="userId"><option value="">All users</option>${(data.availableUsers || []).map(user => `<option value="${user.id}" ${String(filter.userId)===String(user.id)?'selected':''}>${escapeHtml(user.name || user.username || ('#' + user.id))}</option>`).join('')}</select>
+        <select name="userId"><option value="">All users</option>${(data.availableUsers || []).map(user => `<option value="${Number(user.id || 0)}" ${String(filter.userId)===String(user.id)?'selected':''}>${escapeHtml(user.name || user.username || ('#' + user.id))}</option>`).join('')}</select>
         <button type="submit">Apply</button>
         <button type="button" class="secondary" id="activityRefreshBtn">Refresh</button>
       </form>

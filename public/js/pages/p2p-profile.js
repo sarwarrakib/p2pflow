@@ -1,4 +1,4 @@
-// P2PFlow v1.5.14
+// P2PFlow v1.5.15
 // Dedicated Binance-style P2P Profile workspace. Login security is kept on the separate Security page.
 
 function profileMetricValue(value, suffix = '') {
@@ -539,7 +539,7 @@ async function renderP2PProfile() {
   const editorValuesFromFields = fields => Object.fromEntries((fields || []).map(field => [String(field.fieldId || field.fieldName || ''), String(field.fieldValue ?? '')]));
 
   const openBinancePaymentMethods = () => {
-    const url = String(p2pResult.paymentMethodManageUrl || 'https://p2p.binance.com/en');
+    const url = safeBinanceUrl(p2pResult.paymentMethodManageUrl, 'https://p2p.binance.com/en');
     const opened = window.open(url, '_blank', 'noopener,noreferrer');
     if (!opened) window.location.href = url;
     notify('Binance P2P opened. Use More → Payment Methods to add or edit, then return here and tap Sync from Binance.', 'ok', 7000);
@@ -615,7 +615,7 @@ async function renderP2PProfile() {
     });
     $('#mobileProfileShareBtn')?.addEventListener('click', async () => {
       const profile = p2pResult.profile || {};
-      const shareData = { title: profile.nickname || 'P2P Profile', text: `${profile.nickname || 'P2P Profile'}${profile.userNo ? ` · User No ${profile.userNo}` : ''}`, url: p2pResult.advertiserUrl || location.href };
+      const shareData = { title: profile.nickname || 'P2P Profile', text: `${profile.nickname || 'P2P Profile'}${profile.userNo ? ` · User No ${profile.userNo}` : ''}`, url: safeBinanceUrl(p2pResult.advertiserUrl, location.href) };
       try {
         if (navigator.share) await navigator.share(shareData);
         else if (navigator.clipboard) { await navigator.clipboard.writeText(shareData.url); notify('Profile link copied.', 'ok'); }
