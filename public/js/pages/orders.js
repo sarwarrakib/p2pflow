@@ -1,4 +1,4 @@
-// P2PFlow v1.5.16
+// P2PFlow v1.5.17
 // Page module: orders. Edit this file for the orders page UI.
 
 function orderAccountOptions(data = {}) {
@@ -25,6 +25,88 @@ function orderAccountSwitcherHtml(options = [], selectedId = 0) {
   </div>`;
 }
 
+function orderAcceptanceButtonHtml(status = {}) {
+  if (!status.available) return '';
+  const accepting = status.accepting === true;
+  const label = state.lang === 'bn'
+    ? `অর্ডার গ্রহণ: ${accepting ? 'চালু' : 'বন্ধ'}`
+    : `Accept orders: ${accepting ? 'ON' : 'OFF'}`;
+  const presence = status.presenceStatus || 'offline';
+  const title = state.lang === 'bn'
+    ? `${accepting ? 'চালু থাকলে offline হলেও নতুন অর্ডার auto assign হতে পারে।' : 'বন্ধ থাকলে online হলেও নতুন অর্ডার assign হবে না।'} বর্তমান উপস্থিতি: ${presence}`
+    : `${accepting ? 'When ON, new orders may auto-assign even while offline.' : 'When OFF, new orders will not assign even while online.'} Current presence: ${presence}`;
+  return `<button type="button" id="orderAcceptanceToggle" class="order-acceptance-toggle ${accepting ? 'is-on' : 'is-off'}" aria-pressed="${accepting ? 'true' : 'false'}" title="${escapeAttr(title)}"><span class="order-acceptance-dot" aria-hidden="true"></span><span>${escapeHtml(label)}</span></button>`;
+}
+
+function updateOrderAcceptanceControl() {
+  const current = state.orderAcceptance || {};
+  const existing = $('#orderAcceptanceToggle');
+  if (!existing) return;
+  const wrapper = document.createElement('div');
+  wrapper.innerHTML = orderAcceptanceButtonHtml(current);
+  const next = wrapper.firstElementChild;
+  if (!next) return existing.remove();
+  existing.replaceWith(next);
+  bindOrderAcceptanceControl();
+}
+
+async function setOrderAcceptance(accepting, options={}) {
+  if (state.orderAcceptanceBusy) return state.orderAcceptance;
+  state.orderAcceptanceBusy = true;
+  const button = $('#orderAcceptanceToggle');
+  if (button) button.disabled = true;
+  try {
+    const result = await api('/api/me/order-acceptance', { method:'PATCH', body: JSON.stringify({ accepting: Boolean(accepting) }) });
+    state.orderAcceptance = result;
+    state.orderAcceptancePromptShown = true;
+    updateOrderAcceptanceControl();
+    if (!options.silent) notify(result.accepting ? (state.lang === 'bn' ? 'অর্ডার গ্রহণ চালু হয়েছে।' : 'Order acceptance is ON.') : (state.lang === 'bn' ? 'অর্ডার গ্রহণ বন্ধ হয়েছে।' : 'Order acceptance is OFF.'), 'ok');
+    return result;
+  } catch (error) {
+    if (!options.silent) notify(error.message || 'Could not update order acceptance.', 'danger', 6000);
+    throw error;
+  } finally {
+    state.orderAcceptanceBusy = false;
+    const latestButton = $('#orderAcceptanceToggle');
+    if (latestButton) latestButton.disabled = false;
+  }
+}
+
+function bindOrderAcceptanceControl() {
+  const button = $('#orderAcceptanceToggle');
+  if (!button) return;
+  button.onclick = async () => {
+    const next = !(state.orderAcceptance?.accepting === true);
+    try { await setOrderAcceptance(next); } catch {}
+  };
+}
+
+function maybePromptOrderAcceptance(status = {}) {
+  if (!status.available || status.accepting || state.orderAcceptancePromptShown || modalOpen()) return;
+  state.orderAcceptancePromptShown = true;
+  const isBn = state.lang === 'bn';
+  modal(isBn ? 'অর্ডার গ্রহণ' : 'Order Acceptance', `
+    <div class="order-acceptance-prompt">
+      <p>${isBn ? 'স্যার, আপনি কি অর্ডার গ্রহণ করতে চান?' : 'Would you like to accept orders?'}</p>
+      <div id="orderAcceptancePromptMessage" class="form-message"></div>
+      <div class="actions end"><button type="button" class="secondary" id="declineOrderAcceptance">${isBn ? 'না' : 'No'}</button><button type="button" id="confirmOrderAcceptance">${isBn ? 'হ্যাঁ' : 'Yes'}</button></div>
+    </div>`);
+  const noButton = $('#declineOrderAcceptance');
+  const yesButton = $('#confirmOrderAcceptance');
+  if (noButton) noButton.onclick = () => closeModal();
+  if (yesButton) yesButton.onclick = async () => {
+    yesButton.disabled = true;
+    try {
+      await setOrderAcceptance(true, { silent:true });
+      closeModal();
+      notify(isBn ? 'অর্ডার গ্রহণ চালু হয়েছে।' : 'Order acceptance is ON.', 'ok');
+    } catch (error) {
+      yesButton.disabled = false;
+      setFormMessage('#orderAcceptancePromptMessage', error.message || 'Could not enable order acceptance.', 'danger');
+    }
+  };
+}
+
 async function renderOrders(opts={}) {
   setTitle('Orders');
   let requestedCredentialId = Number(state.orderCredentialId || 0);
@@ -49,6 +131,7 @@ async function renderOrders(opts={}) {
   }
   state.orderCredentialOptions = credentialOptions;
   state.orderLiveCredentialOptions = liveCredentialOptions;
+  state.orderAcceptance = data.orderAcceptance || state.bootstrap?.orderAcceptance || state.orderAcceptance || null;
   const selectedCredential = credentialOptions.find(option => Number(option.id) === Number(requestedCredentialId)) || null;
   const selectedLiveCredential = liveCredentialOptions.find(option => Number(option.id) === Number(requestedCredentialId)) || null;
   const canCreateOffline = hasPerm('orders.create');
@@ -109,6 +192,7 @@ async function renderOrders(opts={}) {
   $('#content').innerHTML = `
     <div class="page-account-strip order-account-strip">
       ${orderAccountSwitcherHtml(credentialOptions, requestedCredentialId)}
+      ${orderAcceptanceButtonHtml(state.orderAcceptance || {})}
     </div>
     <div class="order-group-switch order-group-switch-with-menu">
       <div class="order-group-tabs">
@@ -129,6 +213,7 @@ async function renderOrders(opts={}) {
     state.orderSnapshot = null;
     renderOrders();
   });
+  bindOrderAcceptanceControl();
   $('#refreshBtn').onclick = () => refreshOrdersFromButton($('#refreshBtn'));
   if (canSyncBinance && $('#syncBinanceOrdersBtn')) $('#syncBinanceOrdersBtn').onclick = () => openBinanceOrderSyncModal(liveCredentialOptions, requestedCredentialId);
   if (canCreateBinance && $('#newOrderBtn')) $('#newOrderBtn').onclick = () => openCreateOrderModal('binance', liveCredentialOptions, requestedCredentialId);
@@ -168,6 +253,7 @@ async function renderOrders(opts={}) {
     $$(`[data-panel-scope="${scope}"]`).forEach(x => x.classList.toggle('active', x.dataset.panelKey === key));
   });
   startCountdownTimers();
+  window.setTimeout(() => maybePromptOrderAcceptance(state.orderAcceptance || {}), 80);
   if (state.orderListRefreshTimer) clearTimeout(state.orderListRefreshTimer);
   state.orderListRefreshTimer = setTimeout(() => {
     if (state.page === 'orders' && !state.currentOrderId && !modalOpen()) scheduleSmoothRefresh(0);

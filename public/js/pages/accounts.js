@@ -1,4 +1,4 @@
-// P2PFlow v1.5.16
+// P2PFlow v1.5.17
 // Payment accounts: centrally managed, agent-scoped access, compact box-based bulk add.
 
 
@@ -18,9 +18,9 @@ function paymentAccountChargeLabel(account={}) {
 
 async function renderAccounts() {
   const isAgent = state.user.role === 'agent';
-  const canManage = ['admin','manager'].includes(state.user.role) && hasPerm('accounts.manage');
-  const canAdjust = ['admin','manager'].includes(state.user.role) && hasPerm('ledger.adjust');
-  const canViewStatement = ['admin','manager','auditor'].includes(state.user.role) && hasPerm('accounts.view');
+  const canManage = hasPerm('accounts.manage');
+  const canAdjust = hasPerm('ledger.adjust');
+  const canViewStatement = hasPerm('accounts.view');
   setTitle('Payment Accounts');
   const data = await api('/api/payment-accounts');
   window.lastAccounts = data.items || [];
@@ -28,7 +28,7 @@ async function renderAccounts() {
   const headers = ['Account Number','Method','Account User','Type','Agent Access','Transfer Charge','Balance','Receive Left','Send Available','Usage Today','Status', ...actionHeader];
   const rows = (data.items || []).map(account => {
     const assigned = Array.isArray(account.allowedAgents) ? account.allowedAgents : [];
-    const accessHtml = isAgent
+    const accessHtml = isAgent && !canManage
       ? '<b>You</b><br><span class="sub">Assigned access</span>'
       : assigned.length
         ? assigned.map(agent => `<span class="account-agent-pill">${escapeHtml(agent.name || `Agent ${agent.id}`)}</span>`).join('')
@@ -58,8 +58,8 @@ async function renderAccounts() {
   });
   $('#content').innerHTML = `
     <div class="toolbar payment-account-toolbar">
-      <div class="actions">${canManage ? '<button id="newAccountBtn">Add Account</button><button class="secondary" id="bulkAccountBtn">Bulk Add</button>' : ''}<button class="ghost" id="refreshAccounts">Refresh</button></div>
-      <div class="sub">${isAgent ? 'Your assigned accounts only.' : 'Each payment account has an Account User and a Personal, Agent or Merchant type. Agent Access controls who can use it.'}</div>
+      <div class="actions">${canManage ? '<button type="button" id="newAccountBtn">Add Account</button><button type="button" class="secondary" id="bulkAccountBtn">Bulk Add</button>' : ''}<button type="button" class="ghost" id="refreshAccounts">Refresh</button></div>
+      <div class="sub">${isAgent && !canManage ? 'Your assigned accounts only.' : ''}</div>
     </div>
     <div class="card">${table(headers, rows)}</div>`;
   $('#refreshAccounts').onclick = () => renderAccounts();

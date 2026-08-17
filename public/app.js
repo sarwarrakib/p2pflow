@@ -1,5 +1,5 @@
-// v1.5.16: account-scoped Binance RBAC, visible security recovery setup and individual-only profit accounting.
-// v1.5.16: first-run recovery reuses the saved Application Key and software updates are Owner-only from Control Panel.
+// v1.5.17: account-scoped Binance RBAC, visible security recovery setup and individual-only profit accounting.
+// v1.5.17: first-run recovery reuses the saved Application Key and software updates are Owner-only from Control Panel.
 // v1.0.137: Diagnose and harden Binance P2P Create Advertisement privilege flow.
 // v1.0.128: lightweight Ads UI, cached reloads and realtime Binance merchant-status sync.
 // v1.0.117: Stop order countdowns immediately after completed or cancelled status sync.
@@ -67,7 +67,10 @@ const state = {
   p2pMarketLoading: false,
   p2pMarketRefreshTimer: null,
   accountingRefreshTimer: null,
-  accountingLoading: false
+  accountingLoading: false,
+  orderAcceptance: null,
+  orderAcceptancePromptShown: false,
+  orderAcceptanceBusy: false
 };
 
 const pages = [
@@ -79,7 +82,7 @@ const pages = [
   ['ads', 'Advertisements', ['admin','manager','agent','auditor']],
   ['approvals', 'Approvals', ['admin','manager']],
   ['accounts', 'Payment Accounts', ['admin','manager','agent','auditor']],
-  ['ledger', 'Account Statement', ['admin','manager','auditor']],
+  ['ledger', 'Account Statement', ['admin','manager','agent','auditor']],
   ['agents', 'Users', ['admin','manager','auditor']],
   ['user-roles', 'User Roles', ['admin','manager']],
   ['routing', 'Routing', ['admin','manager']],
@@ -226,11 +229,17 @@ function renderSidebarMeta() {
   if (runtime) runtime.classList.toggle('offline', navigator.onLine === false);
 }
 
+const FRONTEND_PERMISSION_IMPLICATIONS = Object.freeze({
+  'accounts.manage': Object.freeze(['accounts.view']),
+  'ledger.adjust': Object.freeze(['accounts.view'])
+});
 function hasPerm(permission) {
   if (!permission) return true;
   if (!state.user) return false;
   if (state.user.role === 'admin') return true;
-  return (state.user.permissions || []).includes(permission);
+  const permissions = state.user.permissions || [];
+  if (permissions.includes(permission)) return true;
+  return Object.entries(FRONTEND_PERMISSION_IMPLICATIONS).some(([granted, implied]) => permissions.includes(granted) && implied.includes(permission));
 }
 
 const $ = (sel, root=document) => root.querySelector(sel);
@@ -2664,6 +2673,7 @@ Object.assign(I18N_BN, {
   "Extension connection.": "Extension সংযোগ।",
   "Capacity Guard checks active account limits.": "Capacity Guard সক্রিয় অ্যাকাউন্ট সীমা চেক করে।",
   "Presence updates automatically.": "উপস্থিতি অটো আপডেট হয়।",
+  "Order Acceptance controls auto-assignment.": "অর্ডার গ্রহণের সুইচ অটো অ্যাসাইন নিয়ন্ত্রণ করে।",
   "Online status updates automatically.": "অনলাইন স্ট্যাটাস অটো আপডেট হয়।",
   "Open orders sync automatically.": "চলমান অর্ডার অটো সিঙ্ক হয়।",
   "Each transfer deducts its charge once.": "প্রতিটি ট্রান্সফারে চার্জ একবার কাটে।",
@@ -2703,7 +2713,7 @@ const UI_SHORT_COPY = {
   "The SMTP password is never returned to the browser or written to audit logs. It is stored only inside the encrypted database. In Local mode, SMTP remains the final automatic fallback when PHP mail/sendmail is unavailable.": "SMTP password is stored encrypted.",
   "Binance BUY paid mark reduces selected account balance through split actual entries. Binance SELL release increases selected account balance through received entries. Offline business entries are recorded separately.": "BUY deducts balance; SELL adds received balance.",
   "When Capacity Guard is ON, the system checks active account capacity. When OFF, assignment uses only method + priority; balance/limit is checked later on the split selection screen.": "Capacity Guard checks active account limits.",
-  "Presence updates live from heartbeat, visibility, focus and interaction. Active, online, idle and away users remain assignment-eligible; only offline users are excluded.": "Presence updates automatically.",
+  "Presence is monitored from heartbeat, visibility, focus and interaction. Auto-assignment is controlled by each Agent’s Order Acceptance switch, not by online/offline presence.": "Order Acceptance controls auto-assignment.",
   "Online state is automatic. Active means visible, focused and recently used; away means the page is in the background; idle means open without recent interaction.": "Online status updates automatically.",
   "The server refreshes every open Binance order detail even when no user is logged in. List and detail views receive the result through live events.": "Open orders sync automatically.",
   "Each split transfer calculates and deducts its own charge immediately. Manual actual charge entered on a split overrides the configured estimate.": "Each transfer deducts its charge once.",
@@ -3374,6 +3384,116 @@ const PERMISSION_LABELS = {
   'credentials.manage': 'Binance API credentials manage'
 };
 
+const PERMISSION_DESCRIPTIONS = Object.freeze({
+  'dashboard.view': { en: 'Open the dashboard and view operational summary cards. It does not grant access to orders, accounting details, settings or other pages.', bn: 'ড্যাশবোর্ড ও অপারেশন সারাংশ দেখা যাবে। অর্ডার, অ্যাকাউন্টিং বিস্তারিত, সেটিংস বা অন্য পেজের অনুমতি এতে পাওয়া যাবে না।' },
+  'orders.view': { en: 'View permitted order lists and details. Binance orders also require Orders View for the exact Binance account; Agents see only orders assigned to them.', bn: 'অনুমোদিত অর্ডার লিস্ট ও বিস্তারিত দেখা যাবে। Binance অর্ডারের জন্য নির্দিষ্ট Binance অ্যাকাউন্টেও Orders View দিতে হবে; Agent শুধু নিজের assigned অর্ডার দেখবে।' },
+  'orders.create': { en: 'Create offline orders and create Binance orders for exact accounts that also have Orders Create granted. It does not allow assignment or final actions.', bn: 'Offline order এবং নির্দিষ্ট Binance অ্যাকাউন্টে Orders Create grant থাকলে Binance order তৈরি করা যাবে। এতে assign বা final action অনুমতি পাওয়া যাবে না।' },
+  'orders.assign': { en: 'Assign or reassign an order to an Agent. Binance orders require the same permission on the exact account, and the target Agent must be accepting orders and have account access.', bn: 'অর্ডার Agent-কে assign বা reassign করা যাবে। Binance অর্ডারে নির্দিষ্ট অ্যাকাউন্টের একই permission লাগবে এবং target Agent-এর Order Acceptance ON ও account access থাকতে হবে।' },
+  'orders.split': { en: 'Add or update payment splits on accessible orders. Using a payment account still requires Payment Account Use and assignment to that account.', bn: 'অ্যাক্সেসযোগ্য অর্ডারে payment split add/update করা যাবে। Payment account ব্যবহার করতে আলাদাভাবে Payment Account Use এবং সেই account assignment লাগবে।' },
+  'orders.final_action': { en: 'Perform paid-mark and release/final workflow where policy allows. Binance orders require this permission on the exact account and all proof/approval rules still apply.', bn: 'নীতি অনুযায়ী paid mark ও release/final workflow করা যাবে। Binance অর্ডারে নির্দিষ্ট অ্যাকাউন্টের permission এবং proof/approval-এর সব নিয়ম প্রযোজ্য থাকবে।' },
+  'orders.quick_release': { en: 'Use the exceptional quick-release workflow before the normal paid-mark stage. Exact Binance-account permission, safety checks and approval limits still apply.', bn: 'স্বাভাবিক paid-mark ধাপের আগে exceptional quick release করা যাবে। নির্দিষ্ট Binance account permission, safety check ও approval limit প্রযোজ্য থাকবে।' },
+  'approvals.manage': { en: 'Open the approval queue and approve or reject protected operational requests. It does not independently grant the underlying order or accounting action.', bn: 'Approval queue দেখা এবং protected request approve/reject করা যাবে। মূল order বা accounting action-এর permission এতে আলাদাভাবে পাওয়া যাবে না।' },
+  'binance.sync': { en: 'Run live Binance order/detail synchronization only for Binance accounts with the same account-level grant. It does not grant chat, Ads or final actions.', bn: 'একই account-level grant থাকা Binance অ্যাকাউন্টে live order/detail sync চালানো যাবে। Chat, Ads বা final action permission এতে পাওয়া যাবে না।' },
+  'binance.chat': { en: 'Read, sync and send Binance P2P chat messages on accessible orders for exact accounts with Chat permission. It does not grant order final actions.', bn: 'অ্যাক্সেসযোগ্য অর্ডারে নির্দিষ্ট account Chat permission থাকলে Binance P2P message পড়া, sync ও পাঠানো যাবে। Final action permission এতে পাওয়া যাবে না।' },
+  'p2p.profile.view': { en: 'View P2P profile, statistics and feedback for exact Binance accounts granted to the user. It does not perform a live sync.', bn: 'যে নির্দিষ্ট Binance account grant করা আছে তার P2P profile, statistics ও feedback দেখা যাবে। এতে live sync হবে না।' },
+  'p2p.profile.sync': { en: 'Fetch and update P2P profile and feedback for exact Binance accounts with the same grant. View permission is implied for opening the result.', bn: 'একই grant থাকা নির্দিষ্ট Binance account-এর P2P profile ও feedback fetch/update করা যাবে। ফলাফল খোলার জন্য view access ব্যবহৃত হবে।' },
+  'ads.view': { en: 'View advertisements and merchant status for exact Binance accounts with Ads View. It does not create, edit, publish or change merchant status.', bn: 'নির্দিষ্ট Binance account-এ Ads View থাকলে advertisement ও merchant status দেখা যাবে। Create, edit, publish বা merchant status change করা যাবে না।' },
+  'ads.manage': { en: 'Create, edit, publish, disable or delete Ads and run Business/Online/Break actions for exact Binance accounts with Ads Manage. All-account actions affect only granted accounts.', bn: 'নির্দিষ্ট Binance account-এ Ads Manage থাকলে Ad create/edit/publish/disable/delete এবং Business/Online/Break action করা যাবে। All action শুধু granted account-গুলোতে কাজ করবে।' },
+  'accounts.view': { en: 'View assigned payment accounts and their allowed statement data. Users with Payment Account Manage can view every payment account.', bn: 'Assigned payment account ও অনুমোদিত statement data দেখা যাবে। Payment Account Manage থাকলে সব payment account দেখা যাবে।' },
+  'accounts.use': { en: 'Use only assigned, active payment accounts in order payment splits. It does not allow adding, editing, changing access or adjusting balances.', bn: 'শুধু assigned ও active payment account order payment split-এ ব্যবহার করা যাবে। Add, edit, access change বা balance adjustment করা যাবে না।' },
+  'accounts.manage': { en: 'Create, bulk add, edit, activate/deactivate and assign Agent access for all payment accounts. It includes page visibility but does not grant use in payment splits or ledger adjustment.', bn: 'সব payment account create, bulk add, edit, active/inactive এবং Agent access assign করা যাবে। Page view অন্তর্ভুক্ত, কিন্তু payment split-এ use বা ledger adjustment permission এতে নেই।' },
+  'ledger.adjust': { en: 'Add offline transactions, top-up/cash-out, correction, expense, settlement and refund entries on payment accounts the user can access. It includes statement visibility but not account editing.', bn: 'অ্যাক্সেসযোগ্য payment account-এ offline transaction, top-up/cash-out, correction, expense, settlement ও refund entry যোগ করা যাবে। Statement view অন্তর্ভুক্ত, account edit নয়।' },
+  'routing.manage': { en: 'Create and edit payment-method routing, priority, amount ranges and capacity rules used by automatic assignment. It does not bypass Order Acceptance or account permissions.', bn: 'Auto assignment-এর payment-method routing, priority, amount range ও capacity rule create/edit করা যাবে। Order Acceptance বা account permission bypass হবে না।' },
+  'agents.manage': { en: 'Create and edit users, login access, global permissions, Binance-account permissions, Security Question setup and Agent operating limits. Delegation cannot exceed the editor’s own access.', bn: 'User create/edit, login access, global permission, Binance-account permission, Security Question ও Agent limit manage করা যাবে। Editor নিজের permission-এর বেশি grant করতে পারবে না।' },
+  'roles.manage': { en: 'Create and edit reusable User Role templates and their global permissions. Assigning exact Binance accounts remains a separate per-user step.', bn: 'Reusable User Role template ও global permission create/edit করা যাবে। নির্দিষ্ট Binance account assignment আলাদা per-user ধাপ।' },
+  'reports.view': { en: 'View operational reports and export permitted report data. It does not grant mutation rights in orders, accounts or accounting.', bn: 'Operational report দেখা এবং অনুমোদিত report data export করা যাবে। Order, account বা accounting পরিবর্তনের permission এতে নেই।' },
+  'accounting.view': { en: 'View permitted accounting overview, capital, profit, income, expense and daily-close information. Agent visibility may be limited to allowed scope.', bn: 'অনুমোদিত accounting overview, capital, profit, income, expense ও daily close তথ্য দেখা যাবে। Agent-এর visibility নির্ধারিত scope অনুযায়ী সীমিত হতে পারে।' },
+  'accounting.manage': { en: 'Create and manage business expense, income and capital movement entries. It does not grant daily closing or Binance-balance synchronization.', bn: 'Business expense, income ও capital movement entry create/manage করা যাবে। Daily closing বা Binance balance sync permission এতে নেই।' },
+  'accounting.close': { en: 'Synchronize accounting Binance balances and create or force a business-day close. Accounting View is required to review the result.', bn: 'Accounting Binance balance sync এবং business day close/force close করা যাবে। ফলাফল দেখার জন্য Accounting View প্রয়োজন।' },
+  'activity.view': { en: 'View user presence, active page, session time and activity analytics. Presence is monitoring only and no longer controls auto-assignment.', bn: 'User presence, active page, session time ও activity analytics দেখা যাবে। Presence শুধু monitoring; auto assignment নিয়ন্ত্রণ করে না।' },
+  'audit.view': { en: 'View security and operational audit logs, including who performed protected actions. It does not grant permission to repeat those actions.', bn: 'Security ও operational audit log এবং কে protected action করেছে তা দেখা যাবে। সেই action করার permission এতে পাওয়া যাবে না।' },
+  'settings.manage': { en: 'Change general operational, mail, security, sync and integration settings allowed by the Settings API. Software Update remains Owner-only.', bn: 'Settings API-তে অনুমোদিত general operation, mail, security, sync ও integration settings পরিবর্তন করা যাবে। Software Update শুধু Owner-এর জন্য।' },
+  'credentials.manage': { en: 'Create and edit Binance API credentials and account configuration. This is highly sensitive and does not automatically grant operational access to those accounts.', bn: 'Binance API credential ও account configuration create/edit করা যাবে। এটি sensitive; credential যোগ করলেই operational account access স্বয়ংক্রিয়ভাবে পাওয়া যাবে না।' }
+});
+
+function permissionDescription(permission) {
+  const item = PERMISSION_DESCRIPTIONS[permission] || {};
+  return state.lang === 'bn' ? (item.bn || item.en || permission) : (item.en || item.bn || permission);
+}
+function permissionHelpHtml(permission) {
+  const description = permissionDescription(permission);
+  return `<span class="permission-help" tabindex="0" role="button" data-permission-help="${escapeAttr(description)}" aria-label="${escapeAttr((state.lang === 'bn' ? 'Permission বিস্তারিত: ' : 'Permission details: ') + description)}">?</span>`;
+}
+function permissionOptionHtml(permission, checked=false, options={}) {
+  const inputName = options.inputName || 'permissions';
+  const dataAttributes = options.dataAttributes || '';
+  const description = permissionDescription(permission);
+  return `<div class="permission-option${options.compact ? ' compact' : ''}" data-permission-scope="${escapeAttr(description)}"><label class="check"><input type="checkbox" name="${escapeAttr(inputName)}" ${dataAttributes} value="${escapeAttr(permission)}" ${checked ? 'checked' : ''}/> <span>${escapeHtml(PERMISSION_LABELS[permission] || permission)}</span></label>${permissionHelpHtml(permission)}</div>`;
+}
+
+let permissionTooltipElement = null;
+function setupPermissionHelpTooltips() {
+  if (document.body.dataset.permissionTooltipsReady === '1') return;
+  document.body.dataset.permissionTooltipsReady = '1';
+  const hide = () => {
+    if (!permissionTooltipElement) return;
+    permissionTooltipElement.hidden = true;
+    permissionTooltipElement.textContent = '';
+  };
+  const show = target => {
+    const text = String(target?.dataset?.permissionHelp || '').trim();
+    if (!text) return;
+    if (!permissionTooltipElement) {
+      permissionTooltipElement = document.createElement('div');
+      permissionTooltipElement.className = 'permission-tooltip';
+      permissionTooltipElement.setAttribute('role', 'tooltip');
+      permissionTooltipElement.hidden = true;
+      document.body.appendChild(permissionTooltipElement);
+    }
+    permissionTooltipElement.textContent = text;
+    permissionTooltipElement.hidden = false;
+    permissionTooltipElement.style.left = '12px';
+    permissionTooltipElement.style.top = '12px';
+    const targetRect = target.getBoundingClientRect();
+    const tooltipRect = permissionTooltipElement.getBoundingClientRect();
+    const margin = 10;
+    let left = targetRect.left + (targetRect.width / 2) - (tooltipRect.width / 2);
+    left = Math.max(margin, Math.min(left, window.innerWidth - tooltipRect.width - margin));
+    let top = targetRect.bottom + 8;
+    if (top + tooltipRect.height > window.innerHeight - margin) top = Math.max(margin, targetRect.top - tooltipRect.height - 8);
+    permissionTooltipElement.style.left = `${Math.round(left)}px`;
+    permissionTooltipElement.style.top = `${Math.round(top)}px`;
+  };
+  document.addEventListener('pointerover', event => {
+    const target = event.target.closest?.('[data-permission-help], [data-permission-scope]');
+    if (target) {
+      if (!target.dataset.permissionHelp && target.dataset.permissionScope) target.dataset.permissionHelp = target.dataset.permissionScope;
+      show(target);
+    }
+  });
+  document.addEventListener('pointerout', event => {
+    const target = event.target.closest?.('[data-permission-help], [data-permission-scope]');
+    if (target && !target.contains(event.relatedTarget)) hide();
+  });
+  document.addEventListener('focusin', event => {
+    const target = event.target.closest?.('[data-permission-help]');
+    if (target) show(target);
+  });
+  document.addEventListener('focusout', event => {
+    if (event.target.closest?.('[data-permission-help]')) hide();
+  });
+  document.addEventListener('click', event => {
+    const target = event.target.closest?.('[data-permission-help]');
+    if (!target) return hide();
+    event.preventDefault();
+    event.stopPropagation();
+    if (permissionTooltipElement && !permissionTooltipElement.hidden && permissionTooltipElement.textContent === target.dataset.permissionHelp) hide();
+    else show(target);
+  });
+  window.addEventListener('resize', hide, { passive:true });
+  window.addEventListener('scroll', hide, { passive:true, capture:true });
+}
+
 const fmt = iso => iso ? new Date(iso).toLocaleString() : '-';
 
 function looksLikeHtml(text) { return /<!doctype html|<html[\s>]|<head[\s>]|<body[\s>]/i.test(String(text || '').slice(0, 500)); }
@@ -3744,6 +3864,7 @@ function setupGlobalPullToRefresh() {
 async function init() {
   setupLanguageControls();
   setupNotificationSoundControls();
+  setupPermissionHelpTooltips();
   setupResponsiveNavigation();
   setupSidebarScrollableNavigation();
   setupGlobalPullToRefresh();
@@ -3996,6 +4117,21 @@ function handleServerEvent(event = {}) {
   if (/^(payment\.|order\.assignment\.)/.test(String(event.type || ''))) {
     if (Number(event.orderId || 0) === Number(state.currentOrderId || 0)) scheduleCurrentOrderReload(120);
     else if (state.page === 'orders') scheduleSmoothRefresh(180);
+  }
+  if (event.type === 'agent.order_acceptance.updated') {
+    const belongsToUser = Number(event.userId || 0) === Number(state.user?.id || 0) || Number(event.agentId || 0) === Number(state.user?.agentId || 0);
+    if (belongsToUser) {
+      state.orderAcceptance = {
+        ...(state.orderAcceptance || {}),
+        available: state.user?.role === 'agent' && hasPerm('orders.view'),
+        accepting: event.accepting === true,
+        agentId: Number(event.agentId || state.user?.agentId || 0) || null,
+        presenceStatus: event.presenceStatus || state.orderAcceptance?.presenceStatus || 'offline',
+        updatedAt: event.updatedAt || event.at || null
+      };
+      if (state.page === 'orders' && !state.currentOrderId) updateOrderAcceptanceControl();
+    }
+    if (['agents','routing','activity'].includes(state.page) && !modalOpen()) scheduleSmoothRefresh(150);
   }
   if (event.type === 'activity.presence.updated') {
     if (state.page === 'ads') {
@@ -4262,7 +4398,7 @@ function renderNav() {
   // legacy flat menu while this marker is absent, the browser/proxy is serving
   // stale frontend JavaScript rather than the active release.
   nav.dataset.navigationModel = 'grouped-control-center';
-  nav.dataset.uiRelease = '1.5.16';
+  nav.dataset.uiRelease = '1.5.17';
   nav.innerHTML = '';
   const visible = visiblePages();
   const visibleIds = new Set(visible.map(([id]) => id));
@@ -5599,7 +5735,7 @@ function binanceCredentialPermissionMatrix(selectedRows = []) {
       <div class="binance-permission-groups">${groups.map(group => {
         const permissions = (group.permissions || []).filter(permission => allowed.has(permission));
         if (!permissions.length) return '';
-        return `<div class="binance-permission-group"><span>${escapeHtml(group.label || group.id || '')}</span>${permissions.map(permission => `<label class="check"><input type="checkbox" name="binanceCredentialPermission" data-credential-id="${credentialId}" value="${escapeAttr(permission)}" ${chosen.has(permission) ? 'checked' : ''}/> ${escapeHtml(PERMISSION_LABELS[permission] || permission)}</label>`).join('')}</div>`;
+        return `<div class="binance-permission-group"><span>${escapeHtml(group.label || group.id || '')}</span>${permissions.map(permission => permissionOptionHtml(permission, chosen.has(permission), { compact:true, inputName:'binanceCredentialPermission', dataAttributes:`data-credential-id="${credentialId}"` })).join('')}</div>`;
       }).join('')}</div>
     </section>`;
   }).join('')}</div>`;
@@ -5673,7 +5809,7 @@ function openUserModal(userItem=null) {
       </fieldset>
       <div><label>Max Active Orders</label><input name="maxActiveOrders" type="number" min="0" step="1" value="${Number.isFinite(Number(userItem?.maxActiveOrders)) ? Number(userItem.maxActiveOrders) : 5}" /></div>
       <div><label>Max Release Amount</label><input name="maxReleaseAmount" type="number" min="0" step="0.01" value="${Number.isFinite(Number(userItem?.maxReleaseAmount)) ? Number(userItem.maxReleaseAmount) : 0}" /></div>
-      <div><label class="check"><input type="checkbox" name="allowNewOrders" ${userItem?.allowNewOrders === false ? '' : 'checked'} /> Allow new orders</label></div>
+      <div><label class="check"><input type="checkbox" name="allowNewOrders" ${userItem?.allowNewOrders === false ? '' : 'checked'} /> Accept new orders even while offline</label></div>
       <div><label class="check"><input type="checkbox" name="smsEnabled" ${userItem?.smsEnabled === false ? '' : 'checked'} /> Panel SMS on order assignment</label></div>
       <div><label class="check"><input type="checkbox" name="canRelease" ${userItem?.canRelease ? 'checked' : ''} /> Can release/final action</label></div>
       <div class="full-row profit-accounting-setting"><label class="check"><input type="checkbox" name="includeProfitInCompanyTotals" ${userItem?.includeProfitInCompanyTotals === false ? '' : 'checked'} /> Include this user's profit in company income and capital totals</label><small>Turn this off to keep the user's income visible in their individual report while excluding it from company totals.</small></div>
@@ -5831,7 +5967,7 @@ function paymentAccountChargeFieldsHtml(account={}) {
 function openAccountModal() {
   modal('Add Payment Account', `
     <form id="accountForm" class="form-grid">
-      <div class="full-row notice"><b>Central account management:</b> Admin and Manager can use every account. An Agent can only see and use accounts granted below.</div>
+      <div class="full-row notice"><b>Payment Account Manage:</b> Users with this permission can create and edit accounts. Payment Account Use remains a separate permission.</div>
       <div><label>Payment Method</label>${methodSelect()}</div>
       <div><label>Account User</label>${paymentAccountOwnerSelect()}</div>
       <div><label>Account Type</label>${paymentAccountTypeSelect('personal')}</div>
@@ -5867,7 +6003,7 @@ function openEditAccountModal(id) {
   if (!account) return notify('Account not found. Refresh page and try again.', 'danger');
   modal('Edit Account / Status', `
     <form id="editAccountForm" class="form-grid">
-      <div class="full-row notice"><b>Central account management:</b> Admin and Manager always have access. Checked Agents can view and use this account.</div>
+      <div class="full-row notice"><b>Account access:</b> Checked Agents can use this account only when they also have Payment Account Use permission.</div>
       <div><label>Payment Method</label>${methodSelect(account.paymentMethodId)}</div>
       <div><label>Account User</label>${paymentAccountOwnerSelect(account.ownerUserId)}</div>
       <div><label>Account Type</label>${paymentAccountTypeSelect(account.accountType)}</div>
@@ -7026,7 +7162,7 @@ async function openP2pInfoModal(order) {
 function methodSelect(selectedId=null) { return `<select name="paymentMethodId">${state.bootstrap.paymentMethods.map(m => `<option value="${m.id}" ${Number(selectedId)===m.id?'selected':''}>${escapeHtml(m.name)}</option>`).join('')}</select>`; }
 function agentSelect(selectedId=null) { return `<select name="agentId">${state.bootstrap.agents.map(a => `<option value="${a.id}" ${Number(selectedId)===a.id?'selected':''}>${escapeHtml(a.name)} (${escapeHtml(a.status)})</option>`).join('')}</select>`; }
 function accountStatusSelect(selected='active') { return `<select name="status"><option value="active" ${selected==='active'?'selected':''}>active</option><option value="hold" ${selected==='hold'?'selected':''}>hold</option><option value="limit_full" ${selected==='limit_full'?'selected':''}>limit_full</option><option value="inactive" ${selected==='inactive'?'selected':''}>inactive</option></select>`; }
-function permissionChecks(selected=[]) { const list = state.bootstrap.permissions || Object.keys(PERMISSION_LABELS); return `<div class="perm-grid">${list.map(p => `<label class="check"><input type="checkbox" name="permissions" value="${p}" ${selected.includes(p)?'checked':''}/> ${escapeHtml(PERMISSION_LABELS[p] || p)}</label>`).join('')}</div>`; }
+function permissionChecks(selected=[]) { const list = state.bootstrap.permissions || Object.keys(PERMISSION_LABELS); return `<div class="perm-grid">${list.map(permission => permissionOptionHtml(permission, selected.includes(permission))).join('')}</div>`; }
 function selectedPermissions(form) { return Array.from(form.querySelectorAll('input[name="permissions"]:checked')).map(x => x.value); }
 function defaultSplitAmount(order) {
   const fallback = Number(order.summary?.remaining || order.amount || 0);

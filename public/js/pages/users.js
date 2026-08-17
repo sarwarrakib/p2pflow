@@ -1,4 +1,4 @@
-// P2PFlow v1.5.16
+// P2PFlow v1.5.17
 // Page module: users. Edit this file for the users page UI.
 
 async function renderUsers() {
@@ -43,6 +43,7 @@ async function renderUsers() {
             <div><span>Global Permissions</span><b>${perms.length}</b></div>
             <div><span>Binance Accounts</span><b>${accountGrants.length} <small>(${grantedActions} grants)</small></b></div>
             <div><span>Security Question</span><b>${a.user?.securityFallbackConfigured ? '<span class="text-ok">Set</span>' : '<span class="text-warn">Not set</span>'}</b></div>
+            <div><span>Order Acceptance</span><b>${a.orderAcceptance?.accepting ? '<span class="text-ok">ON</span>' : '<span class="text-warn">OFF</span>'}</b></div>
             <div><span>Profit Accounting</span><b>${a.includeProfitInCompanyTotals === false ? '<span class="text-warn">Individual only</span>' : '<span class="text-ok">Company total</span>'}</b></div>
             <div><span>Payment Accounts</span><b>${aa.length}</b></div>
             <div><span>Today App Open</span><b>${activityDuration(today.openSeconds)}</b></div>

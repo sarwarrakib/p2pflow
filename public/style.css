@@ -4923,7 +4923,7 @@ tr:hover td{background:#fbfbfc}
   .order-mobile-time { font-size: 9px; }
 }
 
-/* v1.5.16 - login recovery, account-scoped Binance RBAC and account context */
+/* v1.5.17 - login recovery, account-scoped Binance RBAC and account context */
 .text-ok{color:var(--ok-text,#166534)!important}
 .text-warn{color:var(--warn-text,#92400e)!important}
 .security-recovery-panel{
@@ -5116,3 +5116,25 @@ tr:hover td{background:#fbfbfc}
   .binance-account-tab{min-height:36px;max-width:190px;padding:7px 12px;font-size:11px}
   .binance-account-badge{max-width:180px}
 }
+
+
+/* v1.5.17 permission scope help and presence-independent order acceptance */
+.permission-option{display:flex;align-items:flex-start;gap:8px;min-width:0;padding:2px 0}
+.permission-option>label.check{flex:1;min-width:0;margin:0;align-items:flex-start}
+.permission-option>label.check>span{min-width:0;line-height:1.4}
+.permission-option.compact{gap:6px}
+.permission-help{display:inline-grid;place-items:center;flex:0 0 auto;width:20px;height:20px;border:1px solid var(--line,#dfe3e8);border-radius:50%;background:#fff;color:var(--muted,#707782);font-size:12px;font-weight:900;line-height:1;cursor:help;user-select:none;outline:none}
+.permission-help:hover,.permission-help:focus-visible{border-color:var(--primary,#f0b90b);color:var(--text,#181a20);box-shadow:0 0 0 3px rgba(240,185,11,.16)}
+.permission-tooltip{position:fixed;z-index:100000;width:min(380px,calc(100vw - 20px));padding:11px 13px;border:1px solid rgba(255,255,255,.12);border-radius:12px;background:#181a20;color:#fff;box-shadow:0 14px 38px rgba(15,23,42,.28);font-size:12px;line-height:1.55;white-space:normal;pointer-events:none}
+.permission-tooltip[hidden]{display:none}
+.binance-permission-group .permission-option{width:100%}
+.binance-permission-group .permission-help{width:18px;height:18px;font-size:11px}
+.order-account-strip{justify-content:space-between}
+.order-acceptance-toggle{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:38px;padding:8px 13px;border-radius:999px;white-space:nowrap;font-weight:850;box-shadow:none}
+.order-acceptance-toggle.is-on{background:#eaf8f0;color:#146b43;border:1px solid #b8e7cc}
+.order-acceptance-toggle.is-off{background:#fff3e8;color:#9a4b00;border:1px solid #ffd2aa}
+.order-acceptance-dot{width:9px;height:9px;border-radius:50%;background:currentColor;box-shadow:0 0 0 4px rgba(255,255,255,.65)}
+.order-acceptance-toggle:disabled{opacity:.62;cursor:wait}
+.order-acceptance-prompt p{margin:2px 0 18px;font-size:18px;font-weight:800;line-height:1.5;color:var(--text,#181a20)}
+.order-acceptance-prompt .actions.end{justify-content:flex-end}
+@media(max-width:700px){.order-account-strip{align-items:stretch}.order-acceptance-toggle{width:100%}.permission-tooltip{font-size:12px}.order-acceptance-prompt p{font-size:17px}}

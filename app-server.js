@@ -43,7 +43,7 @@ loadEnv();
 applyP2PFlowEnvAliases(process.env);
 
 const APP_VERSION = String(packageInfo.version || '0.0.0');
-const APP_SCHEMA_VERSION = 30;
+const APP_SCHEMA_VERSION = 31;
 const APP_DATA_COMPATIBILITY_EPOCH = 1;
 const PORT = Number(process.env.PORT || 3000);
 const BIND_HOST = cleanEnv(process.env.P2PFLOW_BIND_HOST || process.env.CRM_BIND_HOST || '', '');
@@ -181,6 +181,14 @@ const PERMISSION_CATALOG = [
   'credentials.manage'
 ];
 
+// Write permissions that cannot be used without opening the corresponding
+// read page imply that read permission. The explicit write permission is still
+// required for every mutation.
+const PERMISSION_IMPLICATIONS = Object.freeze({
+  'accounts.manage': Object.freeze(['accounts.view']),
+  'ledger.adjust': Object.freeze(['accounts.view'])
+});
+
 // Binance operations are scoped twice: a user needs the normal permission and
 // an explicit grant for the exact Binance API account. Admin remains the only
 // implicit all-account role. This prevents a user who was granted Account A
@@ -264,7 +272,8 @@ function userHasPermission(user, permission) {
   if (!user) return false;
   if (user.role === 'admin') return true;
   const permissions = normalizePermissions(user.permissions, user.role);
-  return permissions.includes(permission);
+  if (permissions.includes(permission)) return true;
+  return Object.entries(PERMISSION_IMPLICATIONS).some(([granted, implied]) => permissions.includes(granted) && implied.includes(permission));
 }
 
 function binanceAccountGlobalPermissionSet(user = {}) {
@@ -1611,6 +1620,8 @@ function migrateDb(target) {
   });
   target.agents.forEach(a => {
     if (a.allowNewOrders === undefined) a.allowNewOrders = true;
+    if (a.orderAcceptanceUpdatedAt === undefined) a.orderAcceptanceUpdatedAt = null;
+    if (a.orderAcceptanceUpdatedBy === undefined) a.orderAcceptanceUpdatedBy = null;
     if (a.mobile === undefined) a.mobile = '';
     if (a.smsEnabled === undefined) a.smsEnabled = true;
     if (a.includeProfitInCompanyTotals === undefined) a.includeProfitInCompanyTotals = true;
@@ -2066,7 +2077,8 @@ function accountView(accountItem, viewer = null) {
   const receiveAvailable = Math.min(dailyReceiveLeft, monthlyReceiveLeft);
   const sendAvailable = Math.min(num(accountItem.currentBalance), dailySendLeft, monthlySendLeft);
   const allAllowedAgentIds = accountAllowedAgentIds(accountItem);
-  const allowedAgentIds = viewer?.role === 'agent'
+  const viewerCanManage = Boolean(viewer && userHasPermission(viewer, 'accounts.manage'));
+  const allowedAgentIds = viewer?.role === 'agent' && !viewerCanManage
     ? allAllowedAgentIds.filter(id => Number(id) === Number(viewer.agentId))
     : allAllowedAgentIds;
   const allowedAgents = allowedAgentIds.map(id => agentById(id)).filter(Boolean).map(agent => ({ id: agent.id, name: agent.name, userId: agent.userId || null }));
@@ -2787,7 +2799,7 @@ function agentAvailableForAssignment(agent) {
   if (!agent || agent.allowNewOrders === false) return false;
   const linkedUser = db.users.find(u => Number(u.id) === Number(agent.userId) && u.enabled);
   if (!linkedUser || linkedUser.role !== 'agent') return false;
-  return userPresenceView(agent.userId).status !== 'offline';
+  return userHasPermission(linkedUser, 'orders.view');
 }
 
 function rangeBounds(range = null) {
@@ -4847,6 +4859,7 @@ function canUseOrderCredential(user, order, permission) {
 }
 function canAccessAccount(user, accountItem) {
   if (!user || !accountItem) return false;
+  if (userHasPermission(user, 'accounts.manage')) return true;
   if (['admin', 'manager', 'auditor'].includes(user.role)) return true;
   return user.role === 'agent' && userHasPermission(user, 'accounts.view') && accountAssignedToAgent(accountItem, user.agentId);
 }
@@ -10168,6 +10181,12 @@ function realtimeEventForUser(event, user) {
     return visible ? { ...event, type } : null;
   }
 
+  if (type === 'agent.order_acceptance.updated') {
+    const isSelf = Number(event.userId || 0) === Number(user.id || 0);
+    const canMonitor = userHasPermission(user, 'agents.manage') || userHasPermission(user, 'routing.manage') || userHasPermission(user, 'activity.view');
+    return isSelf || canMonitor ? { ...event, type } : null;
+  }
+
   if (type === 'activity.presence.updated') {
     if (userHasPermission(user, 'activity.view')) return { ...event, type };
     if (realtimeUserHasAnyCredentialPermission(user, 'ads.view')) {
@@ -14618,6 +14637,7 @@ async function handleApi(req, res) {
     if (req.method === 'POST' && url.pathname === '/api/login') return await handleLogin(req, res);
     if (req.method === 'POST' && url.pathname === '/api/logout') return handleLogout(req, res);
     if (req.method === 'GET' && url.pathname === '/api/me') return handleMe(req, res);
+    if (url.pathname === '/api/me/order-acceptance') return await handleMyOrderAcceptance(req, res);
     if (url.pathname.startsWith('/api/security/revert/')) return handleSecurityRevert(req, res, parts);
     if (url.pathname.startsWith('/api/me/security/trusted-device/')) return handleTrustedDeviceRevoke(req, res, parts);
     if (url.pathname === '/api/me/security/fallback') return handleMeSecurityFallback(req, res);
@@ -15162,10 +15182,45 @@ function handleLogout(req, res) {
   if (s) { closeUserActivitySession(s.session, 'logout'); sessions.delete(s.sid); syncPersistentSessions(); saveDb(); }
   return sendJson(res, 200, { ok: true }, { 'Set-Cookie': clearSessionCookieHeader(req) }, req);
 }
+function orderAcceptanceForUser(user) {
+  const agent = user ? (db.agents || []).find(item => Number(item.userId || 0) === Number(user.id || 0) || (Number(user.agentId || 0) && Number(item.id) === Number(user.agentId))) : null;
+  const available = Boolean(user && user.enabled !== false && user.role === 'agent' && agent && userHasPermission(user, 'orders.view'));
+  return {
+    available,
+    accepting: Boolean(available && agent.allowNewOrders !== false),
+    agentId: agent ? Number(agent.id) : null,
+    presenceStatus: agent ? agentDynamicStatus(agent) : 'offline',
+    activeAssignments: agent ? activeAssignmentCount(agent.id) : 0,
+    maxActiveOrders: agent ? positiveNum(agent.maxActiveOrders || 0) : 0,
+    updatedAt: agent?.orderAcceptanceUpdatedAt || null,
+    updatedBy: agent?.orderAcceptanceUpdatedBy || null
+  };
+}
+
+async function handleMyOrderAcceptance(req, res) {
+  const user = requireAuth(req, res); if (!user) return;
+  const current = orderAcceptanceForUser(user);
+  if (req.method === 'GET') return sendJson(res, 200, current, {}, req);
+  if (req.method !== 'PATCH') return sendJson(res, 405, { error: 'Method not allowed' }, {}, req);
+  if (!current.available) return sendJson(res, 403, { error: 'Order acceptance is available only to enabled Agent users with Orders View permission.' }, {}, req);
+  const body = await readBody(req);
+  if (typeof body.accepting !== 'boolean') return sendJson(res, 422, { error: 'accepting must be true or false.' }, {}, req);
+  const agent = agentById(current.agentId);
+  const before = agent.allowNewOrders !== false;
+  agent.allowNewOrders = body.accepting;
+  agent.orderAcceptanceUpdatedAt = nowIso();
+  agent.orderAcceptanceUpdatedBy = user.id;
+  logAudit(user, body.accepting ? 'order_acceptance_enabled' : 'order_acceptance_disabled', 'agent', agent.id, { before, accepting: body.accepting, presenceStatus: agentDynamicStatus(agent), autoAssignmentPresenceIndependent: true });
+  saveDb();
+  const next = orderAcceptanceForUser(user);
+  broadcast({ type: 'agent.order_acceptance.updated', userId: user.id, agentId: agent.id, accepting: next.accepting, presenceStatus: next.presenceStatus, updatedAt: next.updatedAt, at: nowIso() });
+  return sendJson(res, 200, next, {}, req);
+}
+
 function handleMe(req, res) {
   const s = getSession(req);
   if (!s) return sendJson(res, 401, { error: 'Not authenticated' }, {}, req);
-  return sendJson(res, 200, { user: userSafe(s.user), csrfToken: s.session.csrfToken }, {}, req);
+  return sendJson(res, 200, { user: userSafe(s.user), csrfToken: s.session.csrfToken, orderAcceptance: orderAcceptanceForUser(s.user) }, {}, req);
 }
 async function handleMeSecurityFallback(req, res) {
   const user = requireAuth(req, res); if (!user) return;
@@ -15370,7 +15425,7 @@ function handleBootstrap(req, res) {
   const accountUsers = userHasPermission(s.user, 'accounts.manage')
     ? db.users.filter(user => user.enabled !== false).map(user => ({ id: user.id, username: user.username, name: user.name, role: user.role, agentId: user.agentId || paymentAccountOwnerAgentId(user) || null }))
     : [];
-  return sendJson(res, 200, { user: userSafe(s.user), csrfToken: s.session.csrfToken, paymentMethods: db.paymentMethods, agents: db.agents.map(agent => agentView(agent, s.user)), accountUsers, permissions: PERMISSION_CATALOG, userRoles: db.userRoles, settings: publicSettings(), notifications: notificationsForUser(s.user).slice(-50).reverse() }, {}, req);
+  return sendJson(res, 200, { user: userSafe(s.user), csrfToken: s.session.csrfToken, orderAcceptance: orderAcceptanceForUser(s.user), paymentMethods: db.paymentMethods, agents: db.agents.map(agent => agentView(agent, s.user)), accountUsers, permissions: PERMISSION_CATALOG, userRoles: db.userRoles, settings: publicSettings(), notifications: notificationsForUser(s.user).slice(-50).reverse() }, {}, req);
 }
 function handleDashboard(req, res) {
   const user = requirePermission(req, res, 'dashboard.view'); if (!user) return;
@@ -15586,7 +15641,8 @@ function agentView(agent, viewer = null) {
       };
     }
   }
-  return { ...agent, manualStatus: 'dynamic', status: dynamicStatus, isOnline: presence.isOnline, isAvailable: presence.isAvailable, presence, activityToday, user: linkedUserView };
+  const orderAcceptance = linkedUser ? orderAcceptanceForUser(linkedUser) : { available: false, accepting: false, agentId: agent.id, presenceStatus: dynamicStatus, activeAssignments: activeAssignmentCount(agent.id), maxActiveOrders: positiveNum(agent.maxActiveOrders || 0), updatedAt: agent.orderAcceptanceUpdatedAt || null, updatedBy: agent.orderAcceptanceUpdatedBy || null };
+  return { ...agent, acceptingOrders: agent.allowNewOrders !== false, orderAcceptance, manualStatus: 'dynamic', status: dynamicStatus, isOnline: presence.isOnline, isAvailable: presence.isAvailable, presence, activityToday, user: linkedUserView };
 }
 
 async function handleUserRoles(req, res) {
@@ -15674,7 +15730,7 @@ async function handleAgents(req, res) {
   if (req.method === 'POST') {
     const admin = requirePermission(req, res, 'agents.manage'); if (!admin) return;
     const body = await readBody(req);
-    const agent = { id: nextId(), name: cleanStr(body.name || 'New Agent', 120), userId: null, status: 'dynamic', mobile: cleanStr(body.mobile || '', 40), smsEnabled: body.smsEnabled !== false, maxActiveOrders: positiveNum(body.maxActiveOrders || 5), allowNewOrders: body.allowNewOrders !== false, canRelease: !!body.canRelease, maxReleaseAmount: positiveNum(body.maxReleaseAmount || 0), includeProfitInCompanyTotals: body.includeProfitInCompanyTotals !== false, createdAt: nowIso() };
+    const agent = { id: nextId(), name: cleanStr(body.name || 'New Agent', 120), userId: null, status: 'dynamic', mobile: cleanStr(body.mobile || '', 40), smsEnabled: body.smsEnabled !== false, maxActiveOrders: positiveNum(body.maxActiveOrders || 5), allowNewOrders: body.allowNewOrders !== false, orderAcceptanceUpdatedAt: nowIso(), orderAcceptanceUpdatedBy: user.id, canRelease: !!body.canRelease, maxReleaseAmount: positiveNum(body.maxReleaseAmount || 0), includeProfitInCompanyTotals: body.includeProfitInCompanyTotals !== false, createdAt: nowIso() };
     if (body.username && body.password) {
       const username = cleanStr(body.username, 80);
       if (db.users.some(u => u.username === username)) return sendJson(res, 422, { error: 'Username already exists' }, {}, req);
@@ -15732,7 +15788,11 @@ async function handleAgentById(req, res, parts) {
     if (body.maxActiveOrders !== undefined) agentCandidate.maxActiveOrders = positiveNum(body.maxActiveOrders);
     if (body.mobile !== undefined) agentCandidate.mobile = cleanStr(body.mobile || '', 40);
     if (body.smsEnabled !== undefined) agentCandidate.smsEnabled = !!body.smsEnabled;
-    if (body.allowNewOrders !== undefined) agentCandidate.allowNewOrders = !!body.allowNewOrders;
+    if (body.allowNewOrders !== undefined) {
+      agentCandidate.allowNewOrders = !!body.allowNewOrders;
+      agentCandidate.orderAcceptanceUpdatedAt = nowIso();
+      agentCandidate.orderAcceptanceUpdatedBy = admin.id;
+    }
     if (body.canRelease !== undefined) agentCandidate.canRelease = !!body.canRelease;
     if (body.maxReleaseAmount !== undefined) agentCandidate.maxReleaseAmount = positiveNum(body.maxReleaseAmount);
     if (body.includeProfitInCompanyTotals !== undefined) agentCandidate.includeProfitInCompanyTotals = body.includeProfitInCompanyTotals !== false;
@@ -15828,6 +15888,8 @@ async function handleAgentById(req, res, parts) {
       }
       if (linkedUserCandidate.role !== 'agent') {
         agentCandidate.allowNewOrders = false;
+        agentCandidate.orderAcceptanceUpdatedAt = nowIso();
+        agentCandidate.orderAcceptanceUpdatedBy = admin.id;
         agentCandidate.canRelease = false;
       }
     }
@@ -16035,7 +16097,6 @@ function createPaymentAccountFromDraft(draft, user) {
 
 async function handleBulkPaymentAccounts(req, res) {
   const user = requirePermission(req, res, 'accounts.manage'); if (!user) return;
-  if (!['admin', 'manager'].includes(user.role)) return sendJson(res, 403, { error: 'Only Admin and Manager can bulk add payment accounts.' }, {}, req);
   if (req.method !== 'POST') return sendJson(res, 405, { error: 'Method not allowed' }, {}, req);
   const body = await readBody(req);
   const structuredBoxImport = Array.isArray(body.accounts);
@@ -16099,14 +16160,13 @@ async function handlePaymentAccounts(req, res, url) {
   const user = requirePermission(req, res, 'accounts.view'); if (!user) return;
   if (req.method === 'GET') {
     let accounts = db.paymentAccounts;
-    if (user.role === 'agent') accounts = accounts.filter(account => accountAssignedToAgent(account, user.agentId));
+    if (user.role === 'agent' && !userHasPermission(user, 'accounts.manage')) accounts = accounts.filter(account => accountAssignedToAgent(account, user.agentId));
     const methodId = Number(url.searchParams.get('paymentMethodId') || 0);
     if (methodId) accounts = accounts.filter(a => a.paymentMethodId === methodId);
     return sendJson(res, 200, { items: accounts.map(account => accountView(account, user)) }, {}, req);
   }
   if (req.method === 'POST') {
     const admin = requirePermission(req, res, 'accounts.manage'); if (!admin) return;
-    if (!['admin', 'manager'].includes(admin.role)) return sendJson(res, 403, { error: 'Only Admin and Manager can create payment accounts.' }, {}, req);
     const body = await readBody(req);
     const paymentMethodId = Number(body.paymentMethodId);
     const method = methodById(paymentMethodId);
@@ -16140,7 +16200,6 @@ async function handlePaymentAccountById(req, res, parts) {
 }
 
 async function updatePaymentAccount(req, res, user, accountItem) {
-  if (!['admin', 'manager'].includes(user.role)) return sendJson(res, 403, { error: 'Only Admin and Manager can update payment accounts.' }, {}, req);
   if (!userHasPermission(user, 'accounts.manage')) return sendJson(res, 403, { error: 'Permission denied: accounts.manage' }, {}, req);
   const body = await readBody(req);
   const nextType = body.accountType !== undefined ? normalizePaymentAccountType(body.accountType) : normalizePaymentAccountType(accountItem.accountType);
@@ -16198,7 +16257,6 @@ async function updatePaymentAccount(req, res, user, accountItem) {
 }
 
 async function addAccountLedger(req, res, user, accountItem) {
-  if (!['admin', 'manager'].includes(user.role)) return sendJson(res, 403, { error: 'Only Admin and Manager can adjust payment-account statements.' }, {}, req);
   if (!userHasPermission(user, 'ledger.adjust')) return sendJson(res, 403, { error: 'Permission denied: ledger.adjust' }, {}, req);
   const body = await readBody(req);
   const type = cleanStr(body.type || '', 40);
@@ -16226,7 +16284,7 @@ async function addAccountLedger(req, res, user, accountItem) {
   db.ledgers.push(ledger);
   logAudit(user, 'payment_account_ledger_adjusted', 'paymentAccount', accountItem.id, { type, amount, balanceBefore: before, balanceAfter: after, note: ledger.note });
   saveDb();
-  return sendJson(res, 201, { account: accountView(accountItem), ledger }, {}, req);
+  return sendJson(res, 201, { account: accountView(accountItem, user), ledger }, {}, req);
 }
 
 function routeView(r) {
@@ -16461,6 +16519,7 @@ async function handleOrders(req, res, url) {
     orders = orders.slice().sort((a,b) => new Date(b.createdAt || b.updatedAt || 0) - new Date(a.createdAt || a.updatedAt || 0));
     return sendJson(res, 200, {
       items: orders.map(order => orderListView(order, user)),
+      orderAcceptance: orderAcceptanceForUser(user),
       credentialOptions: binanceCredentialOptionsForUser(user, 'orders.view', { includeDisabled: true }),
       liveCredentialOptions: usableBinanceCredentialOptionsForUser(user, 'orders.view')
     }, {}, req);
@@ -16796,6 +16855,7 @@ async function managerAssign(req, res, user, order) {
   const agentId = Number(body.agentId);
   const agent = agentById(agentId);
   if (!agent) return sendJson(res, 404, { error: 'Agent not found' }, {}, req);
+  if (!agentAvailableForAssignment(agent)) return sendJson(res, 422, { error: 'That user is not accepting new orders or does not have Orders View permission.' }, {}, req);
   if (order.orderSource !== 'offline' && !userHasBinanceCredentialPermission(agentLoginUser(agentId), order.credentialId, 'orders.view')) {
     return sendJson(res, 422, { error: 'That user is not assigned orders.view permission for this Binance account.' }, {}, req);
   }
@@ -19008,13 +19068,14 @@ async function handleAccounting(req, res, url) {
 
 async function handleLedgers(req, res, url) {
   const user = requirePermission(req, res, 'accounts.view'); if (!user) return;
-  if (user.role === 'agent') return sendJson(res, 403, { error: 'Account statements are not available to agents.' }, {}, req);
   if (req.method !== 'GET') return sendJson(res, 405, { error: 'Method not allowed' }, {}, req);
-  let items = db.ledgers.slice();
+  const accessibleAccountIds = new Set(db.paymentAccounts.filter(account => canAccessAccount(user, account)).map(account => Number(account.id)));
+  let items = db.ledgers.filter(item => accessibleAccountIds.has(Number(item.paymentAccountId || 0)));
   const accountId = Number(url.searchParams.get('accountId') || 0);
   const orderId = Number(url.searchParams.get('orderId') || 0);
-  if (accountId) items = items.filter(l => l.paymentAccountId === accountId);
-  if (orderId) items = items.filter(l => l.orderId === orderId);
+  if (accountId && !accessibleAccountIds.has(accountId)) return sendJson(res, 403, { error: 'No access to this payment-account statement.' }, {}, req);
+  if (accountId) items = items.filter(l => Number(l.paymentAccountId) === accountId);
+  if (orderId) items = items.filter(l => Number(l.orderId) === orderId);
   items = items.slice(-500).reverse().map(item => ledgerView(item, user));
   return sendJson(res, 200, { items }, {}, req);
 }
