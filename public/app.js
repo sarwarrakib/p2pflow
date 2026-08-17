@@ -1,5 +1,5 @@
-// v1.5.17: account-scoped Binance RBAC, visible security recovery setup and individual-only profit accounting.
-// v1.5.17: first-run recovery reuses the saved Application Key and software updates are Owner-only from Control Panel.
+// v1.5.18: account-scoped Binance RBAC, visible security recovery setup and individual-only profit accounting.
+// v1.5.18: first-run recovery reuses the saved Application Key and software updates are Owner-only from Control Panel.
 // v1.0.137: Diagnose and harden Binance P2P Create Advertisement privilege flow.
 // v1.0.128: lightweight Ads UI, cached reloads and realtime Binance merchant-status sync.
 // v1.0.117: Stop order countdowns immediately after completed or cancelled status sync.
@@ -82,6 +82,7 @@ const pages = [
   ['ads', 'Advertisements', ['admin','manager','agent','auditor']],
   ['approvals', 'Approvals', ['admin','manager']],
   ['accounts', 'Payment Accounts', ['admin','manager','agent','auditor']],
+  ['offline-transactions', 'Offline Business', ['admin','manager','agent','auditor']],
   ['ledger', 'Account Statement', ['admin','manager','agent','auditor']],
   ['agents', 'Users', ['admin','manager','auditor']],
   ['user-roles', 'User Roles', ['admin','manager']],
@@ -99,7 +100,7 @@ const pages = [
   ['settings', 'Settings', ['admin','manager']],
   ['p2p-extension', 'Extension Bridge', ['admin','manager']],
   ['security', 'Security', ['admin','manager','agent','auditor']],
-  ['notifications', 'Panel SMS / Alerts', ['admin','manager','agent','auditor']],
+  ['notifications', 'Notifications', ['admin','manager','agent','auditor']],
   ['audit', 'Audit Logs', ['admin','manager','auditor']]
 ];
 
@@ -114,6 +115,7 @@ const PAGE_PERMISSIONS = {
   approvals: 'approvals.manage',
   binance: 'binance.sync',
   accounts: 'accounts.view',
+  'offline-transactions': 'offline.transactions.manage',
   ledger: 'accounts.view',
   agents: 'agents.manage',
   'user-roles': 'roles.manage',
@@ -145,7 +147,7 @@ const NAV_MENU_GROUPS = [
     ['ads','Advertisements','ads'], ['approvals','Approvals','approve']
   ]},
   { id:'accounting', label:'Accounting', icon:'accounting', items:[
-    ['accounting','Overview','overview'], ['accounts','Payment Accounts','wallet'], ['ledger','Account Statement','statement'],
+    ['accounting','Overview','overview'], ['accounts','Payment Accounts','wallet'], ['offline-transactions','Offline Business','offline'], ['ledger','Account Statement','statement'],
     ['accounting-expenses','Expense','expense'], ['accounting-income','Business Income','income'],
     ['accounting-capital','Capital','capital'], ['accounting-closing','Daily Closing','closing']
   ]},
@@ -154,7 +156,7 @@ const NAV_MENU_GROUPS = [
   ]},
   { id:'monitoring', label:'Reports & Monitoring', icon:'monitor', items:[
     ['reports','Reports','reports'], ['activity','Activity Monitor','activity'], ['audit','Audit Logs','audit'],
-    ['notifications','SMS / Alerts','alerts']
+    ['notifications','Notifications','alerts']
   ]},
   { id:'system', label:'System', icon:'system', items:[
     ['security','Security','security'], ['credentials','API Credentials','key'], ['p2p-extension','Extension Bridge','extension'],
@@ -174,6 +176,7 @@ const NAV_ICON_SVGS = {
   accounting:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h14v16H5zM8 8h8M8 12h2M14 12h2M8 16h2M14 16h2"/></svg>',
   overview:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19V9m5 10V5m5 14v-7m5 7V3"/></svg>',
   wallet:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h15v13H4zM4 9h15M15 13h4"/></svg>',
+  offline:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v14H4zM7 9h10M7 13h5M16 13h1M7 17h3"/><path d="M15 3v4M9 3v4"/></svg>',
   statement:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h12v18H6zM9 8h6M9 12h6M9 16h4"/></svg>',
   expense:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v16M7 9l5-5 5 5"/></svg>',
   income:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20V4M7 15l5 5 5-5"/></svg>',
@@ -231,12 +234,15 @@ function renderSidebarMeta() {
 
 const FRONTEND_PERMISSION_IMPLICATIONS = Object.freeze({
   'accounts.manage': Object.freeze(['accounts.view']),
-  'ledger.adjust': Object.freeze(['accounts.view'])
+  'accounts.manage_all': Object.freeze(['accounts.view', 'accounts.manage']),
+  'ledger.adjust': Object.freeze(['accounts.view']),
+  'offline.transactions.manage': Object.freeze(['accounts.view'])
 });
 function hasPerm(permission) {
   if (!permission) return true;
   if (!state.user) return false;
   if (state.user.role === 'admin') return true;
+  if (state.user.role === 'manager' && ['accounts.view','accounts.manage','accounts.manage_all'].includes(permission)) return true;
   const permissions = state.user.permissions || [];
   if (permissions.includes(permission)) return true;
   return Object.entries(FRONTEND_PERMISSION_IMPLICATIONS).some(([granted, implied]) => permissions.includes(granted) && implied.includes(permission));
@@ -2757,6 +2763,63 @@ const UI_SHORT_COPY = {
   "API Mode live হলে approved final action সরাসরি Binance C2C SAPI call করবে. API credential, payId এবং release auth code সঠিক না হলে action fail হবে; secret কখনো UI/audit-এ দেখানো হবে না.": "Live API actions require valid Binance credentials."
 };
 
+Object.assign(I18N_BN, {
+  'Offline Business':'অফলাইন ব্যবসা',
+  'Create Receipt Session':'রিসিভ সেশন তৈরি করুন',
+  'Pending numbers stay reserved and cannot be used by another offline receipt session.':'পেন্ডিং নম্বরগুলো রিজার্ভ থাকবে এবং অন্য অফলাইন রিসিভ সেশনে ব্যবহার করা যাবে না।',
+  'Requested':'রিকোয়েস্টেড',
+  'Planned':'পরিকল্পিত',
+  'Received':'রিসিভড',
+  'Partially Received':'আংশিক রিসিভড',
+  'Ready':'প্রস্তুত',
+  'Finalized':'ফাইনাল হয়েছে',
+  'Finalized Partial':'আংশিক ফাইনাল হয়েছে',
+  'Create Offline Order':'অফলাইন অর্ডার তৈরি করুন',
+  'Create Partial Order':'আংশিক অর্ডার তৈরি করুন',
+  'Open Order':'অর্ডার খুলুন',
+  'Create Offline Receipt Session':'অফলাইন রিসিভ সেশন তৈরি করুন',
+  'Requested Amount':'রিকোয়েস্টেড অ্যামাউন্ট',
+  'Per Number Limit':'প্রতি নম্বর লিমিট',
+  'Reference':'রেফারেন্স',
+  'Customer / Counterparty':'কাস্টমার / কাউন্টারপার্টি',
+  'Search Number, Label or Serial':'নম্বর, লেবেল বা সিরিয়াল সার্চ করুন',
+  'Find Eligible Numbers':'যোগ্য নম্বর খুঁজুন',
+  'Reserve Numbers & Create Session':'নম্বর রিজার্ভ করে সেশন তৈরি করুন',
+  'Receive Available':'রিসিভ অ্যাভেইলেবল',
+  'Suggested':'প্রস্তাবিত',
+  'No offline receipt session yet.':'এখনো কোনো অফলাইন রিসিভ সেশন নেই।',
+  'No eligible unreserved payment number found in your permission scope.':'আপনার পারমিশন স্কোপে কোনো যোগ্য ও আনরিজার্ভড পেমেন্ট নম্বর পাওয়া যায়নি।',
+  'Notifications':'নোটিফিকেশন',
+  'Notification Preferences':'নোটিফিকেশন পছন্দ',
+  'Choose which notification groups appear inside the panel and which are sent to your email.':'কোন নোটিফিকেশন প্যানেলে দেখাবেন এবং কোনগুলো ইমেইলে পাবেন তা নির্বাচন করুন।',
+  'Save Preferences':'পছন্দ সেভ করুন',
+  'Notification Group':'নোটিফিকেশন গ্রুপ',
+  'In App':'অ্যাপে',
+  'Email':'ইমেইল',
+  'Required for security':'সিকিউরিটির জন্য বাধ্যতামূলক',
+  'Notification History':'নোটিফিকেশন হিস্ট্রি',
+  'Only notification categories enabled for this user are shown.':'এই ইউজারের জন্য চালু থাকা নোটিফিকেশন ক্যাটাগরিগুলোই দেখানো হচ্ছে।',
+  'Category':'ক্যাটাগরি',
+  'Read':'পড়া হয়েছে',
+  'Unread':'অপঠিত',
+  'Label':'লেবেল',
+  'Serial Number':'সিরিয়াল নম্বর',
+  'Starting Serial':'শুরুর সিরিয়াল',
+  'Default Label':'ডিফল্ট লেবেল',
+  'Apply Defaults':'ডিফল্ট প্রয়োগ করুন',
+  'Account Preview':'অ্যাকাউন্ট প্রিভিউ',
+  'Search number, label or serial':'নম্বর, লেবেল বা সিরিয়াল সার্চ করুন',
+  'All payment accounts':'সব পেমেন্ট অ্যাকাউন্ট',
+  'Your own and assigned payment accounts':'আপনার নিজস্ব ও অ্যাসাইনড পেমেন্ট অ্যাকাউন্ট',
+  'Statement Entry':'স্টেটমেন্ট এন্ট্রি',
+  'Manage own payment accounts':'নিজস্ব পেমেন্ট অ্যাকাউন্ট ম্যানেজ',
+  'Manage all payment accounts':'সব পেমেন্ট অ্যাকাউন্ট ম্যানেজ',
+  'Payment account statement adjustment':'পেমেন্ট অ্যাকাউন্ট স্টেটমেন্ট অ্যাডজাস্টমেন্ট',
+  'Offline business receipt workflow':'অফলাইন ব্যবসার রিসিভ ওয়ার্কফ্লো',
+  'Open Feedback Page':'ফিডব্যাক পেজ খুলুন',
+  'Permission details':'পারমিশনের বিস্তারিত'
+});
+
 const I18N_BN_PATTERNS = [
   [/^Version\s+(.+)\s+is ready$/i, 'ভার্সন $1 প্রস্তুত'],
   [/^Version\s+(.+)$/i, 'ভার্সন $1'],
@@ -3369,8 +3432,10 @@ const PERMISSION_LABELS = {
   'ads.manage': 'Create, edit and activate advertisements',
   'accounts.view': 'View payment accounts',
   'accounts.use': 'Use assigned payment accounts',
-  'accounts.manage': 'Payment account add/edit/status',
-  'ledger.adjust': 'Offline transaction / statement adjustment',
+  'accounts.manage': 'Manage own payment accounts',
+  'accounts.manage_all': 'Manage all payment accounts',
+  'ledger.adjust': 'Payment account statement adjustment',
+  'offline.transactions.manage': 'Offline business receipt workflow',
   'routing.manage': 'Payment routing manage',
   'agents.manage': 'User add/edit/permission manage',
   'roles.manage': 'User role template manage',
@@ -3399,10 +3464,12 @@ const PERMISSION_DESCRIPTIONS = Object.freeze({
   'p2p.profile.sync': { en: 'Fetch and update P2P profile and feedback for exact Binance accounts with the same grant. View permission is implied for opening the result.', bn: 'একই grant থাকা নির্দিষ্ট Binance account-এর P2P profile ও feedback fetch/update করা যাবে। ফলাফল খোলার জন্য view access ব্যবহৃত হবে।' },
   'ads.view': { en: 'View advertisements and merchant status for exact Binance accounts with Ads View. It does not create, edit, publish or change merchant status.', bn: 'নির্দিষ্ট Binance account-এ Ads View থাকলে advertisement ও merchant status দেখা যাবে। Create, edit, publish বা merchant status change করা যাবে না।' },
   'ads.manage': { en: 'Create, edit, publish, disable or delete Ads and run Business/Online/Break actions for exact Binance accounts with Ads Manage. All-account actions affect only granted accounts.', bn: 'নির্দিষ্ট Binance account-এ Ads Manage থাকলে Ad create/edit/publish/disable/delete এবং Business/Online/Break action করা যাবে। All action শুধু granted account-গুলোতে কাজ করবে।' },
-  'accounts.view': { en: 'View assigned payment accounts and their allowed statement data. Users with Payment Account Manage can view every payment account.', bn: 'Assigned payment account ও অনুমোদিত statement data দেখা যাবে। Payment Account Manage থাকলে সব payment account দেখা যাবে।' },
-  'accounts.use': { en: 'Use only assigned, active payment accounts in order payment splits. It does not allow adding, editing, changing access or adjusting balances.', bn: 'শুধু assigned ও active payment account order payment split-এ ব্যবহার করা যাবে। Add, edit, access change বা balance adjustment করা যাবে না।' },
-  'accounts.manage': { en: 'Create, bulk add, edit, activate/deactivate and assign Agent access for all payment accounts. It includes page visibility but does not grant use in payment splits or ledger adjustment.', bn: 'সব payment account create, bulk add, edit, active/inactive এবং Agent access assign করা যাবে। Page view অন্তর্ভুক্ত, কিন্তু payment split-এ use বা ledger adjustment permission এতে নেই।' },
-  'ledger.adjust': { en: 'Add offline transactions, top-up/cash-out, correction, expense, settlement and refund entries on payment accounts the user can access. It includes statement visibility but not account editing.', bn: 'অ্যাক্সেসযোগ্য payment account-এ offline transaction, top-up/cash-out, correction, expense, settlement ও refund entry যোগ করা যাবে। Statement view অন্তর্ভুক্ত, account edit নয়।' },
+  'accounts.view': { en: 'Open Payment Accounts and view only accounts the user owns or has been assigned. Admin and Manager can view every payment account.', bn: 'Payment Accounts পেজ খুলে user নিজের অথবা তাকে assigned করা account-গুলো দেখতে পারবে। Admin ও Manager সব payment account দেখতে পারবে।' },
+  'accounts.use': { en: 'Use owned or assigned active payment accounts in permitted order payment splits. It does not allow account creation, editing, access changes or balance adjustment.', bn: 'অনুমোদিত order payment split-এ নিজের বা assigned active payment account ব্যবহার করা যাবে। Account create/edit, access change বা balance adjustment করা যাবে না।' },
+  'accounts.manage': { en: 'Create payment accounts under the logged-in user and manage only accounts owned by that user. Agents cannot use this permission to edit another user’s account. It does not grant payment-split use or statement adjustment.', bn: 'লগইন করা user-এর নামে payment account তৈরি এবং শুধু নিজের account manage করা যাবে। Agent এই permission দিয়ে অন্য user-এর account edit করতে পারবে না। Payment split use বা statement adjustment আলাদা permission।' },
+  'accounts.manage_all': { en: 'Manage every payment account, change Account User and assign or remove Agent access. Admin and Manager always have this scope. Agents remain limited to their own accounts even if this permission is accidentally selected.', bn: 'সব payment account manage, Account User পরিবর্তন এবং Agent access assign/remove করা যাবে। Admin ও Manager সবসময় এই scope পাবে। ভুল করে permission selected হলেও Agent শুধু নিজের account-এ সীমাবদ্ধ থাকবে।' },
+  'ledger.adjust': { en: 'Add top-up, cash-out, correction, expense, settlement and refund statement entries. Without Manage All Payment Accounts, adjustments are limited to the logged-in user’s own accounts.', bn: 'Top-up, cash-out, correction, expense, settlement ও refund statement entry করা যাবে। Manage All Payment Accounts না থাকলে শুধু লগইন user-এর নিজের account-এ adjustment করা যাবে।' },
+  'offline.transactions.manage': { en: 'Create offline receipt sessions, reserve eligible payment numbers, mark full or partial amounts received, and finalize full or partial offline orders. Only payment accounts inside the user’s allowed scope are available.', bn: 'Offline receipt session তৈরি, eligible payment number reserve, full/partial received mark এবং full/partial offline order finalize করা যাবে। User-এর allowed scope-এর payment account-ই পাওয়া যাবে।' },
   'routing.manage': { en: 'Create and edit payment-method routing, priority, amount ranges and capacity rules used by automatic assignment. It does not bypass Order Acceptance or account permissions.', bn: 'Auto assignment-এর payment-method routing, priority, amount range ও capacity rule create/edit করা যাবে। Order Acceptance বা account permission bypass হবে না।' },
   'agents.manage': { en: 'Create and edit users, login access, global permissions, Binance-account permissions, Security Question setup and Agent operating limits. Delegation cannot exceed the editor’s own access.', bn: 'User create/edit, login access, global permission, Binance-account permission, Security Question ও Agent limit manage করা যাবে। Editor নিজের permission-এর বেশি grant করতে পারবে না।' },
   'roles.manage': { en: 'Create and edit reusable User Role templates and their global permissions. Assigning exact Binance accounts remains a separate per-user step.', bn: 'Reusable User Role template ও global permission create/edit করা যাবে। নির্দিষ্ট Binance account assignment আলাদা per-user ধাপ।' },
@@ -3422,20 +3489,23 @@ function permissionDescription(permission) {
 }
 function permissionHelpHtml(permission) {
   const description = permissionDescription(permission);
-  return `<span class="permission-help" tabindex="0" role="button" data-permission-help="${escapeAttr(description)}" aria-label="${escapeAttr((state.lang === 'bn' ? 'Permission বিস্তারিত: ' : 'Permission details: ') + description)}">?</span>`;
+  const label = (state.lang === 'bn' ? 'Permission-এর কাজ দেখুন: ' : 'Show permission details: ') + (PERMISSION_LABELS[permission] || permission);
+  return `<button type="button" class="permission-help" data-permission-help="${escapeAttr(description)}" aria-label="${escapeAttr(label)}" aria-expanded="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z"/><circle cx="12" cy="12" r="2.8"/></svg></button>`;
 }
 function permissionOptionHtml(permission, checked=false, options={}) {
   const inputName = options.inputName || 'permissions';
   const dataAttributes = options.dataAttributes || '';
-  const description = permissionDescription(permission);
-  return `<div class="permission-option${options.compact ? ' compact' : ''}" data-permission-scope="${escapeAttr(description)}"><label class="check"><input type="checkbox" name="${escapeAttr(inputName)}" ${dataAttributes} value="${escapeAttr(permission)}" ${checked ? 'checked' : ''}/> <span>${escapeHtml(PERMISSION_LABELS[permission] || permission)}</span></label>${permissionHelpHtml(permission)}</div>`;
+  return `<div class="permission-option${options.compact ? ' compact' : ''}"><label class="check"><input type="checkbox" name="${escapeAttr(inputName)}" ${dataAttributes} value="${escapeAttr(permission)}" ${checked ? 'checked' : ''}/> <span>${escapeHtml(PERMISSION_LABELS[permission] || permission)}</span></label>${permissionHelpHtml(permission)}</div>`;
 }
 
 let permissionTooltipElement = null;
+let activePermissionHelpButton = null;
 function setupPermissionHelpTooltips() {
   if (document.body.dataset.permissionTooltipsReady === '1') return;
   document.body.dataset.permissionTooltipsReady = '1';
   const hide = () => {
+    if (activePermissionHelpButton) activePermissionHelpButton.setAttribute('aria-expanded', 'false');
+    activePermissionHelpButton = null;
     if (!permissionTooltipElement) return;
     permissionTooltipElement.hidden = true;
     permissionTooltipElement.textContent = '';
@@ -3450,6 +3520,9 @@ function setupPermissionHelpTooltips() {
       permissionTooltipElement.hidden = true;
       document.body.appendChild(permissionTooltipElement);
     }
+    if (activePermissionHelpButton && activePermissionHelpButton !== target) activePermissionHelpButton.setAttribute('aria-expanded', 'false');
+    activePermissionHelpButton = target;
+    target.setAttribute('aria-expanded', 'true');
     permissionTooltipElement.textContent = text;
     permissionTooltipElement.hidden = false;
     permissionTooltipElement.style.left = '12px';
@@ -3457,38 +3530,27 @@ function setupPermissionHelpTooltips() {
     const targetRect = target.getBoundingClientRect();
     const tooltipRect = permissionTooltipElement.getBoundingClientRect();
     const margin = 10;
-    let left = targetRect.left + (targetRect.width / 2) - (tooltipRect.width / 2);
+    let left = targetRect.right - tooltipRect.width;
     left = Math.max(margin, Math.min(left, window.innerWidth - tooltipRect.width - margin));
     let top = targetRect.bottom + 8;
     if (top + tooltipRect.height > window.innerHeight - margin) top = Math.max(margin, targetRect.top - tooltipRect.height - 8);
     permissionTooltipElement.style.left = `${Math.round(left)}px`;
     permissionTooltipElement.style.top = `${Math.round(top)}px`;
   };
-  document.addEventListener('pointerover', event => {
-    const target = event.target.closest?.('[data-permission-help], [data-permission-scope]');
-    if (target) {
-      if (!target.dataset.permissionHelp && target.dataset.permissionScope) target.dataset.permissionHelp = target.dataset.permissionScope;
-      show(target);
-    }
-  });
-  document.addEventListener('pointerout', event => {
-    const target = event.target.closest?.('[data-permission-help], [data-permission-scope]');
-    if (target && !target.contains(event.relatedTarget)) hide();
-  });
   document.addEventListener('focusin', event => {
     const target = event.target.closest?.('[data-permission-help]');
     if (target) show(target);
-  });
-  document.addEventListener('focusout', event => {
-    if (event.target.closest?.('[data-permission-help]')) hide();
   });
   document.addEventListener('click', event => {
     const target = event.target.closest?.('[data-permission-help]');
     if (!target) return hide();
     event.preventDefault();
     event.stopPropagation();
-    if (permissionTooltipElement && !permissionTooltipElement.hidden && permissionTooltipElement.textContent === target.dataset.permissionHelp) hide();
+    if (activePermissionHelpButton === target && permissionTooltipElement && !permissionTooltipElement.hidden) hide();
     else show(target);
+  });
+  document.addEventListener('keydown', event => {
+    if (event.key === 'Escape') hide();
   });
   window.addEventListener('resize', hide, { passive:true });
   window.addEventListener('scroll', hide, { passive:true, capture:true });
@@ -4398,7 +4460,7 @@ function renderNav() {
   // legacy flat menu while this marker is absent, the browser/proxy is serving
   // stale frontend JavaScript rather than the active release.
   nav.dataset.navigationModel = 'grouped-control-center';
-  nav.dataset.uiRelease = '1.5.17';
+  nav.dataset.uiRelease = '1.5.18';
   nav.innerHTML = '';
   const visible = visiblePages();
   const visibleIds = new Set(visible.map(([id]) => id));
@@ -4548,6 +4610,7 @@ async function renderPage(showLoading=true) {
     else if (state.page === 'approvals') await renderApprovals();
     else if (state.page === 'ads') await renderAds();
     else if (state.page === 'accounts') await renderAccounts();
+    else if (state.page === 'offline-transactions') await renderOfflineTransactions();
     else if (state.page === 'ledger') await renderLedger();
     else if (state.page === 'agents') await renderUsers();
     else if (state.page === 'user-roles') await renderUserRoles();
@@ -5416,7 +5479,7 @@ async function loadOrderDetail(id, showLoading=true, fromRoute=false) {
       const q = String(query || '').trim().toLowerCase();
       const visible = quickAccounts
         .filter(account => String(account.status || '').toLowerCase() === 'active')
-        .filter(account => !q || [account.accountNumber, account.accountName, account.method?.name, account.method?.code, account.agent?.name, account.accountType].some(value => String(value || '').toLowerCase().includes(q)))
+        .filter(account => !q || [account.accountNumber, account.accountName, account.label, account.serialNumber, account.method?.name, account.method?.code, account.ownerUser?.name, account.accountType].some(value => String(value || '').toLowerCase().includes(q)))
         .sort((a, b) => {
           const selectedA = Number(a.id) === Number(o.selectedPaymentAccountId || o.selectedPaymentAccount?.id || 0) ? 1 : 0;
           const selectedB = Number(b.id) === Number(o.selectedPaymentAccountId || o.selectedPaymentAccount?.id || 0) ? 1 : 0;
@@ -5427,13 +5490,13 @@ async function loadOrderDetail(id, showLoading=true, fromRoute=false) {
           return String(a.accountNumber || '').localeCompare(String(b.accountNumber || ''));
         });
       quickPanelBody.innerHTML = `
-        <div class="quick-number-tools"><button class="quick-number-back" id="backQuickMessages" type="button">←</button><input id="quickNumberSearch" type="search" placeholder="Search number, method or account name" value="${escapeAttr(query)}" /></div>
+        <div class="quick-number-tools"><button class="quick-number-back" id="backQuickMessages" type="button">←</button><input id="quickNumberSearch" type="search" placeholder="Search number, label, serial or method" value="${escapeAttr(query)}" /></div>
         <div class="quick-number-hint">Tap a number to send it and set it as this order's payment account.</div>
         <div class="quick-number-list">${visible.length ? visible.map(account => {
           const isMatch = accountMatchesOrderMethod(account, o);
           const isSelected = Number(account.id) === Number(o.selectedPaymentAccountId || o.selectedPaymentAccount?.id || 0);
           return `<button class="quick-number-row${isSelected ? ' is-selected' : ''}" type="button" data-quick-payment-account="${Number(account.id) || 0}">
-            <span class="quick-number-main"><b>${escapeHtml(account.method?.name || 'Payment account')}</b><strong>${escapeHtml(account.accountNumber || '-')}</strong><small>${escapeHtml(account.accountName || account.agent?.name || '')}</small></span>
+            <span class="quick-number-main"><b>${escapeHtml(account.method?.name || 'Payment account')}</b><strong>${escapeHtml(account.accountNumber || '-')}</strong><small>${escapeHtml([account.label, account.serialNumber, account.accountName].filter(Boolean).join(' · '))}</small></span>
             <span class="quick-number-meta"><em>${escapeHtml(accountTypeLabel(account.accountType))}</em>${isMatch ? '<i>MATCHED METHOD</i>' : ''}${isSelected ? '<i>SELECTED</i>' : ''}</span>
           </button>`;
         }).join('') : '<div class="empty-state small">No active payment number matches this search.</div>'}</div>`;
@@ -5910,16 +5973,36 @@ function paymentAccountOwnerUsers() {
   return Array.isArray(state.bootstrap?.accountUsers) ? state.bootstrap.accountUsers : [];
 }
 
+function paymentAccountScopeManageAll() {
+  return Boolean(state.paymentAccountScope?.manageAll ?? state.bootstrap?.paymentAccountScope?.manageAll);
+}
+
 function paymentAccountOwnerSelect(selectedId=null) {
   const users = paymentAccountOwnerUsers();
-  return `<select name="ownerUserId" required><option value="">Select user</option>${users.map(user => `<option value="${Number(user.id)}" data-role="${escapeAttr(user.role || '')}" data-agent-id="${Number(user.agentId || 0)}" ${Number(selectedId) === Number(user.id) ? 'selected' : ''}>${escapeHtml(user.name || user.username || `User ${user.id}`)} (${escapeHtml(user.username || user.role || '')})</option>`).join('')}</select>`;
+  const effectiveId = Number(selectedId ?? state.user?.id ?? 0);
+  return `<select name="ownerUserId" required><option value="">Select user</option>${users.map(user => `<option value="${Number(user.id)}" data-role="${escapeAttr(user.role || '')}" data-agent-id="${Number(user.agentId || 0)}" ${effectiveId === Number(user.id) ? 'selected' : ''}>${escapeHtml(user.name || user.username || `User ${user.id}`)} (${escapeHtml(user.username || user.role || '')})</option>`).join('')}</select>`;
+}
+
+function paymentAccountOwnerField(selectedId=null, editable=paymentAccountScopeManageAll()) {
+  const effectiveId = Number(selectedId ?? state.user?.id ?? 0);
+  if (editable) return paymentAccountOwnerSelect(effectiveId);
+  const user = paymentAccountOwnerUsers().find(item => Number(item.id) === effectiveId) || (Number(state.user?.id) === effectiveId ? state.user : null);
+  const label = user ? `${user.name || user.username || `User ${effectiveId}`} (${user.username || user.role || ''})` : `User ${effectiveId}`;
+  return `<input type="hidden" name="ownerUserId" value="${effectiveId}"/><input value="${escapeAttr(label)}" disabled aria-label="Account User"/>`;
+}
+
+function paymentAccountAgentAccessField(selectedIds=[], editable=paymentAccountScopeManageAll()) {
+  if (!editable) return '<div class="notice small">This account remains under the selected Account User. Only Admin/Manager or Manage All Payment Accounts can change other Agent access.</div>';
+  return paymentAccountAgentAccessHtml(selectedIds);
 }
 
 function syncPaymentAccountOwnerForm(form) {
   if (!form) return;
   const typeSelect = form.querySelector('[name="accountType"]');
   const ownerSelect = form.querySelector('[name="ownerUserId"]');
-  if (!typeSelect || !ownerSelect) return;
+  // Users without all-account scope receive a hidden, server-enforced owner field.
+  // Only an editable <select> has options that need role filtering/synchronization.
+  if (!typeSelect || !ownerSelect || ownerSelect.tagName !== 'SELECT') return;
   const isAgentType = typeSelect.value === 'agent';
   [...ownerSelect.options].forEach(option => {
     if (!option.value) return;
@@ -5965,22 +6048,25 @@ function paymentAccountChargeFieldsHtml(account={}) {
 }
 
 function openAccountModal() {
+  const manageAll = paymentAccountScopeManageAll();
+  const defaultType = state.user?.role === 'agent' ? 'agent' : 'personal';
   modal('Add Payment Account', `
     <form id="accountForm" class="form-grid">
-      <div class="full-row notice"><b>Payment Account Manage:</b> Users with this permission can create and edit accounts. Payment Account Use remains a separate permission.</div>
       <div><label>Payment Method</label>${methodSelect()}</div>
-      <div><label>Account User</label>${paymentAccountOwnerSelect()}</div>
-      <div><label>Account Type</label>${paymentAccountTypeSelect('personal')}</div>
+      <div><label>Account User</label>${paymentAccountOwnerField(state.user?.id, manageAll)}</div>
+      <div><label>Account Type</label>${paymentAccountTypeSelect(defaultType)}</div>
       <div><label>Account Number</label><input name="accountNumber" required /></div>
+      <div><label>Label</label><input name="label" maxlength="80" placeholder="Example: Office Phone 1" /></div>
+      <div><label>Serial Number</label><input name="serialNumber" maxlength="80" placeholder="Example: SIM-001" /></div>
       <div><label>Account Name</label><input name="accountName" /></div>
-      <div><label>Opening Balance</label><input name="currentBalance" type="number" value="0" /></div>
+      <div><label>Opening Balance</label><input name="currentBalance" type="number" min="0" step="any" value="0" /></div>
       <div><label>Status</label>${accountStatusSelect('active')}</div>
       ${paymentAccountChargeFieldsHtml({})}
-      <div><label>Daily Receive Limit</label><input name="dailyReceiveLimit" type="number" value="50000" /></div>
-      <div><label>Daily Send Limit</label><input name="dailySendLimit" type="number" value="50000" /></div>
-      <div><label>Monthly Receive Limit</label><input name="monthlyReceiveLimit" type="number" value="300000" /></div>
-      <div><label>Monthly Send Limit</label><input name="monthlySendLimit" type="number" value="300000" /></div>
-      <div class="full-row"><label>Agent Access</label>${paymentAccountAgentAccessHtml([])}<small>Unchecked accounts remain Admin/Manager only.</small></div>
+      <div><label>Daily Receive Limit</label><input name="dailyReceiveLimit" type="number" min="0" value="50000" /></div>
+      <div><label>Daily Send Limit</label><input name="dailySendLimit" type="number" min="0" value="50000" /></div>
+      <div><label>Monthly Receive Limit</label><input name="monthlyReceiveLimit" type="number" min="0" value="300000" /></div>
+      <div><label>Monthly Send Limit</label><input name="monthlySendLimit" type="number" min="0" value="300000" /></div>
+      <div class="full-row"><label>Agent Access</label>${paymentAccountAgentAccessField([], manageAll)}</div>
       <div class="full-row" id="accountFormMessage"></div>
       <div class="full-row"><button type="submit">Create Account</button></div>
     </form>`);
@@ -5989,7 +6075,7 @@ function openAccountModal() {
     e.preventDefault();
     try {
       const payload = formObj(e.target);
-      payload.allowedAgentIds = selectedAllowedAgentIds(e.target);
+      if (manageAll) payload.allowedAgentIds = selectedAllowedAgentIds(e.target);
       await api('/api/payment-accounts', { method:'POST', body: JSON.stringify(payload) });
       notify('Payment account created.', 'ok');
       closeModal();
@@ -6001,21 +6087,24 @@ function openAccountModal() {
 function openEditAccountModal(id) {
   const account = (window.lastAccounts || []).find(a => Number(a.id) === Number(id));
   if (!account) return notify('Account not found. Refresh page and try again.', 'danger');
-  modal('Edit Account / Status', `
+  if (!account.viewerCanManage) return notify('You do not have permission to edit this payment account.', 'danger');
+  const manageAccess = account.viewerCanManageAccess === true;
+  modal('Edit Payment Account', `
     <form id="editAccountForm" class="form-grid">
-      <div class="full-row notice"><b>Account access:</b> Checked Agents can use this account only when they also have Payment Account Use permission.</div>
       <div><label>Payment Method</label>${methodSelect(account.paymentMethodId)}</div>
-      <div><label>Account User</label>${paymentAccountOwnerSelect(account.ownerUserId)}</div>
+      <div><label>Account User</label>${paymentAccountOwnerField(account.ownerUserId, manageAccess)}</div>
       <div><label>Account Type</label>${paymentAccountTypeSelect(account.accountType)}</div>
-      <div><label>Account Number</label><input name="accountNumber" value="${escapeAttr(account.accountNumber)}" /></div>
+      <div><label>Account Number</label><input name="accountNumber" value="${escapeAttr(account.accountNumber)}" required /></div>
+      <div><label>Label</label><input name="label" maxlength="80" value="${escapeAttr(account.label || '')}" placeholder="Example: Office Phone 1" /></div>
+      <div><label>Serial Number</label><input name="serialNumber" maxlength="80" value="${escapeAttr(account.serialNumber || '')}" placeholder="Example: SIM-001" /></div>
       <div><label>Account Name</label><input name="accountName" value="${escapeAttr(account.accountName || '')}" /></div>
       <div><label>Status</label>${accountStatusSelect(account.status)}</div>
       ${paymentAccountChargeFieldsHtml(account)}
-      <div><label>Daily Receive Limit</label><input name="dailyReceiveLimit" type="number" value="${account.dailyReceiveLimit || 0}" /></div>
-      <div><label>Daily Send Limit</label><input name="dailySendLimit" type="number" value="${account.dailySendLimit || 0}" /></div>
-      <div><label>Monthly Receive Limit</label><input name="monthlyReceiveLimit" type="number" value="${account.monthlyReceiveLimit || 0}" /></div>
-      <div><label>Monthly Send Limit</label><input name="monthlySendLimit" type="number" value="${account.monthlySendLimit || 0}" /></div>
-      <div class="full-row"><label>Agent Access</label>${paymentAccountAgentAccessHtml(account.allowedAgentIds || [])}</div>
+      <div><label>Daily Receive Limit</label><input name="dailyReceiveLimit" type="number" min="0" value="${account.dailyReceiveLimit || 0}" /></div>
+      <div><label>Daily Send Limit</label><input name="dailySendLimit" type="number" min="0" value="${account.dailySendLimit || 0}" /></div>
+      <div><label>Monthly Receive Limit</label><input name="monthlyReceiveLimit" type="number" min="0" value="${account.monthlyReceiveLimit || 0}" /></div>
+      <div><label>Monthly Send Limit</label><input name="monthlySendLimit" type="number" min="0" value="${account.monthlySendLimit || 0}" /></div>
+      <div class="full-row"><label>Agent Access</label>${paymentAccountAgentAccessField(account.allowedAgentIds || [], manageAccess)}</div>
       <div class="full-row" id="editAccountMessage"></div>
       <div class="full-row"><button type="submit">Save Account</button></div>
     </form>`);
@@ -6024,7 +6113,7 @@ function openEditAccountModal(id) {
     e.preventDefault();
     try {
       const payload = formObj(e.target);
-      payload.allowedAgentIds = selectedAllowedAgentIds(e.target);
+      if (manageAccess) payload.allowedAgentIds = selectedAllowedAgentIds(e.target);
       await api('/api/payment-accounts/' + id, { method:'PATCH', body: JSON.stringify(payload) });
       notify('Payment account updated.', 'ok');
       closeModal();
@@ -6040,62 +6129,88 @@ function parseBulkAccountNumbers(value='') {
     .filter(Boolean);
 }
 
-function currentBulkBalanceMap() {
+function currentBulkPreviewMap() {
   const map = new Map();
-  $$('#bulkAccountPreview [data-bulk-account-balance]').forEach(input => {
-    map.set(String(input.dataset.accountNumber || ''), input.value);
+  $$('#bulkAccountPreview [data-bulk-account-row]').forEach(row => {
+    map.set(String(row.dataset.accountNumber || ''), {
+      balance: row.querySelector('[data-bulk-account-balance]')?.value || '0',
+      label: row.querySelector('[data-bulk-account-label]')?.value || '',
+      serialNumber: row.querySelector('[data-bulk-account-serial]')?.value || ''
+    });
   });
   return map;
 }
 
-function renderBulkAccountPreview({ applyDefault=false } = {}) {
+function bulkSerialValue(seed='', index=0) {
+  const value = String(seed || '').trim();
+  if (!value) return '';
+  const match = value.match(/^(.*?)(\d+)$/);
+  if (match) {
+    const next = String(Number(match[2]) + index).padStart(match[2].length, '0');
+    return `${match[1]}${next}`;
+  }
+  return index === 0 ? value : `${value}-${index + 1}`;
+}
+
+function renderBulkAccountPreview({ applyDefaults=false } = {}) {
   const host = $('#bulkAccountPreview');
   if (!host) return;
   const numbers = parseBulkAccountNumbers($('#bulkAccountNumbers')?.value || '');
-  const previous = currentBulkBalanceMap();
+  const previous = currentBulkPreviewMap();
   const defaultBalance = $('#bulkDefaultOpeningBalance')?.value || '0';
+  const defaultLabel = $('#bulkDefaultLabel')?.value || '';
+  const serialStart = $('#bulkSerialStart')?.value || '';
   const duplicates = new Set(numbers.filter((number, index) => numbers.indexOf(number) !== index));
   const uniqueCount = new Set(numbers).size;
   $('#bulkAccountCount').textContent = String(numbers.length);
   $('#bulkAccountUniqueCount').textContent = String(uniqueCount);
   if (!numbers.length) {
-    host.innerHTML = '<div class="empty bulk-account-empty">Enter one account number per line to build the serial list.</div>';
+    host.innerHTML = '<div class="empty bulk-account-empty">Enter one account number per line.</div>';
     return;
   }
   host.innerHTML = `<div class="bulk-account-preview-list">${numbers.map((number, index) => {
-    const balance = applyDefault ? defaultBalance : (previous.has(number) ? previous.get(number) : defaultBalance);
-    return `<div class="bulk-account-preview-row ${duplicates.has(number) ? 'has-error' : ''}">
+    const old = previous.get(number) || {};
+    const balance = applyDefaults ? defaultBalance : (old.balance ?? defaultBalance);
+    const label = applyDefaults ? defaultLabel : (old.label ?? defaultLabel);
+    const serialNumber = applyDefaults ? bulkSerialValue(serialStart, index) : (old.serialNumber ?? bulkSerialValue(serialStart, index));
+    return `<div class="bulk-account-preview-row bulk-account-preview-row-v2 ${duplicates.has(number) ? 'has-error' : ''}" data-bulk-account-row data-account-number="${escapeAttr(number)}">
       <span class="bulk-account-serial">${index + 1}</span>
       <div class="bulk-account-number"><b>${escapeHtml(number)}</b>${duplicates.has(number) ? '<small>Duplicate number</small>' : ''}</div>
-      <label><span>Opening Balance</span><input data-bulk-account-balance data-account-number="${escapeAttr(number)}" type="number" min="0" step="any" value="${escapeAttr(balance)}" /></label>
+      <label><span>Label</span><input data-bulk-account-label maxlength="80" value="${escapeAttr(label)}" /></label>
+      <label><span>Serial</span><input data-bulk-account-serial maxlength="80" value="${escapeAttr(serialNumber)}" /></label>
+      <label><span>Opening Balance</span><input data-bulk-account-balance type="number" min="0" step="any" value="${escapeAttr(balance)}" /></label>
     </div>`;
   }).join('')}</div>`;
 }
 
 function openBulkAccountModal() {
+  const manageAll = paymentAccountScopeManageAll();
+  const defaultType = state.user?.role === 'agent' ? 'agent' : 'personal';
   modal('Bulk Add Payment Accounts', `
     <form id="bulkAccountForm" class="form-grid bulk-account-box-form">
       <div><label>Payment Method</label>${methodSelect()}</div>
-      <div><label>Account User</label>${paymentAccountOwnerSelect()}</div>
+      <div><label>Account User</label>${paymentAccountOwnerField(state.user?.id, manageAll)}</div>
       <div><label>Account Name</label><input name="accountName" /></div>
-      <div><label>Account Type</label>${paymentAccountTypeSelect('personal')}</div>
+      <div><label>Account Type</label>${paymentAccountTypeSelect(defaultType)}</div>
       <div><label>Status</label>${accountStatusSelect('active')}</div>
       ${paymentAccountChargeFieldsHtml({})}
       <div><label>Daily Receive Limit</label><input name="dailyReceiveLimit" type="number" min="0" value="50000" /></div>
       <div><label>Daily Send Limit</label><input name="dailySendLimit" type="number" min="0" value="50000" /></div>
       <div><label>Monthly Receive Limit</label><input name="monthlyReceiveLimit" type="number" min="0" value="300000" /></div>
       <div><label>Monthly Send Limit</label><input name="monthlySendLimit" type="number" min="0" value="300000" /></div>
-      <div class="full-row"><label>Agent Access</label>${paymentAccountAgentAccessHtml([])}</div>
+      <div class="full-row"><label>Agent Access</label>${paymentAccountAgentAccessField([], manageAll)}</div>
       <div class="full-row bulk-account-number-box">
         <div class="bulk-account-box-head"><label for="bulkAccountNumbers">Account Numbers</label><span><b id="bulkAccountCount">0</b> rows · <b id="bulkAccountUniqueCount">0</b> unique</span></div>
         <textarea id="bulkAccountNumbers" rows="9" spellcheck="false" placeholder="01300000001&#10;01300000002&#10;01300000003"></textarea>
       </div>
-      <div class="full-row bulk-account-balance-tools">
+      <div class="full-row bulk-account-balance-tools bulk-account-default-tools">
+        <label>Default Label <input id="bulkDefaultLabel" maxlength="80" placeholder="Office Phone 1" /></label>
+        <label>Starting Serial <input id="bulkSerialStart" maxlength="80" placeholder="SIM-001" /></label>
         <label>Default Opening Balance <input id="bulkDefaultOpeningBalance" type="number" min="0" step="any" value="0" /></label>
-        <button type="button" class="secondary" id="bulkApplyDefaultBalance">Apply to All</button>
+        <button type="button" class="secondary" id="bulkApplyDefaults">Apply Defaults</button>
       </div>
       <div class="full-row">
-        <div class="bulk-account-preview-title"><b>Serial Account List</b></div>
+        <div class="bulk-account-preview-title"><b>Account Preview</b></div>
         <div id="bulkAccountPreview"></div>
       </div>
       <div class="full-row" id="bulkAccountMessage"></div>
@@ -6104,7 +6219,7 @@ function openBulkAccountModal() {
   bindPaymentAccountOwnerForm($('#bulkAccountForm'));
   const numbersInput = $('#bulkAccountNumbers');
   numbersInput.oninput = () => renderBulkAccountPreview();
-  $('#bulkApplyDefaultBalance').onclick = () => renderBulkAccountPreview({ applyDefault:true });
+  $('#bulkApplyDefaults').onclick = () => renderBulkAccountPreview({ applyDefaults:true });
   renderBulkAccountPreview();
   $('#bulkAccountForm').onsubmit = async e => {
     e.preventDefault();
@@ -6113,11 +6228,13 @@ function openBulkAccountModal() {
     if (numbers.length > 500) return setFormMessage('#bulkAccountMessage', 'A maximum of 500 payment accounts can be added at once.', 'danger');
     if (new Set(numbers).size !== numbers.length) return setFormMessage('#bulkAccountMessage', 'Remove duplicate account numbers before saving.', 'danger');
     const common = formObj(e.target);
-    common.allowedAgentIds = selectedAllowedAgentIds(e.target);
-    const balanceInputs = [...e.target.querySelectorAll('[data-bulk-account-balance]')];
-    const accounts = numbers.map((accountNumber, index) => ({
-      accountNumber,
-      openingBalance: balanceInputs[index]?.value || 0
+    if (manageAll) common.allowedAgentIds = selectedAllowedAgentIds(e.target);
+    const rows = [...e.target.querySelectorAll('[data-bulk-account-row]')];
+    const accounts = rows.map(row => ({
+      accountNumber: row.dataset.accountNumber || '',
+      label: row.querySelector('[data-bulk-account-label]')?.value || '',
+      serialNumber: row.querySelector('[data-bulk-account-serial]')?.value || '',
+      openingBalance: row.querySelector('[data-bulk-account-balance]')?.value || 0
     }));
     try {
       const result = await api('/api/payment-accounts/bulk', { method:'POST', body: JSON.stringify({ common, accounts }) });
@@ -6959,7 +7076,8 @@ function counterpartyCard(o) {
   const positive = comments.filter(x => x.type === 'positive').slice(0, 50);
   const negative = comments.filter(x => x.type === 'negative').slice(0, 50);
   const localState = p2pLocalWaitState(o, c);
-  const manualBtn = `<button type="button" class="ghost mini" data-edit-counterparty-feedback="${Number(o.id || 0)}">Manual Feedback</button>`;
+  const advertiserUrl = String(o.extensionAdvertiserUrl || o.manualFeedbackUrl || '').trim();
+  const manualBtn = `<button type="button" class="ghost mini" data-open-counterparty-feedback="${Number(o.id || 0)}" ${safeBinanceUrl(advertiserUrl, '') ? '' : 'disabled'}>Open Feedback Page</button>`;
   const nick = c.nickname || o.counterpartyName || '-';
   const following = p2pSocialValue(c.followingCount, localState);
   const followers = p2pSocialValue(c.followersCount, localState);
@@ -7066,6 +7184,14 @@ function p2pExtensionStatusHtml(o) {
   return '<div class="p2p-collecting-note">Please wait, collecting missing P2P data...</div>';
 }
 
+function openCounterpartyFeedbackPage(orderId) {
+  const order = state.currentOrder && Number(state.currentOrder.id) === Number(orderId) ? state.currentOrder : null;
+  const rawUrl = String(order?.extensionAdvertiserUrl || order?.manualFeedbackUrl || '').trim();
+  if (!safeBinanceUrl(rawUrl, '')) return notify('Advertiser feedback page is not available for this order yet.', 'warn');
+  const opened = window.open(rawUrl, '_blank', 'noopener,noreferrer');
+  if (!opened) notify('Allow pop-ups for this site, then click Open Feedback Page again.', 'warn');
+}
+
 function bindP2pInfoModalActions(box) {
   $$('[data-p2p-info-tab]', box).forEach(button => {
     button.onclick = () => setP2pInfoTab(button.dataset.p2pInfoTab || 'info');
@@ -7073,8 +7199,8 @@ function bindP2pInfoModalActions(box) {
   $$('[data-p2p-feedback-tab]', box).forEach(button => {
     button.onclick = () => setP2pFeedbackTab(button.dataset.p2pFeedbackTab || 'negative');
   });
-  $$('[data-edit-counterparty-feedback]', box).forEach(button => {
-    button.onclick = () => editCounterpartyFeedback(Number(button.dataset.editCounterpartyFeedback || 0));
+  $$('[data-open-counterparty-feedback]', box).forEach(button => {
+    button.onclick = () => openCounterpartyFeedbackPage(Number(button.dataset.openCounterpartyFeedback || 0));
   });
 }
 
@@ -7161,7 +7287,7 @@ async function openP2pInfoModal(order) {
 
 function methodSelect(selectedId=null) { return `<select name="paymentMethodId">${state.bootstrap.paymentMethods.map(m => `<option value="${m.id}" ${Number(selectedId)===m.id?'selected':''}>${escapeHtml(m.name)}</option>`).join('')}</select>`; }
 function agentSelect(selectedId=null) { return `<select name="agentId">${state.bootstrap.agents.map(a => `<option value="${a.id}" ${Number(selectedId)===a.id?'selected':''}>${escapeHtml(a.name)} (${escapeHtml(a.status)})</option>`).join('')}</select>`; }
-function accountStatusSelect(selected='active') { return `<select name="status"><option value="active" ${selected==='active'?'selected':''}>active</option><option value="hold" ${selected==='hold'?'selected':''}>hold</option><option value="limit_full" ${selected==='limit_full'?'selected':''}>limit_full</option><option value="inactive" ${selected==='inactive'?'selected':''}>inactive</option></select>`; }
+function accountStatusSelect(selected='active') { return `<select name="status"><option value="active" ${selected==='active'?'selected':''}>active</option><option value="hold" ${selected==='hold'?'selected':''}>hold</option><option value="inactive" ${selected==='inactive'?'selected':''}>inactive</option></select>`; }
 function permissionChecks(selected=[]) { const list = state.bootstrap.permissions || Object.keys(PERMISSION_LABELS); return `<div class="perm-grid">${list.map(permission => permissionOptionHtml(permission, selected.includes(permission))).join('')}</div>`; }
 function selectedPermissions(form) { return Array.from(form.querySelectorAll('input[name="permissions"]:checked')).map(x => x.value); }
 function defaultSplitAmount(order) {

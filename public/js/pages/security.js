@@ -1,4 +1,4 @@
-// P2PFlow v1.5.17
+// P2PFlow v1.5.18
 // Dedicated account/login security page. Binance P2P Profile lives on #/p2p-profile.
 
 function securityStatusPill(label, enabled) {
@@ -11,7 +11,7 @@ function securityDeviceRows(devices = []) {
     <div class="security-device-row ${device.current ? 'current' : ''}">
       <div>
         <b>${escapeHtml(device.name || 'Trusted browser')}${device.current ? ' · This device' : ''}</b>
-        <small>Trusted until ${escapeHtml(device.expiresAt ? formatDate(device.expiresAt) : '-')} · Last seen ${escapeHtml(device.lastSeenAt ? formatDate(device.lastSeenAt) : '-')}</small>
+        <small>Trusted until ${escapeHtml(device.expiresAt ? fmt(device.expiresAt) : '-')} · Last seen ${escapeHtml(device.lastSeenAt ? fmt(device.lastSeenAt) : '-')}</small>
       </div>
       <button type="button" class="danger ghost revoke-trusted-device" data-device-id="${escapeAttr(device.id || '')}">${device.current ? 'Remove trust' : 'Revoke'}</button>
     </div>`).join('')}</div>`;

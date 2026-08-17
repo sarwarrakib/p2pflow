@@ -4923,7 +4923,7 @@ tr:hover td{background:#fbfbfc}
   .order-mobile-time { font-size: 9px; }
 }
 
-/* v1.5.17 - login recovery, account-scoped Binance RBAC and account context */
+/* v1.5.18 - login recovery, account-scoped Binance RBAC and account context */
 .text-ok{color:var(--ok-text,#166534)!important}
 .text-warn{color:var(--warn-text,#92400e)!important}
 .security-recovery-panel{
@@ -5118,17 +5118,18 @@ tr:hover td{background:#fbfbfc}
 }
 
 
-/* v1.5.17 permission scope help and presence-independent order acceptance */
-.permission-option{display:flex;align-items:flex-start;gap:8px;min-width:0;padding:2px 0}
+/* v1.5.18 permission eye help and presence-independent order acceptance */
+.permission-option{display:flex;align-items:flex-start;gap:8px;min-width:0;padding:4px 0}
 .permission-option>label.check{flex:1;min-width:0;margin:0;align-items:flex-start}
 .permission-option>label.check>span{min-width:0;line-height:1.4}
 .permission-option.compact{gap:6px}
-.permission-help{display:inline-grid;place-items:center;flex:0 0 auto;width:20px;height:20px;border:1px solid var(--line,#dfe3e8);border-radius:50%;background:#fff;color:var(--muted,#707782);font-size:12px;font-weight:900;line-height:1;cursor:help;user-select:none;outline:none}
-.permission-help:hover,.permission-help:focus-visible{border-color:var(--primary,#f0b90b);color:var(--text,#181a20);box-shadow:0 0 0 3px rgba(240,185,11,.16)}
-.permission-tooltip{position:fixed;z-index:100000;width:min(380px,calc(100vw - 20px));padding:11px 13px;border:1px solid rgba(255,255,255,.12);border-radius:12px;background:#181a20;color:#fff;box-shadow:0 14px 38px rgba(15,23,42,.28);font-size:12px;line-height:1.55;white-space:normal;pointer-events:none}
+.permission-help{display:inline-grid;place-items:center;flex:0 0 auto;width:30px;height:28px;margin-left:auto;padding:0;border:1px solid var(--line,#dfe3e8);border-radius:9px;background:#fff;color:var(--muted,#707782);line-height:1;cursor:pointer;user-select:none;outline:none;box-shadow:none}
+.permission-help svg{width:17px;height:17px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;pointer-events:none}
+.permission-help:hover,.permission-help:focus-visible,.permission-help[aria-expanded="true"]{border-color:var(--primary,#f0b90b);color:var(--text,#181a20);background:#fff9e6;box-shadow:0 0 0 3px rgba(240,185,11,.16)}
+.permission-tooltip{position:fixed;z-index:100000;width:min(420px,calc(100vw - 20px));padding:12px 14px;border:1px solid rgba(255,255,255,.12);border-radius:12px;background:#181a20;color:#fff;box-shadow:0 14px 38px rgba(15,23,42,.28);font-size:12px;line-height:1.6;white-space:normal;pointer-events:none}
 .permission-tooltip[hidden]{display:none}
 .binance-permission-group .permission-option{width:100%}
-.binance-permission-group .permission-help{width:18px;height:18px;font-size:11px}
+.binance-permission-group .permission-help{width:28px;height:26px}
 .order-account-strip{justify-content:space-between}
 .order-acceptance-toggle{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:38px;padding:8px 13px;border-radius:999px;white-space:nowrap;font-weight:850;box-shadow:none}
 .order-acceptance-toggle.is-on{background:#eaf8f0;color:#146b43;border:1px solid #b8e7cc}
@@ -5138,3 +5139,75 @@ tr:hover td{background:#fbfbfc}
 .order-acceptance-prompt p{margin:2px 0 18px;font-size:18px;font-weight:800;line-height:1.5;color:var(--text,#181a20)}
 .order-acceptance-prompt .actions.end{justify-content:flex-end}
 @media(max-width:700px){.order-account-strip{align-items:stretch}.order-acceptance-toggle{width:100%}.permission-tooltip{font-size:12px}.order-acceptance-prompt p{font-size:17px}}
+
+/* v1.5.18 payment-account search, notification preferences and offline business */
+.inline-search{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.inline-search input{min-width:min(320px,70vw)}
+.payment-account-toolbar{align-items:center;gap:12px;flex-wrap:wrap}
+.payment-account-toolbar>.sub{margin-left:auto}
+.bulk-account-default-tools{display:grid;grid-template-columns:repeat(3,minmax(150px,1fr)) auto;align-items:end;gap:10px}
+.bulk-account-default-tools label{display:grid;gap:5px;margin:0}
+.bulk-account-preview-row-v2{grid-template-columns:38px minmax(145px,1.2fr) minmax(130px,1fr) minmax(120px,.8fr) minmax(145px,1fr)}
+.bulk-account-preview-row-v2 label{min-width:0}
+.bulk-account-preview-row-v2 input{width:100%;min-width:0}
+
+.notification-settings-page{display:grid;gap:16px}
+.notification-preferences-card .section-head{align-items:flex-start}
+.notification-channel-head,.notification-preference-row{display:grid;grid-template-columns:minmax(220px,1fr) 100px 100px;align-items:center;gap:12px}
+.notification-channel-head{padding:0 12px 8px;color:var(--muted);font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:.04em}
+.notification-channel-head span:not(:first-child){text-align:center}
+.notification-preference-row{padding:12px;border-top:1px solid var(--line)}
+.notification-preference-info{display:grid;gap:4px;min-width:0}
+.notification-preference-info small{color:var(--muted);line-height:1.45}
+.notification-preference-info .badge{justify-self:start}
+.notification-channel-toggle{display:grid;justify-items:center;gap:5px;margin:0;font-size:12px;font-weight:700;color:var(--muted)}
+.notification-channel-toggle input{width:20px;height:20px;accent-color:var(--primary)}
+
+.offline-transactions-page,.offline-transaction-list{display:grid;gap:14px}
+.offline-transaction-card{display:grid;gap:14px}
+.offline-transaction-head{align-items:flex-start;gap:16px}
+.offline-transaction-head h3{margin:0}
+.offline-transaction-head p{margin:5px 0 0;color:var(--muted)}
+.offline-transaction-summary{display:grid;grid-template-columns:repeat(3,minmax(100px,1fr));gap:8px;min-width:min(390px,100%)}
+.offline-transaction-summary span{display:grid;gap:3px;padding:9px 11px;border:1px solid var(--line);border-radius:10px;background:var(--soft,#f7f8fa)}
+.offline-transaction-summary small,.offline-allocation-row small,.offline-candidate-row small{color:var(--muted);font-size:11px}
+.offline-allocation-list{display:grid;border:1px solid var(--line);border-radius:13px;overflow:hidden}
+.offline-allocation-row{display:grid;grid-template-columns:minmax(190px,1.5fr) repeat(3,minmax(90px,.65fr)) minmax(190px,1fr);align-items:center;gap:10px;padding:11px 12px;border-bottom:1px solid var(--line)}
+.offline-allocation-row:last-child{border-bottom:0}
+.offline-allocation-row>div{display:grid;gap:3px;min-width:0}
+.offline-allocation-account small,.offline-allocation-account span{overflow-wrap:anywhere}
+.offline-receive-action{grid-template-columns:minmax(90px,1fr) auto!important;align-items:center}
+.offline-receive-action input{width:100%;min-width:0}
+.offline-transaction-actions{padding-top:2px}
+.offline-candidate-list{display:grid;max-height:430px;overflow:auto;border:1px solid var(--line);border-radius:13px}
+.offline-candidate-row{display:grid;grid-template-columns:24px 30px minmax(180px,1.5fr) minmax(120px,.8fr) minmax(110px,.7fr);align-items:center;gap:10px;padding:11px 12px;border-bottom:1px solid var(--line);margin:0;cursor:pointer}
+.offline-candidate-row:last-child{border-bottom:0}
+.offline-candidate-row:hover{background:var(--soft,#f7f8fa)}
+.offline-candidate-row>span{display:grid;gap:3px;min-width:0}
+.offline-candidate-row input{width:18px;height:18px;accent-color:var(--primary)}
+.offline-candidate-index{display:inline-grid!important;place-items:center;width:25px;height:25px;border-radius:8px;background:var(--soft,#f4f5f7);font-size:11px;font-weight:800}
+
+@media(max-width:1000px){
+  .bulk-account-preview-row-v2{grid-template-columns:34px minmax(150px,1fr) minmax(120px,1fr)}
+  .bulk-account-preview-row-v2 label:last-child{grid-column:2/-1}
+  .offline-transaction-head{display:grid}
+  .offline-transaction-summary{min-width:0;width:100%}
+  .offline-allocation-row{grid-template-columns:minmax(180px,1.4fr) repeat(3,minmax(80px,.7fr));align-items:start}
+  .offline-receive-action{grid-column:1/-1;grid-template-columns:minmax(120px,1fr) auto!important}
+}
+@media(max-width:700px){
+  .inline-search{width:100%}.inline-search input{flex:1;min-width:0}
+  .payment-account-toolbar>.sub{margin-left:0;width:100%}
+  .bulk-account-default-tools{grid-template-columns:1fr}
+  .bulk-account-preview-row-v2{grid-template-columns:32px 1fr}
+  .bulk-account-preview-row-v2 label{grid-column:2}
+  .notification-channel-head{display:none}
+  .notification-preference-row{grid-template-columns:1fr 1fr;gap:10px}
+  .notification-preference-info{grid-column:1/-1}
+  .notification-channel-toggle{justify-items:start;grid-template-columns:auto 1fr;align-items:center}
+  .offline-transaction-summary{grid-template-columns:1fr}
+  .offline-allocation-row{grid-template-columns:1fr 1fr}
+  .offline-allocation-account,.offline-receive-action{grid-column:1/-1}
+  .offline-candidate-row{grid-template-columns:22px 26px 1fr}
+  .offline-candidate-row>span:nth-last-child(-n+2){grid-column:3}
+}

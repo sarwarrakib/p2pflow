@@ -1,4 +1,4 @@
-// P2PFlow v1.5.17
+// P2PFlow v1.5.18
 // Page module: users. Edit this file for the users page UI.
 
 async function renderUsers() {

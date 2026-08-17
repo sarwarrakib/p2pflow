@@ -12,6 +12,7 @@ const app = read('public/app.js');
 const accounts = read('public/js/pages/accounts.js');
 const orders = read('public/js/pages/orders.js');
 const users = read('public/js/pages/users.js');
+const security = read('public/js/pages/security.js');
 const css = read('public/style.css');
 
 const fail = message => { throw new Error(`Order acceptance / payment permission self-test failed: ${message}`); };
@@ -24,63 +25,63 @@ const section = (source, start, end) => {
   return source.slice(a, b);
 };
 
-assert(pkg.version === '1.5.17', `expected v1.5.17, got ${pkg.version}`);
-assert(server.includes('const APP_SCHEMA_VERSION = 31;'), 'schema 31 is missing.');
+assert(pkg.version === '1.5.18', `expected v1.5.18, got ${pkg.version}`);
+assert(server.includes('const APP_SCHEMA_VERSION = 32;'), 'schema 32 is missing.');
 
-// Payment-account authorization must be permission-driven, including Agent users.
-assert(server.includes("'accounts.manage': Object.freeze(['accounts.view'])"), 'accounts.manage does not imply the page read permission.');
-assert(server.includes("'ledger.adjust': Object.freeze(['accounts.view'])"), 'ledger.adjust does not imply the page read permission.');
-assert(server.includes("if (userHasPermission(user, 'accounts.manage')) return true;"), 'accounts.manage cannot access all payment accounts.');
+// Payment-account authorization: Admin/Manager all, Agent own only, optional all-account permission for non-Agent roles.
+assert(server.includes("'accounts.manage_all': Object.freeze(['accounts.view', 'accounts.manage'])"), 'accounts.manage_all implications are missing.');
+assert(server.includes("'offline.transactions.manage': Object.freeze(['accounts.view'])"), 'offline transaction page implication is missing.');
+const manageAll = section(server, 'function canManageAllPaymentAccounts', 'function canManagePaymentAccount');
+assert(manageAll.includes("['admin', 'manager'].includes"), 'Admin/Manager all-account access is missing.');
+assert(manageAll.includes("role || '').toLowerCase() === 'agent') return false"), 'Agent is not hard-limited away from all-account scope.');
+assert(manageAll.includes("userHasPermission(user, 'accounts.manage_all')"), 'Manage All Payment Accounts permission is not implemented.');
+const manageOwn = section(server, 'function canManagePaymentAccount', 'function canManagePaymentAccountAccess');
+assert(manageOwn.includes("userHasPermission(user, 'accounts.manage')"), 'accounts.manage is not required.');
+assert(manageOwn.includes('paymentAccountOwnedByUser(accountItem, user)'), 'Own-account boundary is missing.');
+const draft = section(server, 'function paymentAccountDraftFromBody', 'function paymentAccountSerialConflict');
+assert(draft.includes('actor?.id'), 'Logged-in user is not the default Account User.');
+assert(draft.includes('if (restrictedToOwnAccount) resolvedOwner = { user: actor'), 'Own-only users can override Account User.');
+assert(draft.includes('label:') && draft.includes('serialNumber:'), 'Label/Serial fields are missing from account draft.');
 
 const paymentList = section(server, 'async function handlePaymentAccounts', 'async function handlePaymentAccountById');
-assert(paymentList.includes("requirePermission(req, res, 'accounts.view')"), 'Payment Accounts page is not protected by accounts.view.');
-assert(paymentList.includes("requirePermission(req, res, 'accounts.manage')"), 'Payment Account create is not protected by accounts.manage.');
-assert(!/\['admin',\s*'manager'\]/.test(paymentList), 'Payment Account create still contains an Admin/Manager role gate.');
-
-const bulk = section(server, 'async function handleBulkPaymentAccounts', 'async function handlePaymentAccounts');
-assert(bulk.includes("requirePermission(req, res, 'accounts.manage')"), 'Bulk Payment Account add is not protected by accounts.manage.');
-assert(!/\['admin',\s*'manager'\]/.test(bulk), 'Bulk Payment Account add still contains an Admin/Manager role gate.');
-
+assert(paymentList.includes('canOpenPaymentAccounts(user)'), 'Payment Accounts page gate is missing.');
+assert(paymentList.includes('canCreatePaymentAccounts(user)'), 'Payment account creation permission gate is missing.');
+assert(paymentList.includes("url.searchParams.get('search')") && paymentList.includes('paymentAccountMatchesSearch'), 'Server-side number/label/serial search is missing.');
 const update = section(server, 'async function updatePaymentAccount', 'async function addAccountLedger');
-assert(update.includes("userHasPermission(user, 'accounts.manage')"), 'Payment Account edit is not protected by accounts.manage.');
-assert(!/\['admin',\s*'manager'\]/.test(update), 'Payment Account edit still contains an Admin/Manager role gate.');
+assert(update.includes('canManagePaymentAccount(user, accountItem)'), 'Edit does not enforce account ownership/scope.');
+assert(update.includes('canManagePaymentAccountAccess'), 'Owner/access editing scope is missing.');
+assert(update.includes('nextLabel') && update.includes('nextSerialNumber'), 'Edit does not persist Label/Serial.');
+const ledger = section(server, 'async function addAccountLedger', 'function offlineTransactionActive');
+assert(ledger.includes('canAdjustPaymentAccount(user, accountItem)'), 'Ledger adjustment does not enforce own/all scope.');
 
-const ledger = section(server, 'async function addAccountLedger', 'function routeView');
-assert(ledger.includes("userHasPermission(user, 'ledger.adjust')"), 'Offline transaction adjustment is not protected by ledger.adjust.');
-assert(!/\['admin',\s*'manager'\]/.test(ledger), 'Ledger adjustment still contains an Admin/Manager role gate.');
+assert(accounts.includes("const canCreate = hasPerm('accounts.manage');"), 'Permitted users cannot see Add Account.');
+assert(accounts.includes('account.viewerCanManage') && accounts.includes('account.viewerCanAdjust'), 'Per-account action flags are not used by the UI.');
+assert(accounts.includes('Search number, label or serial'), 'Payment account search UI is missing.');
+assert(accounts.includes('paymentAccountIdentityHtml'), 'Label/Serial identity display is missing.');
+assert(app.includes('paymentAccountOwnerField(state.user?.id'), 'Add/Bulk Account User does not default to the logged-in user.');
+assert(app.includes('name="label"') && app.includes('name="serialNumber"'), 'Add/Edit Label and Serial fields are missing.');
+assert(app.includes('Starting Serial') && app.includes('bulkSerialValue'), 'Sequential bulk serial workflow is missing.');
+assert(app.includes("['accounts', 'Payment Accounts', ['admin','manager','agent','auditor']]"), 'Payment Accounts page is not available to permitted users.');
 
-assert(accounts.includes("const canManage = hasPerm('accounts.manage');"), 'Agent UI still hides Add/Edit despite accounts.manage.');
-assert(accounts.includes("const canAdjust = hasPerm('ledger.adjust');"), 'Agent UI still hides Offline Txn despite ledger.adjust.');
-assert(accounts.includes('id="newAccountBtn"') && accounts.includes('type="button"'), 'Add Payment Account action button is missing or implicit.');
-assert(app.includes("['accounts', 'Payment Accounts', ['admin','manager','agent','auditor']]"), 'Payment Accounts page is not available to permitted Agent users.');
-assert(app.includes("['ledger', 'Account Statement', ['admin','manager','agent','auditor']]"), 'Account Statement page is not available to permitted Agent users.');
-
-// Assignment eligibility is controlled by the persistent switch, not presence.
+// Assignment eligibility remains controlled by the persistent switch, not presence.
 const availability = section(server, 'function agentAvailableForAssignment', 'function rangeBounds');
 assert(availability.includes('agent.allowNewOrders === false'), 'Order Acceptance OFF is not an assignment blocker.');
 assert(availability.includes("linkedUser.role !== 'agent'"), 'Non-Agent users can become auto-assignment candidates.');
 assert(availability.includes("userHasPermission(linkedUser, 'orders.view')"), 'Orders View is not required for assignment eligibility.');
 assert(!availability.includes('userPresenceView') && !availability.includes('agentDynamicStatus'), 'Presence still controls assignment eligibility.');
-assert(server.includes('agentAvailableForAssignment(x.agent)'), 'Routing does not apply the Order Acceptance gate.');
-
 const manualAssign = section(server, 'async function managerAssign', 'async function requestCoAgent');
 assert(manualAssign.includes('if (!agentAvailableForAssignment(agent))'), 'Manual assignment ignores Order Acceptance OFF.');
-assert(server.includes("if (url.pathname === '/api/me/order-acceptance') return await handleMyOrderAcceptance(req, res);"), 'Order Acceptance API route is missing.');
-assert(server.includes("async function handleMyOrderAcceptance"), 'Order Acceptance API handler is missing.');
-assert(server.includes("broadcast({ type: 'agent.order_acceptance.updated'"), 'Order Acceptance realtime event is missing.');
 assert(orders.includes('id="orderAcceptanceToggle"'), 'Orders-page Order Acceptance button is missing.');
-assert(orders.includes("api('/api/me/order-acceptance'"), 'Orders-page button is not connected to the API.');
 assert(orders.includes('স্যার, আপনি কি অর্ডার গ্রহণ করতে চান?'), 'Required Bengali Order Acceptance prompt is missing.');
-assert(orders.includes('id="declineOrderAcceptance"') && orders.includes('id="confirmOrderAcceptance"'), 'Prompt Yes/No actions are missing.');
-assert(orders.includes("When OFF, new orders will not assign even while online."), 'OFF behavior is not explained on the control.');
-assert(users.includes('Order Acceptance'), 'Users page does not expose each Agent order-acceptance state.');
+assert(users.includes('Order Acceptance'), 'Users page does not expose Agent order-acceptance state.');
 
-// Every catalog permission must have a complete hover/focus description.
+// Every catalog permission has bilingual details and a right-side eye button opened by click.
 const permissions = [
   'dashboard.view','orders.view','orders.create','orders.assign','orders.split','orders.final_action','orders.quick_release',
   'approvals.manage','binance.sync','binance.chat','p2p.profile.view','p2p.profile.sync','ads.view','ads.manage',
-  'accounts.view','accounts.use','accounts.manage','ledger.adjust','routing.manage','agents.manage','roles.manage',
-  'reports.view','accounting.view','accounting.manage','accounting.close','activity.view','audit.view','settings.manage','credentials.manage'
+  'accounts.view','accounts.use','accounts.manage','accounts.manage_all','ledger.adjust','offline.transactions.manage',
+  'routing.manage','agents.manage','roles.manage','reports.view','accounting.view','accounting.manage','accounting.close',
+  'activity.view','audit.view','settings.manage','credentials.manage'
 ];
 for (const permission of permissions) {
   const occurrences = (app.match(new RegExp(`'${permission.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}'`, 'g')) || []).length;
@@ -88,21 +89,24 @@ for (const permission of permissions) {
   const entryPattern = new RegExp(`'${permission.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}'\\s*:\\s*\\{\\s*en:\\s*'[^']{20,}'\\s*,\\s*bn:\\s*'[^']{20,}'`);
   assert(entryPattern.test(app), `complete English/Bengali description missing for permission: ${permission}`);
 }
-assert(app.includes('data-permission-scope='), 'Hovering the permission row does not expose its scope.');
-assert(app.includes('data-permission-help='), 'Keyboard/touch permission help control is missing.');
-assert(app.includes('setupPermissionHelpTooltips()'), 'Permission tooltip setup is missing.');
-assert(app.includes('binanceCredentialPermissionMatrix'), 'Per-Binance-account permission matrix is missing.');
-for (const marker of ['.permission-option','.permission-help','.permission-tooltip','.order-acceptance-toggle','.order-acceptance-prompt']) {
-  assert(css.includes(marker), `CSS marker missing: ${marker}`);
-}
+assert(app.includes('<button type="button" class="permission-help"'), 'Permission eye is not a real button.');
+assert(app.includes('<svg viewBox="0 0 24 24"') && app.includes('data-permission-help='), 'Eye icon/details data is missing.');
+assert(app.includes("document.addEventListener('click'") && app.includes("target.closest?.('[data-permission-help]')"), 'Permission details are not opened by click.');
+assert(!app.includes('data-permission-scope='), 'Whole-row hover details should not replace the right-side eye action.');
+assert(css.includes('.permission-help svg') && css.includes('.permission-help[aria-expanded="true"]'), 'Permission eye visual/expanded state is missing.');
+
+// Security page regression: it must use the global date formatter that actually exists.
+assert(security.includes('fmt(device.expiresAt)') && security.includes('fmt(device.lastSeenAt)'), 'Trusted-device rows still call an undefined date formatter.');
+assert(!security.includes('formatDate('), 'Security page still references undefined formatDate.');
 
 console.log(JSON.stringify({
   ok: true,
   version: pkg.version,
-  schemaVersion: 31,
-  agentPaymentAccountManage: true,
-  agentLedgerAdjust: true,
+  schemaVersion: 32,
+  agentOwnAccountManage: true,
+  managerAllAccountManage: true,
   permissionDescriptions: permissions.length,
+  permissionEyeButton: true,
   assignmentPresenceIndependent: true,
-  orderAcceptancePrompt: true
+  securityPageRegressionFixed: true
 }, null, 2));

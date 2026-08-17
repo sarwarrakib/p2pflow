@@ -43,7 +43,7 @@ loadEnv();
 applyP2PFlowEnvAliases(process.env);
 
 const APP_VERSION = String(packageInfo.version || '0.0.0');
-const APP_SCHEMA_VERSION = 31;
+const APP_SCHEMA_VERSION = 32;
 const APP_DATA_COMPATIBILITY_EPOCH = 1;
 const PORT = Number(process.env.PORT || 3000);
 const BIND_HOST = cleanEnv(process.env.P2PFLOW_BIND_HOST || process.env.CRM_BIND_HOST || '', '');
@@ -167,7 +167,9 @@ const PERMISSION_CATALOG = [
   'accounts.view',
   'accounts.use',
   'accounts.manage',
+  'accounts.manage_all',
   'ledger.adjust',
+  'offline.transactions.manage',
   'routing.manage',
   'agents.manage',
   'roles.manage',
@@ -186,13 +188,67 @@ const PERMISSION_CATALOG = [
 // required for every mutation.
 const PERMISSION_IMPLICATIONS = Object.freeze({
   'accounts.manage': Object.freeze(['accounts.view']),
-  'ledger.adjust': Object.freeze(['accounts.view'])
+  'accounts.manage_all': Object.freeze(['accounts.view', 'accounts.manage']),
+  'ledger.adjust': Object.freeze(['accounts.view']),
+  'offline.transactions.manage': Object.freeze(['accounts.view'])
 });
 
 // Binance operations are scoped twice: a user needs the normal permission and
 // an explicit grant for the exact Binance API account. Admin remains the only
 // implicit all-account role. This prevents a user who was granted Account A
 // from seeing or mutating orders/ads that belong to Account B.
+const NOTIFICATION_CATEGORY_CATALOG = Object.freeze([
+  { id: 'orders', label: 'Orders', description: 'Order creation, status, completion and risk alerts.' },
+  { id: 'assignments', label: 'Assignments', description: 'Order assignment, reassignment and acceptance alerts.' },
+  { id: 'messages', label: 'P2P Messages', description: 'New Binance P2P chat and media-message alerts.' },
+  { id: 'payments', label: 'Payments & Accounts', description: 'Payment split, payment-account, statement and proof alerts.' },
+  { id: 'ads_binance', label: 'Ads & Binance', description: 'Advertisement, merchant-state and Binance synchronization alerts.' },
+  { id: 'accounting', label: 'Accounting', description: 'Income, expense, capital, profit and daily-closing alerts.' },
+  { id: 'team', label: 'Team & Access', description: 'User, role, routing and permission-change alerts.' },
+  { id: 'system', label: 'System', description: 'System health, update, mail and general operational alerts.' },
+  { id: 'security', label: 'Security', description: 'Login, password, OTP, recovery and trusted-device alerts.', mandatory: true }
+]);
+
+function notificationCategoryForType(type = '', item = {}) {
+  const explicit = cleanStr(item.category || '', 40).toLowerCase();
+  if (NOTIFICATION_CATEGORY_CATALOG.some(category => category.id === explicit)) return explicit;
+  const value = String(type || item.type || '').toLowerCase();
+  if (/security|login|password|otp|trusted|device|recovery|credential/.test(value)) return 'security';
+  if (/chat|message|media/.test(value)) return 'messages';
+  if (/assign|reassign|acceptance|routing|agent_available/.test(value)) return 'assignments';
+  if (/payment|split|ledger|account_|account\b|proof|settlement|refund|cashout|topup|offline_receive/.test(value)) return 'payments';
+  if (/advert|\bads?\b|merchant|binance|p2p_profile|sync/.test(value)) return 'ads_binance';
+  if (/accounting|capital|expense|income|profit|daily_close|closing/.test(value)) return 'accounting';
+  if (/user|role|permission|team|employee|agent/.test(value)) return 'team';
+  if (/order|risk_keyword|additional_kyc/.test(value)) return 'orders';
+  return 'system';
+}
+
+function defaultNotificationPreferences() {
+  const enabled = Object.fromEntries(NOTIFICATION_CATEGORY_CATALOG.map(category => [category.id, true]));
+  return { inApp: { ...enabled }, email: { ...enabled } };
+}
+
+function normalizeNotificationPreferences(value = {}) {
+  const defaults = defaultNotificationPreferences();
+  const source = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  const out = { inApp: {}, email: {} };
+  for (const channel of ['inApp', 'email']) {
+    const rows = source[channel] && typeof source[channel] === 'object' && !Array.isArray(source[channel]) ? source[channel] : {};
+    for (const category of NOTIFICATION_CATEGORY_CATALOG) {
+      out[channel][category.id] = category.mandatory === true ? true : rows[category.id] !== false;
+    }
+  }
+  return out;
+}
+
+function notificationEnabledForUser(user, channel = 'inApp', category = 'system') {
+  if (!user) return false;
+  const normalized = normalizeNotificationPreferences(user.notificationPreferences);
+  const id = NOTIFICATION_CATEGORY_CATALOG.some(item => item.id === category) ? category : 'system';
+  return normalized[channel]?.[id] !== false;
+}
+
 const BINANCE_ACCOUNT_PERMISSION_CATALOG = Object.freeze([
   'orders.view',
   'orders.create',
@@ -1103,6 +1159,7 @@ function seedDb() {
     auditLogs: [],
     locks: [],
     notifications: [],
+    offlineTransactions: [],
     chats: [],
     chatReadStates: [],
     coAgentRequests: [],
@@ -1150,7 +1207,7 @@ function migrateDb(target) {
   if (target.settings.loginOtpRouteLastVerifiedAt === undefined) target.settings.loginOtpRouteLastVerifiedAt = null;
   if (target.settings.loginOtpRouteLastVerifiedSystem === undefined) target.settings.loginOtpRouteLastVerifiedSystem = '';
   if (!['live-disabled','live'].includes(target.settings.apiMode)) target.settings.apiMode = 'live';
-  for (const key of ['users','userRoles','apiCredentials','agents','paymentMethods','paymentAccounts','routing','orders','orderAgentAssignments','paymentSplits','ledgers','proofFiles','auditLogs','locks','notifications','chats','chatReadStates','coAgentRequests','approvalRequests','advertisements','securityRevertTokens','sessions','p2pExtensionTasks','p2pExtensionCache','userActivitySessions','businessEntries','businessDailyCloses','binanceBalanceSnapshots','chatMedia','systemUpdates','systemUpdateEvents']) {
+  for (const key of ['users','userRoles','apiCredentials','agents','paymentMethods','paymentAccounts','routing','orders','orderAgentAssignments','paymentSplits','ledgers','proofFiles','auditLogs','locks','notifications','offlineTransactions','chats','chatReadStates','coAgentRequests','approvalRequests','advertisements','securityRevertTokens','sessions','p2pExtensionTasks','p2pExtensionCache','userActivitySessions','businessEntries','businessDailyCloses','binanceBalanceSnapshots','chatMedia','systemUpdates','systemUpdateEvents']) {
     if (!Array.isArray(target[key])) target[key] = [];
   }
   // Schema 26: exactly the original installation administrator becomes the
@@ -1586,6 +1643,7 @@ function migrateDb(target) {
     if (u.securityQuestionUpdatedAt === undefined) u.securityQuestionUpdatedAt = null;
     u.securityQuestion = cleanStr(u.securityQuestion || '', 240);
     if (!u.securityQuestion) u.securityAnswerHash = '';
+    u.notificationPreferences = normalizeNotificationPreferences(u.notificationPreferences);
     if (!u.email && u.role === 'admin' && OWNER_EMAIL) u.email = OWNER_EMAIL;
     if (!u.loginSecretHash && u.role === 'admin') {
       const replacementSecret = ownerAdminCredentials().secretCode;
@@ -1648,14 +1706,42 @@ function migrateDb(target) {
     a.ownerUserId = validOwner ? validOwner.id : null;
     if (!Array.isArray(a.allowedAgentIds)) a.allowedAgentIds = Number(a.agentId || 0) ? [Number(a.agentId)] : [];
     a.allowedAgentIds = Array.from(new Set(a.allowedAgentIds.map(Number).filter(id => target.agents.some(agent => Number(agent.id) === Number(id)))));
-    if (a.accountType === 'agent' && validOwner) {
+    if (validOwner) {
       const ownerAgentId = Number(validOwner.agentId || 0) || Number((target.agents || []).find(agent => Number(agent.userId) === Number(validOwner.id))?.id || 0);
       if (ownerAgentId) a.allowedAgentIds = Array.from(new Set([...a.allowedAgentIds, ownerAgentId]));
     }
+    a.label = cleanStr(a.label || a.accountLabel || '', 80);
+    a.serialNumber = cleanStr(a.serialNumber || a.serial || a.simSerial || '', 80);
     a.agentId = null;
-    a.managedBy = 'admin_manager';
+    if (!a.managedBy) a.managedBy = 'account_owner';
     const hasOpening = target.ledgers.some(l => l.paymentAccountId === a.id && l.type === 'opening');
     if (!hasOpening) target.ledgers.push(openingLedger(target, a, num(a.currentBalance), a.createdAt || nowIso()));
+  });
+  target.offlineTransactions.forEach(transaction => {
+    transaction.referenceNo = cleanStr(transaction.referenceNo || `OBT-${transaction.id || ''}`, 80);
+    transaction.requestedAmount = positiveNum(transaction.requestedAmount || transaction.amount || 0);
+    transaction.perAccountLimit = positiveNum(transaction.perAccountLimit || transaction.accountLimit || 0);
+    transaction.paymentMethodId = Number(transaction.paymentMethodId || 0) || null;
+    transaction.fiatUnit = cleanStr(transaction.fiatUnit || 'BDT', 10).toUpperCase();
+    transaction.counterpartyName = cleanStr(transaction.counterpartyName || '', 120);
+    transaction.note = cleanStr(transaction.note || '', 300);
+    if (!['pending','partially_received','ready','finalized','finalized_partial','cancelled'].includes(String(transaction.status || '').toLowerCase())) transaction.status = transaction.finalizedOrderId ? 'finalized' : 'pending';
+    if (!Array.isArray(transaction.allocations)) transaction.allocations = [];
+    transaction.allocations = transaction.allocations.map(allocation => ({
+      ...allocation,
+      id: Number(allocation.id || 0) || nextIdFor(target),
+      paymentAccountId: Number(allocation.paymentAccountId || 0),
+      plannedAmount: positiveNum(allocation.plannedAmount || 0),
+      receivedAmount: positiveNum(allocation.receivedAmount || 0),
+      receivedLedgerIds: Array.isArray(allocation.receivedLedgerIds) ? allocation.receivedLedgerIds.map(Number).filter(Boolean) : [],
+      status: ['reserved','partial','received','released','cancelled'].includes(String(allocation.status || '').toLowerCase()) ? String(allocation.status).toLowerCase() : (positiveNum(allocation.receivedAmount || 0) > 0 ? 'partial' : 'reserved'),
+      createdAt: allocation.createdAt || transaction.createdAt || nowIso(),
+      updatedAt: allocation.updatedAt || transaction.updatedAt || transaction.createdAt || nowIso()
+    })).filter(allocation => allocation.paymentAccountId && target.paymentAccounts.some(account => Number(account.id) === Number(allocation.paymentAccountId)));
+    transaction.totalPlanned = round2(sum(transaction.allocations.map(allocation => allocation.plannedAmount)));
+    transaction.totalReceived = round2(sum(transaction.allocations.map(allocation => allocation.receivedAmount)));
+    transaction.createdAt = transaction.createdAt || nowIso();
+    transaction.updatedAt = transaction.updatedAt || transaction.createdAt;
   });
   target.paymentSplits.forEach(split => {
     if (split.screenshotDataUrl && !split.proofFileId) {
@@ -1664,8 +1750,9 @@ function migrateDb(target) {
       delete split.screenshotDataUrl;
     }
   });
-  const maxId = Math.max(1000, ...['users','userRoles','agents','paymentMethods','paymentAccounts','routing','orders','orderAgentAssignments','paymentSplits','ledgers','proofFiles','auditLogs','locks','notifications','chats','chatReadStates','coAgentRequests','approvalRequests','advertisements','securityRevertTokens','apiCredentials','p2pExtensionTasks','p2pExtensionCache','userActivitySessions','businessEntries','businessDailyCloses','binanceBalanceSnapshots','chatMedia','systemUpdates','systemUpdateEvents'].flatMap(k => target[k].map(x => Number(x.id || 0))));
-  target.meta.nextId = Math.max(Number(target.meta.nextId || 0), maxId);
+  const maxId = Math.max(1000, ...['users','userRoles','agents','paymentMethods','paymentAccounts','routing','orders','orderAgentAssignments','paymentSplits','ledgers','proofFiles','auditLogs','locks','notifications','offlineTransactions','chats','chatReadStates','coAgentRequests','approvalRequests','advertisements','securityRevertTokens','apiCredentials','p2pExtensionTasks','p2pExtensionCache','userActivitySessions','businessEntries','businessDailyCloses','binanceBalanceSnapshots','chatMedia','systemUpdates','systemUpdateEvents'].flatMap(k => target[k].map(x => Number(x.id || 0))));
+  const nestedOfflineAllocationMaxId = Math.max(0, ...(target.offlineTransactions || []).flatMap(transaction => (transaction.allocations || []).map(allocation => Number(allocation.id || 0))));
+  target.meta.nextId = Math.max(Number(target.meta.nextId || 0), maxId, nestedOfflineAllocationMaxId);
 }
 
 const MIN_LOGIN_PASSWORD_LENGTH = 12;
@@ -1707,6 +1794,7 @@ function makeUser(id, username, password, name, role, agentId, opts = {}) {
     securityQuestion: cleanStr(opts.securityQuestion || '', 240),
     securityAnswerHash: opts.securityAnswer ? hashPassword(String(opts.securityAnswer)) : '',
     securityQuestionUpdatedAt: opts.securityQuestion && opts.securityAnswer ? nowIso() : null,
+    notificationPreferences: normalizeNotificationPreferences(opts.notificationPreferences),
     createdAt: nowIso()
   };
 }
@@ -1842,15 +1930,48 @@ function validatePaymentAccountOwner(accountType, ownerUser) {
 function accountAllowedAgentIds(accountItem) {
   if (!accountItem) return [];
   const legacyAgentId = Number(accountItem.agentId || 0);
+  const ownerAgentId = paymentAccountOwnerAgentId(paymentAccountOwnerUser(accountItem));
   return Array.from(new Set([
     ...(Array.isArray(accountItem.allowedAgentIds) ? accountItem.allowedAgentIds : []).map(Number).filter(Boolean),
-    ...(legacyAgentId ? [legacyAgentId] : [])
+    ...(legacyAgentId ? [legacyAgentId] : []),
+    ...(ownerAgentId ? [ownerAgentId] : [])
   ])).filter(id => db.agents.some(agent => Number(agent.id) === Number(id)));
 }
 
 function accountAssignedToAgent(accountItem, agentId) {
   const targetAgentId = Number(agentId || 0);
   return targetAgentId > 0 && accountAllowedAgentIds(accountItem).includes(targetAgentId);
+}
+
+function paymentAccountOwnedByUser(accountItem, user) {
+  return Boolean(accountItem && user && Number(accountItem.ownerUserId || 0) === Number(user.id || 0));
+}
+
+function canManageAllPaymentAccounts(user) {
+  if (!user) return false;
+  if (['admin', 'manager'].includes(String(user.role || '').toLowerCase())) return true;
+  if (String(user.role || '').toLowerCase() === 'agent') return false;
+  return userHasPermission(user, 'accounts.manage_all');
+}
+
+function canManagePaymentAccount(user, accountItem) {
+  if (!user || !accountItem) return false;
+  if (['admin', 'manager'].includes(String(user.role || '').toLowerCase())) return true;
+  if (!userHasPermission(user, 'accounts.manage')) return false;
+  if (canManageAllPaymentAccounts(user)) return true;
+  return paymentAccountOwnedByUser(accountItem, user);
+}
+
+function canManagePaymentAccountAccess(user, accountItem = null) {
+  if (!user) return false;
+  if (accountItem && !canManagePaymentAccount(user, accountItem)) return false;
+  return canManageAllPaymentAccounts(user);
+}
+
+function canAdjustPaymentAccount(user, accountItem) {
+  if (!user || !accountItem || !userHasPermission(user, 'ledger.adjust')) return false;
+  if (canManageAllPaymentAccounts(user)) return true;
+  return paymentAccountOwnedByUser(accountItem, user);
 }
 
 function isAssignablePaymentAgentId(agentId) {
@@ -1869,9 +1990,10 @@ function normalizeAllowedAgentIds(value) {
 
 function canUsePaymentAccount(user, accountItem) {
   if (!user || !accountItem) return false;
-  if (['admin', 'manager'].includes(user.role)) return true;
-  if (user.role !== 'agent') return false;
-  return userHasPermission(user, 'accounts.use') && accountAssignedToAgent(accountItem, user.agentId);
+  if (['admin', 'manager'].includes(String(user.role || '').toLowerCase())) return true;
+  if (!userHasPermission(user, 'accounts.use')) return false;
+  if (paymentAccountOwnedByUser(accountItem, user)) return true;
+  return Number(user.agentId || 0) > 0 && accountAssignedToAgent(accountItem, user.agentId);
 }
 
 function userSafe(u) {
@@ -1891,7 +2013,8 @@ function userSafe(u) {
     binanceCredentialPermissions: binanceCredentialPermissionRowsForUser(u),
     allowedP2pCredentialIds: Array.isArray(u.allowedP2pCredentialIds) ? u.allowedP2pCredentialIds.map(Number).filter(Boolean) : [],
     securityQuestion: cleanStr(u.securityQuestion || '', 240),
-    securityFallbackConfigured: securityQuestionFallbackConfigured(u)
+    securityFallbackConfigured: securityQuestionFallbackConfigured(u),
+    notificationPreferences: normalizeNotificationPreferences(u.notificationPreferences)
   };
 }
 
@@ -2077,13 +2200,16 @@ function accountView(accountItem, viewer = null) {
   const receiveAvailable = Math.min(dailyReceiveLeft, monthlyReceiveLeft);
   const sendAvailable = Math.min(num(accountItem.currentBalance), dailySendLeft, monthlySendLeft);
   const allAllowedAgentIds = accountAllowedAgentIds(accountItem);
-  const viewerCanManage = Boolean(viewer && userHasPermission(viewer, 'accounts.manage'));
-  const allowedAgentIds = viewer?.role === 'agent' && !viewerCanManage
-    ? allAllowedAgentIds.filter(id => Number(id) === Number(viewer.agentId))
+  const viewerCanManage = Boolean(viewer && canManagePaymentAccount(viewer, accountItem));
+  const viewerCanManageAccess = Boolean(viewer && canManagePaymentAccountAccess(viewer, accountItem));
+  const allowedAgentIds = viewer && !viewerCanManageAccess
+    ? allAllowedAgentIds.filter(id => Number(id) === Number(viewer.agentId || 0))
     : allAllowedAgentIds;
   const allowedAgents = allowedAgentIds.map(id => agentById(id)).filter(Boolean).map(agent => ({ id: agent.id, name: agent.name, userId: agent.userId || null }));
   return {
     ...accountItem,
+    label: cleanStr(accountItem.label || '', 80),
+    serialNumber: cleanStr(accountItem.serialNumber || '', 80),
     agentId: null,
     allowedAgentIds,
     allowedAgents,
@@ -2098,6 +2224,9 @@ function accountView(accountItem, viewer = null) {
     method: methodById(accountItem.paymentMethodId),
     ownerUser: paymentAccountOwnerView(accountItem),
     agent: null,
+    viewerCanManage,
+    viewerCanManageAccess,
+    viewerCanAdjust: viewer ? canAdjustPaymentAccount(viewer, accountItem) : undefined,
     viewerCanUse: viewer ? canUsePaymentAccount(viewer, accountItem) : undefined
   };
 }
@@ -2154,8 +2283,10 @@ function splitHasEvidence(split = {}) {
 }
 
 function activeSplitAccountsForAgent(order, agentId, direction, requiredAmount = 0) {
+  const reservedAccountIds = pendingPaymentAccountReservedIds();
   return db.paymentAccounts
     .filter(account => accountAssignedToAgent(account, agentId) && Number(account.paymentMethodId) === Number(order.paymentMethodId) && account.status === 'active')
+    .filter(account => !reservedAccountIds.has(Number(account.id)))
     .map(account => ({ account, view: accountView(account) }))
     .filter(({ account, view }) => {
       const amount = Math.max(0, num(requiredAmount || 0));
@@ -2195,6 +2326,13 @@ function splitCapacity(view, direction) {
 function validateNewSplit(order, accountItem, splitAgentId, direction, planned, actual, options = {}) {
   const amount = positiveNum(actual || planned || 0);
   if (amount <= 0) return 'Amount must be greater than zero.';
+  const reservation = pendingPaymentAccountReservation(accountItem.id, options);
+  if (reservation?.type === 'offline_transaction') {
+    return `Payment account ${accountItem.accountNumber || accountItem.id} is reserved by a pending Offline Business receipt session.`;
+  }
+  if (reservation?.type === 'payment_split') {
+    return `Payment account ${accountItem.accountNumber || accountItem.id} is reserved by pending order ${reservation.orderNo || reservation.orderId || ''}.`;
+  }
   const view = accountView(accountItem);
   const capacity = splitCapacity(view, direction);
   const charge = paymentTransferCharge(accountItem, amount, direction, options.manualCharge).amount;
@@ -4859,9 +4997,11 @@ function canUseOrderCredential(user, order, permission) {
 }
 function canAccessAccount(user, accountItem) {
   if (!user || !accountItem) return false;
-  if (userHasPermission(user, 'accounts.manage')) return true;
-  if (['admin', 'manager', 'auditor'].includes(user.role)) return true;
-  return user.role === 'agent' && userHasPermission(user, 'accounts.view') && accountAssignedToAgent(accountItem, user.agentId);
+  if (canManageAllPaymentAccounts(user)) return true;
+  const hasPageAccess = userHasPermission(user, 'accounts.view') || userHasPermission(user, 'accounts.manage') || userHasPermission(user, 'accounts.use') || userHasPermission(user, 'ledger.adjust') || userHasPermission(user, 'offline.transactions.manage');
+  if (!hasPageAccess) return false;
+  if (paymentAccountOwnedByUser(accountItem, user)) return true;
+  return Number(user.agentId || 0) > 0 && accountAssignedToAgent(accountItem, user.agentId);
 }
 function canWriteSplit(user, split) {
   if (['admin', 'manager'].includes(user.role)) return true;
@@ -4886,8 +5026,10 @@ function userCanManageApprovals(user) {
 function notificationEmailRecipients(item = {}) {
   const recipients = new Map();
   const excludeUserId = Number(item.excludeUserId || 0);
+  const category = notificationCategoryForType(item.type, item);
   const addUser = user => {
     if (!user || user.enabled === false || Number(user.id || 0) === excludeUserId) return;
+    if (!notificationEnabledForUser(user, 'email', category)) return;
     const email = validEmailAddress(user.email || '');
     if (!email) return;
     recipients.set(email.toLowerCase(), { user, email });
@@ -4948,7 +5090,9 @@ function dispatchNotificationEmail(item = {}) {
 }
 
 function addNotification(type, message, severity = 'info', extra = {}) {
-  const item = { id: nextId(), type, message, severity, status: 'unread', read: false, createdAt: nowIso(), ...extra };
+  const category = notificationCategoryForType(type, extra);
+  const item = { id: nextId(), type, category, message, severity, status: 'unread', read: false, createdAt: nowIso(), ...extra };
+  item.category = notificationCategoryForType(type, item);
   db.notifications.push(item);
   broadcast({ type: 'notification.created', notification: item, at: nowIso() });
   dispatchNotificationEmail(item);
@@ -4960,18 +5104,20 @@ function notifyManager(type, orderId, message, severity = 'warning', extra = {})
 }
 
 function notificationsForUser(user) {
-  const list = (db.notifications || []).filter(n => Number(n.excludeUserId || 0) !== Number(user?.id || 0));
+  const list = (db.notifications || [])
+    .filter(n => Number(n.excludeUserId || 0) !== Number(user?.id || 0))
+    .map(n => ({ ...n, category: notificationCategoryForType(n.type, n) }));
   if (!user) return [];
-  if (['admin', 'manager', 'auditor'].includes(user.role)) {
-    return list.filter(n => !n.orderId || canAccessOrder(user, orderById(n.orderId)));
-  }
-  return list.filter(n => {
-    if (n.userId && Number(n.userId) === Number(user.id)) return true;
-    if (n.agentId && Number(n.agentId) === Number(user.agentId)) return true;
-    if (n.audience === 'all') return true;
-    if (n.orderId && canAccessOrder(user, orderById(n.orderId))) return true;
-    return false;
-  });
+  const accessible = ['admin', 'manager', 'auditor'].includes(user.role)
+    ? list.filter(n => !n.orderId || canAccessOrder(user, orderById(n.orderId)))
+    : list.filter(n => {
+      if (n.userId && Number(n.userId) === Number(user.id)) return true;
+      if (n.agentId && Number(n.agentId) === Number(user.agentId)) return true;
+      if (n.audience === 'all') return true;
+      if (n.orderId && canAccessOrder(user, orderById(n.orderId))) return true;
+      return false;
+    });
+  return accessible.filter(n => notificationEnabledForUser(user, 'inApp', n.category));
 }
 
 function agentLoginUser(agentId) {
@@ -14659,6 +14805,7 @@ async function handleApi(req, res) {
     if (url.pathname === '/api/agents') return handleAgents(req, res);
     if (url.pathname.startsWith('/api/agents/')) return handleAgentById(req, res, parts);
     if (url.pathname === '/api/payment-methods') return handlePaymentMethods(req, res);
+    if (url.pathname === '/api/offline-transactions' || url.pathname.startsWith('/api/offline-transactions/')) return handleOfflineTransactions(req, res, url, parts);
     if (url.pathname === '/api/payment-accounts/bulk') return handleBulkPaymentAccounts(req, res);
     if (url.pathname.startsWith('/api/payment-accounts/')) return handlePaymentAccountById(req, res, parts);
     if (url.pathname === '/api/payment-accounts') return handlePaymentAccounts(req, res, url);
@@ -15422,10 +15569,10 @@ function handleSecurityRevert(req, res, parts) {
 function handleBootstrap(req, res) {
   const s = getSession(req);
   if (!s) return sendJson(res, 401, { error: 'Not authenticated' }, {}, req);
-  const accountUsers = userHasPermission(s.user, 'accounts.manage')
+  const accountUsers = canManageAllPaymentAccounts(s.user)
     ? db.users.filter(user => user.enabled !== false).map(user => ({ id: user.id, username: user.username, name: user.name, role: user.role, agentId: user.agentId || paymentAccountOwnerAgentId(user) || null }))
-    : [];
-  return sendJson(res, 200, { user: userSafe(s.user), csrfToken: s.session.csrfToken, orderAcceptance: orderAcceptanceForUser(s.user), paymentMethods: db.paymentMethods, agents: db.agents.map(agent => agentView(agent, s.user)), accountUsers, permissions: PERMISSION_CATALOG, userRoles: db.userRoles, settings: publicSettings(), notifications: notificationsForUser(s.user).slice(-50).reverse() }, {}, req);
+    : (canCreatePaymentAccounts(s.user) ? [{ id: s.user.id, username: s.user.username, name: s.user.name, role: s.user.role, agentId: s.user.agentId || paymentAccountOwnerAgentId(s.user) || null }] : []);
+  return sendJson(res, 200, { user: userSafe(s.user), csrfToken: s.session.csrfToken, orderAcceptance: orderAcceptanceForUser(s.user), paymentMethods: db.paymentMethods, agents: db.agents.map(agent => agentView(agent, s.user)), accountUsers, paymentAccountScope: { manageAll: canManageAllPaymentAccounts(s.user), ownerUserId: s.user.id }, permissions: PERMISSION_CATALOG, userRoles: db.userRoles, settings: publicSettings(), notifications: notificationsForUser(s.user).slice(-50).reverse() }, {}, req);
 }
 function handleDashboard(req, res) {
   const user = requirePermission(req, res, 'dashboard.view'); if (!user) return;
@@ -15977,7 +16124,10 @@ function paymentAccountBulkRows(body = {}) {
     const common = body.common && typeof body.common === 'object' ? body.common : {};
     return body.accounts.map(account => ({
       ...common,
+      ...(account && typeof account === 'object' ? account : {}),
       accountNumber: account?.accountNumber ?? account?.number ?? '',
+      label: account?.label ?? common.label ?? '',
+      serialNumber: account?.serialNumber ?? account?.serial ?? common.serialNumber ?? common.serial ?? '',
       openingBalance: account?.openingBalance ?? account?.currentBalance ?? account?.balance ?? common.openingBalance ?? 0
     }));
   }
@@ -16026,21 +16176,24 @@ function resolveBulkAgentIds(value) {
   return { ids: Array.from(new Set(ids)), unknown };
 }
 
-function paymentAccountDraftFromBody(body = {}, paymentMethod = null) {
+function paymentAccountDraftFromBody(body = {}, paymentMethod = null, actor = null) {
   const agentSource = body.allowedAgentIds ?? body.agentIds ?? body.agents ?? '';
   const resolvedAgents = resolveBulkAgentIds(agentSource);
-  const ownerSource = body.ownerUserId ?? body.accountUserId ?? body.ownerUser ?? body.accountUser ?? body.username ?? '';
-  const resolvedOwner = resolvePaymentAccountOwnerUser(ownerSource);
-  const accountType = normalizePaymentAccountType(body.accountType || 'personal');
+  const ownerSource = body.ownerUserId ?? body.accountUserId ?? body.ownerUser ?? body.accountUser ?? body.username ?? actor?.id ?? '';
+  let resolvedOwner = resolvePaymentAccountOwnerUser(ownerSource);
+  const restrictedToOwnAccount = Boolean(actor && !canManageAllPaymentAccounts(actor));
+  if (restrictedToOwnAccount) resolvedOwner = { user: actor, unknown: '' };
+  const accountType = normalizePaymentAccountType(body.accountType || (String(actor?.role || '').toLowerCase() === 'agent' ? 'agent' : 'personal'));
   const ownerAgentId = paymentAccountOwnerAgentId(resolvedOwner.user);
-  const allowedAgentIds = Array.from(new Set([
-    ...resolvedAgents.ids,
-    ...(accountType === 'agent' && ownerAgentId ? [ownerAgentId] : [])
-  ]));
+  const allowedAgentIds = restrictedToOwnAccount
+    ? (ownerAgentId ? [ownerAgentId] : [])
+    : Array.from(new Set([...resolvedAgents.ids, ...(ownerAgentId ? [ownerAgentId] : [])]));
   return {
     paymentMethod,
-    accountNumber: cleanStr(body.accountNumber || body.number || '', 80),
+    accountNumber: cleanStr(body.accountNumber || body.number || '', 120),
     accountName: cleanStr(body.accountName || body.name || '', 120),
+    label: cleanStr(body.label || body.accountLabel || '', 80),
+    serialNumber: cleanStr(body.serialNumber || body.serial || body.simSerial || '', 80),
     accountType,
     ownerUserId: resolvedOwner.user?.id || null,
     ownerUser: resolvedOwner.user || null,
@@ -16059,8 +16212,31 @@ function paymentAccountDraftFromBody(body = {}, paymentMethod = null) {
     transactionChargePercent: Math.max(0, Math.min(100, Number(body.transactionChargePercent || 0) || 0)),
     transactionChargeTiers: normalizePaymentChargeTiers(body.transactionChargeTiers || []),
     allowedAgentIds,
-    unknownAgents: resolvedAgents.unknown
+    unknownAgents: restrictedToOwnAccount ? [] : resolvedAgents.unknown
   };
+}
+
+function canCreatePaymentAccounts(user) {
+  return Boolean(user && (['admin', 'manager'].includes(String(user.role || '').toLowerCase()) || userHasPermission(user, 'accounts.manage')));
+}
+
+function canOpenPaymentAccounts(user) {
+  return Boolean(user && (canManageAllPaymentAccounts(user) || ['accounts.view','accounts.use','accounts.manage','ledger.adjust','offline.transactions.manage'].some(permission => userHasPermission(user, permission))));
+}
+
+function paymentAccountSerialConflict(serialNumber = '', excludeId = 0) {
+  const serial = cleanStr(serialNumber || '', 80).toLowerCase();
+  if (!serial) return false;
+  return (db.paymentAccounts || []).some(account => Number(account.id) !== Number(excludeId || 0) && cleanStr(account.serialNumber || '', 80).toLowerCase() === serial);
+}
+
+function paymentAccountMatchesSearch(accountItem = {}, query = '') {
+  const needle = cleanStr(query || '', 160).toLowerCase();
+  if (!needle) return true;
+  const method = methodById(accountItem.paymentMethodId);
+  const owner = paymentAccountOwnerUser(accountItem);
+  return [accountItem.accountNumber, accountItem.accountName, accountItem.label, accountItem.serialNumber, method?.name, method?.code, owner?.name, owner?.username]
+    .some(value => String(value || '').toLowerCase().includes(needle));
 }
 
 function createPaymentAccountFromDraft(draft, user) {
@@ -16072,6 +16248,8 @@ function createPaymentAccountFromDraft(draft, user) {
     paymentMethodId: draft.paymentMethod.id,
     accountNumber: draft.accountNumber,
     accountName: draft.accountName,
+    label: draft.label,
+    serialNumber: draft.serialNumber,
     accountType: draft.accountType,
     dailyReceiveLimit: draft.dailyReceiveLimit,
     dailySendLimit: draft.dailySendLimit,
@@ -16086,17 +16264,18 @@ function createPaymentAccountFromDraft(draft, user) {
     transactionChargeTiers: draft.transactionChargeTiers,
     currentBalance: 0,
     status: draft.status,
-    managedBy: 'admin_manager',
+    managedBy: canManageAllPaymentAccounts(user) ? 'all_accounts' : 'account_owner',
     createdBy: user.id,
     createdAt: nowIso()
   };
   db.paymentAccounts.push(item);
-  db.ledgers.push({ id: nextId(), paymentAccountId: item.id, agentId: null, direction: 'opening', type: 'opening', amount: draft.openingBalance, balanceBefore: 0, balanceAfter: draft.openingBalance, note: 'Opening balance', createdBy: user.id, createdAt: nowIso() });
+  db.ledgers.push({ id: nextId(), paymentAccountId: item.id, agentId: paymentAccountOwnerAgentId(draft.ownerUser), direction: 'opening', type: 'opening', amount: draft.openingBalance, balanceBefore: 0, balanceAfter: draft.openingBalance, note: 'Opening balance', createdBy: user.id, createdAt: nowIso() });
   return item;
 }
 
 async function handleBulkPaymentAccounts(req, res) {
-  const user = requirePermission(req, res, 'accounts.manage'); if (!user) return;
+  const user = requireAuth(req, res); if (!user) return;
+  if (!canCreatePaymentAccounts(user)) return sendJson(res, 403, { error: 'Permission denied: accounts.manage' }, {}, req);
   if (req.method !== 'POST') return sendJson(res, 405, { error: 'Method not allowed' }, {}, req);
   const body = await readBody(req);
   const structuredBoxImport = Array.isArray(body.accounts);
@@ -16106,15 +16285,18 @@ async function handleBulkPaymentAccounts(req, res) {
 
   const drafts = [];
   const errors = [];
-  const seen = new Set();
+  const seenAccounts = new Set();
+  const seenSerials = new Set();
   rows.forEach((row, index) => {
     const normalizedRow = {
       paymentMethodId: bulkField(row, 'paymentMethodId', 'methodId'),
       paymentMethod: bulkField(row, 'paymentMethod', 'method', 'paymentMethodCode', 'methodCode'),
       accountNumber: bulkField(row, 'accountNumber', 'number'),
       accountName: bulkField(row, 'accountName', 'name'),
+      label: bulkField(row, 'label', 'accountLabel'),
+      serialNumber: bulkField(row, 'serialNumber', 'serial', 'simSerial'),
       accountType: bulkField(row, 'accountType', 'type'),
-      ownerUserId: bulkField(row, 'ownerUserId', 'accountUserId', 'userId', 'ownerUser', 'accountUser', 'username'),
+      ownerUserId: bulkField(row, 'ownerUserId', 'accountUserId', 'userId', 'ownerUser', 'accountUser', 'username') || user.id,
       currentBalance: bulkField(row, 'openingBalance', 'currentBalance', 'balance'),
       status: bulkField(row, 'status'),
       dailyReceiveLimit: bulkField(row, 'dailyReceiveLimit'),
@@ -16131,7 +16313,7 @@ async function handleBulkPaymentAccounts(req, res) {
       allowedAgentIds: bulkField(row, 'agentIds', 'allowedAgentIds', 'agents')
     };
     const method = resolvePaymentMethodForAccountRow(normalizedRow);
-    const draft = paymentAccountDraftFromBody(normalizedRow, method);
+    const draft = paymentAccountDraftFromBody(normalizedRow, method, user);
     const rowNumber = structuredBoxImport ? index + 1 : index + 2;
     if (!method) errors.push({ row: rowNumber, error: 'Payment method not found. Use an existing method ID, code or exact name.' });
     if (!draft.accountNumber) errors.push({ row: rowNumber, error: 'Account number is required.' });
@@ -16141,9 +16323,14 @@ async function handleBulkPaymentAccounts(req, res) {
     if (draft.unknownAgents.length) errors.push({ row: rowNumber, error: `Unknown or non-agent access value(s): ${draft.unknownAgents.join(', ')}` });
     if (method && draft.accountNumber) {
       const key = `${method.id}:${draft.accountNumber.toLowerCase()}`;
-      if (seen.has(key)) errors.push({ row: rowNumber, error: 'Duplicate account number in this import for the same payment method.' });
+      if (seenAccounts.has(key)) errors.push({ row: rowNumber, error: 'Duplicate account number in this import for the same payment method.' });
       if (db.paymentAccounts.some(account => Number(account.paymentMethodId) === Number(method.id) && String(account.accountNumber || '').toLowerCase() === draft.accountNumber.toLowerCase())) errors.push({ row: rowNumber, error: 'This payment account already exists.' });
-      seen.add(key);
+      seenAccounts.add(key);
+    }
+    if (draft.serialNumber) {
+      const serialKey = draft.serialNumber.toLowerCase();
+      if (seenSerials.has(serialKey) || paymentAccountSerialConflict(draft.serialNumber)) errors.push({ row: rowNumber, error: 'Serial Number must be unique.' });
+      seenSerials.add(serialKey);
     }
     drafts.push(draft);
   });
@@ -16157,32 +16344,39 @@ async function handleBulkPaymentAccounts(req, res) {
 }
 
 async function handlePaymentAccounts(req, res, url) {
-  const user = requirePermission(req, res, 'accounts.view'); if (!user) return;
+  const user = requireAuth(req, res); if (!user) return;
+  if (!canOpenPaymentAccounts(user)) return sendJson(res, 403, { error: 'Permission denied: accounts.view' }, {}, req);
   if (req.method === 'GET') {
-    let accounts = db.paymentAccounts;
-    if (user.role === 'agent' && !userHasPermission(user, 'accounts.manage')) accounts = accounts.filter(account => accountAssignedToAgent(account, user.agentId));
+    let accounts = (db.paymentAccounts || []).filter(account => canAccessAccount(user, account));
     const methodId = Number(url.searchParams.get('paymentMethodId') || 0);
-    if (methodId) accounts = accounts.filter(a => a.paymentMethodId === methodId);
-    return sendJson(res, 200, { items: accounts.map(account => accountView(account, user)) }, {}, req);
+    if (methodId) accounts = accounts.filter(account => Number(account.paymentMethodId) === methodId);
+    const search = cleanStr(url.searchParams.get('search') || url.searchParams.get('q') || '', 160);
+    if (search) accounts = accounts.filter(account => paymentAccountMatchesSearch(account, search));
+    accounts = accounts.slice().sort((a, b) => String(a.serialNumber || '').localeCompare(String(b.serialNumber || ''), undefined, { numeric: true }) || String(a.label || '').localeCompare(String(b.label || '')) || String(a.accountNumber || '').localeCompare(String(b.accountNumber || '')));
+    return sendJson(res, 200, {
+      items: accounts.map(account => accountView(account, user)),
+      scope: { manageAll: canManageAllPaymentAccounts(user), ownerUserId: user.id, ownerAgentId: Number(user.agentId || paymentAccountOwnerAgentId(user) || 0) || null }
+    }, {}, req);
   }
   if (req.method === 'POST') {
-    const admin = requirePermission(req, res, 'accounts.manage'); if (!admin) return;
+    if (!canCreatePaymentAccounts(user)) return sendJson(res, 403, { error: 'Permission denied: accounts.manage' }, {}, req);
     const body = await readBody(req);
     const paymentMethodId = Number(body.paymentMethodId);
     const method = methodById(paymentMethodId);
     if (!method) return sendJson(res, 422, { error: 'Valid payment method required' }, {}, req);
-    const draft = paymentAccountDraftFromBody(body, method);
+    const draft = paymentAccountDraftFromBody({ ...body, ownerUserId: body.ownerUserId || user.id }, method, user);
     if (!draft.accountNumber) return sendJson(res, 422, { error: 'Account number is required' }, {}, req);
     if (draft.unknownOwner) return sendJson(res, 422, { error: `Unknown or disabled Account User: ${draft.unknownOwner}` }, {}, req);
     const ownerError = validatePaymentAccountOwner(draft.accountType, draft.ownerUser);
     if (ownerError) return sendJson(res, 422, { error: ownerError }, {}, req);
     if (draft.unknownAgents.length) return sendJson(res, 422, { error: `Unknown or non-agent access value(s): ${draft.unknownAgents.join(', ')}` }, {}, req);
+    if (paymentAccountSerialConflict(draft.serialNumber)) return sendJson(res, 409, { error: 'Serial Number must be unique.' }, {}, req);
     if (db.paymentAccounts.some(account => Number(account.paymentMethodId) === paymentMethodId && String(account.accountNumber || '').toLowerCase() === draft.accountNumber.toLowerCase())) return sendJson(res, 409, { error: 'This payment account already exists for the selected method.' }, {}, req);
-    const item = createPaymentAccountFromDraft(draft, admin);
-    logAudit(admin, 'payment_account_created', 'paymentAccount', item.id, { accountNumber: item.accountNumber, managedBy: 'admin_manager', ownerUserId: item.ownerUserId, accountType: item.accountType, openingBalance: draft.openingBalance, allowedAgentIds: item.allowedAgentIds });
+    const item = createPaymentAccountFromDraft(draft, user);
+    logAudit(user, 'payment_account_created', 'paymentAccount', item.id, { accountNumber: item.accountNumber, label: item.label, serialNumber: item.serialNumber, ownerUserId: item.ownerUserId, accountType: item.accountType, openingBalance: draft.openingBalance, allowedAgentIds: item.allowedAgentIds });
     saveDb();
     broadcast({ type: 'payment.account.created', paymentAccountId: item.id, ownerUserId: item.ownerUserId, accountType: item.accountType, allowedAgentIds: item.allowedAgentIds, at: nowIso() });
-    return sendJson(res, 201, accountView(item, admin), {}, req);
+    return sendJson(res, 201, accountView(item, user), {}, req);
   }
   return sendJson(res, 405, { error: 'Method not allowed' }, {}, req);
 }
@@ -16200,11 +16394,12 @@ async function handlePaymentAccountById(req, res, parts) {
 }
 
 async function updatePaymentAccount(req, res, user, accountItem) {
-  if (!userHasPermission(user, 'accounts.manage')) return sendJson(res, 403, { error: 'Permission denied: accounts.manage' }, {}, req);
+  if (!canManagePaymentAccount(user, accountItem)) return sendJson(res, 403, { error: 'You can only manage payment accounts owned by your user unless Manage All Payment Accounts is granted.' }, {}, req);
   const body = await readBody(req);
+  const canEditAccess = canManagePaymentAccountAccess(user, accountItem);
   const nextType = body.accountType !== undefined ? normalizePaymentAccountType(body.accountType) : normalizePaymentAccountType(accountItem.accountType);
-  let nextOwnerUser = paymentAccountOwnerUser(accountItem);
-  if (body.ownerUserId !== undefined || body.accountUserId !== undefined || body.ownerUser !== undefined || body.accountUser !== undefined) {
+  let nextOwnerUser = canEditAccess ? paymentAccountOwnerUser(accountItem) : user;
+  if (canEditAccess && (body.ownerUserId !== undefined || body.accountUserId !== undefined || body.ownerUser !== undefined || body.accountUser !== undefined)) {
     const resolvedOwner = resolvePaymentAccountOwnerUser(body.ownerUserId ?? body.accountUserId ?? body.ownerUser ?? body.accountUser);
     if (resolvedOwner.unknown) return sendJson(res, 422, { error: `Unknown or disabled Account User: ${resolvedOwner.unknown}` }, {}, req);
     nextOwnerUser = resolvedOwner.user;
@@ -16213,51 +16408,56 @@ async function updatePaymentAccount(req, res, user, accountItem) {
   if (ownerError) return sendJson(res, 422, { error: ownerError }, {}, req);
 
   let nextAllowedAgentIds = accountAllowedAgentIds(accountItem);
-  if (body.allowedAgentIds !== undefined || body.agentIds !== undefined || body.agents !== undefined) {
+  if (canEditAccess && (body.allowedAgentIds !== undefined || body.agentIds !== undefined || body.agents !== undefined)) {
     const resolved = resolveBulkAgentIds(body.allowedAgentIds ?? body.agentIds ?? body.agents);
     if (resolved.unknown.length) return sendJson(res, 422, { error: `Unknown or non-agent access value(s): ${resolved.unknown.join(', ')}` }, {}, req);
     nextAllowedAgentIds = resolved.ids;
   }
-  if (nextType === 'agent') {
-    const ownerAgentId = paymentAccountOwnerAgentId(nextOwnerUser);
-    if (ownerAgentId) nextAllowedAgentIds = Array.from(new Set([...nextAllowedAgentIds, ownerAgentId]));
-  }
+  const ownerAgentId = paymentAccountOwnerAgentId(nextOwnerUser);
+  if (ownerAgentId) nextAllowedAgentIds = Array.from(new Set([...nextAllowedAgentIds, ownerAgentId]));
+  if (!canEditAccess) nextAllowedAgentIds = ownerAgentId ? [ownerAgentId] : [];
+
   let nextPaymentMethodId = Number(accountItem.paymentMethodId || 0);
   if (body.paymentMethodId !== undefined) {
     nextPaymentMethodId = Number(body.paymentMethodId);
     if (!methodById(nextPaymentMethodId)) return sendJson(res, 422, { error: 'Valid payment method required' }, {}, req);
   }
   const nextAccountNumber = body.accountNumber !== undefined ? cleanStr(body.accountNumber, 120) : cleanStr(accountItem.accountNumber, 120);
+  const nextLabel = body.label !== undefined || body.accountLabel !== undefined ? cleanStr(body.label ?? body.accountLabel ?? '', 80) : cleanStr(accountItem.label || '', 80);
+  const nextSerialNumber = body.serialNumber !== undefined || body.serial !== undefined ? cleanStr(body.serialNumber ?? body.serial ?? '', 80) : cleanStr(accountItem.serialNumber || '', 80);
   if (!nextAccountNumber) return sendJson(res, 422, { error: 'Account number is required' }, {}, req);
+  if (paymentAccountSerialConflict(nextSerialNumber, accountItem.id)) return sendJson(res, 409, { error: 'Serial Number must be unique.' }, {}, req);
   const duplicate = db.paymentAccounts.some(item => Number(item.id) !== Number(accountItem.id) && Number(item.paymentMethodId) === nextPaymentMethodId && String(item.accountNumber || '').trim().toLowerCase() === nextAccountNumber.toLowerCase());
   if (duplicate) return sendJson(res, 409, { error: 'This payment account already exists for the selected method.' }, {}, req);
   const nextStatus = body.status !== undefined ? cleanStr(body.status, 40).toLowerCase() : String(accountItem.status || 'active').toLowerCase();
-  if (!['active','inactive'].includes(nextStatus)) return sendJson(res, 422, { error: 'Payment account status must be Active or Inactive.' }, {}, req);
+  if (!['active','hold','inactive'].includes(nextStatus)) return sendJson(res, 422, { error: 'Payment account status must be Active, Hold or Inactive.' }, {}, req);
 
   accountItem.agentId = null;
-  accountItem.managedBy = 'admin_manager';
+  accountItem.managedBy = canEditAccess ? 'all_accounts' : 'account_owner';
   accountItem.accountType = nextType;
   accountItem.ownerUserId = nextOwnerUser.id;
   accountItem.allowedAgentIds = nextAllowedAgentIds;
   accountItem.paymentMethodId = nextPaymentMethodId;
   accountItem.accountNumber = nextAccountNumber;
+  accountItem.label = nextLabel;
+  accountItem.serialNumber = nextSerialNumber;
   if (body.accountName !== undefined) accountItem.accountName = cleanStr(body.accountName, 120);
   accountItem.status = nextStatus;
-  for (const k of ['dailyReceiveLimit','dailySendLimit','monthlyReceiveLimit','monthlySendLimit','minOrderAmount','maxOrderAmount']) if (body[k] !== undefined) accountItem[k] = positiveNum(body[k]);
+  for (const key of ['dailyReceiveLimit','dailySendLimit','monthlyReceiveLimit','monthlySendLimit','minOrderAmount','maxOrderAmount']) if (body[key] !== undefined) accountItem[key] = positiveNum(body[key]);
   if (body.transactionChargeMode !== undefined) accountItem.transactionChargeMode = normalizePaymentChargeMode(body.transactionChargeMode);
   if (body.transactionChargeAppliesTo !== undefined) accountItem.transactionChargeAppliesTo = normalizePaymentChargeAppliesTo(body.transactionChargeAppliesTo);
   if (body.transactionChargeFixed !== undefined) accountItem.transactionChargeFixed = positiveNum(body.transactionChargeFixed);
   if (body.transactionChargePercent !== undefined) accountItem.transactionChargePercent = Math.max(0, Math.min(100, Number(body.transactionChargePercent || 0) || 0));
   if (body.transactionChargeTiers !== undefined) accountItem.transactionChargeTiers = normalizePaymentChargeTiers(body.transactionChargeTiers);
   accountItem.updatedAt = nowIso();
-  logAudit(user, 'payment_account_updated', 'paymentAccount', accountItem.id, { accountNumber: accountItem.accountNumber, status: accountItem.status, ownerUserId: accountItem.ownerUserId, accountType: accountItem.accountType, allowedAgentIds: accountAllowedAgentIds(accountItem) });
+  logAudit(user, 'payment_account_updated', 'paymentAccount', accountItem.id, { accountNumber: accountItem.accountNumber, label: accountItem.label, serialNumber: accountItem.serialNumber, status: accountItem.status, ownerUserId: accountItem.ownerUserId, accountType: accountItem.accountType, allowedAgentIds: accountAllowedAgentIds(accountItem) });
   saveDb();
   broadcast({ type: 'payment.account.updated', paymentAccountId: accountItem.id, ownerUserId: accountItem.ownerUserId, accountType: accountItem.accountType, allowedAgentIds: accountAllowedAgentIds(accountItem), at: nowIso() });
   return sendJson(res, 200, accountView(accountItem, user), {}, req);
 }
 
 async function addAccountLedger(req, res, user, accountItem) {
-  if (!userHasPermission(user, 'ledger.adjust')) return sendJson(res, 403, { error: 'Permission denied: ledger.adjust' }, {}, req);
+  if (!canAdjustPaymentAccount(user, accountItem)) return sendJson(res, 403, { error: 'Ledger adjustment is allowed only on payment accounts owned by your user unless all-account access is available.' }, {}, req);
   const body = await readBody(req);
   const type = cleanStr(body.type || '', 40);
   const ledgerTypes = {
@@ -16280,11 +16480,394 @@ async function addAccountLedger(req, res, user, accountItem) {
   const effect = ledgerTypes[type].sign === 'signed' ? amount : ledgerTypes[type].sign * amount;
   if (effect < 0 && Math.abs(effect) > before) return sendJson(res, 422, { error: 'Transaction exceeds current account balance' }, {}, req);
   const after = before + effect;
-  const ledger = { id: nextId(), paymentAccountId: accountItem.id, agentId: accountItem.agentId, direction: ledgerTypes[type].direction, type, amount, balanceBefore: before, balanceAfter: after, note: cleanStr(body.note || ledgerTypes[type].label, 300), reference: cleanStr(body.reference || '', 120), createdBy: user.id, createdAt: nowIso() };
+  const ledger = { id: nextId(), paymentAccountId: accountItem.id, agentId: paymentAccountOwnerAgentId(paymentAccountOwnerUser(accountItem)), direction: ledgerTypes[type].direction, type, amount, balanceBefore: before, balanceAfter: after, note: cleanStr(body.note || ledgerTypes[type].label, 300), reference: cleanStr(body.reference || '', 120), createdBy: user.id, createdAt: nowIso() };
   db.ledgers.push(ledger);
   logAudit(user, 'payment_account_ledger_adjusted', 'paymentAccount', accountItem.id, { type, amount, balanceBefore: before, balanceAfter: after, note: ledger.note });
   saveDb();
   return sendJson(res, 201, { account: accountView(accountItem, user), ledger }, {}, req);
+}
+
+function offlineTransactionActive(item = {}) {
+  return ['pending', 'partially_received', 'ready'].includes(String(item.status || '').toLowerCase());
+}
+
+function canManageOfflineTransactions(user) {
+  return Boolean(user && userHasPermission(user, 'offline.transactions.manage'));
+}
+
+function canUseAccountForOfflineTransaction(user, accountItem) {
+  if (!canManageOfflineTransactions(user) || !accountItem || String(accountItem.status || '').toLowerCase() !== 'active') return false;
+  if (canManageAllPaymentAccounts(user)) return true;
+  return paymentAccountOwnedByUser(accountItem, user);
+}
+
+function canAccessOfflineTransaction(user, transaction) {
+  if (!user || !transaction || !canManageOfflineTransactions(user)) return false;
+  if (canManageAllPaymentAccounts(user)) return true;
+  if (Number(transaction.createdBy || 0) === Number(user.id || 0)) return true;
+  return (transaction.allocations || []).some(row => paymentAccountOwnedByUser(accountById(row.paymentAccountId), user));
+}
+
+function offlineReservedAccountIds(excludeTransactionId = 0) {
+  const reserved = new Set();
+  for (const transaction of db.offlineTransactions || []) {
+    if (!offlineTransactionActive(transaction) || Number(transaction.id) === Number(excludeTransactionId || 0)) continue;
+    for (const allocation of transaction.allocations || []) {
+      if (['released', 'cancelled'].includes(String(allocation.status || '').toLowerCase())) continue;
+      const accountId = Number(allocation.paymentAccountId || 0);
+      if (accountId) reserved.add(accountId);
+    }
+  }
+  return reserved;
+}
+
+function offlineAccountReservation(accountId, excludeTransactionId = 0) {
+  const targetId = Number(accountId || 0);
+  if (!targetId) return null;
+  for (const transaction of db.offlineTransactions || []) {
+    if (!offlineTransactionActive(transaction) || Number(transaction.id) === Number(excludeTransactionId || 0)) continue;
+    const allocation = (transaction.allocations || []).find(row =>
+      Number(row.paymentAccountId || 0) === targetId &&
+      !['released', 'cancelled'].includes(String(row.status || '').toLowerCase())
+    );
+    if (!allocation) continue;
+    return {
+      type: 'offline_transaction',
+      transactionId: Number(transaction.id || 0),
+      referenceNo: cleanStr(transaction.referenceNo || '', 80),
+      allocationId: Number(allocation.id || 0)
+    };
+  }
+  return null;
+}
+
+function paymentSplitReservationActive(split = {}) {
+  const status = String(split.status || '').toLowerCase();
+  if (['completed', 'released', 'cancelled', 'reversed'].includes(status)) return false;
+  const order = orderById(split.orderId);
+  if (!order || orderIsClosed(order)) return false;
+  const planned = positiveNum(split.plannedAmount || 0);
+  const actual = positiveNum(split.actualAmount || 0);
+  return ['planned', 'pending', 'partial'].includes(status) || planned > actual + 1e-9;
+}
+
+function paymentSplitReservedAccountIds(excludeSplitId = 0) {
+  const reserved = new Set();
+  for (const split of db.paymentSplits || []) {
+    if (Number(split.id || 0) === Number(excludeSplitId || 0) || !paymentSplitReservationActive(split)) continue;
+    const accountId = Number(split.paymentAccountId || 0);
+    if (accountId) reserved.add(accountId);
+  }
+  return reserved;
+}
+
+function paymentSplitAccountReservation(accountId, excludeSplitId = 0) {
+  const targetId = Number(accountId || 0);
+  if (!targetId) return null;
+  const split = (db.paymentSplits || []).find(item =>
+    Number(item.paymentAccountId || 0) === targetId &&
+    Number(item.id || 0) !== Number(excludeSplitId || 0) &&
+    paymentSplitReservationActive(item)
+  );
+  if (!split) return null;
+  const order = orderById(split.orderId);
+  return {
+    type: 'payment_split',
+    splitId: Number(split.id || 0),
+    orderId: Number(split.orderId || 0),
+    orderNo: cleanStr(order?.orderNo || '', 80)
+  };
+}
+
+function pendingPaymentAccountReservedIds(options = {}) {
+  const reserved = offlineReservedAccountIds(options.excludeTransactionId || 0);
+  for (const accountId of paymentSplitReservedAccountIds(options.excludeSplitId || 0)) reserved.add(accountId);
+  return reserved;
+}
+
+function pendingPaymentAccountReservation(accountId, options = {}) {
+  return offlineAccountReservation(accountId, options.excludeTransactionId || 0)
+    || paymentSplitAccountReservation(accountId, options.excludeSplitId || 0);
+}
+
+function refreshOfflineTransactionTotals(transaction) {
+  const allocations = Array.isArray(transaction.allocations) ? transaction.allocations : [];
+  transaction.totalPlanned = round2(sum(allocations.map(row => positiveNum(row.plannedAmount || 0))));
+  transaction.totalReceived = round2(sum(allocations.map(row => positiveNum(row.receivedAmount || 0))));
+  if (offlineTransactionActive(transaction)) {
+    if (transaction.totalReceived >= positiveNum(transaction.requestedAmount || 0) && transaction.requestedAmount > 0) transaction.status = 'ready';
+    else if (transaction.totalReceived > 0) transaction.status = 'partially_received';
+    else transaction.status = 'pending';
+  }
+  transaction.updatedAt = transaction.updatedAt || transaction.createdAt || nowIso();
+  return transaction;
+}
+
+function offlineTransactionView(transaction, user) {
+  refreshOfflineTransactionTotals(transaction);
+  const allocations = (transaction.allocations || []).map(allocation => {
+    const accountItem = accountById(allocation.paymentAccountId);
+    const account = accountItem && canAccessAccount(user, accountItem) ? accountView(accountItem, user) : { id: allocation.paymentAccountId, restricted: true };
+    return {
+      ...allocation,
+      plannedAmount: positiveNum(allocation.plannedAmount || 0),
+      receivedAmount: positiveNum(allocation.receivedAmount || 0),
+      remainingAmount: round2(Math.max(0, positiveNum(allocation.plannedAmount || 0) - positiveNum(allocation.receivedAmount || 0))),
+      account
+    };
+  });
+  const creator = (db.users || []).find(item => Number(item.id) === Number(transaction.createdBy || 0));
+  return {
+    ...transaction,
+    allocations,
+    paymentMethod: methodById(transaction.paymentMethodId),
+    creator: creator ? { id: creator.id, name: creator.name, username: creator.username, role: creator.role } : null,
+    canFinalizePartial: positiveNum(transaction.totalReceived || 0) > 0 && positiveNum(transaction.totalReceived || 0) < positiveNum(transaction.requestedAmount || 0),
+    canCancel: positiveNum(transaction.totalReceived || 0) === 0 && offlineTransactionActive(transaction)
+  };
+}
+
+function offlineTransactionCandidates(user, url) {
+  const requestedAmount = positiveNum(url.searchParams.get('amount') || 0);
+  const perAccountLimit = positiveNum(url.searchParams.get('perAccountLimit') || url.searchParams.get('limit') || 0);
+  const paymentMethodId = Number(url.searchParams.get('paymentMethodId') || 0);
+  const search = cleanStr(url.searchParams.get('search') || url.searchParams.get('q') || '', 160);
+  const offlineReserved = offlineReservedAccountIds();
+  const orderReserved = paymentSplitReservedAccountIds();
+  const reserved = pendingPaymentAccountReservedIds();
+  let accounts = (db.paymentAccounts || [])
+    .filter(account => canUseAccountForOfflineTransaction(user, account))
+    .filter(account => !reserved.has(Number(account.id)));
+  if (paymentMethodId) accounts = accounts.filter(account => Number(account.paymentMethodId) === paymentMethodId);
+  if (search) accounts = accounts.filter(account => paymentAccountMatchesSearch(account, search));
+  accounts = accounts
+    .map(account => accountView(account, user))
+    .filter(account => positiveNum(account.receiveAvailable || 0) > 0)
+    .sort((a, b) => String(a.serialNumber || '').localeCompare(String(b.serialNumber || ''), undefined, { numeric: true }) || String(a.label || '').localeCompare(String(b.label || '')) || Number(a.id) - Number(b.id));
+  let remaining = requestedAmount;
+  const items = accounts.map(account => {
+    const available = positiveNum(account.receiveAvailable || 0);
+    const suggestedAmount = requestedAmount > 0
+      ? round2(Math.min(available, perAccountLimit > 0 ? perAccountLimit : available, Math.max(0, remaining)))
+      : round2(Math.min(available, perAccountLimit > 0 ? perAccountLimit : available));
+    remaining = Math.max(0, remaining - suggestedAmount);
+    return { ...account, suggestedAmount, reserved: false };
+  });
+  return {
+    items,
+    requestedAmount,
+    perAccountLimit,
+    suggestedTotal: round2(sum(items.map(item => item.suggestedAmount || 0))),
+    uncoveredAmount: round2(Math.max(0, remaining)),
+    reservedAccountIds: Array.from(reserved),
+    offlineReservedAccountIds: Array.from(offlineReserved),
+    pendingOrderReservedAccountIds: Array.from(orderReserved)
+  };
+}
+
+function createOfflineCompletedOrder(transaction, user) {
+  refreshOfflineTransactionTotals(transaction);
+  const amount = positiveNum(transaction.totalReceived || 0);
+  if (!(amount > 0)) throw Object.assign(new Error('Receive at least one payment before creating an offline order.'), { statusCode: 422 });
+  const createdAt = transaction.createdAt || nowIso();
+  const completedAt = nowIso();
+  const order = {
+    id: nextId(),
+    orderNo: cleanStr(`OFFLINE-${transaction.referenceNo || transaction.id}-${Date.now()}`, 80),
+    orderSource: 'offline',
+    offlineTransactionId: transaction.id,
+    credentialId: null,
+    credentialName: '',
+    type: 'SELL',
+    asset: 'LOCAL_GOODS',
+    amount,
+    fiatAmount: amount,
+    fiatUnit: cleanStr(transaction.fiatUnit || 'BDT', 10).toUpperCase(),
+    rate: 1,
+    assetAmount: amount,
+    paymentTimeLimitMinutes: 0,
+    paymentStartedAt: createdAt,
+    paymentDeadlineAt: completedAt,
+    paymentCompletedAt: completedAt,
+    paymentMethodId: Number(transaction.paymentMethodId || 0),
+    status: 'completed',
+    leadAgentId: Number(user.agentId || 0) || null,
+    currentAgentId: Number(user.agentId || 0) || null,
+    createdAt,
+    updatedAt: completedAt,
+    completedAt,
+    externalStatus: 'OFFLINE_RECEIVED_COMPLETED',
+    counterpartyName: cleanStr(transaction.counterpartyName || 'Offline customer', 120),
+    counterpartyRealName: cleanCounterpartyRealName(transaction.counterpartyName || ''),
+    counterpartyStats: { ...emptyCounterpartyStats(), nickname: cleanStr(transaction.counterpartyName || 'Offline customer', 120) },
+    sourceNote: cleanStr([transaction.note, `Offline receipt session ${transaction.referenceNo || transaction.id}`].filter(Boolean).join(' · '), 300),
+    externalOrderNo: '',
+    binancePayId: 0
+  };
+  ensureOrderFinancials(order);
+  db.orders.push(order);
+  if (Number(user.agentId || 0)) {
+    db.orderAgentAssignments.push({
+      id: nextId(), orderId: order.id, agentId: Number(user.agentId), role: 'lead', assignedAmount: amount,
+      actualAmount: amount, direction: 'receive', status: 'completed', assignedBy: user.id,
+      createdAt, completedAt
+    });
+  }
+  for (const allocation of transaction.allocations || []) {
+    const receivedAmount = positiveNum(allocation.receivedAmount || 0);
+    if (!(receivedAmount > 0)) continue;
+    const accountItem = accountById(allocation.paymentAccountId);
+    const ownerAgentId = paymentAccountOwnerAgentId(paymentAccountOwnerUser(accountItem));
+    const split = {
+      id: nextId(), orderId: order.id, paymentAccountId: Number(allocation.paymentAccountId), agentId: ownerAgentId || Number(user.agentId || 0) || null,
+      direction: 'receive', plannedAmount: receivedAmount, actualAmount: receivedAmount, status: 'completed',
+      note: cleanStr(`Offline received · ${transaction.referenceNo || transaction.id}`, 300),
+      transactionReference: cleanStr(transaction.referenceNo || '', 120),
+      createdBy: user.id, createdAt, updatedBy: user.id, updatedAt: completedAt
+    };
+    db.paymentSplits.push(split);
+    for (const ledgerId of allocation.receivedLedgerIds || []) {
+      const ledger = (db.ledgers || []).find(item => Number(item.id) === Number(ledgerId));
+      if (!ledger) continue;
+      ledger.orderId = order.id;
+      ledger.splitId = split.id;
+    }
+  }
+  return order;
+}
+
+async function handleOfflineTransactions(req, res, url, parts) {
+  const user = requireAuth(req, res); if (!user) return;
+  if (!canManageOfflineTransactions(user)) return sendJson(res, 403, { error: 'Permission denied: offline.transactions.manage' }, {}, req);
+  const idToken = parts[2] || '';
+  if (idToken === 'candidates') {
+    if (req.method !== 'GET') return sendJson(res, 405, { error: 'Method not allowed' }, {}, req);
+    return sendJson(res, 200, offlineTransactionCandidates(user, url), {}, req);
+  }
+  if (!idToken) {
+    if (req.method === 'GET') {
+      const items = (db.offlineTransactions || []).filter(item => canAccessOfflineTransaction(user, item)).slice().sort((a, b) => (Date.parse(b.createdAt || '') || 0) - (Date.parse(a.createdAt || '') || 0));
+      return sendJson(res, 200, { items: items.map(item => offlineTransactionView(item, user)) }, {}, req);
+    }
+    if (req.method === 'POST') {
+      const body = await readBody(req);
+      const requestedAmount = positiveNum(body.requestedAmount || body.amount || 0);
+      const perAccountLimit = positiveNum(body.perAccountLimit || body.accountLimit || 0);
+      const paymentMethodId = Number(body.paymentMethodId || 0);
+      if (!(requestedAmount > 0)) return sendJson(res, 422, { error: 'Requested amount must be greater than zero.' }, {}, req);
+      if (!(perAccountLimit > 0)) return sendJson(res, 422, { error: 'Per-number limit must be greater than zero.' }, {}, req);
+      if (!methodById(paymentMethodId)) return sendJson(res, 422, { error: 'Valid payment method required.' }, {}, req);
+      const selectedIds = Array.from(new Set((Array.isArray(body.paymentAccountIds) ? body.paymentAccountIds : []).map(Number).filter(Boolean)));
+      if (!selectedIds.length) return sendJson(res, 422, { error: 'Select at least one payment account.' }, {}, req);
+      const allocations = [];
+      let remaining = requestedAmount;
+      for (const accountId of selectedIds) {
+        const accountItem = accountById(accountId);
+        if (!accountItem || !canUseAccountForOfflineTransaction(user, accountItem)) return sendJson(res, 403, { error: `Payment account ${accountId} is outside your permitted scope.` }, {}, req);
+        const reservation = pendingPaymentAccountReservation(accountId);
+        if (reservation?.type === 'offline_transaction') return sendJson(res, 409, { error: `Payment account ${accountItem.accountNumber} is already reserved by another pending offline transaction.` }, {}, req);
+        if (reservation?.type === 'payment_split') return sendJson(res, 409, { error: `Payment account ${accountItem.accountNumber} is already reserved by pending order ${reservation.orderNo || reservation.orderId || ''}.` }, {}, req);
+        const view = accountView(accountItem, user);
+        const plannedAmount = round2(Math.min(positiveNum(view.receiveAvailable || 0), perAccountLimit, Math.max(0, remaining)));
+        if (!(plannedAmount > 0)) continue;
+        allocations.push({ id: nextId(), paymentAccountId: accountId, plannedAmount, receivedAmount: 0, receivedLedgerIds: [], status: 'reserved', createdAt: nowIso(), updatedAt: nowIso() });
+        remaining = Math.max(0, remaining - plannedAmount);
+        if (remaining <= 0) break;
+      }
+      if (!allocations.length) return sendJson(res, 422, { error: 'Selected payment accounts have no available receive limit.' }, {}, req);
+      const transaction = {
+        id: nextId(), referenceNo: cleanStr(body.referenceNo || `OBT-${Date.now()}`, 80), requestedAmount, perAccountLimit,
+        paymentMethodId, fiatUnit: cleanStr(body.fiatUnit || 'BDT', 10).toUpperCase(), counterpartyName: cleanStr(body.counterpartyName || '', 120),
+        note: cleanStr(body.note || '', 300), status: 'pending', allocations, totalPlanned: 0, totalReceived: 0,
+        createdBy: user.id, createdAt: nowIso(), updatedAt: nowIso(), finalizedOrderId: null, finalizedAt: null, cancelledAt: null
+      };
+      refreshOfflineTransactionTotals(transaction);
+      db.offlineTransactions.push(transaction);
+      logAudit(user, 'offline_transaction_created', 'offlineTransaction', transaction.id, { requestedAmount, totalPlanned: transaction.totalPlanned, paymentAccountIds: allocations.map(row => row.paymentAccountId) });
+      saveDb();
+      broadcast({ type: 'offline.transaction.created', offlineTransactionId: transaction.id, requestedAmount, totalPlanned: transaction.totalPlanned, at: nowIso() });
+      return sendJson(res, 201, offlineTransactionView(transaction, user), {}, req);
+    }
+    return sendJson(res, 405, { error: 'Method not allowed' }, {}, req);
+  }
+
+  const transactionId = Number(idToken || 0);
+  const transaction = (db.offlineTransactions || []).find(item => Number(item.id) === transactionId);
+  if (!transaction) return sendJson(res, 404, { error: 'Offline transaction not found.' }, {}, req);
+  if (!canAccessOfflineTransaction(user, transaction)) return sendJson(res, 403, { error: 'No access to this offline transaction.' }, {}, req);
+  const action = String(parts[3] || '').toLowerCase();
+  if (!action && req.method === 'GET') return sendJson(res, 200, offlineTransactionView(transaction, user), {}, req);
+  if (!offlineTransactionActive(transaction)) return sendJson(res, 409, { error: 'This offline transaction is already finalized or cancelled.' }, {}, req);
+
+  if (action === 'receive' && req.method === 'POST') {
+    const body = await readBody(req);
+    const allocationId = Number(body.allocationId || 0);
+    const allocation = (transaction.allocations || []).find(row => Number(row.id) === allocationId);
+    if (!allocation) return sendJson(res, 404, { error: 'Reserved payment number not found.' }, {}, req);
+    const accountItem = accountById(allocation.paymentAccountId);
+    if (!accountItem || !canUseAccountForOfflineTransaction(user, accountItem)) return sendJson(res, 403, { error: 'No access to this payment account.' }, {}, req);
+    const remainingAmount = round2(Math.max(0, positiveNum(allocation.plannedAmount || 0) - positiveNum(allocation.receivedAmount || 0)));
+    const amount = positiveNum(body.amount || remainingAmount);
+    if (!(amount > 0) || amount > remainingAmount + 1e-9) return sendJson(res, 422, { error: `Received amount must be between 0.01 and ${remainingAmount}.` }, {}, req);
+    const liveView = accountView(accountItem, user);
+    if (amount > positiveNum(liveView.receiveAvailable || 0) + 1e-9) return sendJson(res, 422, { error: 'Received amount exceeds the current available receive limit for this account.' }, {}, req);
+    const before = calcAccountBalance(accountItem.id);
+    const ledger = {
+      id: nextId(), orderId: null, splitId: null, offlineTransactionId: transaction.id, paymentAccountId: accountItem.id,
+      agentId: paymentAccountOwnerAgentId(paymentAccountOwnerUser(accountItem)), direction: 'receive', type: 'offline_receive', amount,
+      balanceBefore: before, balanceAfter: round2(before + amount), note: cleanStr(body.note || `Offline received · ${transaction.referenceNo}`, 300),
+      reference: cleanStr(transaction.referenceNo || '', 120), createdBy: user.id, createdAt: nowIso()
+    };
+    db.ledgers.push(ledger);
+    allocation.receivedAmount = round2(positiveNum(allocation.receivedAmount || 0) + amount);
+    allocation.receivedLedgerIds = Array.from(new Set([...(allocation.receivedLedgerIds || []).map(Number), ledger.id]));
+    allocation.status = allocation.receivedAmount >= positiveNum(allocation.plannedAmount || 0) ? 'received' : 'partial';
+    allocation.updatedAt = nowIso();
+    transaction.updatedAt = nowIso();
+    refreshOfflineTransactionTotals(transaction);
+    logAudit(user, 'offline_transaction_payment_received', 'offlineTransaction', transaction.id, { allocationId, paymentAccountId: accountItem.id, amount, totalReceived: transaction.totalReceived });
+    saveDb();
+    broadcast({ type: 'offline.transaction.received', offlineTransactionId: transaction.id, paymentAccountId: accountItem.id, amount, totalReceived: transaction.totalReceived, at: nowIso() });
+    return sendJson(res, 200, offlineTransactionView(transaction, user), {}, req);
+  }
+
+  if (action === 'finalize' && req.method === 'POST') {
+    const body = await readBody(req);
+    refreshOfflineTransactionTotals(transaction);
+    if (!(transaction.totalReceived > 0)) return sendJson(res, 422, { error: 'Receive at least one payment before creating an offline order.' }, {}, req);
+    const isPartial = transaction.totalReceived + 1e-9 < positiveNum(transaction.requestedAmount || 0);
+    if (isPartial && body.allowPartial !== true) return sendJson(res, 422, { error: 'The full amount has not been received. Confirm partial finalization to create an order for only the received total.' }, {}, req);
+    const order = createOfflineCompletedOrder(transaction, user);
+    transaction.status = isPartial ? 'finalized_partial' : 'finalized';
+    transaction.finalizedOrderId = order.id;
+    transaction.finalizedAt = nowIso();
+    transaction.updatedAt = transaction.finalizedAt;
+    (transaction.allocations || []).forEach(row => {
+      if (!(positiveNum(row.receivedAmount || 0) > 0)) row.status = 'released';
+      else row.status = 'received';
+      row.updatedAt = transaction.finalizedAt;
+    });
+    logAudit(user, isPartial ? 'offline_transaction_partially_finalized' : 'offline_transaction_finalized', 'offlineTransaction', transaction.id, { orderId: order.id, requestedAmount: transaction.requestedAmount, receivedAmount: transaction.totalReceived });
+    addNotification('offline_transaction_finalized', `Offline order ${order.orderNo} created for ${transaction.fiatUnit || 'BDT'} ${transaction.totalReceived}.`, 'info', { category: 'payments', userId: user.id, orderId: order.id, audience: 'manager' });
+    saveDb();
+    broadcast({ type: 'order.created', orderId: order.id, orderNo: order.orderNo, status: order.status, source: 'offline_transaction', at: nowIso() });
+    return sendJson(res, 200, { transaction: offlineTransactionView(transaction, user), order: orderListView(order, user) }, {}, req);
+  }
+
+  if (action === 'cancel' && req.method === 'POST') {
+    refreshOfflineTransactionTotals(transaction);
+    if (transaction.totalReceived > 0) return sendJson(res, 409, { error: 'Money has already been received. Create a partial offline order instead of cancelling.' }, {}, req);
+    transaction.status = 'cancelled';
+    transaction.cancelledAt = nowIso();
+    transaction.updatedAt = transaction.cancelledAt;
+    (transaction.allocations || []).forEach(row => { row.status = 'released'; row.updatedAt = transaction.cancelledAt; });
+    logAudit(user, 'offline_transaction_cancelled', 'offlineTransaction', transaction.id, {});
+    saveDb();
+    broadcast({ type: 'offline.transaction.cancelled', offlineTransactionId: transaction.id, at: nowIso() });
+    return sendJson(res, 200, offlineTransactionView(transaction, user), {}, req);
+  }
+
+  return sendJson(res, 404, { error: 'Unknown offline transaction action.' }, {}, req);
 }
 
 function routeView(r) {
@@ -16568,11 +17151,16 @@ function orderListView(order, user = null) {
   const assetSummary = deriveOrderAssetSummary(order);
   const credential = order.orderSource === 'offline' ? null : binanceCredentialById(order.credentialId);
   const identity = credential ? binanceCredentialP2pIdentity(credential) : null;
+  const extensionFeedbackUserNo = p2pExtensionOrderUserNo(order);
+  const extensionAdvertiserUrl = extensionFeedbackUserNo ? p2pAdvertiserUrlForUserNo(extensionFeedbackUserNo) : '';
   return {
     ...order,
     credentialName: credential ? binanceCredentialLabel(credential) : cleanStr(order.credentialName || '', 120),
     credentialDisplayName: identity?.displayName || cleanStr(order.credentialName || '', 120),
     p2pUsername: identity?.p2pUsername || '',
+    extensionFeedbackUserNo,
+    extensionAdvertiserUrl,
+    manualFeedbackUrl: extensionAdvertiserUrl,
     binanceAccount: credential ? {
       id: Number(credential.id),
       name: identity.displayName,
@@ -19283,7 +19871,7 @@ async function handleNotificationCenter(req, res) {
   orders = orders.filter(order => canAccessOrder(user, order));
   const chatItems = [];
   let chatTotal = 0;
-  for (const order of orders) {
+  if (notificationEnabledForUser(user, 'inApp', 'messages')) for (const order of orders) {
     const count = unreadChatCountForUser(user, order);
     if (count <= 0) continue;
     chatTotal += count;
@@ -19313,28 +19901,45 @@ async function handleNotificationCenter(req, res) {
 
 async function handleNotifications(req, res) {
   const user = requireAuth(req, res); if (!user) return;
-  if (req.method === 'GET') return sendJson(res, 200, { items: notificationsForUser(user).slice().reverse() }, {}, req);
+  if (req.method === 'GET') return sendJson(res, 200, {
+    items: notificationsForUser(user).slice().reverse(),
+    preferences: normalizeNotificationPreferences(user.notificationPreferences),
+    categories: NOTIFICATION_CATEGORY_CATALOG.map(category => ({ ...category }))
+  }, {}, req);
+  if (req.method === 'PATCH') {
+    const body = await readBody(req);
+    const next = normalizeNotificationPreferences(body.preferences || body);
+    user.notificationPreferences = next;
+    logAudit(user, 'notification_preferences_updated', 'user', user.id, { preferences: next });
+    saveDb();
+    return sendJson(res, 200, { ok: true, preferences: next, categories: NOTIFICATION_CATEGORY_CATALOG.map(category => ({ ...category })), message: 'Notification preferences saved.' }, {}, req);
+  }
   if (req.method === 'POST') {
     const body = await readBody(req);
     if (body.notificationId) {
       const item = notificationsForUser(user).find(n => Number(n.id) === Number(body.notificationId));
       if (!item) return sendJson(res, 404, { error: 'Notification not found' }, {}, req);
-      item.read = true;
-      item.status = 'read';
-      item.readAt = nowIso();
+      const stored = (db.notifications || []).find(n => Number(n.id) === Number(item.id));
+      if (stored) {
+        stored.read = true;
+        stored.status = 'read';
+        stored.readAt = nowIso();
+      }
       saveDb();
       return sendJson(res, 200, { ok: true, notificationId: item.id }, {}, req);
     }
     if (body.markRead) {
       const readAt = nowIso();
       let markedNotifications = 0;
-      notificationsForUser(user).forEach(n => {
+      const visibleIds = new Set(notificationsForUser(user).map(n => Number(n.id)));
+      (db.notifications || []).forEach(n => {
+        if (!visibleIds.has(Number(n.id))) return;
         if (unreadNotificationItem(n)) markedNotifications += 1;
         n.read = true;
         n.status = 'read';
         n.readAt = readAt;
       });
-      const chatResult = body.includeChats === false
+      const chatResult = body.includeChats === false || !notificationEnabledForUser(user, 'inApp', 'messages')
         ? { markedOrders: 0, markedMessages: 0 }
         : markAccessibleChatNotificationsRead(user);
       saveDb();
@@ -19987,7 +20592,7 @@ function runAccountingSelfTest() {
 
     // v1.0.159 audit: the startup migration must preserve Agent/Merchant account
     // types and must not destroy unknown additive fields created by a newer release.
-    const migrationArrays = ['users','userRoles','apiCredentials','agents','paymentMethods','paymentAccounts','routing','orders','orderAgentAssignments','paymentSplits','ledgers','proofFiles','auditLogs','locks','notifications','chats','chatReadStates','coAgentRequests','approvalRequests','advertisements','securityRevertTokens','sessions','p2pExtensionTasks','p2pExtensionCache','userActivitySessions','businessEntries','businessDailyCloses','binanceBalanceSnapshots','chatMedia','systemUpdates','systemUpdateEvents'];
+    const migrationArrays = ['users','userRoles','apiCredentials','agents','paymentMethods','paymentAccounts','routing','orders','orderAgentAssignments','paymentSplits','ledgers','proofFiles','auditLogs','locks','notifications','offlineTransactions','chats','chatReadStates','coAgentRequests','approvalRequests','advertisements','securityRevertTokens','sessions','p2pExtensionTasks','p2pExtensionCache','userActivitySessions','businessEntries','businessDailyCloses','binanceBalanceSnapshots','chatMedia','systemUpdates','systemUpdateEvents'];
     const migrationTarget = { meta: { nextId: 9000, schemaVersion: APP_SCHEMA_VERSION + 1, futureOpaqueField: 'keep-me' }, settings: { ...defaultSettings(), updateAvailableVersion: APP_VERSION, updateAvailableRelease: { version: APP_VERSION } }, futureTopLevel: { keep: true } };
     migrationArrays.forEach(key => { migrationTarget[key] = []; });
     migrationTarget.users = [
