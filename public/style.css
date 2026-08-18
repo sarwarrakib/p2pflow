@@ -5130,7 +5130,7 @@ tr:hover td{background:#fbfbfc}
 .permission-tooltip[hidden]{display:none}
 .binance-permission-group .permission-option{width:100%}
 .binance-permission-group .permission-help{width:28px;height:26px}
-.order-account-strip{justify-content:space-between}
+.order-account-strip{justify-content:flex-start}
 .order-acceptance-toggle{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:38px;padding:8px 13px;border-radius:999px;white-space:nowrap;font-weight:850;box-shadow:none}
 .order-acceptance-toggle.is-on{background:#eaf8f0;color:#146b43;border:1px solid #b8e7cc}
 .order-acceptance-toggle.is-off{background:#fff3e8;color:#9a4b00;border:1px solid #ffd2aa}
@@ -5138,7 +5138,7 @@ tr:hover td{background:#fbfbfc}
 .order-acceptance-toggle:disabled{opacity:.62;cursor:wait}
 .order-acceptance-prompt p{margin:2px 0 18px;font-size:18px;font-weight:800;line-height:1.5;color:var(--text,#181a20)}
 .order-acceptance-prompt .actions.end{justify-content:flex-end}
-@media(max-width:700px){.order-account-strip{align-items:stretch}.order-acceptance-toggle{width:100%}.permission-tooltip{font-size:12px}.order-acceptance-prompt p{font-size:17px}}
+@media(max-width:700px){.order-account-strip{align-items:stretch}.permission-tooltip{font-size:12px}.order-acceptance-prompt p{font-size:17px}}
 
 /* v1.5.20 payment-account search, notification preferences and offline business */
 .inline-search{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
@@ -5223,8 +5223,7 @@ tr:hover td{background:#fbfbfc}
 .background-notification-toggle:hover{transform:none;filter:none}
 .background-notification-toggle:disabled{opacity:.62;cursor:wait}
 .background-notification-dot{width:9px;height:9px;border-radius:50%;background:currentColor;box-shadow:0 0 0 4px rgba(255,255,255,.68)}
-.chat-availability-bar,.chat-page-controls{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap}
-.chat-availability-bar{padding:8px 12px;border-bottom:1px solid var(--line,#e5e7eb);background:rgba(255,255,255,.97)}
+.chat-page-controls{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap}
 .chat-page-controls{margin:0 0 10px;padding:0 2px}
 .order-live-chat-card{position:relative}
 .chat-new-messages{
@@ -5240,10 +5239,8 @@ tr:hover td{background:#fbfbfc}
 .top-actions>.order-acceptance-toggle.compact{min-height:34px;padding:6px 11px;font-size:12px}
 
 @media(max-width:900px){
-  .chat-availability-bar{justify-content:space-between;padding:7px 9px}
-  .chat-availability-bar .order-acceptance-toggle,.chat-availability-bar .background-notification-toggle{flex:1 1 auto;width:auto;min-width:0}
   .chat-page-controls{justify-content:stretch}
-  .chat-page-controls .order-acceptance-toggle,.chat-page-controls .background-notification-toggle{flex:1 1 0;width:auto;min-width:0}
+  .chat-page-controls .background-notification-toggle{flex:1 1 0;width:auto;min-width:0}
   .top-actions>.order-acceptance-toggle.compact{width:auto;min-width:0}
 }
 @media(max-width:700px){
@@ -5255,10 +5252,9 @@ tr:hover td{background:#fbfbfc}
   .chat-new-messages{bottom:14px;max-width:calc(100% - 24px)}
 }
 @media(max-width:480px){
-  .chat-availability-bar,.chat-page-controls{gap:6px}
-  .chat-availability-bar .order-acceptance-toggle,.chat-availability-bar .background-notification-toggle,
-  .chat-page-controls .order-acceptance-toggle,.chat-page-controls .background-notification-toggle{padding:6px 8px;font-size:10.5px}
+  .chat-page-controls{gap:6px}
+  .chat-page-controls .background-notification-toggle{padding:6px 8px;font-size:10.5px}
   .top-actions>.order-acceptance-toggle.compact{max-width:118px;overflow:hidden;text-overflow:ellipsis}
 }
 
-/* v1.5.21 payment-account serial scope */
+/* v1.5.22 payment-account serial scope */

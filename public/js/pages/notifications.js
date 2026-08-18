@@ -1,4 +1,4 @@
-// P2PFlow v1.5.21
+// P2PFlow v1.5.22
 // User-controlled in-app and email notification preferences.
 
 function notificationPreferenceRows(data={}) {
@@ -34,7 +34,7 @@ async function renderNotifications() {
   ]);
   $('#content').innerHTML = `<div class="notification-settings-page">
     <section class="card notification-preferences-card">
-      <div class="section-head"><div><h3>Notification Preferences</h3><p>Choose in-app, email and background notification groups.</p></div><div class="notification-preference-actions">${backgroundNotificationToggleHtml({ compact:true })}<button type="button" id="saveNotificationPreferences">Save Preferences</button></div></div>
+      <div class="section-head"><div><h3>Notification Preferences</h3><p>Choose in-app, email and background notification groups.</p></div><div class="notification-preference-actions"><button type="button" id="saveNotificationPreferences">Save Preferences</button></div></div>
       <div class="notification-channel-head"><span>Notification Group</span><span>In App</span><span>Email</span><span>Background</span></div>
       <div id="notificationPreferenceRows">${notificationPreferenceRows(data)}</div>
       <div id="notificationPreferencesMessage"></div>
@@ -44,9 +44,6 @@ async function renderNotifications() {
       ${rows.length ? table(['Time','Category','Message','Status','Action'], rows) : '<div class="empty-state">No notifications yet.</div>'}
     </section>
   </div>`;
-
-  bindBackgroundNotificationControls($('#content') || document);
-  updateBackgroundNotificationControls($('#content') || document);
 
   $('#saveNotificationPreferences')?.addEventListener('click', async () => {
     const preferences = { inApp:{}, email:{}, push:{} };

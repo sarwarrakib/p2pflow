@@ -1,4 +1,5 @@
-// v1.5.21: Payment Account serial uniqueness is scoped by normalized Payment Method name and Label.
+// v1.5.22: Header-only Work Status, chat-only notification master, and coupled sound/push controls.
+// v1.5.22: Payment Account serial uniqueness remains scoped by normalized Payment Method name and Label.
 // v1.5.20: account-scoped Binance RBAC, visible security recovery setup and individual-only profit accounting.
 // v1.5.20: first-run recovery reuses the saved Application Key and software updates are Owner-only from Control Panel.
 // v1.0.137: Diagnose and harden Binance P2P Create Advertisement privilege flow.
@@ -119,7 +120,7 @@ const PAGE_PERMISSIONS = {
   'p2p-market': 'orders.view',
   'p2p-profile': 'p2p.profile.view',
   orders: 'orders.view',
-  chat: 'orders.view',
+  chat: null,
   ads: 'ads.view',
   approvals: 'approvals.manage',
   binance: 'binance.sync',
@@ -2114,6 +2115,8 @@ Object.assign(I18N_BN, {
   "Only matching payment-method rules are used.": "শুধু মিল থাকা পেমেন্ট মেথডের নিয়ম ব্যবহার হবে।",
   "Lower priority number is checked first.": "কম অগ্রাধিকার নম্বর আগে চেক হবে।",
   "Limits and capacity are checked before assignment.": "অ্যাসাইন করার আগে সীমা ও ক্যাপাসিটি চেক হবে।",
+  "Notification Sound": "নোটিফিকেশন সাউন্ড",
+  "Choose the sound used when the Notifications button is ON.": "Notifications বাটন অন থাকলে যে সাউন্ড বাজবে সেটি নির্বাচন করুন।",
   "Custom sound stays in this browser.": "কাস্টম সাউন্ড শুধু এই ব্রাউজারে থাকবে।",
   "Verify the counterparty before payment or release.": "পেমেন্ট বা রিলিজের আগে কাউন্টারপার্টি যাচাই করুন।",
   "No API credential is assigned.": "কোনো API ক্রেডেনশিয়াল অ্যাসাইন নেই।",
@@ -3304,7 +3307,18 @@ function setupHeaderNotificationCenter() {
 let notificationAudioContext = null;
 let notificationCustomAudio = null;
 let notificationCustomAudioSrc = '';
-const NOTIFICATION_SOUND_CHOICES = ['chime','bell','alert','soft','custom','off'];
+const NOTIFICATION_SOUND_CHOICES = ['chime','bell','alert','soft','custom'];
+
+function notificationMasterEnabled() {
+  const config = state.pushConfig || {};
+  return config.enabled === true && config.currentDeviceSubscribed === true;
+}
+
+function notificationCategoryEnabledOnDevice(category='orders') {
+  if (!notificationMasterEnabled()) return false;
+  const preferences = state.pushConfig?.preferences?.push || state.user?.notificationPreferences?.push || {};
+  return preferences[String(category || 'orders')] !== false;
+}
 
 function notificationSoundChoice() {
   const value = localStorage.getItem('crmNotificationSound') || 'chime';
@@ -3396,26 +3410,28 @@ function playCustomNotificationSound(showFailure=false) {
   }
 }
 
-function playNotificationSound(showFailure=false) {
+function playNotificationSound(showFailure=false, options={}) {
+  if (options.force !== true && !notificationCategoryEnabledOnDevice(options.category || 'orders')) return false;
   const choice = notificationSoundChoice();
-  if (choice === 'off') return;
   if (choice === 'custom') {
-    if (playCustomNotificationSound(showFailure)) return;
-    if (showFailure) return;
+    if (playCustomNotificationSound(showFailure)) return true;
+    if (showFailure) return false;
     playBuiltInNotificationSound('chime');
-    return;
+    return true;
   }
   playBuiltInNotificationSound(choice);
+  return true;
 }
 
-function playOrderNotificationSoundOnce(orderKey) {
+function playOrderNotificationSoundOnce(orderKey, category='orders') {
+  if (!notificationCategoryEnabledOnDevice(category)) return false;
   const key = String(orderKey || '').trim();
-  if (key && state.seenOrderSoundKeys.has(key)) return;
+  if (key && state.seenOrderSoundKeys.has(key)) return false;
   if (key) {
     state.seenOrderSoundKeys.add(key);
     if (state.seenOrderSoundKeys.size > 300) state.seenOrderSoundKeys = new Set([...state.seenOrderSoundKeys].slice(-150));
   }
-  playNotificationSound(false);
+  return playNotificationSound(false, { category });
 }
 
 function notificationSoundSettingsHtml() {
@@ -3423,7 +3439,7 @@ function notificationSoundSettingsHtml() {
   const customName = notificationCustomSoundName();
   return `<div class="full-row sound-settings-card">
     <div class="settings-section-head">
-      <div><b>Notification Sound</b><span>New order/assignment alert sound is configured here, not in the dashboard header.</span></div>
+      <div><b>Notification Sound</b><span>Choose the sound used when the Notifications button is ON.</span></div>
       <button id="settingsNotificationSoundTest" type="button" class="secondary">Test Sound</button>
     </div>
     <div class="form-grid compact-grid">
@@ -3435,7 +3451,6 @@ function notificationSoundSettingsHtml() {
           <option value="alert" ${choice==='alert'?'selected':''}>Alert</option>
           <option value="soft" ${choice==='soft'?'selected':''}>Soft</option>
           <option value="custom" ${choice==='custom'?'selected':''}>Custom uploaded sound</option>
-          <option value="off" ${choice==='off'?'selected':''}>Off</option>
         </select>
       </div>
       <div>
@@ -3474,10 +3489,10 @@ function bindNotificationSoundSettings() {
         notify('Custom selected. Now upload an audio file from this Settings section.', 'warn', 4500);
         return;
       }
-      if (choice !== 'off') playNotificationSound(true);
+      playNotificationSound(true, { force:true });
     };
   }
-  if (test) test.onclick = () => playNotificationSound(true);
+  if (test) test.onclick = () => playNotificationSound(true, { force:true });
   if (file) {
     file.onchange = async () => {
       const selected = file.files && file.files[0];
@@ -3501,7 +3516,7 @@ function bindNotificationSoundSettings() {
         notificationCustomAudioSrc = '';
         refreshNotificationSoundSettingsPanel();
         notify('Custom notification sound saved in this browser.', 'ok');
-        playNotificationSound(true);
+        playNotificationSound(true, { force:true });
       } catch (_) {
         notify('Could not read this audio file. Please choose another file.', 'danger');
       } finally {
@@ -3551,8 +3566,8 @@ function backgroundNotificationToggleHtml(options={}) {
     ? `নোটিফিকেশন ${active ? 'অন' : 'অফ'}`
     : `Notifications ${active ? 'ON' : 'OFF'}`;
   const title = state.lang === 'bn'
-    ? (active ? 'লক বা অ্যাপ বন্ধ থাকলেও এই বন্ডেড ডিভাইসে নতুন অর্ডার ও মেসেজের সিস্টেম নোটিফিকেশন আসবে।' : 'এই বন্ডেড ডিভাইসে ব্যাকগ্রাউন্ড অর্ডার ও মেসেজ নোটিফিকেশন চালু করুন।')
-    : (active ? 'This bonded device can receive system notifications for new orders and messages while the app is inactive.' : 'Enable background order and message notifications on this bonded device.');
+    ? (active ? 'নতুন অর্ডার ও P2P মেসেজের ব্রাউজার নোটিফিকেশন এবং সেট করা সাউন্ড চালু আছে।' : 'এই ডিভাইসে নতুন অর্ডার বা P2P মেসেজের ব্রাউজার নোটিফিকেশন ও অটোমেটিক সাউন্ড বন্ধ আছে।')
+    : (active ? 'Browser notifications and the selected sound are ON for new orders and P2P messages.' : 'Browser notifications and automatic order/message sounds are OFF on this device.');
   return `<button type="button" class="background-notification-toggle ${compact ? 'compact' : ''} ${active ? 'is-on' : 'is-off'}" data-background-notification-toggle aria-pressed="${active ? 'true' : 'false'}" title="${escapeAttr(title)}" ${state.pushBusy ? 'disabled' : ''}><span class="background-notification-dot" aria-hidden="true"></span><span>${escapeHtml(label)}</span></button>`;
 }
 
@@ -3564,6 +3579,9 @@ function updateBackgroundNotificationControls(root=document) {
     button.classList.toggle('is-off', !active);
     button.disabled = Boolean(state.pushBusy);
     button.setAttribute('aria-pressed', active ? 'true' : 'false');
+    button.title = state.lang === 'bn'
+      ? (active ? 'নতুন অর্ডার ও P2P মেসেজের ব্রাউজার নোটিফিকেশন এবং সেট করা সাউন্ড চালু আছে।' : 'এই ডিভাইসে নতুন অর্ডার বা P2P মেসেজের ব্রাউজার নোটিফিকেশন ও অটোমেটিক সাউন্ড বন্ধ আছে।')
+      : (active ? 'Browser notifications and the selected sound are ON for new orders and P2P messages.' : 'Browser notifications and automatic order/message sounds are OFF on this device.');
     const label = button.querySelector('span:last-child');
     if (label) label.textContent = state.lang === 'bn' ? `নোটিফিকেশন ${active ? 'অন' : 'অফ'}` : `Notifications ${active ? 'ON' : 'OFF'}`;
   });
@@ -3609,6 +3627,7 @@ async function loadBackgroundNotificationConfig(options={}) {
   try {
     const config = await api('/api/push', { silent: options.silent !== false, noAutoReload:true });
     state.pushConfig = config;
+    state.user.backgroundNotificationsEnabled = config.enabled === true;
     updateBackgroundNotificationControls();
     return config;
   } catch (_) {
@@ -3652,7 +3671,9 @@ async function enableBackgroundNotifications() {
       body:JSON.stringify({ subscription:subscription.toJSON(), deviceId, deviceName:notificationDeviceName(), enabled:true })
     });
     state.pushConfig = result;
-    notify(state.lang === 'bn' ? 'ব্যাকগ্রাউন্ড নোটিফিকেশন চালু হয়েছে।' : 'Background notifications are ON.', 'ok');
+    if (state.user) state.user.backgroundNotificationsEnabled = true;
+    notify(state.lang === 'bn' ? 'এই ডিভাইসে নোটিফিকেশন ও সাউন্ড চালু হয়েছে।' : 'Notifications and sound are ON on this device.', 'ok');
+    playNotificationSound(true, { force:true });
     return result;
   } finally {
     state.pushBusy = false;
@@ -3662,13 +3683,37 @@ async function enableBackgroundNotifications() {
 
 async function disableBackgroundNotifications() {
   if (state.pushBusy) return state.pushConfig;
+  const previousConfig = state.pushConfig ? { ...state.pushConfig } : null;
   state.pushBusy = true;
+  state.pushConfig = { ...(state.pushConfig || {}), currentDeviceSubscribed:false };
   updateBackgroundNotificationControls();
   try {
-    const result = await api('/api/push/preferences', { method:'PATCH', body:JSON.stringify({ enabled:false }) });
+    const deviceId = trustedNotificationDeviceId();
+    let endpoint = '';
+    let subscription = null;
+    try {
+      const registration = state.serviceWorkerRegistration || await registerP2PFlowServiceWorker();
+      subscription = registration ? await registration.pushManager.getSubscription() : null;
+      endpoint = String(subscription?.endpoint || '');
+    } catch (_) {}
+    const result = await api('/api/push/subscribe', {
+      method:'DELETE',
+      body:JSON.stringify({ endpoint, deviceId })
+    });
+    if (subscription) await subscription.unsubscribe().catch(()=>false);
     state.pushConfig = result;
-    notify(state.lang === 'bn' ? 'ব্যাকগ্রাউন্ড নোটিফিকেশন বন্ধ হয়েছে।' : 'Background notifications are OFF.', 'ok');
+    if (state.user) state.user.backgroundNotificationsEnabled = result.enabled === true;
+    try {
+      if (notificationCustomAudio) {
+        notificationCustomAudio.pause();
+        notificationCustomAudio.currentTime = 0;
+      }
+    } catch (_) {}
+    notify(state.lang === 'bn' ? 'এই ডিভাইসে নোটিফিকেশন ও সাউন্ড বন্ধ হয়েছে।' : 'Notifications and sound are OFF on this device.', 'ok');
     return result;
+  } catch (error) {
+    state.pushConfig = previousConfig;
+    throw error;
   } finally {
     state.pushBusy = false;
     updateBackgroundNotificationControls();
@@ -4473,7 +4518,7 @@ function notifyOrderChange(change = {}, sourceType = '') {
   const key = [sourceType, change.orderId || change.id, change.orderNo || change.externalOrderNo, change.externalStatus, change.status, change.created ? 'new' : 'status'].join('|');
   if (eventOnceKey(key)) return;
   notify(notice.msg, notice.type, 3000);
-  if (change.created) playOrderNotificationSoundOnce(change.orderId || change.id || change.orderNo || change.externalOrderNo);
+  if (change.created) playOrderNotificationSoundOnce(change.orderId || change.id || change.orderNo || change.externalOrderNo, 'orders');
 }
 
 function handleServerEvent(event = {}) {
@@ -4507,9 +4552,17 @@ function handleServerEvent(event = {}) {
   if (event.type === 'agent.order_acceptance.updated' || event.type === 'user.work_availability.updated') {
     const belongsToUser = Number(event.userId || 0) === Number(state.user?.id || 0) || Number(event.agentId || 0) === Number(state.user?.agentId || 0);
     if (belongsToUser) {
+      const controlsAutoAssignment = event.controlsAutoAssignment !== undefined
+        ? event.controlsAutoAssignment === true
+        : state.orderAcceptance?.controlsAutoAssignment === true;
+      const liveOrderAccess = event.liveOrderAccess !== undefined
+        ? event.liveOrderAccess === true
+        : state.orderAcceptance?.liveOrderAccess === true;
       state.orderAcceptance = {
         ...(state.orderAcceptance || {}),
-        available: state.user?.enabled !== false,
+        available: controlsAutoAssignment && !liveOrderAccess,
+        controlsAutoAssignment,
+        liveOrderAccess,
         accepting: event.accepting === true,
         workAvailable: event.accepting === true,
         assignable: event.assignable === true || state.orderAcceptance?.assignable === true,
@@ -4540,13 +4593,13 @@ function handleServerEvent(event = {}) {
     const key = ['created', event.orderId, orderNo, event.at || ''].join('|');
     if (!eventOnceKey(key)) {
       notify(`New order ${orderNo} received.`, 'ok', 3000);
-      playOrderNotificationSoundOnce(event.orderId || orderNo);
+      playOrderNotificationSoundOnce(event.orderId || orderNo, 'orders');
     }
   }
   if (event.type === 'notification.created' && event.notification?.type === 'panel_sms_order_assigned') {
     const notification = event.notification;
     const belongsToUser = Number(notification.userId || 0) === Number(state.user?.id || 0) || Number(notification.agentId || 0) === Number(state.user?.agentId || 0);
-    if (belongsToUser) playOrderNotificationSoundOnce(notification.orderId || notification.message);
+    if (belongsToUser) playOrderNotificationSoundOnce(notification.orderId || notification.message, 'assignments');
   }
   if (event.type === 'order.additional_kyc.verified') {
     const orderNo = event.orderNo || event.externalOrderNo || ('#' + event.orderId);
@@ -4573,7 +4626,7 @@ function handleServerEvent(event = {}) {
     const key = ['chat', event.orderId, event.latestMessageId || event.at || event.incomingImported].join('|');
     if (!eventOnceKey(key)) {
       notify(`New message on order ${orderNo}.`, 'ok', 3500);
-      playOrderNotificationSoundOnce(key);
+      playOrderNotificationSoundOnce(key, 'messages');
     }
     if (Number(event.orderId) === Number(state.currentOrderId)) {
       scheduleCurrentOrderChatDelta(60);
@@ -4786,7 +4839,7 @@ function renderNav() {
   // legacy flat menu while this marker is absent, the browser/proxy is serving
   // stale frontend JavaScript rather than the active release.
   nav.dataset.navigationModel = 'grouped-control-center';
-  nav.dataset.uiRelease = '1.5.21';
+  nav.dataset.uiRelease = '1.5.22';
   nav.innerHTML = '';
   const visible = visiblePages();
   const visibleIds = new Set(visible.map(([id]) => id));
@@ -5581,10 +5634,6 @@ async function loadOrderDetail(id, showLoading=true, fromRoute=false) {
               ${isRealBinanceOrder(o) ? '<button class="order-chat-header-icon" id="chatP2pInfoBtn" type="button" aria-label="Open P2P information">ⓘ</button>' : '<span class="order-chat-header-spacer"></span>'}
             </header>
             <div class="order-chat-primary-actionbar">${chatTopActions}</div>
-            <div class="chat-availability-bar">
-              ${typeof orderAcceptanceButtonHtml === 'function' ? orderAcceptanceButtonHtml(state.orderAcceptance || {}, { id:'chatWorkAvailabilityToggle', compact:true }) : ''}
-              ${backgroundNotificationToggleHtml({ compact:true })}
-            </div>
 
             <div class="order-chat-panel-content">
               ${hasPerm('accounts.view') && ['admin','manager'].includes(state.user.role) ? '<button class="order-chat-rail-btn left" id="chatPaymentSplitRailBtn" type="button" aria-label="Open payment split">≡</button>' : ''}
@@ -5961,8 +6010,6 @@ async function loadOrderDetail(id, showLoading=true, fromRoute=false) {
     }
   };
   bindChatImagePreviews($('#orderChatPanel') || document);
-  if (typeof bindOrderAcceptanceControl === 'function') bindOrderAcceptanceControl($('#orderChatPanel') || document);
-  bindBackgroundNotificationControls($('#orderChatPanel') || document);
   bindChatScrollState();
   updateChatNewMessagesButton();
   startOrderDetailAutoSync(o);

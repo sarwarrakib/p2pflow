@@ -1,4 +1,4 @@
-// P2PFlow v1.0.115
+// P2PFlow v1.5.22
 // Binance-style P2P message inbox. Threads open the corresponding order chat.
 
 function stopChatInboxAutoRefresh() {
@@ -93,7 +93,6 @@ async function renderChatInbox(options={}) {
     if (summary) summary.innerHTML = `<span>${items.length} conversation${items.length === 1 ? '' : 's'}</span>${Number(data?.totalUnread || 0) ? `<b>${Number(data.totalUnread)} unread</b>` : ''}`;
     bindChatInboxThreadClicks();
     bindBackgroundNotificationControls(page || document);
-    if (typeof bindOrderAcceptanceControl === 'function') bindOrderAcceptanceControl(page || document);
     if (page) page.scrollTop = pageScrollTop;
     requestAnimationFrame(() => window.scrollTo({ top:windowScrollY, left:0, behavior:'auto' }));
     if (hadSearchFocus) {
@@ -106,7 +105,6 @@ async function renderChatInbox(options={}) {
   }
   $('#content').innerHTML = `<div class="chat-inbox-page">
     <div class="chat-page-controls">
-      ${typeof orderAcceptanceButtonHtml === 'function' ? orderAcceptanceButtonHtml(state.orderAcceptance || {}, { id:'chatInboxWorkAvailabilityToggle', compact:true }) : ''}
       ${backgroundNotificationToggleHtml({ compact:true })}
     </div>
     <div class="chat-inbox-search">
@@ -137,7 +135,6 @@ async function renderChatInbox(options={}) {
   };
   bindChatInboxThreadClicks();
   bindBackgroundNotificationControls($('#content') || document);
-  if (typeof bindOrderAcceptanceControl === 'function') bindOrderAcceptanceControl($('#content') || document);
   scheduleChatInboxAutoRefresh();
 }
 

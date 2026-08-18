@@ -22,7 +22,7 @@ const section = (source, start, end) => {
   return source.slice(a, b);
 };
 
-assert(pkg.version === '1.5.21', `expected v1.5.21, got ${pkg.version}`);
+assert(pkg.version === '1.5.22', `expected v1.5.22, got ${pkg.version}`);
 assert(server.includes('const APP_SCHEMA_VERSION = 33;'), 'schema 33 must remain unchanged for this logic-only update.');
 
 const helpers = section(server, 'function normalizePaymentAccountSerialScopeValue', 'function paymentAccountMatchesSearch');

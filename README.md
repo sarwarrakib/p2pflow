@@ -27,16 +27,30 @@ Updater code এবং database আলাদা রাখে। Update install-�
 
 ## Version
 
-Internal SemVer: `1.5.21`
+Internal SemVer: `1.5.22`
 UI: `1.5`
 Database schema: `33`
 
 Normal next version: `SET_NEXT_VERSION.bat` -> `1.6.0`  
-Hotfix: `SET_HOTFIX_VERSION.bat` -> `1.5.22`
+Hotfix: `SET_HOTFIX_VERSION.bat` -> `1.5.23`
 
 ## Database history safety
 
 P2PFlow keeps authoritative business/application data in MariaDB/MySQL/PostgreSQL. State payloads are compressed with Brotli before AES-256-GCM encryption, proofs/chat media are stored as encrypted database objects, and identical newly uploaded proof/media bytes use content-addressed object IDs to avoid duplicate blobs. The default is 3 retained recovery checkpoints with a 6-hour archive interval and 5 retained automatic database backups. Older uncompressed state/history/backup payloads are upgraded incrementally after startup. Health Check reports each P2PFlow database table's allocated size/row count, current encrypted state payload size, compression saving percentage, and proof/chat object usage so database-MB growth can be inspected without terminal access. `shared/`, `.p2pflow`, `.env`, `releases/` and temporary restart/update markers are operational bootstrap/update metadata only; they are not an application/business-data store. The application runtime itself does not write proof, chat, audit, order, ledger, notification or recovery-code data to local files.
+
+## v1.5.22 Header-only Work Status & Notification Master
+
+- Work ON/OFF control এখন শুধু global header-এ থাকে। Orders page, standalone P2P Message page এবং order-detail embedded chat থেকে duplicate Work control সরানো হয়েছে।
+- Work control শুধু auto-assignment eligible Agent-এর জন্য দেখা যায়। কোনো user-এর অন্তত একটি নির্দিষ্ট Binance account-এ effective `binance.sync` (Binance live order sync) permission থাকলে Work control দেখানো হয় না।
+- Permission বা role পরিবর্তনের পরে open session-এ realtime event দিয়ে header Work control সঙ্গে সঙ্গে show/hide হয়।
+- Notifications ON/OFF master button শুধু standalone **P2P Message** page-এ থাকে; order-detail embedded chat-এ আর থাকে না। এটি Work বা `orders.view` permission-এর ওপর নির্ভর করে না; `orders.view` ছাড়া user inbox data না দেখেও device notification control ব্যবহার করতে পারে। Notification Preferences page category/channel configuration-এর জন্য, master button duplicate করে না।
+- Notifications OFF করলে current device-এর push subscription server এবং browser—দুই দিক থেকেই সরানো হয় এবং foreground order/assignment/P2P-message sound সঙ্গে সঙ্গে বন্ধ হয়।
+- Notifications ON করলে current bonded device browser push subscription নেয়, সব background category ON করে এবং Settings-এ selected built-in/custom sound foreground event-এ ব্যবহার করে।
+- Sound Type selector থেকে আলাদা `Off` option সরানো হয়েছে; master Notifications button-ই browser notification ও automatic sound-এর একমাত্র ON/OFF control।
+- Fully closed/locked browser notification-এর actual sound OS/browser policy অনুসরণ করে; selected custom audio web app/page চলমান থাকলে বাজে।
+- Database schema `33`; কোনো data migration প্রয়োজন নেই।
+
+বিস্তারিত: `P2PFlow_v1.5.22_RELEASE_NOTES_BN.md`, `P2PFlow_v1.5.22_MANUAL_UPDATE_BN.md` এবং `P2PFlow_v1.5.22_LAUNCH_CHECKLIST_BN.md`।
 
 ## v1.5.21 Payment Account Serial Scope
 
@@ -49,18 +63,16 @@ P2PFlow keeps authoritative business/application data in MariaDB/MySQL/PostgreSQ
 - Comparison trim, case-insensitive, repeated-space normalization এবং Unicode NFKC normalization ব্যবহার করে।
 - Database schema `33`; কোনো data migration প্রয়োজন নেই।
 
-বিস্তারিত: `P2PFlow_v1.5.21_RELEASE_NOTES_BN.md`, `P2PFlow_v1.5.21_MANUAL_UPDATE_BN.md` এবং `P2PFlow_v1.5.21_LAUNCH_CHECKLIST_BN.md`।
-
 ## v1.5.20 Stable Session, Fast Orders/Ads, Background Push ও Smooth Chat
 
 - Mobile network/Wi-Fi IP বদলালেও session আর IP-prefix mismatch-এর কারণে হঠাৎ logout করবে না। নতুন session stable browser-family binding ব্যবহার করে; bonded device থাকলে cryptographic device ID-ও binding-এর অংশ। পুরোনো v1 session safeভাবে v2-তে upgrade হয়।
 - Transient 401 হলে frontend সঙ্গে সঙ্গে login page-এ না গিয়ে `/api/me` দিয়ে session confirm করে একবার request retry করে।
 - Orders list একই response-এ unread count দেয় এবং mobile navigation একটি combined count endpoint ব্যবহার করে। Ads initial load cached merchant/readiness data দিয়ে render হয়; explicit refresh/action ছাড়া blocking live probe হয় না।
-- Bonded/trusted device-এ Notifications ON করলে native Web Push subscription হয়। App background, inactive বা supported platform-এ বন্ধ থাকলেও new order assignment, new P2P message এবং enabled category notification system notification হিসেবে পৌঁছাতে পারে। Notifications OFF করলে background delivery বন্ধ থাকে।
+- P2P Message page-এর Notifications ON করলে current bonded/trusted device-এ native Web Push subscription হয়। App background, inactive বা supported platform-এ বন্ধ থাকলেও new order assignment, new P2P message এবং enabled category notification system notification হিসেবে পৌঁছাতে পারে। Notifications OFF করলে current device-এর subscription সরানো হয় এবং ওই device-এ automatic order/message sound ও browser notification বন্ধ থাকে।
 - iPhone/iPad-এ Home Screen web app থেকে permission দিতে হবে। Browser/OS notification sound control করে; app foreground custom sound এবং background system sound আলাদা।
-- Work Status button সব enabled user-এর top bar, Orders এবং Chat area-তে দেখা যায়। Agent-এর Work Status ON হলে offline থাকলেও eligible order assign হতে পারে; PAUSED হলে online থাকলেও নতুন order assign হয় না।
+- Work Status button শুধু global header-এ এবং শুধু auto-assignment Agent-এর জন্য দেখা যায়। Effective Binance Live Order (`binance.sync`) access থাকা user-এর Work button লাগে না ও দেখানো হয় না। Eligible Agent-এর Work ON হলে offline থাকলেও order assign হতে পারে; PAUSED হলে online থাকলেও নতুন order assign হয় না।
 - Order chat এখন `/chat-delta` দিয়ে শুধু নতুন message merge করে। Incoming/outgoing message-এ পুরো order page reload হয় না; scroll/focus অক্ষত থাকে এবং পুরোনো message পড়ার সময় “new messages” button দেখা যায়। P2P Message inbox-ও thread list partial refresh করে।
-- Notification Preferences-এ In App, Email এবং Background channel আলাদা category অনুযায়ী manage করা যায়। Chat-এর master Notifications ON করলে সব background category ON হয়।
+- Notification Preferences-এ In App, Email এবং Background channel আলাদা category অনুযায়ী manage করা যায়। P2P Message page-এর একমাত্র master Notifications button ON করলে current device subscribe হয় ও সব background category ON হয়; individual order chat-এ এই control থাকে না।
 - Database schema `33`; migration additive এবং existing users, sessions, trusted devices, orders, Ads, chats, payment accounts, ledger ও accounting data preserve করে।
 ## v1.5.13 Settings Workspace & Compact Mail Failover UI
 

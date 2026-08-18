@@ -1,4 +1,4 @@
-// P2PFlow v1.5.21
+// P2PFlow v1.5.22
 // Page module: orders. Edit this file for the orders page UI.
 
 function orderAccountOptions(data = {}) {
@@ -43,18 +43,11 @@ function workAvailabilityTitle(status = {}) {
   return `${accepting ? 'Shown as ready for work.' : 'Shown as paused from work.'} Presence: ${presence}`;
 }
 
-function orderAcceptanceButtonHtml(status = {}, options={}) {
-  if (!status.available) return '';
-  const accepting = status.accepting === true;
-  const id = String(options.id || 'orderAcceptanceToggle');
-  const compact = options.compact === true;
-  return `<button type="button" id="${escapeAttr(id)}" class="order-acceptance-toggle ${compact ? 'compact' : ''} ${accepting ? 'is-on' : 'is-off'}" data-order-acceptance-toggle aria-pressed="${accepting ? 'true' : 'false'}" title="${escapeAttr(workAvailabilityTitle(status))}"><span class="order-acceptance-dot" aria-hidden="true"></span><span>${escapeHtml(workAvailabilityLabel(status))}</span></button>`;
-}
-
 function updateOrderAcceptanceControl() {
   const current = state.orderAcceptance || {};
   document.querySelectorAll('[data-order-acceptance-toggle]').forEach(button => {
-    if (!current.available) {
+    const visible = current.available === true && current.controlsAutoAssignment !== false && current.liveOrderAccess !== true;
+    if (!visible) {
       button.classList.add('hidden');
       return;
     }
@@ -213,7 +206,6 @@ async function renderOrders(opts={}) {
   $('#content').innerHTML = `
     <div class="page-account-strip order-account-strip">
       ${orderAccountSwitcherHtml(credentialOptions, requestedCredentialId)}
-      ${orderAcceptanceButtonHtml(state.orderAcceptance || {})}
     </div>
     <div class="order-group-switch order-group-switch-with-menu">
       <div class="order-group-tabs">
@@ -234,7 +226,6 @@ async function renderOrders(opts={}) {
     state.orderSnapshot = null;
     renderOrders();
   });
-  bindOrderAcceptanceControl();
   $('#refreshBtn').onclick = () => refreshOrdersFromButton($('#refreshBtn'));
   if (canSyncBinance && $('#syncBinanceOrdersBtn')) $('#syncBinanceOrdersBtn').onclick = () => openBinanceOrderSyncModal(liveCredentialOptions, requestedCredentialId);
   if (canCreateBinance && $('#newOrderBtn')) $('#newOrderBtn').onclick = () => openCreateOrderModal('binance', liveCredentialOptions, requestedCredentialId);

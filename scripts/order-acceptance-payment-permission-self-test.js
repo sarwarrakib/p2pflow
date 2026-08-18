@@ -11,6 +11,8 @@ const server = read('app-server.js');
 const app = read('public/app.js');
 const accounts = read('public/js/pages/accounts.js');
 const orders = read('public/js/pages/orders.js');
+const chat = read('public/js/pages/chat.js');
+const index = read('public/index.html');
 const users = read('public/js/pages/users.js');
 const security = read('public/js/pages/security.js');
 const css = read('public/style.css');
@@ -25,7 +27,7 @@ const section = (source, start, end) => {
   return source.slice(a, b);
 };
 
-assert(pkg.version === '1.5.21', `expected v1.5.21, got ${pkg.version}`);
+assert(pkg.version === '1.5.22', `expected v1.5.22, got ${pkg.version}`);
 assert(server.includes('const APP_SCHEMA_VERSION = 33;'), 'schema 33 is missing.');
 
 // Payment-account authorization: Admin/Manager all, Agent own only, optional all-account permission for non-Agent roles.
@@ -71,7 +73,11 @@ assert(availability.includes("userHasPermission(linkedUser, 'orders.view')"), 'O
 assert(!availability.includes('userPresenceView') && !availability.includes('agentDynamicStatus'), 'Presence still controls assignment eligibility.');
 const manualAssign = section(server, 'async function managerAssign', 'async function requestCoAgent');
 assert(manualAssign.includes('if (!agentAvailableForAssignment(agent))'), 'Manual assignment ignores Order Acceptance OFF.');
-assert(orders.includes("options.id || 'orderAcceptanceToggle'") && orders.includes('data-order-acceptance-toggle'), 'Orders-page Work Status button is missing.');
+const acceptanceView = section(server, 'function userHasLiveOrderAccess', 'async function handleMyOrderAcceptance');
+assert(acceptanceView.includes("binanceCredentialIdsForUserPermission(user, 'binance.sync'"), 'Live Order account permission is not detected.');
+assert(acceptanceView.includes('controlsAutoAssignment = Boolean(assignable && !liveOrderAccess)'), 'Live Order users are not excluded from the Work Status control.');
+assert(index.includes('id="globalWorkAvailabilityToggle"') && index.includes('data-order-acceptance-toggle'), 'Global header Work Status button is missing.');
+assert(!orders.includes('orderAcceptanceButtonHtml') && !chat.includes('data-order-acceptance-toggle'), 'Duplicate Work Status button remains inside Orders or P2P Message.');
 assert(orders.includes('স্যার, আপনি কি এখন কাজ করতে চান?'), 'Required Bengali Work Status prompt is missing.');
 assert(users.includes('Work Status'), 'Users page does not expose work status.');
 

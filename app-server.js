@@ -16104,17 +16104,26 @@ function handleLogout(req, res) {
   if (s) { closeUserActivitySession(s.session, 'logout'); sessions.delete(s.sid); syncPersistentSessions(); saveDb(); }
   return sendJson(res, 200, { ok: true }, { 'Set-Cookie': clearSessionCookieHeader(req) }, req);
 }
+function userHasLiveOrderAccess(user) {
+  if (!user || user.enabled === false) return false;
+  if (String(user.role || '').toLowerCase() === 'admin') return true;
+  return binanceCredentialIdsForUserPermission(user, 'binance.sync', { includeDisabled: true }).length > 0;
+}
+
 function orderAcceptanceForUser(user) {
   const agent = user ? (db.agents || []).find(item => Number(item.userId || 0) === Number(user.id || 0) || (Number(user.agentId || 0) && Number(item.id) === Number(user.agentId))) : null;
-  const available = Boolean(user && user.enabled !== false);
-  const accepting = Boolean(available && user.workAvailable !== false);
-  const assignable = Boolean(user && user.role === 'agent' && agent && userHasPermission(user, 'orders.view'));
+  const liveOrderAccess = userHasLiveOrderAccess(user);
+  const assignable = Boolean(user && user.enabled !== false && user.role === 'agent' && agent && userHasPermission(user, 'orders.view'));
+  const controlsAutoAssignment = Boolean(assignable && !liveOrderAccess);
+  const accepting = Boolean(assignable && user.workAvailable !== false && agent.allowNewOrders !== false);
   return {
-    available,
+    available: controlsAutoAssignment,
+    controlsAutoAssignment,
+    liveOrderAccess,
     accepting,
     workAvailable: accepting,
     assignable,
-    assignmentEligible: Boolean(assignable && accepting && agent.allowNewOrders !== false),
+    assignmentEligible: Boolean(assignable && accepting),
     agentId: agent ? Number(agent.id) : null,
     presenceStatus: agent ? agentDynamicStatus(agent) : userPresenceView(user?.id || 0).status,
     activeAssignments: agent ? activeAssignmentCount(agent.id) : 0,
@@ -16124,12 +16133,33 @@ function orderAcceptanceForUser(user) {
   };
 }
 
+function broadcastOrderAcceptanceState(user, extra = {}) {
+  if (!user) return null;
+  const next = orderAcceptanceForUser(user);
+  broadcast({
+    type: 'user.work_availability.updated',
+    userId: user.id,
+    agentId: next.agentId || null,
+    available: next.available,
+    controlsAutoAssignment: next.controlsAutoAssignment,
+    liveOrderAccess: next.liveOrderAccess,
+    accepting: next.accepting,
+    assignable: next.assignable,
+    assignmentEligible: next.assignmentEligible,
+    presenceStatus: next.presenceStatus,
+    updatedAt: next.updatedAt,
+    at: nowIso(),
+    ...extra
+  });
+  return next;
+}
+
 async function handleMyOrderAcceptance(req, res) {
   const user = requireAuth(req, res); if (!user) return;
   const current = orderAcceptanceForUser(user);
   if (req.method === 'GET') return sendJson(res, 200, current, {}, req);
   if (req.method !== 'PATCH') return sendJson(res, 405, { error: 'Method not allowed' }, {}, req);
-  if (!current.available) return sendJson(res, 403, { error: 'Work availability is unavailable for this disabled user.' }, {}, req);
+  if (!current.available) return sendJson(res, 403, { error: 'Work Status is available only to order-assignment Agents without Live Order access.' }, {}, req);
   const body = await readBody(req);
   if (typeof body.accepting !== 'boolean') return sendJson(res, 422, { error: 'accepting must be true or false.' }, {}, req);
   const before = user.workAvailable !== false;
@@ -16146,13 +16176,12 @@ async function handleMyOrderAcceptance(req, res) {
     before,
     accepting: body.accepting,
     agentId: agent?.id || null,
-    controlsAutoAssignment: Boolean(agent && user.role === 'agent' && userHasPermission(user, 'orders.view')),
+    controlsAutoAssignment: current.controlsAutoAssignment === true,
     presenceStatus: agent ? agentDynamicStatus(agent) : userPresenceView(user.id).status,
     autoAssignmentPresenceIndependent: true
   });
   saveDb();
-  const next = orderAcceptanceForUser(user);
-  broadcast({ type: 'user.work_availability.updated', userId: user.id, agentId: agent?.id || null, accepting: next.accepting, assignable: next.assignable, assignmentEligible: next.assignmentEligible, presenceStatus: next.presenceStatus, updatedAt: next.updatedAt, at: nowIso() });
+  const next = broadcastOrderAcceptanceState(user, { reason: 'self_toggle' });
   return sendJson(res, 200, next, {}, req);
 }
 
@@ -16630,7 +16659,8 @@ async function handleUserRoleById(req, res, parts) {
     if (body.description !== undefined) item.description = cleanStr(body.description, 300);
     item.permissions = nextPermissions;
     item.updatedAt = nowIso();
-    db.users.filter(u => Number(u.roleProfileId) === id).forEach(u => {
+    const affectedUsers = db.users.filter(u => Number(u.roleProfileId) === id);
+    affectedUsers.forEach(u => {
       u.role = item.systemRole;
       u.permissions = normalizePermissions(item.permissions, item.systemRole);
       u.binanceCredentialPermissions = normalizeBinanceCredentialPermissions(u.binanceCredentialPermissions || [], u);
@@ -16638,6 +16668,7 @@ async function handleUserRoleById(req, res, parts) {
     });
     logAudit(admin, 'user_role_updated', 'userRole', item.id, { name: item.name, systemRole: item.systemRole, permissions: item.permissions });
     saveDb();
+    affectedUsers.forEach(affectedUser => broadcastOrderAcceptanceState(affectedUser, { reason: 'role_permissions_updated' }));
     return sendJson(res, 200, item, {}, req);
   }
   if (req.method === 'DELETE') {
@@ -16850,6 +16881,8 @@ async function handleAgentById(req, res, parts) {
     }
     logAudit(admin, 'agent_updated', 'agent', agent.id, { agent: agentView(agent, admin) });
     saveDb();
+    const savedLinkedUser = db.users.find(u => Number(u.id) === Number(agent.userId || 0)) || null;
+    if (savedLinkedUser) broadcastOrderAcceptanceState(savedLinkedUser, { reason: 'user_permissions_updated' });
     return sendJson(res, 200, agentView(agent, admin), {}, req);
   }
   return sendJson(res, 405, { error: 'Method not allowed' }, {}, req);
@@ -17911,9 +17944,9 @@ function chatInboxMessagePreview(chat) {
 }
 
 async function handleChatInbox(req, res) {
-  const user = requirePermission(req, res, 'orders.view'); if (!user) return;
+  const user = requireAuth(req, res); if (!user) return;
   if (req.method !== 'GET') return sendJson(res, 405, { error: 'Method not allowed' }, {}, req);
-  const orders = ordersAccessibleToUser(user);
+  const orders = userHasPermission(user, 'orders.view') ? ordersAccessibleToUser(user) : [];
   const latestByOrder = latestC2cChatsForOrders(orders);
   const unreadSnapshot = chatUnreadSnapshotForOrders(user, orders);
   const items = [];

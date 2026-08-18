@@ -45,7 +45,10 @@ assert(app.includes('scheduleCurrentOrderChatDelta') && app.includes('/chat-delt
 const receivedHandler = (app.match(/if \(event\.type === 'chat\.message\.received'[\s\S]*?\n  }\n  if \(event\.type === 'chat\.message\.sent'/) || [''])[0];
 assert(receivedHandler.includes('scheduleCurrentOrderChatDelta') && !receivedHandler.includes('scheduleCurrentOrderReload'), 'incoming chat still reloads the whole order page');
 assert(chat.includes('preserveFocus:true') && chat.includes('chatThreadList'), 'chat inbox partial refresh is missing');
-assert(orders.includes('data-order-acceptance-toggle') && index.includes('globalWorkAvailabilityToggle'), 'work status control is not available globally');
+assert(index.includes('globalWorkAvailabilityToggle') && !orders.includes('orderAcceptanceButtonHtml') && !chat.includes('data-order-acceptance-toggle'), 'work status is not limited to the global header');
+assert(server.includes("function userHasLiveOrderAccess") && server.includes("binanceCredentialIdsForUserPermission(user, 'binance.sync'"), 'live-order permission does not suppress the work control');
+assert(chat.includes('backgroundNotificationToggleHtml({ compact:true })') && !notifications.includes('backgroundNotificationToggleHtml'), 'notification master control is not limited to the P2P Message page');
+assert(app.includes('notificationCategoryEnabledOnDevice') && app.includes("subscription.unsubscribe()") && app.includes("method:'DELETE'"), 'notification OFF does not disable sound and remove this device push subscription');
 assert(notifications.includes('data-notification-channel="push"'), 'background notification preferences are missing');
 assert(css.includes('.background-notification-toggle') && css.includes('.chat-new-messages'), 'push/chat UI styles are missing');
 assert(ads.includes('data = await api(adsPageUrl())'), 'Ads initial load is not using the cached fast path');
