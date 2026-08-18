@@ -25,7 +25,7 @@ const section = (source, start, end) => {
   return source.slice(a, b);
 };
 
-assert(pkg.version === '1.5.20', `expected v1.5.20, got ${pkg.version}`);
+assert(pkg.version === '1.5.21', `expected v1.5.21, got ${pkg.version}`);
 assert(server.includes('const APP_SCHEMA_VERSION = 33;'), 'schema 33 is missing.');
 
 // Payment-account authorization: Admin/Manager all, Agent own only, optional all-account permission for non-Agent roles.
@@ -38,7 +38,7 @@ assert(manageAll.includes("userHasPermission(user, 'accounts.manage_all')"), 'Ma
 const manageOwn = section(server, 'function canManagePaymentAccount', 'function canManagePaymentAccountAccess');
 assert(manageOwn.includes("userHasPermission(user, 'accounts.manage')"), 'accounts.manage is not required.');
 assert(manageOwn.includes('paymentAccountOwnedByUser(accountItem, user)'), 'Own-account boundary is missing.');
-const draft = section(server, 'function paymentAccountDraftFromBody', 'function paymentAccountSerialConflict');
+const draft = section(server, 'function paymentAccountDraftFromBody', 'function normalizePaymentAccountSerialScopeValue');
 assert(draft.includes('actor?.id'), 'Logged-in user is not the default Account User.');
 assert(draft.includes('if (restrictedToOwnAccount) resolvedOwner = { user: actor'), 'Own-only users can override Account User.');
 assert(draft.includes('label:') && draft.includes('serialNumber:'), 'Label/Serial fields are missing from account draft.');

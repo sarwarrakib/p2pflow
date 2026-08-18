@@ -2508,7 +2508,7 @@ body.order-chat-open .modal-backdrop{z-index:1450}
 .bulk-account-preview-title{align-items:flex-end}.bulk-account-preview-title small{text-align:right}
 .bulk-account-preview-list{display:grid;gap:8px;max-height:360px;overflow:auto;padding-right:3px}
 .bulk-account-preview-row{display:grid;grid-template-columns:38px minmax(0,1fr) minmax(150px,220px);align-items:center;gap:10px;padding:10px 11px;border:1px solid var(--line,#e7e9ed);border-radius:12px;background:#fff}
-.bulk-account-preview-row.has-error{border-color:#ef4444;background:#fff7f7}
+.bulk-account-preview-row.has-error,.bulk-account-preview-row.has-serial-error{border-color:#ef4444;background:#fff7f7}
 .bulk-account-serial{display:grid;place-items:center;width:30px;height:30px;border-radius:50%;background:#f1f3f5;font-weight:800;font-size:12px}
 .bulk-account-number{display:flex;min-width:0;flex-direction:column;gap:2px}.bulk-account-number b{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.bulk-account-number small{color:#b91c1c}
 .bulk-account-preview-row label{display:flex;flex-direction:column;gap:5px;margin:0}.bulk-account-preview-row label span{color:var(--muted,#777);font-size:11px}.bulk-account-preview-row input{width:100%}
@@ -5260,3 +5260,5 @@ tr:hover td{background:#fbfbfc}
   .chat-page-controls .order-acceptance-toggle,.chat-page-controls .background-notification-toggle{padding:6px 8px;font-size:10.5px}
   .top-actions>.order-acceptance-toggle.compact{max-width:118px;overflow:hidden;text-overflow:ellipsis}
 }
+
+/* v1.5.21 payment-account serial scope */

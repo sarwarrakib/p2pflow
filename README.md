@@ -27,16 +27,29 @@ Updater code এবং database আলাদা রাখে। Update install-�
 
 ## Version
 
-Internal SemVer: `1.5.20`
+Internal SemVer: `1.5.21`
 UI: `1.5`
 Database schema: `33`
 
 Normal next version: `SET_NEXT_VERSION.bat` -> `1.6.0`  
-Hotfix: `SET_HOTFIX_VERSION.bat` -> `1.5.21`
+Hotfix: `SET_HOTFIX_VERSION.bat` -> `1.5.22`
 
 ## Database history safety
 
 P2PFlow keeps authoritative business/application data in MariaDB/MySQL/PostgreSQL. State payloads are compressed with Brotli before AES-256-GCM encryption, proofs/chat media are stored as encrypted database objects, and identical newly uploaded proof/media bytes use content-addressed object IDs to avoid duplicate blobs. The default is 3 retained recovery checkpoints with a 6-hour archive interval and 5 retained automatic database backups. Older uncompressed state/history/backup payloads are upgraded incrementally after startup. Health Check reports each P2PFlow database table's allocated size/row count, current encrypted state payload size, compression saving percentage, and proof/chat object usage so database-MB growth can be inspected without terminal access. `shared/`, `.p2pflow`, `.env`, `releases/` and temporary restart/update markers are operational bootstrap/update metadata only; they are not an application/business-data store. The application runtime itself does not write proof, chat, audit, order, ledger, notification or recovery-code data to local files.
+
+## v1.5.21 Payment Account Serial Scope
+
+- Payment Account Serial Number আর পুরো system-এ globally unique নয়; normalized Payment Method name অনুযায়ী আলাদা namespace ব্যবহার করে।
+- একই Payment Method এবং একই non-empty Label-এর মধ্যে একই Serial Number দ্বিতীয়বার save করা যাবে না।
+- একই Payment Method-এর ভিন্ন non-empty Label-এ একই Serial Number পুনরায় ব্যবহার করা যাবে।
+- Label blank থাকলে Serial Number পুরো Payment Method-এর মধ্যে unique থাকবে; একই method-এর labeled account-এর সঙ্গেও conflict হবে।
+- ভিন্ন Payment Method-এ একই Label/Serial ব্যবহার করা যাবে।
+- Add, Edit, Bulk Add এবং CSV/structured import একই server-side rule ব্যবহার করে। Bulk modal save-এর আগেই একই scope-এর duplicate row দেখায়।
+- Comparison trim, case-insensitive, repeated-space normalization এবং Unicode NFKC normalization ব্যবহার করে।
+- Database schema `33`; কোনো data migration প্রয়োজন নেই।
+
+বিস্তারিত: `P2PFlow_v1.5.21_RELEASE_NOTES_BN.md`, `P2PFlow_v1.5.21_MANUAL_UPDATE_BN.md` এবং `P2PFlow_v1.5.21_LAUNCH_CHECKLIST_BN.md`।
 
 ## v1.5.20 Stable Session, Fast Orders/Ads, Background Push ও Smooth Chat
 
@@ -49,9 +62,6 @@ P2PFlow keeps authoritative business/application data in MariaDB/MySQL/PostgreSQ
 - Order chat এখন `/chat-delta` দিয়ে শুধু নতুন message merge করে। Incoming/outgoing message-এ পুরো order page reload হয় না; scroll/focus অক্ষত থাকে এবং পুরোনো message পড়ার সময় “new messages” button দেখা যায়। P2P Message inbox-ও thread list partial refresh করে।
 - Notification Preferences-এ In App, Email এবং Background channel আলাদা category অনুযায়ী manage করা যায়। Chat-এর master Notifications ON করলে সব background category ON হয়।
 - Database schema `33`; migration additive এবং existing users, sessions, trusted devices, orders, Ads, chats, payment accounts, ledger ও accounting data preserve করে।
-
-বিস্তারিত: `P2PFlow_v1.5.20_RELEASE_NOTES_BN.md`, `P2PFlow_v1.5.20_MANUAL_UPDATE_BN.md` এবং `P2PFlow_v1.5.20_LAUNCH_CHECKLIST_BN.md`।
-
 ## v1.5.13 Settings Workspace & Compact Mail Failover UI
 
 Settings আর একটি দীর্ঘ single-page form নয়। এখন **General, Binance & Sync, Login & Security, Email Delivery, Notifications, Presence & Activity**—এই ৬টি purpose-based section আছে। Desktop-এ compact section navigation এবং mobile-এ horizontal section switcher ব্যবহার করা হয়; selected section browser-এ মনে থাকে।
