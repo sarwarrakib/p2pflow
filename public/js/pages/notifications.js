@@ -1,4 +1,4 @@
-// P2PFlow v1.5.23
+// P2PFlow v1.5.24
 // User-controlled in-app and email notification preferences.
 
 function notificationPreferenceRows(data={}) {

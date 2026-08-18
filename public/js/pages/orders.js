@@ -1,4 +1,4 @@
-// P2PFlow v1.5.23
+// P2PFlow v1.5.24
 // Page module: orders. Edit this file for the orders page UI.
 
 function orderAccountOptions(data = {}) {
@@ -412,7 +412,7 @@ function renderSplit(s) {
       <div><b>${escapeHtml(accountLabel)}</b>${methodLabel ? ` - ${escapeHtml(methodLabel)}` : ''}<br/><span class="sub">${s.agent?.name ? `User: ${escapeHtml(s.agent.name)}` : ''}</span></div>
       ${state.user?.role === 'agent' ? '' : `<button data-update-split="${s.id}">Edit</button>`}
     </div>
-    Amount: <b>${money(s.actualAmount)}</b> | Transfer charge: <b>${money(s.transactionChargeAmount || 0)}</b> | Status: ${badge(s.status, statusClass(s.status))}
+    Amount: <b>${money(s.actualAmount)}</b> | Charge / commission: <b>${money(s.transactionChargeAmount || 0)}</b> | Status: ${badge(s.status, statusClass(s.status))}
     ${proof}
     ${s.note ? `<br/><span class="sub">Note: ${escapeHtml(s.note)}</span>` : ''}
   </div>`;

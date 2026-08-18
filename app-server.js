@@ -44,7 +44,7 @@ loadEnv();
 applyP2PFlowEnvAliases(process.env);
 
 const APP_VERSION = String(packageInfo.version || '0.0.0');
-const APP_SCHEMA_VERSION = 33;
+const APP_SCHEMA_VERSION = 34;
 const APP_DATA_COMPATIBILITY_EPOCH = 1;
 const PORT = Number(process.env.PORT || 3000);
 const BIND_HOST = cleanEnv(process.env.P2PFLOW_BIND_HOST || process.env.CRM_BIND_HOST || '', '');
@@ -1789,10 +1789,37 @@ function migrateDb(target) {
     }
     a.label = cleanStr(a.label || a.accountLabel || '', 80);
     a.serialNumber = cleanStr(a.serialNumber || a.serial || a.simSerial || '', 80);
+    a.transactionChargeMode = normalizePaymentChargeMode(a.transactionChargeMode || 'none');
+    a.transactionChargeFixed = positiveNum(a.transactionChargeFixed || 0);
+    a.transactionChargePercent = Math.max(0, Math.min(100, Number(a.transactionChargePercent || 0) || 0));
+    a.transactionChargeTiers = normalizePaymentChargeTiers(a.transactionChargeTiers || []);
+    // Schema 34: Personal and Merchant accounts use a transfer fee only on
+    // outgoing fee-eligible transaction types. Agent accounts use the same
+    // configured rule as an earned commission on both incoming and outgoing
+    // manual money movements.
+    a.transactionChargeAppliesTo = a.accountType === 'agent' ? 'both' : 'send';
+    if (a.deletedAt === undefined) a.deletedAt = null;
+    if (a.deletedBy === undefined) a.deletedBy = null;
+    if (a.deleteReason === undefined) a.deleteReason = '';
     a.agentId = null;
     if (!a.managedBy) a.managedBy = 'account_owner';
     const hasOpening = target.ledgers.some(l => l.paymentAccountId === a.id && l.type === 'opening');
     if (!hasOpening) target.ledgers.push(openingLedger(target, a, num(a.currentBalance), a.createdAt || nowIso()));
+  });
+  target.paymentSplits.forEach(split => {
+    const accountItem = target.paymentAccounts.find(account => Number(account.id) === Number(split.paymentAccountId || 0)) || null;
+    const storedKind = cleanStr(split.transactionAdjustmentKind || '', 20).toLowerCase();
+    if (!['charge', 'commission'].includes(storedKind)) {
+      const hasHistoricalMovement = positiveNum(split.actualAmount || 0) > 0
+        || positiveNum(split.transactionChargeAmount || 0) > 0
+        || target.ledgers.some(ledger => Number(ledger.splitId || 0) === Number(split.id || 0));
+      // Existing split charge ledgers were deductions in older releases. Keep
+      // those historical rows as charges; only untouched planned Agent splits
+      // adopt the new commission model automatically.
+      split.transactionAdjustmentKind = hasHistoricalMovement
+        ? 'charge'
+        : (normalizePaymentAccountType(accountItem?.accountType) === 'agent' ? 'commission' : 'charge');
+    } else split.transactionAdjustmentKind = storedKind;
   });
   target.offlineTransactions.forEach(transaction => {
     transaction.referenceNo = cleanStr(transaction.referenceNo || `OBT-${transaction.id || ''}`, 80);
@@ -1960,6 +1987,14 @@ function normalizePaymentAccountType(value) {
   return 'personal';
 }
 
+function paymentAccountDeleted(accountItem = {}) {
+  return Boolean(accountItem && accountItem.deletedAt);
+}
+
+function paymentAccountChargeAppliesToForType(accountType = 'personal') {
+  return normalizePaymentAccountType(accountType) === 'agent' ? 'both' : 'send';
+}
+
 function paymentAccountOwnerUser(accountItem) {
   if (!accountItem) return null;
   return (db.users || []).find(user => Number(user.id) === Number(accountItem.ownerUserId || 0)) || null;
@@ -2035,7 +2070,7 @@ function canManageAllPaymentAccounts(user) {
 }
 
 function canManagePaymentAccount(user, accountItem) {
-  if (!user || !accountItem) return false;
+  if (!user || !accountItem || paymentAccountDeleted(accountItem)) return false;
   if (['admin', 'manager'].includes(String(user.role || '').toLowerCase())) return true;
   if (!userHasPermission(user, 'accounts.manage')) return false;
   if (canManageAllPaymentAccounts(user)) return true;
@@ -2049,7 +2084,7 @@ function canManagePaymentAccountAccess(user, accountItem = null) {
 }
 
 function canAdjustPaymentAccount(user, accountItem) {
-  if (!user || !accountItem || !userHasPermission(user, 'ledger.adjust')) return false;
+  if (!user || !accountItem || paymentAccountDeleted(accountItem) || !userHasPermission(user, 'ledger.adjust')) return false;
   if (canManageAllPaymentAccounts(user)) return true;
   return paymentAccountOwnedByUser(accountItem, user);
 }
@@ -2069,7 +2104,7 @@ function normalizeAllowedAgentIds(value) {
 }
 
 function canUsePaymentAccount(user, accountItem) {
-  if (!user || !accountItem) return false;
+  if (!user || !accountItem || paymentAccountDeleted(accountItem)) return false;
   if (['admin', 'manager'].includes(String(user.role || '').toLowerCase())) return true;
   if (!userHasPermission(user, 'accounts.use')) return false;
   if (paymentAccountOwnedByUser(accountItem, user)) return true;
@@ -2104,8 +2139,8 @@ function userSafe(u) {
 function ledgerEffect(l) {
   const amount = num(l.amount);
   const type = String(l.type || '');
-  if (['opening', 'topup', 'offline_receive', 'settlement_in', 'refund_in', 'business_income', 'business_capital_in', 'business_transfer_charge_refund'].includes(type)) return Math.abs(amount);
-  if (['cashout', 'offline_purchase', 'expense', 'settlement_out', 'refund_out', 'business_capital_out', 'business_transfer_charge'].includes(type)) return -Math.abs(amount);
+  if (['opening', 'topup', 'offline_receive', 'settlement_in', 'refund_in', 'business_income', 'business_capital_in', 'business_transfer_charge_refund', 'agent_transaction_commission'].includes(type)) return Math.abs(amount);
+  if (['cashout', 'offline_purchase', 'expense', 'settlement_out', 'refund_out', 'business_capital_out', 'business_transfer_charge', 'agent_transaction_commission_reversal'].includes(type)) return -Math.abs(amount);
   if (type === 'correction') return amount;
   if (l.direction === 'receive') return Math.abs(amount);
   if (l.direction === 'send') return -Math.abs(amount);
@@ -2168,15 +2203,238 @@ function paymentTransferCharge(accountItem = {}, amount = 0, direction = 'send',
   return { amount: round2(charge), mode: config.mode, source };
 }
 
+const MANUAL_PAYMENT_TRANSACTION_TYPES = Object.freeze({
+  send_money: { label: 'Send Money', direction: 'send', sign: -1, personalFee: true },
+  receive_money: { label: 'Receive Money', direction: 'receive', sign: 1, personalFee: false },
+  cash_out: { label: 'Cash Out', direction: 'send', sign: -1, personalFee: true },
+  bill_pay: { label: 'Bill Pay', direction: 'send', sign: -1, personalFee: false },
+  payment: { label: 'Payment', direction: 'send', sign: -1, personalFee: false },
+  mobile_recharge: { label: 'Mobile Recharge', direction: 'send', sign: -1, personalFee: false }
+});
+
+function manualPaymentTransactionDefinition(value = '') {
+  return MANUAL_PAYMENT_TRANSACTION_TYPES[cleanStr(value || '', 50).toLowerCase()] || null;
+}
+
+function manualPaymentAdjustmentKind(accountItem = {}, transactionType = '') {
+  const definition = manualPaymentTransactionDefinition(transactionType);
+  if (!definition) return 'none';
+  if (normalizePaymentAccountType(accountItem.accountType) === 'agent') return 'commission';
+  return definition.personalFee ? 'charge' : 'none';
+}
+
+function paymentSplitAdjustmentKind(accountItem = {}, split = {}) {
+  const stored = cleanStr(split.transactionAdjustmentKind || '', 20).toLowerCase();
+  if (['charge', 'commission'].includes(stored)) return stored;
+  return normalizePaymentAccountType(accountItem.accountType) === 'agent' ? 'commission' : 'charge';
+}
+
+function createAutomaticAgentCommissionEntry({
+  amount = 0,
+  accountItem = null,
+  agentId = 0,
+  userId = null,
+  ledgerId = null,
+  manualTransactionId = null,
+  orderId = null,
+  splitId = null,
+  transactionType = '',
+  note = '',
+  at = nowIso(),
+  reversal = false
+} = {}) {
+  const normalizedAmount = positiveNum(amount || 0);
+  const normalizedAgentId = Number(agentId || 0);
+  if (!(normalizedAmount > 0) || !normalizedAgentId) return null;
+  const sourceType = reversal ? 'agent_transaction_commission_reversal' : 'agent_transaction_commission';
+  const entry = {
+    id: nextId(),
+    type: reversal ? 'expense' : 'income',
+    amount: normalizedAmount,
+    currency: 'BDT',
+    category: reversal ? 'Agent Transaction Commission Reversal' : 'Agent Transaction Commission',
+    note: cleanStr(note || `${reversal ? 'Reversed' : 'Earned'} Agent commission${accountItem?.accountNumber ? ` for ${accountItem.accountNumber}` : ''}`, 500),
+    businessDate: accountingLocalDate(at),
+    paymentAccountId: Number(accountItem?.id || 0) || null,
+    agentId: normalizedAgentId,
+    createdBy: Number(userId || 0) || null,
+    createdAt: at,
+    updatedAt: at,
+    ledgerId: Number(ledgerId || 0) || null,
+    automatic: true,
+    protected: true,
+    sourceType,
+    manualTransactionId: Number(manualTransactionId || 0) || null,
+    orderId: Number(orderId || 0) || null,
+    splitId: Number(splitId || 0) || null,
+    transactionType: cleanStr(transactionType || '', 50),
+    includeInCompanyTotals: agentProfitIncludedInCompanyTotals(normalizedAgentId)
+  };
+  db.businessEntries.push(entry);
+  return entry;
+}
+
+function suppliedManualPaymentAdjustment(body = {}) {
+  for (const key of ['adjustmentAmount','transactionChargeAmount','chargeAmount','commissionAmount','manualCharge']) {
+    if (body[key] !== undefined && body[key] !== null && String(body[key]).trim() !== '') return { supplied: true, amount: positiveNum(body[key]) };
+  }
+  return { supplied: false, amount: null };
+}
+
+function manualPaymentTransactionPreview(accountItem = {}, body = {}) {
+  const type = cleanStr(body.type || body.transactionType || '', 50).toLowerCase();
+  const definition = manualPaymentTransactionDefinition(type);
+  if (!definition) {
+    const error = new Error('Transaction type must be Send Money, Receive Money, Cash Out, Bill Pay, Payment or Mobile Recharge.');
+    error.statusCode = 422;
+    throw error;
+  }
+  const amount = positiveNum(body.amount || 0);
+  if (!(amount > 0)) {
+    const error = new Error('Amount must be greater than zero.');
+    error.statusCode = 422;
+    throw error;
+  }
+  const adjustmentKind = manualPaymentAdjustmentKind(accountItem, type);
+  const supplied = suppliedManualPaymentAdjustment(body);
+  const config = paymentChargeConfig(accountItem);
+  if (adjustmentKind !== 'none' && config.mode === 'manual' && !supplied.supplied) {
+    const error = new Error(`${adjustmentKind === 'commission' ? 'Commission' : 'Charge'} amount is required because this account uses a manual rule.`);
+    error.statusCode = 422;
+    throw error;
+  }
+  let adjustmentInfo = { amount: 0, mode: config.mode, source: 'not_applicable' };
+  if (adjustmentKind !== 'none') {
+    adjustmentInfo = paymentTransferCharge(
+      { ...accountItem, transactionChargeAppliesTo: adjustmentKind === 'commission' ? 'both' : 'send' },
+      amount,
+      definition.direction,
+      supplied.supplied ? supplied.amount : null
+    );
+  }
+  const adjustmentAmount = positiveNum(adjustmentInfo.amount || 0);
+  const mainEffect = definition.sign * amount;
+  const adjustmentEffect = adjustmentKind === 'charge' ? -adjustmentAmount : adjustmentKind === 'commission' ? adjustmentAmount : 0;
+  return {
+    type,
+    definition,
+    amount,
+    adjustmentKind,
+    adjustmentAmount,
+    adjustmentInfo,
+    mainEffect: round2(mainEffect),
+    adjustmentEffect: round2(adjustmentEffect),
+    netEffect: round2(mainEffect + adjustmentEffect)
+  };
+}
+
+function createManualPaymentAccountTransaction(user, accountItem, body = {}) {
+  if (!accountItem || paymentAccountDeleted(accountItem)) {
+    const error = new Error('Payment account not found.');
+    error.statusCode = 404;
+    throw error;
+  }
+  const preview = manualPaymentTransactionPreview(accountItem, body);
+  const before = calcAccountBalance(accountItem.id);
+  const capacity = accountView(accountItem);
+  if (preview.definition.direction === 'send') {
+    if (preview.amount > positiveNum(capacity.sendAvailable || 0) + 1e-9) {
+      const error = new Error(`Transaction exceeds the current send balance or configured send limit. Available: ${round2(capacity.sendAvailable || 0)}.`);
+      error.statusCode = 422;
+      throw error;
+    }
+    const requiredBefore = preview.adjustmentKind === 'charge' ? preview.amount + preview.adjustmentAmount : preview.amount;
+    if (requiredBefore > before + 1e-9) {
+      const error = new Error(`Transaction exceeds current account balance. Required: ${round2(requiredBefore)}, Available: ${round2(before)}.`);
+      error.statusCode = 422;
+      throw error;
+    }
+  } else if (preview.amount > positiveNum(capacity.receiveAvailable || 0) + 1e-9) {
+    const error = new Error(`Transaction exceeds the configured receive limit. Available: ${round2(capacity.receiveAvailable || 0)}.`);
+    error.statusCode = 422;
+    throw error;
+  }
+
+  const at = nowIso();
+  const ownerAgentId = paymentAccountOwnerAgentId(paymentAccountOwnerUser(accountItem));
+  if (preview.adjustmentKind === 'commission' && !ownerAgentId) {
+    const error = new Error('Agent commission requires an Agent account owned by an Agent user.');
+    error.statusCode = 422;
+    throw error;
+  }
+  const manualTransactionId = nextId();
+  const mainAfter = round2(before + preview.mainEffect);
+  const mainLedger = {
+    id: nextId(), manualTransactionId, paymentAccountId: accountItem.id, agentId: ownerAgentId || null,
+    direction: preview.definition.direction, type: `manual_${preview.type}`, transactionType: preview.type,
+    amount: preview.amount, balanceBefore: before, balanceAfter: mainAfter,
+    note: cleanStr(body.note || preview.definition.label, 300), reference: cleanStr(body.reference || '', 120),
+    createdBy: user.id, createdAt: at
+  };
+  db.ledgers.push(mainLedger);
+
+  let adjustmentLedger = null;
+  let commissionEntry = null;
+  if (preview.adjustmentAmount > 0 && preview.adjustmentKind !== 'none') {
+    const adjustmentBefore = calcAccountBalance(accountItem.id);
+    const isCommission = preview.adjustmentKind === 'commission';
+    adjustmentLedger = {
+      id: nextId(), manualTransactionId, paymentAccountId: accountItem.id, agentId: ownerAgentId || null,
+      direction: isCommission ? 'receive' : 'send',
+      type: isCommission ? 'agent_transaction_commission' : 'business_transfer_charge',
+      amount: preview.adjustmentAmount,
+      balanceBefore: adjustmentBefore,
+      balanceAfter: round2(adjustmentBefore + preview.adjustmentEffect),
+      category: isCommission ? 'agent_transaction_commission' : 'manual_transfer_charge',
+      transactionType: preview.type,
+      adjustmentMode: preview.adjustmentInfo.mode,
+      adjustmentSource: preview.adjustmentInfo.source,
+      note: cleanStr(body.adjustmentNote || `${preview.definition.label} ${isCommission ? 'commission' : 'charge'}`, 300),
+      reference: cleanStr(body.reference || '', 120), createdBy: user.id, createdAt: at
+    };
+    db.ledgers.push(adjustmentLedger);
+    if (isCommission) {
+      commissionEntry = createAutomaticAgentCommissionEntry({
+        amount: preview.adjustmentAmount,
+        accountItem,
+        agentId: ownerAgentId,
+        userId: user.id,
+        ledgerId: adjustmentLedger.id,
+        manualTransactionId,
+        transactionType: preview.type,
+        note: body.adjustmentNote || `${preview.definition.label} commission for ${accountItem.accountNumber}`,
+        at
+      });
+      adjustmentLedger.businessEntryId = commissionEntry?.id || null;
+    }
+  }
+  recalculateAccountBalances();
+  return {
+    manualTransactionId,
+    preview,
+    mainLedger,
+    adjustmentLedger,
+    commissionEntry,
+    balanceBefore: before,
+    balanceAfter: calcAccountBalance(accountItem.id)
+  };
+}
+
 function splitWalletMovementPreview(split = {}, accountItem = {}, newActual = 0, manualCharge = null) {
   const oldActual = positiveNum(split.actualAmount || 0);
   const oldCharge = positiveNum(split.transactionChargeAmount || 0);
-  const chargeInfo = paymentTransferCharge(accountItem, newActual, split.direction || 'send', manualCharge);
+  const adjustmentKind = paymentSplitAdjustmentKind(accountItem, split);
+  const chargeInfo = paymentTransferCharge(
+    adjustmentKind === 'commission' ? { ...accountItem, transactionChargeAppliesTo: 'both' } : accountItem,
+    newActual,
+    split.direction || 'send',
+    manualCharge
+  );
   const newCharge = positiveNum(chargeInfo.amount || 0);
   const amountDelta = round2(positiveNum(newActual) - oldActual);
   const chargeDelta = round2(newCharge - oldCharge);
   const mainEffect = split.direction === 'send' ? -amountDelta : amountDelta;
-  const chargeEffect = -chargeDelta;
+  const adjustmentEffect = adjustmentKind === 'commission' ? chargeDelta : -chargeDelta;
   return {
     oldActual,
     newActual: positiveNum(newActual),
@@ -2184,7 +2442,9 @@ function splitWalletMovementPreview(split = {}, accountItem = {}, newActual = 0,
     newCharge,
     amountDelta,
     chargeDelta,
-    netBalanceEffect: round2(mainEffect + chargeEffect),
+    adjustmentKind,
+    adjustmentEffect: round2(adjustmentEffect),
+    netBalanceEffect: round2(mainEffect + adjustmentEffect),
     chargeInfo
   };
 }
@@ -2213,42 +2473,81 @@ function appendSignedSplitLedger({ split, accountItem, user, amountDelta, note =
   return ledger;
 }
 
-function appendSplitChargeLedger({ split, accountItem, user, chargeDelta, note = '' }) {
+function appendSplitChargeLedger({ split, accountItem, user, chargeDelta, adjustmentKind = 'charge', note = '' }) {
   if (!chargeDelta) return null;
   const before = calcAccountBalance(accountItem.id);
-  const isCharge = chargeDelta > 0;
+  const isPositive = chargeDelta > 0;
+  const isCommission = adjustmentKind === 'commission';
+  const type = isCommission
+    ? (isPositive ? 'agent_transaction_commission' : 'agent_transaction_commission_reversal')
+    : (isPositive ? 'business_transfer_charge' : 'business_transfer_charge_refund');
+  const direction = isCommission
+    ? (isPositive ? 'receive' : 'send')
+    : (isPositive ? 'send' : 'receive');
+  const effect = isCommission ? chargeDelta : -chargeDelta;
+  const at = nowIso();
+  const commissionAgentId = isCommission
+    ? (paymentAccountOwnerAgentId(paymentAccountOwnerUser(accountItem)) || Number(split.agentId || 0) || null)
+    : (Number(split.agentId || 0) || null);
   const ledger = {
-    id: nextId(), orderId: split.orderId, splitId: split.id, paymentAccountId: accountItem.id, agentId: split.agentId,
-    direction: isCharge ? 'send' : 'receive',
-    type: isCharge ? 'business_transfer_charge' : 'business_transfer_charge_refund',
-    amount: Math.abs(chargeDelta), balanceBefore: before, balanceAfter: round2(before - chargeDelta),
-    category: 'payment_transfer_charge', note: cleanStr(note || 'automatic payment transfer charge', 300),
-    createdBy: user.id, createdAt: nowIso()
+    id: nextId(), orderId: split.orderId, splitId: split.id, paymentAccountId: accountItem.id, agentId: commissionAgentId,
+    direction, type, amount: Math.abs(chargeDelta), balanceBefore: before, balanceAfter: round2(before + effect),
+    category: isCommission ? 'agent_transaction_commission' : 'payment_transfer_charge',
+    transactionAdjustmentKind: adjustmentKind,
+    note: cleanStr(note || (isCommission ? 'automatic Agent transaction commission' : 'automatic payment transfer charge'), 300),
+    createdBy: user.id, createdAt: at
   };
   db.ledgers.push(ledger);
+  if (isCommission) {
+    const entry = createAutomaticAgentCommissionEntry({
+      amount: Math.abs(chargeDelta),
+      accountItem,
+      agentId: commissionAgentId,
+      userId: user.id,
+      ledgerId: ledger.id,
+      orderId: split.orderId,
+      splitId: split.id,
+      transactionType: split.direction === 'send' ? 'order_money_out' : 'order_money_in',
+      note: note || `${isPositive ? 'Earned' : 'Reversed'} Agent commission for order split`,
+      at,
+      reversal: !isPositive
+    });
+    ledger.businessEntryId = entry?.id || null;
+  }
   return ledger;
 }
 
 function applySplitWalletMovement(split, accountItem, user, newActual, options = {}) {
   const preview = splitWalletMovementPreview(split, accountItem, newActual, options.manualCharge);
+  if (preview.adjustmentKind === 'commission' && !paymentAccountOwnerAgentId(paymentAccountOwnerUser(accountItem))) {
+    const err = new Error('Agent commission requires an Agent account owned by an Agent user.');
+    err.statusCode = 422;
+    throw err;
+  }
   const before = calcAccountBalance(accountItem.id);
-  if (preview.netBalanceEffect < 0 && Math.abs(preview.netBalanceEffect) > before + 1e-9) {
-    const err = new Error(`Wallet balance is not enough for amount plus transfer charge. Required: ${round2(Math.abs(preview.netBalanceEffect))}, Available: ${round2(before)}.`);
+  const additionalSendAmount = split.direction === 'send' ? Math.max(0, preview.amountDelta) : 0;
+  const additionalCharge = preview.adjustmentKind === 'charge' ? Math.max(0, preview.chargeDelta) : 0;
+  const requiredBefore = round2(additionalSendAmount + additionalCharge);
+  if (requiredBefore > before + 1e-9) {
+    const label = preview.adjustmentKind === 'commission' ? 'transfer amount before commission credit' : 'amount plus transfer charge';
+    const err = new Error(`Wallet balance is not enough for ${label}. Required: ${requiredBefore}, Available: ${round2(before)}.`);
     err.statusCode = 422;
     throw err;
   }
   const available = split.direction === 'send' ? num(accountView(accountItem).sendAvailable) : Infinity;
-  if (preview.netBalanceEffect < 0 && Math.abs(preview.netBalanceEffect) > available + 1e-9) {
-    const err = new Error(`Wallet send capacity is not enough for amount plus transfer charge. Required: ${round2(Math.abs(preview.netBalanceEffect))}, Available: ${round2(available)}.`);
+  if (requiredBefore > available + 1e-9) {
+    const label = preview.adjustmentKind === 'commission' ? 'transfer amount before commission credit' : 'amount plus transfer charge';
+    const err = new Error(`Wallet send capacity is not enough for ${label}. Required: ${requiredBefore}, Available: ${round2(available)}.`);
     err.statusCode = 422;
     throw err;
   }
   const mainLedger = appendSignedSplitLedger({ split, accountItem, user, amountDelta: preview.amountDelta, note: options.note });
-  const chargeLedger = appendSplitChargeLedger({ split, accountItem, user, chargeDelta: preview.chargeDelta, note: options.chargeNote });
+  const chargeLedger = appendSplitChargeLedger({ split, accountItem, user, chargeDelta: preview.chargeDelta, adjustmentKind: preview.adjustmentKind, note: options.chargeNote });
   split.actualAmount = preview.newActual;
   split.transactionChargeAmount = preview.newCharge;
   split.transactionChargeMode = preview.chargeInfo.mode;
   split.transactionChargeSource = preview.chargeInfo.source;
+  split.transactionAdjustmentKind = preview.adjustmentKind;
   return { ...preview, balanceBefore: before, balanceAfter: calcAccountBalance(accountItem.id), mainLedgerId: mainLedger?.id || null, chargeLedgerId: chargeLedger?.id || null };
 }
 
@@ -2261,7 +2560,8 @@ function recalculateAccountBalances(target = db) {
 }
 
 function isSpendOrReceiveLedger(l) {
-  return l.type === 'send' || l.type === 'receive' || l.direction === 'send' || l.direction === 'receive';
+  if (['business_transfer_charge','business_transfer_charge_refund','agent_transaction_commission','agent_transaction_commission_reversal'].includes(String(l.type || ''))) return false;
+  return l.type === 'send' || l.type === 'receive' || String(l.type || '').startsWith('manual_') || l.direction === 'send' || l.direction === 'receive';
 }
 
 function accountUsage(accountId) {
@@ -2309,8 +2609,9 @@ function accountView(accountItem, viewer = null) {
     agent: null,
     viewerCanManage,
     viewerCanManageAccess,
-    viewerCanAdjust: viewer ? canAdjustPaymentAccount(viewer, accountItem) : undefined,
-    viewerCanUse: viewer ? canUsePaymentAccount(viewer, accountItem) : undefined
+    viewerCanDelete: viewer ? Boolean(!paymentAccountDeleted(accountItem) && canManagePaymentAccount(viewer, accountItem)) : undefined,
+    viewerCanAdjust: viewer ? Boolean(!paymentAccountDeleted(accountItem) && canAdjustPaymentAccount(viewer, accountItem)) : undefined,
+    viewerCanUse: viewer ? Boolean(!paymentAccountDeleted(accountItem) && canUsePaymentAccount(viewer, accountItem)) : undefined
   };
 }
 
@@ -2376,8 +2677,9 @@ function activeSplitAccountsForAgent(order, agentId, direction, requiredAmount =
     .map(account => ({ account, view: accountView(account) }))
     .filter(({ account, view }) => {
       const amount = Math.max(0, num(requiredAmount || 0));
-      const charge = paymentTransferCharge(account, amount, direction, null).amount;
-      const needed = direction === 'send' ? amount + charge : amount;
+      const adjustmentKind = paymentSplitAdjustmentKind(account);
+      const charge = paymentTransferCharge(adjustmentKind === 'commission' ? { ...account, transactionChargeAppliesTo: 'both' } : account, amount, direction, null).amount;
+      const needed = direction === 'send' ? amount + (adjustmentKind === 'charge' ? charge : 0) : amount;
       return splitCapacity(view, direction) + 1e-9 >= needed;
     })
     .sort((a, b) => splitCapacity(b.view, direction) - splitCapacity(a.view, direction));
@@ -2421,11 +2723,14 @@ function validateNewSplit(order, accountItem, splitAgentId, direction, planned, 
   }
   const view = accountView(accountItem);
   const capacity = splitCapacity(view, direction);
-  const charge = paymentTransferCharge(accountItem, amount, direction, options.manualCharge).amount;
-  const requiredCapacity = direction === 'send' ? amount + charge : amount;
+  const adjustmentKind = paymentSplitAdjustmentKind(accountItem);
+  const charge = paymentTransferCharge(adjustmentKind === 'commission' ? { ...accountItem, transactionChargeAppliesTo: 'both' } : accountItem, amount, direction, options.manualCharge).amount;
+  const requiredCapacity = direction === 'send' ? amount + (adjustmentKind === 'charge' ? charge : 0) : amount;
   if (requiredCapacity > capacity) {
     return direction === 'send'
-      ? `Amount plus transfer charge exceeds wallet available balance. Available: ${capacity}, Amount: ${amount}, Charge: ${charge}.`
+      ? (adjustmentKind === 'commission'
+        ? `Amount exceeds wallet available balance before commission credit. Available: ${capacity}, Amount: ${amount}.`
+        : `Amount plus transfer charge exceeds wallet available balance. Available: ${capacity}, Amount: ${amount}, Charge: ${charge}.`)
       : `Amount exceeds wallet receive limit left. Available: ${capacity}, Amount: ${amount}.`;
   }
   if (options.allowUnassigned) return '';
@@ -17037,7 +17342,7 @@ function paymentAccountDraftFromBody(body = {}, paymentMethod = null, actor = nu
     minOrderAmount: positiveNum(body.minOrderAmount || 0),
     maxOrderAmount: positiveNum(body.maxOrderAmount || 0),
     transactionChargeMode: normalizePaymentChargeMode(body.transactionChargeMode || 'none'),
-    transactionChargeAppliesTo: normalizePaymentChargeAppliesTo(body.transactionChargeAppliesTo || 'send'),
+    transactionChargeAppliesTo: paymentAccountChargeAppliesToForType(accountType),
     transactionChargeFixed: positiveNum(body.transactionChargeFixed || 0),
     transactionChargePercent: Math.max(0, Math.min(100, Number(body.transactionChargePercent || 0) || 0)),
     transactionChargeTiers: normalizePaymentChargeTiers(body.transactionChargeTiers || []),
@@ -17084,7 +17389,7 @@ function findPaymentAccountSerialConflict({ serialNumber = '', paymentMethodId =
   const candidate = { serialNumber, paymentMethodId: Number(paymentMethodId || 0), label };
   if (!normalizePaymentAccountSerialScopeValue(candidate.serialNumber, 80)) return null;
   const source = Array.isArray(accounts) ? accounts : (db.paymentAccounts || []);
-  return source.find(account => Number(account.id || 0) !== Number(excludeId || 0) && paymentAccountSerialScopesConflict(candidate, account)) || null;
+  return source.find(account => !paymentAccountDeleted(account) && Number(account.id || 0) !== Number(excludeId || 0) && paymentAccountSerialScopesConflict(candidate, account)) || null;
 }
 
 function paymentAccountSerialScopeView(paymentMethodId = 0, label = '', serialNumber = '') {
@@ -17145,6 +17450,9 @@ function createPaymentAccountFromDraft(draft, user) {
     currentBalance: 0,
     status: draft.status,
     managedBy: canManageAllPaymentAccounts(user) ? 'all_accounts' : 'account_owner',
+    deletedAt: null,
+    deletedBy: null,
+    deleteReason: '',
     createdBy: user.id,
     createdAt: nowIso()
   };
@@ -17153,9 +17461,206 @@ function createPaymentAccountFromDraft(draft, user) {
   return item;
 }
 
+function paymentAccountIdsFromBody(body = {}) {
+  const source = Array.isArray(body.ids) ? body.ids : (Array.isArray(body.accountIds) ? body.accountIds : []);
+  return Array.from(new Set(source.map(Number).filter(id => id > 0))).slice(0, 500);
+}
+
+function paymentAccountDeletionBlocker(accountItem = {}) {
+  if (!accountItem) return 'Payment account not found.';
+  if (paymentAccountDeleted(accountItem)) return 'Payment account is already deleted.';
+  const balance = round2(calcAccountBalance(accountItem.id));
+  if (Math.abs(balance) > 0.009) return `Balance must be zero before deletion. Current balance: ${balance}.`;
+  const reservation = pendingPaymentAccountReservation(accountItem.id);
+  if (reservation?.type === 'offline_transaction') return `Account is reserved by pending Offline Business transaction ${reservation.referenceNo || `#${reservation.transactionId}`}.`;
+  if (reservation?.type === 'payment_split') return `Account is reserved by pending order ${reservation.orderNo || `#${reservation.orderId}`}.`;
+  return '';
+}
+
+function softDeletePaymentAccount(user, accountItem, reason = '') {
+  accountItem.status = 'inactive';
+  accountItem.deletedAt = nowIso();
+  accountItem.deletedBy = user.id;
+  accountItem.deleteReason = cleanStr(reason || 'Deleted from Payment Accounts', 300);
+  accountItem.updatedAt = accountItem.deletedAt;
+  return accountItem;
+}
+
+function paymentAccountBulkUpdateCandidate(user, accountItem, changes = {}, serialNumberOverride = undefined) {
+  const candidate = {
+    ...accountItem,
+    allowedAgentIds: accountAllowedAgentIds(accountItem),
+    transactionChargeTiers: normalizePaymentChargeTiers(accountItem.transactionChargeTiers || [])
+  };
+  const canEditAccess = canManagePaymentAccountAccess(user, accountItem);
+  let nextType = changes.accountType !== undefined ? normalizePaymentAccountType(changes.accountType) : normalizePaymentAccountType(candidate.accountType);
+  let nextOwnerUser = canEditAccess ? paymentAccountOwnerUser(candidate) : user;
+  if (changes.ownerUserId !== undefined || changes.accountUserId !== undefined || changes.ownerUser !== undefined || changes.accountUser !== undefined) {
+    if (!canEditAccess) {
+      const error = new Error('Only Admin/Manager or Manage All Payment Accounts can bulk-change Account User.');
+      error.statusCode = 403;
+      throw error;
+    }
+    const resolvedOwner = resolvePaymentAccountOwnerUser(changes.ownerUserId ?? changes.accountUserId ?? changes.ownerUser ?? changes.accountUser);
+    if (resolvedOwner.unknown) {
+      const error = new Error(`Unknown or disabled Account User: ${resolvedOwner.unknown}`);
+      error.statusCode = 422;
+      throw error;
+    }
+    nextOwnerUser = resolvedOwner.user;
+  }
+  const ownerError = validatePaymentAccountOwner(nextType, nextOwnerUser);
+  if (ownerError) {
+    const error = new Error(ownerError);
+    error.statusCode = 422;
+    throw error;
+  }
+  let nextAllowedAgentIds = accountAllowedAgentIds(candidate);
+  if (changes.allowedAgentIds !== undefined || changes.agentIds !== undefined || changes.agents !== undefined) {
+    if (!canEditAccess) {
+      const error = new Error('Only Admin/Manager or Manage All Payment Accounts can bulk-change Agent access.');
+      error.statusCode = 403;
+      throw error;
+    }
+    const resolved = resolveBulkAgentIds(changes.allowedAgentIds ?? changes.agentIds ?? changes.agents);
+    if (resolved.unknown.length) {
+      const error = new Error(`Unknown or non-agent access value(s): ${resolved.unknown.join(', ')}`);
+      error.statusCode = 422;
+      throw error;
+    }
+    nextAllowedAgentIds = resolved.ids;
+  }
+  const ownerAgentId = paymentAccountOwnerAgentId(nextOwnerUser);
+  if (ownerAgentId) nextAllowedAgentIds = Array.from(new Set([...nextAllowedAgentIds, ownerAgentId]));
+  if (!canEditAccess) nextAllowedAgentIds = ownerAgentId ? [ownerAgentId] : [];
+
+  candidate.agentId = null;
+  candidate.managedBy = canEditAccess ? 'all_accounts' : 'account_owner';
+  candidate.accountType = nextType;
+  candidate.ownerUserId = nextOwnerUser.id;
+  candidate.allowedAgentIds = nextAllowedAgentIds;
+  if (changes.label !== undefined || changes.accountLabel !== undefined) candidate.label = cleanStr(changes.label ?? changes.accountLabel ?? '', 80);
+  if (serialNumberOverride !== undefined) candidate.serialNumber = cleanStr(serialNumberOverride || '', 80);
+  else if (changes.serialNumber !== undefined || changes.serial !== undefined) candidate.serialNumber = cleanStr(changes.serialNumber ?? changes.serial ?? '', 80);
+  if (changes.accountName !== undefined) candidate.accountName = cleanStr(changes.accountName || '', 120);
+  if (changes.status !== undefined) {
+    const status = cleanStr(changes.status || '', 40).toLowerCase();
+    if (!['active','hold','inactive'].includes(status)) {
+      const error = new Error('Payment account status must be Active, Hold or Inactive.');
+      error.statusCode = 422;
+      throw error;
+    }
+    candidate.status = status;
+  }
+  for (const key of ['dailyReceiveLimit','dailySendLimit','monthlyReceiveLimit','monthlySendLimit','minOrderAmount','maxOrderAmount']) {
+    if (changes[key] !== undefined) candidate[key] = positiveNum(changes[key]);
+  }
+  if (changes.transactionChargeMode !== undefined) candidate.transactionChargeMode = normalizePaymentChargeMode(changes.transactionChargeMode);
+  if (changes.transactionChargeFixed !== undefined) candidate.transactionChargeFixed = positiveNum(changes.transactionChargeFixed);
+  if (changes.transactionChargePercent !== undefined) candidate.transactionChargePercent = Math.max(0, Math.min(100, Number(changes.transactionChargePercent || 0) || 0));
+  if (changes.transactionChargeTiers !== undefined) candidate.transactionChargeTiers = normalizePaymentChargeTiers(changes.transactionChargeTiers);
+  candidate.transactionChargeAppliesTo = paymentAccountChargeAppliesToForType(candidate.accountType);
+  candidate.updatedAt = nowIso();
+  return candidate;
+}
+
+function paymentAccountBulkSerialOverrideMap(body = {}) {
+  const out = new Map();
+  const source = body.serialNumbers ?? body.serialNumberById ?? body.serials;
+  if (Array.isArray(source)) {
+    source.forEach(row => {
+      const id = Number(row?.id ?? row?.accountId ?? 0);
+      if (id) out.set(id, row?.serialNumber ?? row?.serial ?? '');
+    });
+  } else if (source && typeof source === 'object') {
+    Object.entries(source).forEach(([key, value]) => {
+      const id = Number(key || 0);
+      if (id) out.set(id, value);
+    });
+  }
+  return out;
+}
+
+async function bulkUpdatePaymentAccounts(req, res, user) {
+  const body = await readBody(req);
+  const ids = paymentAccountIdsFromBody(body);
+  if (!ids.length) return sendJson(res, 422, { error: 'Select at least one payment account.' }, {}, req);
+  const changes = body.changes && typeof body.changes === 'object' ? body.changes : {};
+  const serialOverrides = paymentAccountBulkSerialOverrideMap(body);
+  if (!Object.keys(changes).length && !serialOverrides.size) return sendJson(res, 422, { error: 'Choose at least one field to edit.' }, {}, req);
+  const originals = ids.map(id => accountById(id));
+  const missing = ids.filter((id, index) => !originals[index] || paymentAccountDeleted(originals[index]));
+  if (missing.length) return sendJson(res, 404, { error: `Payment account(s) not found: ${missing.join(', ')}` }, {}, req);
+  const forbidden = originals.filter(account => !canManagePaymentAccount(user, account));
+  if (forbidden.length) return sendJson(res, 403, { error: 'You can only bulk-edit payment accounts inside your management scope.' }, {}, req);
+
+  const candidates = [];
+  const errors = [];
+  originals.forEach((accountItem, index) => {
+    try {
+      candidates.push(paymentAccountBulkUpdateCandidate(user, accountItem, changes, serialOverrides.has(accountItem.id) ? serialOverrides.get(accountItem.id) : undefined));
+    } catch (error) {
+      errors.push({ accountId: accountItem.id, accountNumber: accountItem.accountNumber, error: error.message, statusCode: error.statusCode || 422, index });
+    }
+  });
+  if (errors.length) return sendJson(res, Math.max(...errors.map(item => Number(item.statusCode || 422))), { error: 'Bulk edit validation failed. No accounts were changed.', errors }, {}, req);
+
+  const selectedIds = new Set(ids);
+  const comparisonPool = (db.paymentAccounts || []).filter(account => !paymentAccountDeleted(account) && !selectedIds.has(Number(account.id))).concat(candidates);
+  for (const candidate of candidates) {
+    const conflict = comparisonPool.find(other => Number(other.id) !== Number(candidate.id) && paymentAccountSerialScopesConflict(candidate, other));
+    if (!conflict) continue;
+    const maySeeConflict = selectedIds.has(Number(conflict.id)) || canAccessAccount(user, conflict);
+    errors.push({
+      accountId: candidate.id,
+      accountNumber: candidate.accountNumber,
+      code: 'PAYMENT_ACCOUNT_SERIAL_SCOPE_CONFLICT',
+      error: paymentAccountSerialConflictMessage(candidate.paymentMethodId, candidate.label, candidate.serialNumber, maySeeConflict ? conflict : null),
+      conflictAccountId: maySeeConflict ? conflict.id : null,
+      conflictAccountNumber: maySeeConflict ? conflict.accountNumber : null
+    });
+  }
+  if (errors.length) return sendJson(res, 409, { error: 'Bulk edit validation failed. No accounts were changed.', errors }, {}, req);
+
+  candidates.forEach(candidate => {
+    const target = accountById(candidate.id);
+    Object.assign(target, candidate);
+  });
+  logAudit(user, 'payment_accounts_bulk_updated', 'paymentAccount', null, { count: ids.length, accountIds: ids, fields: Object.keys(changes), serialOverrides: serialOverrides.size });
+  saveDb();
+  broadcast({ type: 'payment.accounts.bulk_updated', count: ids.length, accountIds: ids, at: nowIso() });
+  return sendJson(res, 200, { count: ids.length, items: ids.map(id => accountView(accountById(id), user)) }, {}, req);
+}
+
+async function bulkDeletePaymentAccounts(req, res, user) {
+  const body = await readBody(req);
+  const ids = paymentAccountIdsFromBody(body);
+  if (!ids.length) return sendJson(res, 422, { error: 'Select at least one payment account.' }, {}, req);
+  const items = ids.map(id => accountById(id));
+  const errors = [];
+  items.forEach((accountItem, index) => {
+    const id = ids[index];
+    if (!accountItem || paymentAccountDeleted(accountItem)) errors.push({ accountId: id, error: 'Payment account not found or already deleted.' });
+    else if (!canManagePaymentAccount(user, accountItem)) errors.push({ accountId: id, accountNumber: accountItem.accountNumber, error: 'No permission to delete this payment account.' });
+    else {
+      const blocker = paymentAccountDeletionBlocker(accountItem);
+      if (blocker) errors.push({ accountId: id, accountNumber: accountItem.accountNumber, error: blocker });
+    }
+  });
+  if (errors.length) return sendJson(res, 409, { error: 'Bulk delete validation failed. No accounts were deleted.', errors }, {}, req);
+  const reason = cleanStr(body.reason || 'Bulk deleted from Payment Accounts', 300);
+  items.forEach(accountItem => softDeletePaymentAccount(user, accountItem, reason));
+  logAudit(user, 'payment_accounts_bulk_deleted', 'paymentAccount', null, { count: ids.length, accountIds: ids, reason });
+  saveDb();
+  broadcast({ type: 'payment.accounts.bulk_deleted', count: ids.length, accountIds: ids, at: nowIso() });
+  return sendJson(res, 200, { ok: true, count: ids.length, accountIds: ids }, {}, req);
+}
+
 async function handleBulkPaymentAccounts(req, res) {
   const user = requireAuth(req, res); if (!user) return;
   if (!canCreatePaymentAccounts(user)) return sendJson(res, 403, { error: 'Permission denied: accounts.manage' }, {}, req);
+  if (req.method === 'PATCH') return bulkUpdatePaymentAccounts(req, res, user);
+  if (req.method === 'DELETE') return bulkDeletePaymentAccounts(req, res, user);
   if (req.method !== 'POST') return sendJson(res, 405, { error: 'Method not allowed' }, {}, req);
   const body = await readBody(req);
   const structuredBoxImport = Array.isArray(body.accounts);
@@ -17204,7 +17709,7 @@ async function handleBulkPaymentAccounts(req, res) {
     if (method && draft.accountNumber) {
       const key = `${method.id}:${draft.accountNumber.toLowerCase()}`;
       if (seenAccounts.has(key)) errors.push({ row: rowNumber, error: 'Duplicate account number in this import for the same payment method.' });
-      if (db.paymentAccounts.some(account => Number(account.paymentMethodId) === Number(method.id) && String(account.accountNumber || '').toLowerCase() === draft.accountNumber.toLowerCase())) errors.push({ row: rowNumber, error: 'This payment account already exists.' });
+      if (db.paymentAccounts.some(account => !paymentAccountDeleted(account) && Number(account.paymentMethodId) === Number(method.id) && String(account.accountNumber || '').toLowerCase() === draft.accountNumber.toLowerCase())) errors.push({ row: rowNumber, error: 'This payment account already exists.' });
       seenAccounts.add(key);
     }
     if (method && draft.serialNumber) {
@@ -17243,7 +17748,7 @@ async function handlePaymentAccounts(req, res, url) {
   const user = requireAuth(req, res); if (!user) return;
   if (!canOpenPaymentAccounts(user)) return sendJson(res, 403, { error: 'Permission denied: accounts.view' }, {}, req);
   if (req.method === 'GET') {
-    let accounts = (db.paymentAccounts || []).filter(account => canAccessAccount(user, account));
+    let accounts = (db.paymentAccounts || []).filter(account => !paymentAccountDeleted(account) && canAccessAccount(user, account));
     const methodId = Number(url.searchParams.get('paymentMethodId') || 0);
     if (methodId) accounts = accounts.filter(account => Number(account.paymentMethodId) === methodId);
     const search = cleanStr(url.searchParams.get('search') || url.searchParams.get('q') || '', 160);
@@ -17276,7 +17781,7 @@ async function handlePaymentAccounts(req, res, url) {
         conflict: { accountId: maySeeConflict ? Number(serialConflict.id || 0) || null : null, accountNumber: maySeeConflict ? cleanStr(serialConflict.accountNumber || '', 120) || null : null }
       }, {}, req);
     }
-    if (db.paymentAccounts.some(account => Number(account.paymentMethodId) === paymentMethodId && String(account.accountNumber || '').toLowerCase() === draft.accountNumber.toLowerCase())) return sendJson(res, 409, { error: 'This payment account already exists for the selected method.' }, {}, req);
+    if (db.paymentAccounts.some(account => !paymentAccountDeleted(account) && Number(account.paymentMethodId) === paymentMethodId && String(account.accountNumber || '').toLowerCase() === draft.accountNumber.toLowerCase())) return sendJson(res, 409, { error: 'This payment account already exists for the selected method.' }, {}, req);
     const item = createPaymentAccountFromDraft(draft, user);
     logAudit(user, 'payment_account_created', 'paymentAccount', item.id, { accountNumber: item.accountNumber, label: item.label, serialNumber: item.serialNumber, ownerUserId: item.ownerUserId, accountType: item.accountType, openingBalance: draft.openingBalance, allowedAgentIds: item.allowedAgentIds });
     saveDb();
@@ -17290,11 +17795,22 @@ async function handlePaymentAccountById(req, res, parts) {
   const user = requireAuth(req, res); if (!user) return;
   const id = Number(parts[2]);
   const accountItem = accountById(id);
-  if (!accountItem) return sendJson(res, 404, { error: 'Payment account not found' }, {}, req);
+  if (!accountItem || paymentAccountDeleted(accountItem)) return sendJson(res, 404, { error: 'Payment account not found' }, {}, req);
   if (!canAccessAccount(user, accountItem)) return sendJson(res, 403, { error: 'No access to this payment account.' }, {}, req);
   if (!parts[3] && req.method === 'GET') return sendJson(res, 200, accountView(accountItem, user), {}, req);
   if (parts[3] === 'ledger' && req.method === 'POST') return addAccountLedger(req, res, user, accountItem);
   if (!parts[3] && req.method === 'PATCH') return updatePaymentAccount(req, res, user, accountItem);
+  if (!parts[3] && req.method === 'DELETE') {
+    if (!canManagePaymentAccount(user, accountItem)) return sendJson(res, 403, { error: 'You can only delete payment accounts inside your management scope.' }, {}, req);
+    const blocker = paymentAccountDeletionBlocker(accountItem);
+    if (blocker) return sendJson(res, 409, { error: blocker }, {}, req);
+    const body = await readBody(req);
+    softDeletePaymentAccount(user, accountItem, body.reason || 'Deleted from Payment Accounts');
+    logAudit(user, 'payment_account_deleted', 'paymentAccount', accountItem.id, { accountNumber: accountItem.accountNumber, reason: accountItem.deleteReason });
+    saveDb();
+    broadcast({ type: 'payment.account.deleted', paymentAccountId: accountItem.id, at: nowIso() });
+    return sendJson(res, 200, { ok: true, id: accountItem.id }, {}, req);
+  }
   return sendJson(res, 404, { error: 'Unknown payment account action' }, {}, req);
 }
 
@@ -17341,7 +17857,7 @@ async function updatePaymentAccount(req, res, user, accountItem) {
       conflict: { accountId: maySeeConflict ? Number(serialConflict.id || 0) || null : null, accountNumber: maySeeConflict ? cleanStr(serialConflict.accountNumber || '', 120) || null : null }
     }, {}, req);
   }
-  const duplicate = db.paymentAccounts.some(item => Number(item.id) !== Number(accountItem.id) && Number(item.paymentMethodId) === nextPaymentMethodId && String(item.accountNumber || '').trim().toLowerCase() === nextAccountNumber.toLowerCase());
+  const duplicate = db.paymentAccounts.some(item => !paymentAccountDeleted(item) && Number(item.id) !== Number(accountItem.id) && Number(item.paymentMethodId) === nextPaymentMethodId && String(item.accountNumber || '').trim().toLowerCase() === nextAccountNumber.toLowerCase());
   if (duplicate) return sendJson(res, 409, { error: 'This payment account already exists for the selected method.' }, {}, req);
   const nextStatus = body.status !== undefined ? cleanStr(body.status, 40).toLowerCase() : String(accountItem.status || 'active').toLowerCase();
   if (!['active','hold','inactive'].includes(nextStatus)) return sendJson(res, 422, { error: 'Payment account status must be Active, Hold or Inactive.' }, {}, req);
@@ -17359,7 +17875,7 @@ async function updatePaymentAccount(req, res, user, accountItem) {
   accountItem.status = nextStatus;
   for (const key of ['dailyReceiveLimit','dailySendLimit','monthlyReceiveLimit','monthlySendLimit','minOrderAmount','maxOrderAmount']) if (body[key] !== undefined) accountItem[key] = positiveNum(body[key]);
   if (body.transactionChargeMode !== undefined) accountItem.transactionChargeMode = normalizePaymentChargeMode(body.transactionChargeMode);
-  if (body.transactionChargeAppliesTo !== undefined) accountItem.transactionChargeAppliesTo = normalizePaymentChargeAppliesTo(body.transactionChargeAppliesTo);
+  accountItem.transactionChargeAppliesTo = paymentAccountChargeAppliesToForType(accountItem.accountType);
   if (body.transactionChargeFixed !== undefined) accountItem.transactionChargeFixed = positiveNum(body.transactionChargeFixed);
   if (body.transactionChargePercent !== undefined) accountItem.transactionChargePercent = Math.max(0, Math.min(100, Number(body.transactionChargePercent || 0) || 0));
   if (body.transactionChargeTiers !== undefined) accountItem.transactionChargeTiers = normalizePaymentChargeTiers(body.transactionChargeTiers);
@@ -17373,7 +17889,40 @@ async function updatePaymentAccount(req, res, user, accountItem) {
 async function addAccountLedger(req, res, user, accountItem) {
   if (!canAdjustPaymentAccount(user, accountItem)) return sendJson(res, 403, { error: 'Ledger adjustment is allowed only on payment accounts owned by your user unless all-account access is available.' }, {}, req);
   const body = await readBody(req);
-  const type = cleanStr(body.type || '', 40);
+  const type = cleanStr(body.type || '', 50).toLowerCase();
+  if (manualPaymentTransactionDefinition(type)) {
+    try {
+      const result = createManualPaymentAccountTransaction(user, accountItem, { ...body, type });
+      logAudit(user, 'payment_account_manual_transaction', 'paymentAccount', accountItem.id, {
+        manualTransactionId: result.manualTransactionId,
+        transactionType: type,
+        amount: result.preview.amount,
+        adjustmentKind: result.preview.adjustmentKind,
+        adjustmentAmount: result.preview.adjustmentAmount,
+        balanceBefore: result.balanceBefore,
+        balanceAfter: result.balanceAfter
+      });
+      saveDb();
+      broadcast({ type: 'payment.account.transaction_created', paymentAccountId: accountItem.id, manualTransactionId: result.manualTransactionId, at: nowIso() });
+      return sendJson(res, 201, {
+        account: accountView(accountItem, user),
+        ledger: result.mainLedger,
+        adjustmentLedger: result.adjustmentLedger,
+        commissionEntry: result.commissionEntry,
+        transaction: {
+          id: result.manualTransactionId,
+          type,
+          amount: result.preview.amount,
+          adjustmentKind: result.preview.adjustmentKind,
+          adjustmentAmount: result.preview.adjustmentAmount,
+          balanceBefore: result.balanceBefore,
+          balanceAfter: result.balanceAfter
+        }
+      }, {}, req);
+    } catch (error) {
+      return sendJson(res, error.statusCode || 422, { error: error.message || 'Manual transaction failed.' }, {}, req);
+    }
+  }
   const ledgerTypes = {
     topup: { direction: 'topup', sign: 1, label: 'Top up / cash in' },
     cashout: { direction: 'cashout', sign: -1, label: 'Cash out' },
@@ -18575,7 +19124,7 @@ async function addSplit(req, res, user, order) {
   const manualCharge = body.actualCharge ?? body.transactionChargeAmount ?? null;
   const validationError = validateNewSplit(order, accountItem, splitAgentId, direction, planned, actual, { allowUnassigned: isPrivilegedOrderOperator(user), manualCharge });
   if (validationError) return sendJson(res, 422, { error: validationError }, {}, req);
-  const split = { id: nextId(), orderId: order.id, agentId: splitAgentId, paymentAccountId: accountItem.id, paymentMethodId: accountItem.paymentMethodId, direction, plannedAmount: planned, actualAmount: 0, transactionChargeAmount: 0, transactionChargeMode: 'none', transactionChargeSource: '', status: actual === 0 ? 'planned' : (actual < planned ? 'partial' : 'completed'), proofFileId: null, transactionReference: cleanStr(body.transactionReference || '', 120), note: cleanStr(body.note || '', 300), createdBy: user.id, updatedBy: user.id, createdAt: nowIso(), updatedAt: nowIso() };
+  const split = { id: nextId(), orderId: order.id, agentId: splitAgentId, paymentAccountId: accountItem.id, paymentMethodId: accountItem.paymentMethodId, direction, plannedAmount: planned, actualAmount: 0, transactionChargeAmount: 0, transactionChargeMode: 'none', transactionChargeSource: '', transactionAdjustmentKind: paymentSplitAdjustmentKind(accountItem), status: actual === 0 ? 'planned' : (actual < planned ? 'partial' : 'completed'), proofFileId: null, transactionReference: cleanStr(body.transactionReference || '', 120), note: cleanStr(body.note || '', 300), createdBy: user.id, updatedBy: user.id, createdAt: nowIso(), updatedAt: nowIso() };
   if (body.screenshotDataUrl) {
     const proof = saveProofDataUrlToDatabase(body.screenshotDataUrl, { orderId: split.orderId, splitId: split.id, uploadedBy: user.id, createdAt: nowIso() }, db);
     if (!proof) return sendJson(res, 422, { error: 'Invalid or unsupported proof image' }, {}, req);
@@ -18702,7 +19251,7 @@ function applySplitCompletionEvidence(order, assignment, user, body = {}) {
     if (validationError) throw Object.assign(new Error(validationError), { statusCode: 422 });
     split = {
       id: nextId(), orderId: order.id, agentId, paymentAccountId: accountItem.id, paymentMethodId: accountItem.paymentMethodId,
-      direction, plannedAmount: requestedActual, actualAmount: 0, transactionChargeAmount: 0, transactionChargeMode: 'none', transactionChargeSource: '', status: 'planned', proofFileId: null,
+      direction, plannedAmount: requestedActual, actualAmount: 0, transactionChargeAmount: 0, transactionChargeMode: 'none', transactionChargeSource: '', transactionAdjustmentKind: paymentSplitAdjustmentKind(accountItem), status: 'planned', proofFileId: null,
       transactionReference: '', note: '', createdBy: user.id, updatedBy: user.id, createdAt: nowIso(), updatedAt: nowIso()
     };
     db.paymentSplits.push(split);
@@ -19670,7 +20219,15 @@ function accountingEntryView(item = {}) {
     paymentAccountId: item.paymentAccountId || null,
     paymentAccount: accountItem ? { id: accountItem.id, accountNumber: accountItem.accountNumber, accountName: accountItem.accountName, method: methodById(accountItem.paymentMethodId) || null } : null,
     agentId: item.agentId || null,
-    agent: agent ? { id: agent.id, name: agent.name } : null
+    agent: agent ? { id: agent.id, name: agent.name } : null,
+    automatic: item.automatic === true,
+    protected: item.protected === true,
+    sourceType: item.sourceType || '',
+    includeInCompanyTotals: item.agentId ? accountingEntryIncludedInCompanyTotals(item) : true,
+    manualTransactionId: item.manualTransactionId || null,
+    orderId: item.orderId || null,
+    splitId: item.splitId || null,
+    transactionType: item.transactionType || ''
   };
 }
 
@@ -19688,14 +20245,20 @@ function accountingCostTransactionsForRange(range = null, viewer = {}, asOf = no
       const view = accountingEntryView(item);
       const currency = cleanStr(item.currency || 'BDT', 10).toUpperCase();
       const amount = positiveNum(item.amount || 0);
+      const automaticAgentCommissionReversal = String(item.sourceType || '') === 'agent_transaction_commission_reversal';
+      const protectedEntry = item.protected === true || item.automatic === true;
       items.push({
-        id: `expense:${item.id}`, entryId: item.id, source: 'manual_expense', sourceLabel: 'Manual Business Expense',
+        id: `expense:${item.id}`, entryId: item.id,
+        source: automaticAgentCommissionReversal ? 'agent_commission_reversal' : 'manual_expense',
+        sourceLabel: automaticAgentCommissionReversal ? 'Agent Commission Reversal' : 'Manual Business Expense',
         category: item.category || 'General', businessDate: view.businessDate, createdAt: item.createdAt,
         amountBdt: currency === 'BDT' ? amount : amount * companyDollarRate,
         amountUsd: ['USDT','USD'].includes(currency) ? amount : 0,
         currency, amount, note: item.note || '', orderId: null, orderNo: '',
         paymentAccount: view.paymentAccount, agent: view.agent, createdByUser: view.createdByUser,
-        reversible: true
+        automatic: item.automatic === true,
+        protected: item.protected === true,
+        reversible: !protectedEntry
       });
     });
 
@@ -19764,6 +20327,26 @@ function accountingEntriesForRange(range = null) {
   // Every saved business entry belongs to accounting history. BDT entries are
   // already required to reference a CRM payment account; USDT entries may not.
   return (db.businessEntries || []).filter(item => inReportRange(item.createdAt, range));
+}
+
+function accountingEntryIncludedInCompanyTotals(entry = {}) {
+  if (!entry.agentId) return true;
+  return agentProfitIncludedInCompanyTotals(entry.agentId);
+}
+
+function accountingEntryValueBdt(entry = {}, companyDollarRate = 118) {
+  const amount = positiveNum(entry.amount || 0);
+  const currency = cleanStr(entry.currency || 'BDT', 10).toUpperCase();
+  if (currency === 'BDT') return amount;
+  if (currency === 'USD' || currency === 'USDT') return amount * positiveNum(companyDollarRate || 118);
+  return 0;
+}
+
+function accountingEntrySignedProfitBdt(entry = {}, companyDollarRate = 118) {
+  const value = accountingEntryValueBdt(entry, companyDollarRate);
+  if (entry.type === 'income') return value;
+  if (entry.type === 'expense') return -value;
+  return 0;
 }
 
 function accountingCapitalEntryUsd(entry = {}, asOf = nowIso()) {
@@ -19849,10 +20432,11 @@ function accountingSummaryForRange(range, viewer, options = {}) {
   const rows = allRows.filter(row => inReportRange(row.completedAt, range));
   const entries = accountingEntriesForRange(range);
   const companyDollarRate = positiveNum(db.settings.accountingCompanyDollarRate || 118) || 118;
+  const companyEntries = entries.filter(accountingEntryIncludedInCompanyTotals);
   const replacementProfit = accountingRealtimeReplacementProfit(allRows, range, asOf, companyDollarRate);
   const inventoryGrossProfit = round2(sum(rows.filter(row => row.type === 'SELL').map(row => num(row.inventoryPnl ?? row.grossProfit))));
-  const otherIncome = round2(sum(entries.filter(item => item.type === 'income' && cleanStr(item.currency || 'BDT', 10).toUpperCase() === 'BDT').map(item => positiveNum(item.amount))));
-  const expenses = round2(sum(entries.filter(item => item.type === 'expense' && cleanStr(item.currency || 'BDT', 10).toUpperCase() === 'BDT').map(item => positiveNum(item.amount))));
+  const otherIncome = round2(sum(companyEntries.filter(item => item.type === 'income').map(item => accountingEntryValueBdt(item, companyDollarRate))));
+  const expenses = round2(sum(companyEntries.filter(item => item.type === 'expense').map(item => accountingEntryValueBdt(item, companyDollarRate))));
   const capitalIn = round2(sum(entries.filter(item => item.type === 'capital_in' && cleanStr(item.currency || 'BDT', 10).toUpperCase() === 'BDT').map(item => positiveNum(item.amount))));
   const capitalOut = round2(sum(entries.filter(item => item.type === 'capital_out' && cleanStr(item.currency || 'BDT', 10).toUpperCase() === 'BDT').map(item => positiveNum(item.amount))));
   const capitalInUsd = sum(entries.filter(item => item.type === 'capital_in').map(item => accountingCapitalEntryUsd(item, asOf)));
@@ -19874,10 +20458,14 @@ function accountingSummaryForRange(range, viewer, options = {}) {
   // Actual assets remain visible for reconciliation, while profit marked
   // “individual only” is ring-fenced from company income and capital totals.
   const ownerActualBusinessAssetUsd = actualBinanceUsd + pendingEstimatedNetUsd;
-  const allUserProfitUsd = num(replacementProfit.totals.profitUsd || 0);
+  const allAgentEntryProfitBdt = sum(entries.filter(item => item.agentId).map(item => accountingEntrySignedProfitBdt(item, companyDollarRate)));
+  const excludedAgentEntryProfitBdt = sum(entries
+    .filter(item => item.agentId && !accountingEntryIncludedInCompanyTotals(item))
+    .map(item => accountingEntrySignedProfitBdt(item, companyDollarRate)));
+  const allUserProfitUsd = num(replacementProfit.totals.profitUsd || 0) + (allAgentEntryProfitBdt / companyDollarRate);
   const excludedUserProfitUsd = sum((replacementProfit.agentTotals || [])
     .filter(item => !agentProfitIncludedInCompanyTotals(item.agentId))
-    .map(item => num(item.profitUsd || 0)));
+    .map(item => num(item.profitUsd || 0))) + (excludedAgentEntryProfitBdt / companyDollarRate);
   const sumUserProfitUsd = allUserProfitUsd - excludedUserProfitUsd;
   const ownerCurrentBusinessAssetUsd = ownerActualBusinessAssetUsd - excludedUserProfitUsd;
   const openingCapitalInfo = accountingOpeningCapitalForRange(range, asOf, companyDollarRate);
@@ -19902,7 +20490,7 @@ function accountingSummaryForRange(range, viewer, options = {}) {
   const unrealizedProfit = round2(cryptoValue - inventory.bookValue);
   const buyCost = round2(sum(rows.filter(row => row.type === 'BUY').map(row => row.fiat)));
   const sellRevenue = round2(sum(rows.filter(row => row.type === 'SELL').map(row => row.fiat)));
-  const businessCosts = accountingBusinessCostReport(rows, entries, range, companyDollarRate);
+  const businessCosts = accountingBusinessCostReport(rows, companyEntries, range, companyDollarRate);
 
   const agentMap = new Map((db.agents || []).map(agent => [Number(agent.id), {
     agentId: agent.id, name: agent.name, orders: new Set(), buyVolume: 0, buyCrypto: 0,
@@ -19936,8 +20524,8 @@ function accountingSummaryForRange(range, viewer, options = {}) {
     if (!entry.agentId) return;
     const item = agentMap.get(Number(entry.agentId));
     if (!item) return;
-    if (entry.type === 'income') item.income += positiveNum(entry.amount);
-    if (entry.type === 'expense') item.expenses += positiveNum(entry.amount);
+    if (entry.type === 'income') item.income += accountingEntryValueBdt(entry, companyDollarRate);
+    if (entry.type === 'expense') item.expenses += accountingEntryValueBdt(entry, companyDollarRate);
   });
   let byAgent = [...agentMap.values()].map(item => ({
     agentId: item.agentId, name: item.name, orders: item.orders.size,
@@ -19951,7 +20539,7 @@ function accountingSummaryForRange(range, viewer, options = {}) {
     accountingScope: agentProfitIncludedInCompanyTotals(item.agentId) ? 'company' : 'individual_only',
     grossProfit: round2(item.profitUsd * companyDollarRate), profitBdt: round2(item.profitUsd * companyDollarRate),
     otherIncome: round2(item.income), expenses: round2(item.expenses),
-    netContribution: round2(item.profitUsd * companyDollarRate)
+    netContribution: round2((item.profitUsd * companyDollarRate) + item.income - item.expenses)
   })).filter(item => item.orders || item.otherIncome || item.expenses || Math.abs(item.profitUsd) > 0.000000001);
   const scopeAgent = viewer?.role === 'agent' ? byAgent.find(item => Number(item.agentId) === Number(viewer.agentId)) || {
     agentId: Number(viewer.agentId || 0), name: viewer.name || viewer.username || 'Agent', orders: 0,
@@ -19983,7 +20571,7 @@ function accountingSummaryForRange(range, viewer, options = {}) {
   const scopedProfitUsd = scopeAgent ? num(scopeAgent.profitUsd || 0) : sumUserProfitUsd;
   const scopedOtherIncome = scopeAgent ? num(scopeAgent.otherIncome || 0) : otherIncome;
   const scopedExpenses = scopeAgent ? num(scopeAgent.expenses || 0) : expenses;
-  const scopedNetProfit = scopeAgent ? round2(scopedProfitUsd * companyDollarRate) : round2(ownerProfitBdt);
+  const scopedNetProfit = scopeAgent ? round2((scopedProfitUsd * companyDollarRate) + scopedOtherIncome - scopedExpenses) : round2(ownerProfitBdt);
   const scopedBuyCost = scopeAgent ? num(scopeAgent.buyVolume || 0) : buyCost;
   const scopedSellRevenue = scopeAgent ? num(scopeAgent.sellVolume || 0) : sellRevenue;
   const scopedBuyCrypto = scopeAgent ? num(scopeAgent.buyCrypto || 0) : num(replacementProfit.totals.buyNetQuantity || 0);
@@ -20638,6 +21226,7 @@ async function handleAccounting(req, res, url) {
     const index = (db.businessEntries || []).findIndex(item => Number(item.id) === id);
     if (index < 0) return sendJson(res, 404, { error: 'Accounting entry not found.' }, {}, req);
     const item = db.businessEntries[index];
+    if (item.protected === true || item.automatic === true || item.sourceType === 'agent_transaction_commission') return sendJson(res, 409, { error: 'Automatic Agent commission entries are linked to wallet statements and cannot be deleted separately.' }, {}, req);
     if ((db.businessDailyCloses || []).some(close => close.businessDate === item.businessDate)) return sendJson(res, 409, { error: 'Closed-day entries cannot be deleted.' }, {}, req);
     if (item.ledgerId) db.ledgers = db.ledgers.filter(ledger => Number(ledger.id) !== Number(item.ledgerId));
     db.businessEntries.splice(index, 1);
@@ -22100,6 +22689,184 @@ function runPaymentAccountSerialScopeSelfTest() {
   }
 }
 
+
+function runPaymentAccountBulkManualTransactionSelfTest() {
+  const previousDb = db;
+  const closeEnough = (a, b, tolerance = 0.001) => Math.abs(Number(a) - Number(b)) <= tolerance;
+  const assert = (condition, message) => { if (!condition) throw new Error(message); };
+  const highLimits = {
+    dailyReceiveLimit: 1000000,
+    dailySendLimit: 1000000,
+    monthlyReceiveLimit: 10000000,
+    monthlySendLimit: 10000000,
+    minOrderAmount: 0,
+    maxOrderAmount: 0,
+    status: 'active',
+    deletedAt: null,
+    deletedBy: null,
+    deleteReason: ''
+  };
+  try {
+    db = {
+      meta: { nextId: 30000, schemaVersion: APP_SCHEMA_VERSION, dataCompatibilityEpoch: APP_DATA_COMPATIBILITY_EPOCH },
+      settings: {
+        accountingTimezoneOffsetMinutes: 0,
+        accountingCompanyDollarRate: 118,
+        accountingCryptoAsset: 'USDT'
+      },
+      users: [
+        { id: 1, username: 'owner', name: 'Owner', role: 'admin', enabled: true, permissions: PERMISSION_CATALOG.slice() },
+        { id: 2, username: 'agent-one', name: 'Agent One', role: 'agent', enabled: true, agentId: 20, permissions: ['accounts.view','accounts.manage','accounts.use','ledger.adjust'] }
+      ],
+      agents: [{ id: 20, userId: 2, name: 'Agent One', includeProfitInCompanyTotals: false }],
+      paymentMethods: [
+        { id: 10, code: 'BKASH', name: 'bKash', enabled: true },
+        { id: 11, code: 'NAGAD', name: 'Nagad', enabled: true }
+      ],
+      paymentAccounts: [
+        { id: 100, ownerUserId: 1, paymentMethodId: 10, accountNumber: 'P-100', accountName: 'Personal', label: 'Personal', serialNumber: 'P-1', accountType: 'personal', allowedAgentIds: [], transactionChargeMode: 'fixed', transactionChargeAppliesTo: 'send', transactionChargeFixed: 5, transactionChargePercent: 0, transactionChargeTiers: [], ...highLimits },
+        { id: 101, ownerUserId: 1, paymentMethodId: 10, accountNumber: 'M-101', accountName: 'Merchant', label: 'Merchant', serialNumber: 'M-1', accountType: 'merchant', allowedAgentIds: [], transactionChargeMode: 'percentage', transactionChargeAppliesTo: 'send', transactionChargeFixed: 0, transactionChargePercent: 1, transactionChargeTiers: [], ...highLimits },
+        { id: 102, ownerUserId: 2, paymentMethodId: 10, accountNumber: 'A-102', accountName: 'Agent', label: 'Agent', serialNumber: 'A-1', accountType: 'agent', allowedAgentIds: [20], transactionChargeMode: 'percentage', transactionChargeAppliesTo: 'both', transactionChargeFixed: 0, transactionChargePercent: 2, transactionChargeTiers: [], ...highLimits },
+        { id: 103, ownerUserId: 1, paymentMethodId: 11, accountNumber: 'MAN-103', accountName: 'Manual Rule', label: 'Manual', serialNumber: 'MAN-1', accountType: 'personal', allowedAgentIds: [], transactionChargeMode: 'manual', transactionChargeAppliesTo: 'send', transactionChargeFixed: 0, transactionChargePercent: 0, transactionChargeTiers: [], ...highLimits },
+        { id: 104, ownerUserId: 1, paymentMethodId: 11, accountNumber: 'ZERO-104', accountName: 'Delete Me', label: 'Delete Scope', serialNumber: 'ZERO-1', accountType: 'personal', allowedAgentIds: [], transactionChargeMode: 'none', transactionChargeAppliesTo: 'send', transactionChargeFixed: 0, transactionChargePercent: 0, transactionChargeTiers: [], ...highLimits },
+        { id: 105, ownerUserId: 1, paymentMethodId: 11, accountNumber: 'BULK-105', accountName: 'Bulk One', label: 'One', serialNumber: 'B-1', accountType: 'personal', allowedAgentIds: [], transactionChargeMode: 'none', transactionChargeAppliesTo: 'send', transactionChargeFixed: 0, transactionChargePercent: 0, transactionChargeTiers: [], ...highLimits },
+        { id: 106, ownerUserId: 1, paymentMethodId: 11, accountNumber: 'BULK-106', accountName: 'Bulk Two', label: 'Two', serialNumber: 'B-2', accountType: 'personal', allowedAgentIds: [], transactionChargeMode: 'none', transactionChargeAppliesTo: 'send', transactionChargeFixed: 0, transactionChargePercent: 0, transactionChargeTiers: [], ...highLimits }
+      ],
+      ledgers: [
+        { id: 201, paymentAccountId: 100, direction: 'opening', type: 'opening', amount: 5000, createdAt: '2026-08-01T00:00:00.000Z' },
+        { id: 202, paymentAccountId: 101, direction: 'opening', type: 'opening', amount: 5000, createdAt: '2026-08-01T00:00:00.000Z' },
+        { id: 203, paymentAccountId: 102, direction: 'opening', type: 'opening', amount: 0, createdAt: '2026-08-01T00:00:00.000Z' },
+        { id: 204, paymentAccountId: 103, direction: 'opening', type: 'opening', amount: 5000, createdAt: '2026-08-01T00:00:00.000Z' },
+        { id: 205, paymentAccountId: 104, direction: 'opening', type: 'opening', amount: 0, createdAt: '2026-08-01T00:00:00.000Z' },
+        { id: 206, paymentAccountId: 105, direction: 'opening', type: 'opening', amount: 0, createdAt: '2026-08-01T00:00:00.000Z' },
+        { id: 207, paymentAccountId: 106, direction: 'opening', type: 'opening', amount: 0, createdAt: '2026-08-01T00:00:00.000Z' }
+      ],
+      orders: [], orderAgentAssignments: [], paymentSplits: [], offlineTransactions: [],
+      businessEntries: [], businessDailyCloses: [], binanceBalanceSnapshots: [],
+      routing: [], proofFiles: [], auditLogs: [], locks: [], notifications: [], apiCredentials: [],
+      chats: [], chatReadStates: [], coAgentRequests: [], approvalRequests: [], advertisements: [],
+      securityRevertTokens: [], sessions: [], p2pExtensionTasks: [], p2pExtensionCache: [],
+      userActivitySessions: [], chatMedia: [], systemUpdates: [], systemUpdateEvents: []
+    };
+
+    const admin = db.users[0];
+    const personal = accountById(100);
+    const merchant = accountById(101);
+    const agentAccount = accountById(102);
+    const manualRule = accountById(103);
+    const zeroAccount = accountById(104);
+
+    const personalSend = createManualPaymentAccountTransaction(admin, personal, { type: 'send_money', amount: 1000, note: 'Personal Send Money' });
+    assert(closeEnough(personalSend.balanceAfter, 3995), `Personal Send Money balance mismatch: ${personalSend.balanceAfter}`);
+    assert(personalSend.preview.adjustmentKind === 'charge' && closeEnough(personalSend.preview.adjustmentAmount, 5), 'Personal Send Money fee was not applied.');
+    const personalBill = createManualPaymentAccountTransaction(admin, personal, { type: 'bill_pay', amount: 100, note: 'Personal Bill Pay' });
+    assert(closeEnough(personalBill.balanceAfter, 3895), `Personal Bill Pay balance mismatch: ${personalBill.balanceAfter}`);
+    assert(personalBill.preview.adjustmentKind === 'none' && closeEnough(personalBill.preview.adjustmentAmount, 0), 'Bill Pay incorrectly received a fee.');
+
+    const merchantCashOut = createManualPaymentAccountTransaction(admin, merchant, { type: 'cash_out', amount: 1000, note: 'Merchant Cash Out' });
+    assert(closeEnough(merchantCashOut.balanceAfter, 3990), `Merchant Cash Out balance mismatch: ${merchantCashOut.balanceAfter}`);
+    assert(merchantCashOut.preview.adjustmentKind === 'charge' && closeEnough(merchantCashOut.preview.adjustmentAmount, 10), 'Merchant Cash Out percentage fee was not applied.');
+
+    const agentReceive = createManualPaymentAccountTransaction(admin, agentAccount, { type: 'receive_money', amount: 1000, note: 'Agent Receive Money' });
+    assert(closeEnough(agentReceive.balanceAfter, 1020), `Agent receive commission balance mismatch: ${agentReceive.balanceAfter}`);
+    assert(agentReceive.preview.adjustmentKind === 'commission' && closeEnough(agentReceive.preview.adjustmentAmount, 20), 'Agent incoming commission was not credited.');
+    const agentSend = createManualPaymentAccountTransaction(admin, agentAccount, { type: 'send_money', amount: 500, note: 'Agent Send Money' });
+    assert(closeEnough(agentSend.balanceAfter, 530), `Agent outgoing commission balance mismatch: ${agentSend.balanceAfter}`);
+    assert(agentSend.preview.adjustmentKind === 'commission' && closeEnough(agentSend.preview.adjustmentAmount, 10), 'Agent outgoing commission was not credited.');
+    const protectedManualCommissions = db.businessEntries.filter(item => item.sourceType === 'agent_transaction_commission' && item.manualTransactionId);
+    assert(protectedManualCommissions.length === 2 && protectedManualCommissions.every(item => item.automatic === true && item.protected === true), 'Manual Agent commission accounting entries are not protected automatic income.');
+    assert(protectedManualCommissions.every(item => accountingEntryIncludedInCompanyTotals(item) === false), 'Individual-only Agent commission leaked into Company totals.');
+
+    const receiveSplit = { id: 301, orderId: 401, agentId: 20, paymentAccountId: 102, direction: 'receive', actualAmount: 0, transactionChargeAmount: 0, transactionAdjustmentKind: 'commission' };
+    const receiveMovement = applySplitWalletMovement(receiveSplit, agentAccount, admin, 100, { note: 'Order receive' });
+    assert(closeEnough(receiveMovement.balanceAfter, 632), `Agent split receive balance mismatch: ${receiveMovement.balanceAfter}`);
+    assert(closeEnough(receiveSplit.transactionChargeAmount, 2), 'Agent split incoming commission was not recorded.');
+    const sendSplit = { id: 302, orderId: 402, agentId: 20, paymentAccountId: 102, direction: 'send', actualAmount: 0, transactionChargeAmount: 0, transactionAdjustmentKind: 'commission' };
+    const sendMovement = applySplitWalletMovement(sendSplit, agentAccount, admin, 200, { note: 'Order send' });
+    assert(closeEnough(sendMovement.balanceAfter, 436), `Agent split send balance mismatch: ${sendMovement.balanceAfter}`);
+    const reducedMovement = applySplitWalletMovement(sendSplit, agentAccount, admin, 100, { note: 'Order send reduced' });
+    assert(closeEnough(reducedMovement.balanceAfter, 534), `Agent split commission reversal mismatch: ${reducedMovement.balanceAfter}`);
+    assert(db.ledgers.some(item => item.type === 'agent_transaction_commission_reversal' && Number(item.splitId) === 302), 'Agent split commission reversal ledger is missing.');
+    assert(db.businessEntries.some(item => item.sourceType === 'agent_transaction_commission_reversal' && Number(item.splitId) === 302 && item.type === 'expense' && item.protected === true), 'Agent split commission reversal accounting entry is missing.');
+
+    const beforeManualFailure = db.ledgers.length;
+    let manualRequiredRejected = false;
+    try { createManualPaymentAccountTransaction(admin, manualRule, { type: 'send_money', amount: 100 }); }
+    catch (error) { manualRequiredRejected = /required/i.test(error.message); }
+    assert(manualRequiredRejected, 'Manual charge rule accepted a transaction without the actual charge amount.');
+    assert(db.ledgers.length === beforeManualFailure, 'Failed manual-rule transaction changed the ledger.');
+    const suppliedManual = createManualPaymentAccountTransaction(admin, manualRule, { type: 'send_money', amount: 100, adjustmentAmount: 7 });
+    assert(closeEnough(suppliedManual.balanceAfter, 4893), `Manual supplied fee balance mismatch: ${suppliedManual.balanceAfter}`);
+
+    assert(/Balance must be zero/.test(paymentAccountDeletionBlocker(personal)), 'Non-zero payment account deletion was not blocked.');
+    const zeroLedgerCount = db.ledgers.filter(item => Number(item.paymentAccountId) === 104).length;
+    assert(paymentAccountDeletionBlocker(zeroAccount) === '', 'Zero-balance unreserved payment account should be deletable.');
+    softDeletePaymentAccount(admin, zeroAccount, 'Self-test deletion');
+    assert(paymentAccountDeleted(zeroAccount) && zeroAccount.status === 'inactive', 'Payment account soft delete did not persist deletion state.');
+    assert(db.ledgers.filter(item => Number(item.paymentAccountId) === 104).length === zeroLedgerCount, 'Payment account delete removed statement history.');
+    assert(!findPaymentAccountSerialConflict({ paymentMethodId: 11, label: 'Delete Scope', serialNumber: 'ZERO-1' }), 'Deleted payment account still blocks serial reuse.');
+
+    const bulkOne = accountById(105);
+    const bulkTwo = accountById(106);
+    const originalBulkState = [bulkOne, bulkTwo].map(item => ({ id: item.id, label: item.label, serialNumber: item.serialNumber, status: item.status }));
+    const conflictCandidates = [
+      paymentAccountBulkUpdateCandidate(admin, bulkOne, { label: 'Shared' }, 'SAME-1'),
+      paymentAccountBulkUpdateCandidate(admin, bulkTwo, { label: 'Shared' }, 'SAME-1')
+    ];
+    assert(paymentAccountSerialScopesConflict(conflictCandidates[0], conflictCandidates[1]), 'Bulk edit did not detect an in-batch serial collision.');
+    assert(originalBulkState.every(snapshot => {
+      const current = accountById(snapshot.id);
+      return current.label === snapshot.label && current.serialNumber === snapshot.serialNumber && current.status === snapshot.status;
+    }), 'Bulk validation mutated accounts before all rows passed.');
+    const validCandidates = [
+      paymentAccountBulkUpdateCandidate(admin, bulkOne, { status: 'hold', transactionChargeMode: 'fixed', transactionChargeFixed: 3 }, 'SEQ-001'),
+      paymentAccountBulkUpdateCandidate(admin, bulkTwo, { status: 'hold', transactionChargeMode: 'fixed', transactionChargeFixed: 3 }, 'SEQ-002')
+    ];
+    assert(!paymentAccountSerialScopesConflict(validCandidates[0], validCandidates[1]), 'Valid sequential bulk edit incorrectly conflicts.');
+    validCandidates.forEach(candidate => Object.assign(accountById(candidate.id), candidate));
+    assert([bulkOne, bulkTwo].every(item => item.status === 'hold' && item.transactionChargeMode === 'fixed' && closeEnough(item.transactionChargeFixed, 3)), 'Validated bulk changes were not applied together.');
+
+    const migrationArrays = ['users','userRoles','apiCredentials','agents','paymentMethods','paymentAccounts','routing','orders','orderAgentAssignments','paymentSplits','ledgers','proofFiles','auditLogs','locks','notifications','offlineTransactions','chats','chatReadStates','coAgentRequests','approvalRequests','advertisements','securityRevertTokens','sessions','p2pExtensionTasks','p2pExtensionCache','userActivitySessions','businessEntries','businessDailyCloses','binanceBalanceSnapshots','chatMedia','systemUpdates','systemUpdateEvents'];
+    const migrationTarget = { meta: { nextId: 50000, schemaVersion: 33, dataCompatibilityEpoch: APP_DATA_COMPATIBILITY_EPOCH }, settings: {} };
+    migrationArrays.forEach(key => { migrationTarget[key] = []; });
+    migrationTarget.paymentAccounts = [{ id: 501, paymentMethodId: 10, accountNumber: 'LEGACY-AGENT', accountType: 'agent', currentBalance: 0, status: 'active' }];
+    migrationTarget.paymentSplits = [
+      { id: 601, paymentAccountId: 501, actualAmount: 100, transactionChargeAmount: 2, direction: 'send' },
+      { id: 602, paymentAccountId: 501, actualAmount: 0, transactionChargeAmount: 0, direction: 'receive', status: 'planned' }
+    ];
+    migrationTarget.ledgers = [{ id: 701, paymentAccountId: 501, splitId: 601, direction: 'send', type: 'business_transfer_charge', amount: 2, createdAt: '2026-08-01T00:00:00.000Z' }];
+    migrateDb(migrationTarget);
+    assert(migrationTarget.meta.schemaVersion === APP_SCHEMA_VERSION, `Schema migration target mismatch: ${migrationTarget.meta.schemaVersion}`);
+    assert(migrationTarget.paymentSplits.find(item => item.id === 601)?.transactionAdjustmentKind === 'charge', 'Historical Agent split charge was reinterpreted as commission.');
+    assert(migrationTarget.paymentSplits.find(item => item.id === 602)?.transactionAdjustmentKind === 'commission', 'Untouched planned Agent split did not adopt commission mode.');
+
+    const typeKeys = Object.keys(MANUAL_PAYMENT_TRANSACTION_TYPES);
+    assert(typeKeys.length === 6 && ['send_money','receive_money','cash_out','bill_pay','payment','mobile_recharge'].every(key => typeKeys.includes(key)), 'Manual transaction catalog is incomplete.');
+
+    console.log(JSON.stringify({
+      ok: true,
+      version: APP_VERSION,
+      schemaVersion: APP_SCHEMA_VERSION,
+      bulk: { multiSelectEdit: true, atomicValidation: true, safeSoftDelete: true, statementHistoryPreserved: true },
+      personal: { sendMoneyFee: personalSend.preview.adjustmentAmount, billPayFee: personalBill.preview.adjustmentAmount, finalBalance: personalBill.balanceAfter },
+      merchant: { cashOutFee: merchantCashOut.preview.adjustmentAmount, finalBalance: merchantCashOut.balanceAfter },
+      agent: {
+        incomingCommission: agentReceive.preview.adjustmentAmount,
+        outgoingCommission: agentSend.preview.adjustmentAmount,
+        splitIncomingCommission: receiveSplit.transactionChargeAmount,
+        splitOutgoingCommission: sendSplit.transactionChargeAmount,
+        finalBalance: reducedMovement.balanceAfter,
+        protectedAccounting: true,
+        individualOnlyExcluded: true
+      },
+      manualRule: { missingAmountRejected: true, suppliedCharge: suppliedManual.preview.adjustmentAmount },
+      migration: { historicalSplitPreservedAsCharge: true, plannedAgentSplitUsesCommission: true }
+    }, null, 2));
+  } finally {
+    db = previousDb;
+  }
+}
+
 async function runMailCommandMode() {
   if (!db) db = await initDb();
   if (process.argv.includes('--mail-probe')) {
@@ -22136,6 +22903,9 @@ if (process.argv.includes('--accounting-self-test')) {
 } else if (process.argv.includes('--payment-account-serial-scope-self-test')) {
   try { runPaymentAccountSerialScopeSelfTest(); process.exit(0); }
   catch (err) { console.error(`Payment-account serial scope self-test failed: ${err.message}`); process.exit(1); }
+} else if (process.argv.includes('--payment-account-bulk-manual-transaction-self-test')) {
+  try { runPaymentAccountBulkManualTransactionSelfTest(); process.exit(0); }
+  catch (err) { console.error(`Payment-account bulk/manual transaction self-test failed: ${err.message}`); process.exit(1); }
 } else if (process.argv.includes('--mail-test') || process.argv.includes('--mail-probe')) {
   runMailCommandMode().catch(err => {
     console.error(`Mail command failed: ${err.message}`);

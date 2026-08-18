@@ -1,4 +1,4 @@
-// P2PFlow v1.5.23
+// P2PFlow v1.5.24
 // Business Accounting is separated into Overview, Expenses, Income, Capital and Daily Closing pages.
 // Individual-only Agent profit remains visible but is excluded from Company income/capital totals.
 
@@ -184,7 +184,8 @@ function accountingAccountLabel(item={}) {
   return '—';
 }
 
-function accountingDeleteButton(entryId, canManage) {
+function accountingDeleteButton(entryId, canManage, protectedEntry=false) {
+  if (protectedEntry) return '<span class="badge blue" title="Automatic wallet-linked accounting entry">Automatic</span>';
   if (!entryId || !canManage) return '';
   return `<button class="icon ghost" data-delete-accounting-entry="${Number(entryId)}" title="Delete">×</button>`;
 }
@@ -400,7 +401,7 @@ async function renderAccountingExpenses(options={}) {
           `<span class="badge ${item.source.includes('refund') ? 'ok' : item.source.includes('binance') ? 'blue' : 'danger'}">${escapeHtml(item.sourceLabel || item.source)}</span>`,
           escapeHtml(item.category || 'General'), escapeHtml(accountingAccountLabel(item)), escapeHtml(item.agent?.name || 'Company'),
           escapeHtml(item.note || '—'), `<b class="${Number(item.amountBdt || 0) < 0 ? 'positive' : 'negative'}">${accountingMoney(item.amountBdt)}</b>`,
-          Number(item.amountUsd || 0) ? `${accountingNumber(item.amountUsd,8)} USDT` : '—', accountingDeleteButton(item.entryId, p.canManage)
+          Number(item.amountUsd || 0) ? `${accountingNumber(item.amountUsd,8)} USDT` : '—', accountingDeleteButton(item.entryId, p.canManage, item.protected || item.automatic || item.reversible === false)
         ]))}
       </section>
       `;
@@ -444,7 +445,7 @@ async function renderAccountingIncome(options={}) {
         ${table(['Date & Time','Category','Payment Account','Agent','Note','Amount','Entered By','Action'], (entries.items || []).map(item => [
           escapeHtml(fmt(item.createdAt || item.businessDate)), escapeHtml(item.category || 'General'), escapeHtml(accountingAccountLabel(item)),
           escapeHtml(item.agent?.name || 'Company'), escapeHtml(item.note || '—'), `<b class="positive">+${escapeHtml(accountingEntryAmount(item).replace('-',''))}</b>`,
-          escapeHtml(item.createdByUser?.name || item.createdByUser?.username || '—'), accountingDeleteButton(item.id, p.canManage)
+          escapeHtml(item.createdByUser?.name || item.createdByUser?.username || '—'), accountingDeleteButton(item.id, p.canManage, item.protected || item.automatic)
         ]))}
       </section>`;
     accountingBindFilter(pageId, renderAccountingIncome);

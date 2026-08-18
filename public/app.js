@@ -1,5 +1,6 @@
-// v1.5.23: Header-only Work Status, chat-only notification master, and coupled sound/push controls.
+// v1.5.24: Payment-account multi-select, safe delete, manual transaction fees and Agent commission accounting.
 // v1.5.23: Payment Account serial scope treats each normalized Label, including no Label, as an independent namespace.
+// v1.5.22: Header-only Work Status, chat-only notification master, and coupled sound/push controls.
 // v1.5.20: account-scoped Binance RBAC, visible security recovery setup and individual-only profit accounting.
 // v1.5.20: first-run recovery reuses the saved Application Key and software updates are Owner-only from Control Panel.
 // v1.0.137: Diagnose and harden Binance P2P Create Advertisement privilege flow.
@@ -1865,6 +1866,34 @@ Object.assign(I18N_BN, {
   "Session History": "সেশন ইতিহাস",
   "Tracking scope:": "ট্র্যাকিং:",
   "Transfer Charge": "ট্রান্সফার চার্জ",
+  "Charge / Commission": "চার্জ / কমিশন",
+  "Charge / Commission Rule": "চার্জ / কমিশন নিয়ম",
+  "Actual Charge / Commission": "প্রকৃত চার্জ / কমিশন",
+  "Actual Charge / Commission (Optional)": "প্রকৃত চার্জ / কমিশন (ঐচ্ছিক)",
+  "Manual Transaction": "ম্যানুয়াল লেনদেন",
+  "Send Money": "সেন্ড মানি",
+  "Receive Money": "রিসিভ মানি",
+  "Cash Out": "ক্যাশ আউট",
+  "Bill Pay": "বিল পে",
+  "Mobile Recharge": "মোবাইল রিচার্জ",
+  "Select All": "সব নির্বাচন",
+  "Clear Selection": "নির্বাচন পরিষ্কার",
+  "Edit Selected": "নির্বাচিতগুলো এডিট",
+  "Delete Selected": "নির্বাচিতগুলো ডিলিট",
+  "No commission": "কমিশন নেই",
+  "Money in + money out": "টাকা আসা + টাকা যাওয়া",
+  "Send Money + Cash Out": "সেন্ড মানি + ক্যাশ আউট",
+  "Change Status": "স্ট্যাটাস পরিবর্তন",
+  "Change Account Type": "অ্যাকাউন্ট ধরন পরিবর্তন",
+  "Change Label": "লেবেল পরিবর্তন",
+  "Change Account Name": "অ্যাকাউন্ট নাম পরিবর্তন",
+  "Regenerate Serial Sequence": "সিরিয়াল ক্রম নতুন করে তৈরি",
+  "Starting Serial": "শুরুর সিরিয়াল",
+  "Fixed Amount": "নির্দিষ্ট পরিমাণ",
+  "Percentage": "শতাংশ",
+  "Tier Rules (JSON)": "ধাপভিত্তিক নিয়ম (JSON)",
+  "Update Selected Accounts": "নির্বাচিত অ্যাকাউন্ট আপডেট",
+  "Automatic": "স্বয়ংক্রিয়",
   "Update Security": "আপডেট সিকিউরিটি",
   "User Management": "ইউজার ব্যবস্থাপনা",
   "Actual BUY Spend": "প্রকৃত BUY খরচ",
@@ -4839,7 +4868,7 @@ function renderNav() {
   // legacy flat menu while this marker is absent, the browser/proxy is serving
   // stale frontend JavaScript rather than the active release.
   nav.dataset.navigationModel = 'grouped-control-center';
-  nav.dataset.uiRelease = '1.5.23';
+  nav.dataset.uiRelease = '1.5.24';
   nav.innerHTML = '';
   const visible = visiblePages();
   const visibleIds = new Set(visible.map(([id]) => id));
@@ -6413,21 +6442,19 @@ function bindPaymentAccountOwnerForm(form) {
 
 function paymentAccountChargeFieldsHtml(account={}) {
   const mode = String(account.transactionChargeMode || 'none');
-  const applies = String(account.transactionChargeAppliesTo || 'send');
   const tiers = Array.isArray(account.transactionChargeTiers) ? JSON.stringify(account.transactionChargeTiers) : '[]';
   return `
-    <div><label>Transfer Charge Rule</label><select name="transactionChargeMode">
-      <option value="none" ${mode==='none'?'selected':''}>No charge</option>
-      <option value="fixed" ${mode==='fixed'?'selected':''}>Fixed charge</option>
-      <option value="percentage" ${mode==='percentage'?'selected':''}>Percentage charge</option>
+    <div><label>Charge / Commission Rule</label><select name="transactionChargeMode">
+      <option value="none" ${mode==='none'?'selected':''}>None</option>
+      <option value="fixed" ${mode==='fixed'?'selected':''}>Fixed amount</option>
+      <option value="percentage" ${mode==='percentage'?'selected':''}>Percentage</option>
       <option value="fixed_percentage" ${mode==='fixed_percentage'?'selected':''}>Fixed + percentage</option>
-      <option value="tiered" ${mode==='tiered'?'selected':''}>Tier-based charge</option>
-      <option value="manual" ${mode==='manual'?'selected':''}>Manual actual charge</option>
+      <option value="tiered" ${mode==='tiered'?'selected':''}>Tier-based</option>
+      <option value="manual" ${mode==='manual'?'selected':''}>Manual actual amount</option>
     </select></div>
-    <div><label>Charge Applies To</label><select name="transactionChargeAppliesTo"><option value="send" ${applies==='send'?'selected':''}>Send</option><option value="receive" ${applies==='receive'?'selected':''}>Receive</option><option value="both" ${applies==='both'?'selected':''}>Both</option></select></div>
-    <div><label>Fixed Charge (BDT)</label><input name="transactionChargeFixed" type="number" min="0" step="0.01" value="${escapeAttr(account.transactionChargeFixed || 0)}" /></div>
-    <div><label>Percentage Charge (%)</label><input name="transactionChargePercent" type="number" min="0" max="100" step="0.0001" value="${escapeAttr(account.transactionChargePercent || 0)}" /></div>
-    <div class="full-row"><label>Tier Rules (JSON)</label><textarea name="transactionChargeTiers" rows="3" placeholder='[{"min":0,"max":5000,"fixed":5,"percent":0}]'>${escapeHtml(tiers)}</textarea><small>Each split transfer calculates and deducts its own charge immediately. Manual actual charge entered on a split overrides the configured estimate.</small></div>`;
+    <div><label>Fixed Amount (BDT)</label><input name="transactionChargeFixed" type="number" min="0" step="0.01" value="${escapeAttr(account.transactionChargeFixed || 0)}" /></div>
+    <div><label>Percentage (%)</label><input name="transactionChargePercent" type="number" min="0" max="100" step="0.0001" value="${escapeAttr(account.transactionChargePercent || 0)}" /></div>
+    <div class="full-row"><label>Tier Rules (JSON)</label><textarea name="transactionChargeTiers" rows="3" placeholder='[{"min":0,"max":5000,"fixed":5,"percent":0}]'>${escapeHtml(tiers)}</textarea><small>Personal and Merchant accounts charge only Send Money and Cash Out. Agent accounts credit commission on every money-in and money-out manual transaction. The server enforces this scope automatically.</small></div>`;
 }
 
 function openAccountModal() {
@@ -6503,6 +6530,100 @@ function openEditAccountModal(id) {
       await renderAccounts();
     } catch (err) { setFormMessage('#editAccountMessage', err.message || 'Account update failed', 'danger'); }
   };
+}
+
+function bulkEditApplyField(form, checkboxName, fieldName, changes, transform = value => value) {
+  const checkbox = form.querySelector(`[name="${checkboxName}"]`);
+  if (!checkbox?.checked) return;
+  const field = form.querySelector(`[name="${fieldName}"]`);
+  changes[fieldName] = transform(field?.value ?? '');
+}
+
+function openBulkEditAccountModal(ids=[]) {
+  const selectedIds = Array.from(new Set((ids || []).map(Number).filter(Boolean)));
+  const accounts = (window.lastAccounts || []).filter(account => selectedIds.includes(Number(account.id)) && account.viewerCanManage);
+  if (!accounts.length) return notify('Select at least one manageable payment account.', 'danger');
+  const manageAll = accounts.every(account => account.viewerCanManageAccess === true);
+  modal(`Edit ${accounts.length} Payment Account${accounts.length === 1 ? '' : 's'}`, `
+    <form id="bulkEditAccountForm" class="form-grid">
+      <div class="full-row notice"><b>${accounts.length} selected</b><br>${accounts.map(account => escapeHtml(account.accountNumber || `#${account.id}`)).join(', ')}</div>
+      <div class="bulk-edit-field"><label class="check"><input type="checkbox" name="applyStatus" /> Change Status</label>${accountStatusSelect('active')}</div>
+      <div class="bulk-edit-field"><label class="check"><input type="checkbox" name="applyAccountType" /> Change Account Type</label>${paymentAccountTypeSelect(accounts[0]?.accountType || 'personal')}</div>
+      <div class="bulk-edit-field"><label class="check"><input type="checkbox" name="applyLabel" /> Change Label</label><input name="label" maxlength="80" placeholder="Blank clears the Label" /></div>
+      <div class="bulk-edit-field"><label class="check"><input type="checkbox" name="applyAccountName" /> Change Account Name</label><input name="accountName" maxlength="120" placeholder="Blank clears the Account Name" /></div>
+      <div class="bulk-edit-field"><label class="check"><input type="checkbox" name="applySerialSequence" /> Regenerate Serial Sequence</label><input name="serialStart" maxlength="80" placeholder="Example: SIM-001" /></div>
+      ${manageAll ? `<div class="bulk-edit-field"><label class="check"><input type="checkbox" name="applyOwnerUserId" /> Change Account User</label>${paymentAccountOwnerSelect(accounts[0]?.ownerUserId || state.user?.id)}</div>` : ''}
+      <div class="bulk-edit-field"><label class="check"><input type="checkbox" name="applyDailyReceiveLimit" /> Daily Receive Limit</label><input name="dailyReceiveLimit" type="number" min="0" step="0.01" value="0" /></div>
+      <div class="bulk-edit-field"><label class="check"><input type="checkbox" name="applyDailySendLimit" /> Daily Send Limit</label><input name="dailySendLimit" type="number" min="0" step="0.01" value="0" /></div>
+      <div class="bulk-edit-field"><label class="check"><input type="checkbox" name="applyMonthlyReceiveLimit" /> Monthly Receive Limit</label><input name="monthlyReceiveLimit" type="number" min="0" step="0.01" value="0" /></div>
+      <div class="bulk-edit-field"><label class="check"><input type="checkbox" name="applyMonthlySendLimit" /> Monthly Send Limit</label><input name="monthlySendLimit" type="number" min="0" step="0.01" value="0" /></div>
+      <div class="bulk-edit-field"><label class="check"><input type="checkbox" name="applyTransactionChargeMode" /> Charge / Commission Rule</label><select name="transactionChargeMode"><option value="none">None</option><option value="fixed">Fixed amount</option><option value="percentage">Percentage</option><option value="fixed_percentage">Fixed + percentage</option><option value="tiered">Tier-based</option><option value="manual">Manual actual amount</option></select></div>
+      <div class="bulk-edit-field"><label class="check"><input type="checkbox" name="applyTransactionChargeFixed" /> Fixed Amount</label><input name="transactionChargeFixed" type="number" min="0" step="0.01" value="0" /></div>
+      <div class="bulk-edit-field"><label class="check"><input type="checkbox" name="applyTransactionChargePercent" /> Percentage</label><input name="transactionChargePercent" type="number" min="0" max="100" step="0.0001" value="0" /></div>
+      <div class="full-row bulk-edit-field"><label class="check"><input type="checkbox" name="applyTransactionChargeTiers" /> Tier Rules (JSON)</label><textarea name="transactionChargeTiers" rows="3" placeholder='[{"min":0,"max":5000,"fixed":5,"percent":0}]'>[]</textarea></div>
+      ${manageAll ? `<div class="full-row bulk-edit-field"><label class="check"><input type="checkbox" name="applyAllowedAgentIds" /> Replace Agent Access</label>${paymentAccountAgentAccessHtml(accounts[0]?.allowedAgentIds || [])}</div>` : ''}
+      <div class="full-row sub">Unchecked fields remain unchanged. The update is atomic: if one selected account fails validation, none are changed.</div>
+      <div class="full-row" id="bulkEditAccountMessage"></div>
+      <div class="full-row"><button type="submit">Update Selected Accounts</button></div>
+    </form>`);
+  const form = $('#bulkEditAccountForm');
+  form.onsubmit = async event => {
+    event.preventDefault();
+    const changes = {};
+    bulkEditApplyField(form, 'applyStatus', 'status', changes);
+    bulkEditApplyField(form, 'applyAccountType', 'accountType', changes);
+    bulkEditApplyField(form, 'applyLabel', 'label', changes);
+    bulkEditApplyField(form, 'applyAccountName', 'accountName', changes);
+    bulkEditApplyField(form, 'applyDailyReceiveLimit', 'dailyReceiveLimit', changes, Number);
+    bulkEditApplyField(form, 'applyDailySendLimit', 'dailySendLimit', changes, Number);
+    bulkEditApplyField(form, 'applyMonthlyReceiveLimit', 'monthlyReceiveLimit', changes, Number);
+    bulkEditApplyField(form, 'applyMonthlySendLimit', 'monthlySendLimit', changes, Number);
+    bulkEditApplyField(form, 'applyTransactionChargeMode', 'transactionChargeMode', changes);
+    bulkEditApplyField(form, 'applyTransactionChargeFixed', 'transactionChargeFixed', changes, Number);
+    bulkEditApplyField(form, 'applyTransactionChargePercent', 'transactionChargePercent', changes, Number);
+    bulkEditApplyField(form, 'applyTransactionChargeTiers', 'transactionChargeTiers', changes);
+    if (manageAll && form.applyOwnerUserId?.checked) changes.ownerUserId = Number(form.ownerUserId?.value || 0);
+    if (manageAll && form.applyAllowedAgentIds?.checked) changes.allowedAgentIds = selectedAllowedAgentIds(form);
+    const serialNumbers = {};
+    if (form.applySerialSequence?.checked) {
+      const seed = String(form.serialStart?.value || '').trim();
+      if (!seed) return setFormMessage('#bulkEditAccountMessage', 'Enter a Starting Serial or uncheck Regenerate Serial Sequence.', 'danger');
+      accounts.forEach((account, index) => { serialNumbers[account.id] = bulkSerialValue(seed, index); });
+    }
+    if (!Object.keys(changes).length && !Object.keys(serialNumbers).length) return setFormMessage('#bulkEditAccountMessage', 'Choose at least one field to edit.', 'danger');
+    try {
+      const result = await api('/api/payment-accounts/bulk', { method:'PATCH', body:JSON.stringify({ ids:accounts.map(account => account.id), changes, serialNumbers }) });
+      notify(`${result.count || accounts.length} payment account(s) updated.`, 'ok');
+      paymentAccountSelectedIdSet().clear();
+      closeModal();
+      await renderAccounts();
+    } catch (error) {
+      const details = Array.isArray(error?.data?.errors) ? error.data.errors.map(item => `${item.accountNumber || `#${item.accountId}`}: ${item.error}`).join('\n') : '';
+      setFormMessage('#bulkEditAccountMessage', `${error.message || 'Bulk update failed.'}${details ? `\n${details}` : ''}`, 'danger');
+    }
+  };
+}
+
+async function deletePaymentAccounts(ids=[]) {
+  const selectedIds = Array.from(new Set((ids || []).map(Number).filter(Boolean)));
+  const accounts = (window.lastAccounts || []).filter(account => selectedIds.includes(Number(account.id)) && account.viewerCanDelete);
+  if (!accounts.length) return notify('Select at least one deletable payment account.', 'danger');
+  const labels = accounts.map(account => account.accountNumber || `#${account.id}`).join(', ');
+  const confirmed = window.confirm(`Delete ${accounts.length} payment account${accounts.length === 1 ? '' : 's'}?\n\n${labels}\n\nBalance must be zero and no pending order/offline reservation may exist. Statement history will be preserved.`);
+  if (!confirmed) return;
+  try {
+    const endpoint = accounts.length === 1 ? `/api/payment-accounts/${accounts[0].id}` : '/api/payment-accounts/bulk';
+    const body = accounts.length === 1
+      ? { reason:'Deleted from Payment Accounts' }
+      : { ids:accounts.map(account => account.id), reason:'Bulk deleted from Payment Accounts' };
+    const result = await api(endpoint, { method:'DELETE', body:JSON.stringify(body) });
+    notify(`${result.count || 1} payment account(s) deleted.`, 'ok');
+    accounts.forEach(account => paymentAccountSelectedIdSet().delete(Number(account.id)));
+    await renderAccounts();
+  } catch (error) {
+    const details = Array.isArray(error?.data?.errors) ? error.data.errors.map(item => `${item.accountNumber || `#${item.accountId}`}: ${item.error}`).join('\n') : '';
+    notify(`${error.message || 'Delete failed.'}${details ? `\n${details}` : ''}`, 'danger');
+  }
 }
 
 function parseBulkAccountNumbers(value='') {
@@ -6701,38 +6822,107 @@ function openBulkAccountModal() {
   };
 }
 
+function manualPaymentTransactionAdjustmentKindClient(account={}, type='') {
+  if (String(account.accountType || '').toLowerCase() === 'agent') return 'commission';
+  return ['send_money','cash_out'].includes(String(type || '').toLowerCase()) ? 'charge' : 'none';
+}
+
+function configuredPaymentAdjustmentClient(account={}, amount=0) {
+  const base = Math.max(0, Number(amount || 0));
+  const mode = String(account.transactionChargeMode || 'none');
+  const fixed = Math.max(0, Number(account.transactionChargeFixed || 0));
+  const percent = Math.max(0, Number(account.transactionChargePercent || 0));
+  if (!(base > 0)) return mode === 'manual' ? null : 0;
+  if (mode === 'fixed') return fixed;
+  if (mode === 'percentage') return base * percent / 100;
+  if (mode === 'fixed_percentage') return fixed + (base * percent / 100);
+  if (mode === 'tiered') {
+    const tiers = Array.isArray(account.transactionChargeTiers) ? account.transactionChargeTiers : [];
+    const tier = tiers.find(row => base >= Number(row?.min || 0) && (!(Number(row?.max || 0) > 0) || base <= Number(row.max)));
+    return tier ? Math.max(0, Number(tier.fixed || 0)) + (base * Math.max(0, Number(tier.percent || 0)) / 100) : 0;
+  }
+  if (mode === 'manual') return null;
+  return 0;
+}
+
+function syncManualPaymentTransactionForm(form, account, { resetOverride=false }={}) {
+  if (!form) return;
+  const type = form.type?.value || '';
+  const amount = Number(form.amount?.value || 0);
+  const kind = manualPaymentTransactionAdjustmentKindClient(account, type);
+  const panel = form.querySelector('[data-manual-adjustment-panel]');
+  const input = form.querySelector('[name="adjustmentAmount"]');
+  const label = form.querySelector('[data-manual-adjustment-label]');
+  const help = form.querySelector('[data-manual-adjustment-help]');
+  if (!panel || !input || !label || !help) return;
+  panel.classList.toggle('hidden', kind === 'none');
+  input.disabled = kind === 'none';
+  if (kind === 'none') {
+    input.value = '0.00';
+    input.dataset.dirty = 'false';
+    help.textContent = 'No charge applies to this transaction type.';
+    return;
+  }
+  label.textContent = kind === 'commission' ? 'Commission (BDT)' : 'Charge (BDT)';
+  if (resetOverride) input.dataset.dirty = 'false';
+  const configured = configuredPaymentAdjustmentClient(account, amount);
+  if (String(account.transactionChargeMode || 'none') === 'manual') {
+    if (input.dataset.dirty !== 'true') input.value = '';
+    input.required = true;
+    help.textContent = `Manual ${kind} rule: enter the actual ${kind} amount.`;
+  } else {
+    input.required = false;
+    if (input.dataset.dirty !== 'true') input.value = Number(configured || 0).toFixed(2);
+    help.textContent = `${kind === 'commission' ? 'Commission is credited' : 'Charge is deducted'} immediately. Edit the box only to record an actual override.`;
+  }
+}
+
 function openAdjustAccountModal(id) {
   const account = (window.lastAccounts || []).find(a => Number(a.id) === Number(id));
   if (!account) return notify('Account not found. Refresh page and try again.', 'danger');
-  modal('Offline Transaction / Statement Adjustment', `
-    <div class="kv"><b>Account</b><span>${escapeHtml(account.accountNumber)}</span><b>Current Balance</b><span>${money(account.currentBalance)}</span></div>
+  const isAgentAccount = String(account.accountType || '').toLowerCase() === 'agent';
+  modal('Manual Balance Transaction', `
+    <div class="kv"><b>Account</b><span>${escapeHtml(account.accountNumber)}</span><b>Type</b><span>${escapeHtml(accountTypeLabel(account.accountType))}</span><b>Current Balance</b><span>${money(account.currentBalance)}</span></div>
     <form id="adjustForm" class="form-grid">
-      <div><label>Type</label><select name="type">
-        <option value="offline_purchase">Offline Purchase (-)</option>
-        <option value="expense">Business Expense (-)</option>
-        <option value="cashout">Cash Out (-)</option>
-        <option value="settlement_out">Settlement Out (-)</option>
-        <option value="refund_out">Refund Out (-)</option>
-        <option value="offline_receive">Offline Receive (+)</option>
-        <option value="topup">Topup (+)</option>
-        <option value="settlement_in">Settlement In (+)</option>
-        <option value="refund_in">Refund In (+)</option>
-        <option value="correction">Correction +/-</option>
+      <div><label>Transaction Type</label><select name="type">
+        <option value="send_money">Send Money (-)</option>
+        <option value="receive_money">Receive Money (+)</option>
+        <option value="cash_out">Cash Out (-)</option>
+        <option value="bill_pay">Bill Pay (-)</option>
+        <option value="payment">Payment (-)</option>
+        <option value="mobile_recharge">Mobile Recharge (-)</option>
       </select></div>
-      <div><label>Amount</label><input name="amount" type="number" value="0" /></div>
-      <div><label>Reference</label><input name="reference" /></div>
-      <div class="full-row"><label>Note</label><input name="note" /></div>
+      <div><label>Amount (BDT)</label><input name="amount" type="number" min="0.01" step="0.01" value="0" required /></div>
+      <div data-manual-adjustment-panel><label data-manual-adjustment-label>${isAgentAccount ? 'Commission' : 'Charge'} (BDT)</label><input name="adjustmentAmount" type="number" min="0" step="0.01" data-dirty="false" /><small data-manual-adjustment-help></small></div>
+      <div><label>Reference</label><input name="reference" maxlength="120" /></div>
+      <div class="full-row"><label>Note</label><input name="note" maxlength="300" /></div>
+      <div class="full-row notice small">${isAgentAccount ? 'Agent accounts receive the configured commission immediately for both incoming and outgoing transactions.' : 'Personal and Merchant accounts apply a charge only to Send Money and Cash Out.'}</div>
       <div class="full-row" id="adjustMessage"></div>
-      <div class="full-row"><button type="submit">Save Statement Entry</button></div>
+      <div class="full-row"><button type="submit">Save Transaction</button></div>
     </form>`);
-  $('#adjustForm').onsubmit = async e => {
-    e.preventDefault();
+  const form = $('#adjustForm');
+  const adjustmentInput = form.querySelector('[name="adjustmentAmount"]');
+  form.type.addEventListener('change', () => syncManualPaymentTransactionForm(form, account, { resetOverride:true }));
+  form.amount.addEventListener('input', () => syncManualPaymentTransactionForm(form, account));
+  adjustmentInput.addEventListener('input', () => { adjustmentInput.dataset.dirty = 'true'; });
+  syncManualPaymentTransactionForm(form, account, { resetOverride:true });
+  form.onsubmit = async event => {
+    event.preventDefault();
+    const kind = manualPaymentTransactionAdjustmentKindClient(account, form.type.value);
+    if (kind !== 'none' && String(account.transactionChargeMode || 'none') === 'manual' && String(adjustmentInput.value || '').trim() === '') {
+      return setFormMessage('#adjustMessage', `Enter the actual ${kind} amount.`, 'danger');
+    }
+    const payload = formObj(form);
+    if (kind === 'none') delete payload.adjustmentAmount;
+    else if (String(adjustmentInput.value || '').trim() !== '') payload.adjustmentAmount = Number(adjustmentInput.value || 0);
     try {
-      await api('/api/payment-accounts/' + id + '/ledger', { method:'POST', body: JSON.stringify(formObj(e.target)) });
-      notify('Statement transaction saved.', 'ok');
+      const result = await api('/api/payment-accounts/' + id + '/ledger', { method:'POST', body:JSON.stringify(payload) });
+      const adjustment = Number(result.transaction?.adjustmentAmount || 0);
+      const adjustmentText = adjustment > 0 ? ` ${kind === 'commission' ? 'Commission credited' : 'Charge deducted'}: ${money(adjustment)}.` : '';
+      notify(`Manual transaction saved.${adjustmentText}`, 'ok');
       closeModal();
       await renderAccounts();
-    } catch (err) { setFormMessage('#adjustMessage', err.message || 'Statement adjustment failed', 'danger'); }
+    } catch (error) { setFormMessage('#adjustMessage', error.message || 'Manual transaction failed', 'danger'); }
   };
 }
 
@@ -6914,7 +7104,7 @@ async function openPaymentSplitActionModal(order, finalAction) {
       <input type="hidden" name="direction" value="${escapeAttr(direction)}" />
       ${accountField}
       <div class="full-row"><label>Amount</label><input name="amount" type="number" min="0.01" step="0.01" value="${escapeAttr(currentRemaining)}" /></div>
-      <div><label>Actual Transfer Charge (Optional)</label><input name="actualCharge" type="number" min="0" step="0.01" placeholder="Uses account rule when empty" /></div>
+      <div><label>Actual Charge / Commission (Optional)</label><input name="actualCharge" type="number" min="0" step="0.01" placeholder="Uses account rule when empty" /></div>
       <div><label>Transaction ID</label><input name="transactionReference" maxlength="120" placeholder="Transaction / reference ID" /></div>
       <div><label>Proof Screenshot</label><input type="file" id="paymentSplitActionProof" accept="image/png,image/jpeg,image/webp" /></div>
       <div class="full-row"><label>Note</label><input name="note" placeholder="Optional note" /></div>
@@ -7138,9 +7328,9 @@ async function openAddSplitModal(order) {
     <div class="live-remaining" id="addSplitPreview"></div>
     <form id="splitForm" class="form-grid">
       <input type="hidden" name="direction" value="${escapeAttr(direction)}" />
-      <div class="full-row"><label>Payment Account</label><select name="paymentAccountId">${activeAccounts.map(a => `<option value="${a.id}" ${Number(a.id) === selectedAccountId ? 'selected' : ''}>${escapeHtml(a.accountNumber)} - ${escapeHtml(a.method?.name || '')} - System managed - ${escapeHtml(accountTypeLabel(a.accountType))} - balance ${money(a.currentBalance)} - send ${money(a.sendAvailable)} - receive ${money(a.receiveAvailable)} - charge ${escapeHtml(a.transactionChargeMode || 'none')}</option>`).join('')}</select></div>
+      <div class="full-row"><label>Payment Account</label><select name="paymentAccountId">${activeAccounts.map(a => `<option value="${a.id}" ${Number(a.id) === selectedAccountId ? 'selected' : ''}>${escapeHtml(a.accountNumber)} - ${escapeHtml(a.method?.name || '')} - System managed - ${escapeHtml(accountTypeLabel(a.accountType))} - balance ${money(a.currentBalance)} - send ${money(a.sendAvailable)} - receive ${money(a.receiveAvailable)} - rule ${escapeHtml(a.transactionChargeMode || 'none')}</option>`).join('')}</select></div>
       <div class="full-row"><label>Amount</label><input name="amount" type="number" min="0.01" step="0.01" value="${defaultAmount}" /></div>
-      <div><label>Actual Transfer Charge (Optional)</label><input name="actualCharge" type="number" min="0" step="0.01" placeholder="Uses selected account rule when empty" /></div>
+      <div><label>Actual Charge / Commission (Optional)</label><input name="actualCharge" type="number" min="0" step="0.01" placeholder="Uses selected account rule when empty" /></div>
       <div><label>Proof Screenshot</label><input type="file" id="addProofFile" accept="image/png,image/jpeg,image/webp" /></div>
       <div><label>Note</label><input name="note" placeholder="Optional" /></div>
       <div class="full-row" id="splitFormMessage"></div>
@@ -7205,7 +7395,7 @@ function openUpdateSplitModal(order, splitId) {
     <div class="live-remaining" id="splitPreview"></div>
     <form id="updateSplitForm" class="form-grid">
       <div class="full-row"><label>Amount</label><input name="amount" type="number" min="0.01" step="0.01" value="${split.actualAmount || split.plannedAmount}" /></div>
-      <div><label>Actual Transfer Charge</label><input name="actualCharge" type="number" min="0" step="0.01" value="${escapeAttr(split.transactionChargeAmount || 0)}" /></div>
+      <div><label>Actual Charge / Commission</label><input name="actualCharge" type="number" min="0" step="0.01" value="${escapeAttr(split.transactionChargeAmount || 0)}" /></div>
       <div><label>Status</label><select name="status"><option>completed</option><option>partial</option><option>short</option><option>excess</option></select></div>
       <div><label>Proof Screenshot</label><input type="file" id="proofFile" accept="image/png,image/jpeg,image/webp" /></div>
       <div class="full-row"><label>Note</label><input name="note" value="${escapeAttr(split.note || '')}" /></div>
@@ -7256,7 +7446,7 @@ function openCoAgentDoneModal(order, assignment = null) {
     <div class="notice">Enter the completed amount and proof.</div>
     <form id="coAgentDoneForm" class="form-grid">
       <div><label>Amount</label><input name="actualAmount" type="number" min="0.01" step="0.01" max="${escapeAttr(assigned)}" value="${escapeAttr(actualDefault)}" required /></div>
-      <div><label>Actual Transfer Charge (Optional)</label><input name="actualCharge" type="number" min="0" step="0.01" placeholder="Uses account rule when empty" /></div>
+      <div><label>Actual Charge / Commission (Optional)</label><input name="actualCharge" type="number" min="0" step="0.01" placeholder="Uses account rule when empty" /></div>
       <div><label>Transaction ID</label><input name="transactionReference" maxlength="120" placeholder="Transaction / reference ID" /></div>
       <div class="full-row"><label>Proof Screenshot</label><input type="file" id="coAgentDoneProof" accept="image/png,image/jpeg,image/webp" /></div>
       <div class="full-row"><label>Note</label><input name="note" value="My assigned part is completed" /></div>

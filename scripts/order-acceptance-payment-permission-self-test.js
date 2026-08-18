@@ -27,8 +27,8 @@ const section = (source, start, end) => {
   return source.slice(a, b);
 };
 
-assert(pkg.version === '1.5.23', `expected v1.5.23, got ${pkg.version}`);
-assert(server.includes('const APP_SCHEMA_VERSION = 33;'), 'schema 33 is missing.');
+assert(pkg.version === '1.5.24', `expected v1.5.24, got ${pkg.version}`);
+assert(server.includes('const APP_SCHEMA_VERSION = 34;'), 'schema 34 is missing.');
 
 // Payment-account authorization: Admin/Manager all, Agent own only, optional all-account permission for non-Agent roles.
 assert(server.includes("'accounts.manage_all': Object.freeze(['accounts.view', 'accounts.manage'])"), 'accounts.manage_all implications are missing.');
@@ -108,7 +108,7 @@ assert(!security.includes('formatDate('), 'Security page still references undefi
 console.log(JSON.stringify({
   ok: true,
   version: pkg.version,
-  schemaVersion: 33,
+  schemaVersion: 34,
   agentOwnAccountManage: true,
   managerAllAccountManage: true,
   permissionDescriptions: permissions.length,
