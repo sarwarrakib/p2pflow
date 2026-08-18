@@ -1,12 +1,13 @@
-// P2PFlow v1.5.19
+// P2PFlow v1.5.20
 // User-controlled in-app and email notification preferences.
 
 function notificationPreferenceRows(data={}) {
-  const preferences = data.preferences || { inApp:{}, email:{} };
+  const preferences = data.preferences || { inApp:{}, email:{}, push:{} };
   return (data.categories || []).map(category => {
     const mandatory = category.mandatory === true;
     const inApp = mandatory || preferences.inApp?.[category.id] !== false;
     const email = mandatory || preferences.email?.[category.id] !== false;
+    const push = mandatory || preferences.push?.[category.id] !== false;
     return `<div class="notification-preference-row" data-notification-category="${escapeAttr(category.id)}">
       <div class="notification-preference-info">
         <b>${escapeHtml(category.label || category.id)}</b>
@@ -15,6 +16,7 @@ function notificationPreferenceRows(data={}) {
       </div>
       <label class="notification-channel-toggle"><input type="checkbox" data-notification-channel="inApp" ${inApp ? 'checked' : ''} ${mandatory ? 'disabled' : ''}/><span>In App</span></label>
       <label class="notification-channel-toggle"><input type="checkbox" data-notification-channel="email" ${email ? 'checked' : ''} ${mandatory ? 'disabled' : ''}/><span>Email</span></label>
+      <label class="notification-channel-toggle"><input type="checkbox" data-notification-channel="push" ${push ? 'checked' : ''} ${mandatory ? 'disabled' : ''}/><span>Background</span></label>
     </div>`;
   }).join('');
 }
@@ -22,6 +24,7 @@ function notificationPreferenceRows(data={}) {
 async function renderNotifications() {
   setTitle('Notifications');
   const data = await api('/api/notifications');
+  state.pushConfig = data.backgroundNotifications || state.pushConfig;
   const rows = (data.items || []).map(n => [
     fmt(n.createdAt),
     escapeHtml((data.categories || []).find(category => category.id === n.category)?.label || n.category || n.type || ''),
@@ -31,8 +34,8 @@ async function renderNotifications() {
   ]);
   $('#content').innerHTML = `<div class="notification-settings-page">
     <section class="card notification-preferences-card">
-      <div class="section-head"><div><h3>Notification Preferences</h3><p>Choose which notification groups appear inside the panel and which are sent to your email.</p></div><button type="button" id="saveNotificationPreferences">Save Preferences</button></div>
-      <div class="notification-channel-head"><span>Notification Group</span><span>In App</span><span>Email</span></div>
+      <div class="section-head"><div><h3>Notification Preferences</h3><p>Choose in-app, email and background notification groups.</p></div><div class="notification-preference-actions">${backgroundNotificationToggleHtml({ compact:true })}<button type="button" id="saveNotificationPreferences">Save Preferences</button></div></div>
+      <div class="notification-channel-head"><span>Notification Group</span><span>In App</span><span>Email</span><span>Background</span></div>
       <div id="notificationPreferenceRows">${notificationPreferenceRows(data)}</div>
       <div id="notificationPreferencesMessage"></div>
     </section>
@@ -42,11 +45,14 @@ async function renderNotifications() {
     </section>
   </div>`;
 
+  bindBackgroundNotificationControls($('#content') || document);
+  updateBackgroundNotificationControls($('#content') || document);
+
   $('#saveNotificationPreferences')?.addEventListener('click', async () => {
-    const preferences = { inApp:{}, email:{} };
+    const preferences = { inApp:{}, email:{}, push:{} };
     $$('[data-notification-category]').forEach(row => {
       const category = row.dataset.notificationCategory;
-      for (const channel of ['inApp','email']) {
+      for (const channel of ['inApp','email','push']) {
         const input = row.querySelector(`[data-notification-channel="${channel}"]`);
         preferences[channel][category] = input?.disabled ? true : input?.checked !== false;
       }
@@ -56,6 +62,8 @@ async function renderNotifications() {
     try {
       const result = await api('/api/notifications', { method:'PATCH', body:JSON.stringify({ preferences }) });
       state.user.notificationPreferences = result.preferences || preferences;
+      state.pushConfig = result.backgroundNotifications || state.pushConfig;
+      updateBackgroundNotificationControls();
       setFormMessage('#notificationPreferencesMessage', result.message || 'Notification preferences saved.', 'ok');
       notify('Notification preferences saved.', 'ok');
       scheduleHeaderNotificationRefresh(50);

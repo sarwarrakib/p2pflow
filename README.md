@@ -27,30 +27,30 @@ Updater code এবং database আলাদা রাখে। Update install-�
 
 ## Version
 
-Internal SemVer: `1.5.19`
+Internal SemVer: `1.5.20`
 UI: `1.5`
-Database schema: `32`
+Database schema: `33`
 
 Normal next version: `SET_NEXT_VERSION.bat` -> `1.6.0`  
-Hotfix: `SET_HOTFIX_VERSION.bat` -> `1.5.20`
+Hotfix: `SET_HOTFIX_VERSION.bat` -> `1.5.21`
 
 ## Database history safety
 
 P2PFlow keeps authoritative business/application data in MariaDB/MySQL/PostgreSQL. State payloads are compressed with Brotli before AES-256-GCM encryption, proofs/chat media are stored as encrypted database objects, and identical newly uploaded proof/media bytes use content-addressed object IDs to avoid duplicate blobs. The default is 3 retained recovery checkpoints with a 6-hour archive interval and 5 retained automatic database backups. Older uncompressed state/history/backup payloads are upgraded incrementally after startup. Health Check reports each P2PFlow database table's allocated size/row count, current encrypted state payload size, compression saving percentage, and proof/chat object usage so database-MB growth can be inspected without terminal access. `shared/`, `.p2pflow`, `.env`, `releases/` and temporary restart/update markers are operational bootstrap/update metadata only; they are not an application/business-data store. The application runtime itself does not write proof, chat, audit, order, ledger, notification or recovery-code data to local files.
 
-## v1.5.19 Payment Account Scope, Notification Preferences ও Offline Business
+## v1.5.20 Stable Session, Fast Orders/Ads, Background Push ও Smooth Chat
 
-- Add/Bulk Add Payment Account-এ Account User logged-in user হিসেবে default selected হয়। Admin/Manager সব account manage করে; Agent `accounts.manage` থাকলে শুধু নিজের account manage করে। Custom non-Agent role-এর জন্য `accounts.manage_all` আছে।
-- Payment Account-এ Label ও unique Serial Number যোগ হয়েছে; number, label ও serial দিয়ে permission-scoped search করা যায়।
-- সব 31টি global এবং per-Binance-account permission row-এর ডান পাশে eye button আছে; click/keyboard/touch-এ পূর্ণ scope ও dependency দেখা যায়।
-- Security page-এর undefined date formatter regression ঠিক করা হয়েছে।
-- Notifications page-এ per-user In App/Email category preference আছে; Security category mandatory।
-- Order P2P Information-এর Open Feedback Page button extension task-এর exact advertiser URL নতুন tab-এ খোলে।
-- নতুন Offline Business page requested amount ও per-number limit দিয়ে eligible numbers reserve করে, full/partial received entry দিয়ে balance বাড়ায় এবং full অথবা explicit partial completed offline order তৈরি করে। Active session-এর reserved number অন্য session-এ reuse হয় না।
-- Database schema `32`; migration additive এবং existing users, orders, Ads, payment accounts, ledger, accounting ও security data preserve করে।
-- v1.5.17-এর Order Acceptance, Agent payment permission fixes এবং v1.5.16-এর multi-account Orders/Ads behavior বহাল আছে।
+- Mobile network/Wi-Fi IP বদলালেও session আর IP-prefix mismatch-এর কারণে হঠাৎ logout করবে না। নতুন session stable browser-family binding ব্যবহার করে; bonded device থাকলে cryptographic device ID-ও binding-এর অংশ। পুরোনো v1 session safeভাবে v2-তে upgrade হয়।
+- Transient 401 হলে frontend সঙ্গে সঙ্গে login page-এ না গিয়ে `/api/me` দিয়ে session confirm করে একবার request retry করে।
+- Orders list একই response-এ unread count দেয় এবং mobile navigation একটি combined count endpoint ব্যবহার করে। Ads initial load cached merchant/readiness data দিয়ে render হয়; explicit refresh/action ছাড়া blocking live probe হয় না।
+- Bonded/trusted device-এ Notifications ON করলে native Web Push subscription হয়। App background, inactive বা supported platform-এ বন্ধ থাকলেও new order assignment, new P2P message এবং enabled category notification system notification হিসেবে পৌঁছাতে পারে। Notifications OFF করলে background delivery বন্ধ থাকে।
+- iPhone/iPad-এ Home Screen web app থেকে permission দিতে হবে। Browser/OS notification sound control করে; app foreground custom sound এবং background system sound আলাদা।
+- Work Status button সব enabled user-এর top bar, Orders এবং Chat area-তে দেখা যায়। Agent-এর Work Status ON হলে offline থাকলেও eligible order assign হতে পারে; PAUSED হলে online থাকলেও নতুন order assign হয় না।
+- Order chat এখন `/chat-delta` দিয়ে শুধু নতুন message merge করে। Incoming/outgoing message-এ পুরো order page reload হয় না; scroll/focus অক্ষত থাকে এবং পুরোনো message পড়ার সময় “new messages” button দেখা যায়। P2P Message inbox-ও thread list partial refresh করে।
+- Notification Preferences-এ In App, Email এবং Background channel আলাদা category অনুযায়ী manage করা যায়। Chat-এর master Notifications ON করলে সব background category ON হয়।
+- Database schema `33`; migration additive এবং existing users, sessions, trusted devices, orders, Ads, chats, payment accounts, ledger ও accounting data preserve করে।
 
-বিস্তারিত: `P2PFlow_v1.5.19_RELEASE_NOTES_BN.md`, `P2PFlow_v1.5.19_MANUAL_UPDATE_BN.md` এবং `P2PFlow_v1.5.19_LAUNCH_CHECKLIST_BN.md`।
+বিস্তারিত: `P2PFlow_v1.5.20_RELEASE_NOTES_BN.md`, `P2PFlow_v1.5.20_MANUAL_UPDATE_BN.md` এবং `P2PFlow_v1.5.20_LAUNCH_CHECKLIST_BN.md`।
 
 ## v1.5.13 Settings Workspace & Compact Mail Failover UI
 

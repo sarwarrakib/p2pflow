@@ -1,0 +1,11 @@
+{
+  "name": "P2PFlow Operations",
+  "short_name": "P2PFlow",
+  "description": "P2PFlow operations panel",
+  "start_url": "/#/orders",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#111827",
+  "lang": "bn"
+}

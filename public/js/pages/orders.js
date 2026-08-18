@@ -1,4 +1,4 @@
-// P2PFlow v1.5.19
+// P2PFlow v1.5.20
 // Page module: orders. Edit this file for the orders page UI.
 
 function orderAccountOptions(data = {}) {
@@ -25,69 +25,90 @@ function orderAccountSwitcherHtml(options = [], selectedId = 0) {
   </div>`;
 }
 
-function orderAcceptanceButtonHtml(status = {}) {
+function workAvailabilityLabel(status = {}) {
+  const accepting = status.accepting === true;
+  return state.lang === 'bn'
+    ? `কাজ: ${accepting ? 'অন' : 'বিরতি'}`
+    : `Work: ${accepting ? 'ON' : 'PAUSED'}`;
+}
+
+function workAvailabilityTitle(status = {}) {
+  const accepting = status.accepting === true;
+  const presence = status.presenceStatus || 'offline';
+  if (state.lang === 'bn') {
+    if (status.assignable) return `${accepting ? 'অন থাকলে offline হলেও অনুমোদিত নতুন অর্ডার auto assign হতে পারে।' : 'বিরতিতে থাকলে online হলেও নতুন অর্ডার assign হবে না।'} উপস্থিতি: ${presence}`;
+    return `${accepting ? 'কাজের জন্য প্রস্তুত হিসেবে দেখাবে।' : 'কাজ থেকে বিরত হিসেবে দেখাবে।'} উপস্থিতি: ${presence}`;
+  }
+  if (status.assignable) return `${accepting ? 'When ON, permitted new orders may auto-assign even while offline.' : 'When paused, new orders will not assign even while online.'} Presence: ${presence}`;
+  return `${accepting ? 'Shown as ready for work.' : 'Shown as paused from work.'} Presence: ${presence}`;
+}
+
+function orderAcceptanceButtonHtml(status = {}, options={}) {
   if (!status.available) return '';
   const accepting = status.accepting === true;
-  const label = state.lang === 'bn'
-    ? `অর্ডার গ্রহণ: ${accepting ? 'চালু' : 'বন্ধ'}`
-    : `Accept orders: ${accepting ? 'ON' : 'OFF'}`;
-  const presence = status.presenceStatus || 'offline';
-  const title = state.lang === 'bn'
-    ? `${accepting ? 'চালু থাকলে offline হলেও নতুন অর্ডার auto assign হতে পারে।' : 'বন্ধ থাকলে online হলেও নতুন অর্ডার assign হবে না।'} বর্তমান উপস্থিতি: ${presence}`
-    : `${accepting ? 'When ON, new orders may auto-assign even while offline.' : 'When OFF, new orders will not assign even while online.'} Current presence: ${presence}`;
-  return `<button type="button" id="orderAcceptanceToggle" class="order-acceptance-toggle ${accepting ? 'is-on' : 'is-off'}" aria-pressed="${accepting ? 'true' : 'false'}" title="${escapeAttr(title)}"><span class="order-acceptance-dot" aria-hidden="true"></span><span>${escapeHtml(label)}</span></button>`;
+  const id = String(options.id || 'orderAcceptanceToggle');
+  const compact = options.compact === true;
+  return `<button type="button" id="${escapeAttr(id)}" class="order-acceptance-toggle ${compact ? 'compact' : ''} ${accepting ? 'is-on' : 'is-off'}" data-order-acceptance-toggle aria-pressed="${accepting ? 'true' : 'false'}" title="${escapeAttr(workAvailabilityTitle(status))}"><span class="order-acceptance-dot" aria-hidden="true"></span><span>${escapeHtml(workAvailabilityLabel(status))}</span></button>`;
 }
 
 function updateOrderAcceptanceControl() {
   const current = state.orderAcceptance || {};
-  const existing = $('#orderAcceptanceToggle');
-  if (!existing) return;
-  const wrapper = document.createElement('div');
-  wrapper.innerHTML = orderAcceptanceButtonHtml(current);
-  const next = wrapper.firstElementChild;
-  if (!next) return existing.remove();
-  existing.replaceWith(next);
+  document.querySelectorAll('[data-order-acceptance-toggle]').forEach(button => {
+    if (!current.available) {
+      button.classList.add('hidden');
+      return;
+    }
+    button.classList.remove('hidden');
+    const accepting = current.accepting === true;
+    button.classList.toggle('is-on', accepting);
+    button.classList.toggle('is-off', !accepting);
+    button.disabled = Boolean(state.orderAcceptanceBusy);
+    button.setAttribute('aria-pressed', accepting ? 'true' : 'false');
+    button.title = workAvailabilityTitle(current);
+    const label = button.querySelector('span:last-child');
+    if (label) label.textContent = workAvailabilityLabel(current);
+  });
   bindOrderAcceptanceControl();
 }
 
 async function setOrderAcceptance(accepting, options={}) {
   if (state.orderAcceptanceBusy) return state.orderAcceptance;
   state.orderAcceptanceBusy = true;
-  const button = $('#orderAcceptanceToggle');
-  if (button) button.disabled = true;
+  document.querySelectorAll('[data-order-acceptance-toggle]').forEach(button => { button.disabled = true; });
   try {
     const result = await api('/api/me/order-acceptance', { method:'PATCH', body: JSON.stringify({ accepting: Boolean(accepting) }) });
     state.orderAcceptance = result;
     state.orderAcceptancePromptShown = true;
     updateOrderAcceptanceControl();
-    if (!options.silent) notify(result.accepting ? (state.lang === 'bn' ? 'অর্ডার গ্রহণ চালু হয়েছে।' : 'Order acceptance is ON.') : (state.lang === 'bn' ? 'অর্ডার গ্রহণ বন্ধ হয়েছে।' : 'Order acceptance is OFF.'), 'ok');
+    if (!options.silent) notify(result.accepting ? (state.lang === 'bn' ? 'কাজের অবস্থা অন হয়েছে।' : 'Work status is ON.') : (state.lang === 'bn' ? 'কাজের অবস্থা বিরতিতে গেছে।' : 'Work status is PAUSED.'), 'ok');
     return result;
   } catch (error) {
-    if (!options.silent) notify(error.message || 'Could not update order acceptance.', 'danger', 6000);
+    if (!options.silent) notify(error.message || 'Could not update work status.', 'danger', 6000);
     throw error;
   } finally {
     state.orderAcceptanceBusy = false;
-    const latestButton = $('#orderAcceptanceToggle');
-    if (latestButton) latestButton.disabled = false;
+    updateOrderAcceptanceControl();
   }
 }
 
-function bindOrderAcceptanceControl() {
-  const button = $('#orderAcceptanceToggle');
-  if (!button) return;
-  button.onclick = async () => {
-    const next = !(state.orderAcceptance?.accepting === true);
-    try { await setOrderAcceptance(next); } catch {}
-  };
+function bindOrderAcceptanceControl(root=document) {
+  root.querySelectorAll?.('[data-order-acceptance-toggle]').forEach(button => {
+    if (button.dataset.workBound === '1') return;
+    button.dataset.workBound = '1';
+    button.onclick = async () => {
+      const next = !(state.orderAcceptance?.accepting === true);
+      try { await setOrderAcceptance(next); } catch {}
+    };
+  });
 }
 
 function maybePromptOrderAcceptance(status = {}) {
   if (!status.available || status.accepting || state.orderAcceptancePromptShown || modalOpen()) return;
   state.orderAcceptancePromptShown = true;
   const isBn = state.lang === 'bn';
-  modal(isBn ? 'অর্ডার গ্রহণ' : 'Order Acceptance', `
+  modal(isBn ? 'কাজের অবস্থা' : 'Work Status', `
     <div class="order-acceptance-prompt">
-      <p>${isBn ? 'স্যার, আপনি কি অর্ডার গ্রহণ করতে চান?' : 'Would you like to accept orders?'}</p>
+      <p>${isBn ? 'স্যার, আপনি কি এখন কাজ করতে চান?' : 'Are you ready to work now?'}</p>
       <div id="orderAcceptancePromptMessage" class="form-message"></div>
       <div class="actions end"><button type="button" class="secondary" id="declineOrderAcceptance">${isBn ? 'না' : 'No'}</button><button type="button" id="confirmOrderAcceptance">${isBn ? 'হ্যাঁ' : 'Yes'}</button></div>
     </div>`);
@@ -99,10 +120,10 @@ function maybePromptOrderAcceptance(status = {}) {
     try {
       await setOrderAcceptance(true, { silent:true });
       closeModal();
-      notify(isBn ? 'অর্ডার গ্রহণ চালু হয়েছে।' : 'Order acceptance is ON.', 'ok');
+      notify(isBn ? 'কাজের অবস্থা অন হয়েছে।' : 'Work status is ON.', 'ok');
     } catch (error) {
       yesButton.disabled = false;
-      setFormMessage('#orderAcceptancePromptMessage', error.message || 'Could not enable order acceptance.', 'danger');
+      setFormMessage('#orderAcceptancePromptMessage', error.message || 'Could not enable work status.', 'danger');
     }
   };
 }
@@ -121,7 +142,7 @@ async function renderOrders(opts={}) {
     localStorage.removeItem('crmOrderCredentialId');
     data = await api('/api/orders', { autoReloadOnChallenge: true });
   }
-  const unreadData = await api('/api/chat-unread', { silent:true, noAutoReload:true }).catch(() => ({ counts:{}, total:0 }));
+  const unreadData = { counts: data.unreadCounts || {}, total: Number(data.unreadTotal || 0), latestByOrder: data.unreadLatestByOrder || {} };
   const credentialOptions = orderAccountOptions(data);
   const liveCredentialOptions = Array.isArray(data.liveCredentialOptions) ? data.liveCredentialOptions : [];
   if (requestedCredentialId && !credentialOptions.some(option => Number(option.id) === requestedCredentialId)) {

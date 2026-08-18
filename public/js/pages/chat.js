@@ -83,13 +83,38 @@ async function renderChatInbox(options={}) {
   const data = await api('/api/chat-inbox', { silent:Boolean(options.preserveFocus), noAutoReload:Boolean(options.preserveFocus) });
   const items = data?.items || [];
   const visible = filterChatInboxItems(items, state.chatInboxSearch);
+  const existingList = $('#chatThreadList');
+  if (options.preserveFocus && existingList && state.page === 'chat') {
+    const page = existingList.closest('.chat-inbox-page');
+    const pageScrollTop = page?.scrollTop || 0;
+    const windowScrollY = window.scrollY || 0;
+    existingList.innerHTML = renderChatInboxThreads(visible);
+    const summary = $('#chatInboxSummary');
+    if (summary) summary.innerHTML = `<span>${items.length} conversation${items.length === 1 ? '' : 's'}</span>${Number(data?.totalUnread || 0) ? `<b>${Number(data.totalUnread)} unread</b>` : ''}`;
+    bindChatInboxThreadClicks();
+    bindBackgroundNotificationControls(page || document);
+    if (typeof bindOrderAcceptanceControl === 'function') bindOrderAcceptanceControl(page || document);
+    if (page) page.scrollTop = pageScrollTop;
+    requestAnimationFrame(() => window.scrollTo({ top:windowScrollY, left:0, behavior:'auto' }));
+    if (hadSearchFocus) {
+      const search = $('#chatInboxSearch');
+      search?.focus({ preventScroll:true });
+      if (search && selectionStart !== null) search.setSelectionRange(selectionStart, selectionStart);
+    }
+    scheduleChatInboxAutoRefresh();
+    return;
+  }
   $('#content').innerHTML = `<div class="chat-inbox-page">
+    <div class="chat-page-controls">
+      ${typeof orderAcceptanceButtonHtml === 'function' ? orderAcceptanceButtonHtml(state.orderAcceptance || {}, { id:'chatInboxWorkAvailabilityToggle', compact:true }) : ''}
+      ${backgroundNotificationToggleHtml({ compact:true })}
+    </div>
     <div class="chat-inbox-search">
       <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" stroke-width="2"/><path d="m16.5 16.5 4 4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
       <input id="chatInboxSearch" type="search" autocomplete="off" placeholder="Search" value="${escapeAttr(state.chatInboxSearch || '')}" aria-label="Search P2P messages" />
       ${state.chatInboxSearch ? '<button id="clearChatInboxSearch" type="button" aria-label="Clear search">×</button>' : ''}
     </div>
-    <div class="chat-inbox-summary"><span>${items.length} conversation${items.length === 1 ? '' : 's'}</span>${Number(data?.totalUnread || 0) ? `<b>${Number(data.totalUnread)} unread</b>` : ''}</div>
+    <div class="chat-inbox-summary" id="chatInboxSummary"><span>${items.length} conversation${items.length === 1 ? '' : 's'}</span>${Number(data?.totalUnread || 0) ? `<b>${Number(data.totalUnread)} unread</b>` : ''}</div>
     <div class="chat-thread-list" id="chatThreadList">${renderChatInboxThreads(visible)}</div>
   </div>`;
 
@@ -111,6 +136,8 @@ async function renderChatInbox(options={}) {
     renderChatInbox({ preserveFocus:true });
   };
   bindChatInboxThreadClicks();
+  bindBackgroundNotificationControls($('#content') || document);
+  if (typeof bindOrderAcceptanceControl === 'function') bindOrderAcceptanceControl($('#content') || document);
   scheduleChatInboxAutoRefresh();
 }
 

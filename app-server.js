@@ -19,6 +19,7 @@ const { syncPublicMirror } = require('./lib/publicAssetMirror');
 const { classifyStartupError } = require('./lib/productionPreflight');
 const { applyP2PFlowEnvAliases, resolveEnvFile, setupPaths, isSetupComplete, setupRequired, startHostingSetupServer, markSetupComplete, sanitizeFreshOwnerSecrets, beginBootstrapClaim, finishBootstrapClaim, restoreBootstrapClaim } = require('./lib/hostingSetup');
 const { callSignedSapi, callSignedSapiPath, ENDPOINTS } = require('./lib/binanceAdapter');
+const { generateVapidKeys, validateVapidKeys, normalizeSubscription, sendWebPush } = require('./lib/webPush');
 const net = require('net');
 const tls = require('tls');
 
@@ -43,7 +44,7 @@ loadEnv();
 applyP2PFlowEnvAliases(process.env);
 
 const APP_VERSION = String(packageInfo.version || '0.0.0');
-const APP_SCHEMA_VERSION = 32;
+const APP_SCHEMA_VERSION = 33;
 const APP_DATA_COMPATIBILITY_EPOCH = 1;
 const PORT = Number(process.env.PORT || 3000);
 const BIND_HOST = cleanEnv(process.env.P2PFLOW_BIND_HOST || process.env.CRM_BIND_HOST || '', '');
@@ -117,6 +118,9 @@ const SMTP_USER = process.env.P2PFLOW_SMTP_USER || process.env.CRM_SMTP_USER || 
 const SMTP_PASS = process.env.P2PFLOW_SMTP_PASS || process.env.CRM_SMTP_PASS || '';
 const SMTP_HELO = process.env.P2PFLOW_SMTP_HELO || process.env.CRM_SMTP_HELO || 'localhost';
 const PUBLIC_BASE_URL = cleanEnv(process.env.P2PFLOW_PUBLIC_BASE_URL || process.env.CRM_PUBLIC_BASE_URL || '', '');
+const WEB_PUSH_SUBJECT = cleanEnv(process.env.P2PFLOW_WEB_PUSH_SUBJECT || process.env.CRM_WEB_PUSH_SUBJECT || '', '');
+const WEB_PUSH_TIMEOUT_MS = Math.max(3000, Math.min(30000, Number(process.env.P2PFLOW_WEB_PUSH_TIMEOUT_MS || 12000) || 12000));
+const WEB_PUSH_MAX_SUBSCRIPTIONS_PER_USER = Math.max(1, Math.min(20, Number(process.env.P2PFLOW_WEB_PUSH_MAX_SUBSCRIPTIONS_PER_USER || 8) || 8));
 const NODE_ENVIRONMENT = cleanEnv(process.env.NODE_ENV || 'production', 'production').toLowerCase();
 const TRUST_PROXY_SETTING = cleanEnv(process.env.P2PFLOW_TRUST_PROXY || process.env.CRM_TRUST_PROXY || 'loopback', 'loopback').toLowerCase();
 const ALLOWED_HOSTS_SETTING = cleanEnv(process.env.P2PFLOW_ALLOWED_HOSTS || process.env.CRM_ALLOWED_HOSTS || '', '');
@@ -226,14 +230,14 @@ function notificationCategoryForType(type = '', item = {}) {
 
 function defaultNotificationPreferences() {
   const enabled = Object.fromEntries(NOTIFICATION_CATEGORY_CATALOG.map(category => [category.id, true]));
-  return { inApp: { ...enabled }, email: { ...enabled } };
+  return { inApp: { ...enabled }, email: { ...enabled }, push: { ...enabled } };
 }
 
 function normalizeNotificationPreferences(value = {}) {
   const defaults = defaultNotificationPreferences();
   const source = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
-  const out = { inApp: {}, email: {} };
-  for (const channel of ['inApp', 'email']) {
+  const out = { inApp: {}, email: {}, push: {} };
+  for (const channel of ['inApp', 'email', 'push']) {
     const rows = source[channel] && typeof source[channel] === 'object' && !Array.isArray(source[channel]) ? source[channel] : {};
     for (const category of NOTIFICATION_CATEGORY_CATALOG) {
       out[channel][category.id] = category.mandatory === true ? true : rows[category.id] !== false;
@@ -247,6 +251,67 @@ function notificationEnabledForUser(user, channel = 'inApp', category = 'system'
   const normalized = normalizeNotificationPreferences(user.notificationPreferences);
   const id = NOTIFICATION_CATEGORY_CATALOG.some(item => item.id === category) ? category : 'system';
   return normalized[channel]?.[id] !== false;
+}
+
+function normalizePushSubscriptions(value = []) {
+  const rows = Array.isArray(value) ? value : [];
+  const seen = new Set();
+  return rows.filter(item => item && typeof item === 'object').map(item => {
+    const endpoint = cleanStr(item.endpoint || '', 2048);
+    if (!endpoint || seen.has(endpoint)) return null;
+    try {
+      normalizeSubscription({ endpoint, keys: { p256dh: item.p256dh || item.keys?.p256dh, auth: item.auth || item.keys?.auth } });
+    } catch { return null; }
+    seen.add(endpoint);
+    return {
+      id: cleanStr(item.id || crypto.randomBytes(12).toString('hex'), 80),
+      endpoint,
+      p256dh: cleanStr(item.p256dh || item.keys?.p256dh || '', 256),
+      auth: cleanStr(item.auth || item.keys?.auth || '', 256),
+      expirationTime: Number(item.expirationTime || 0) || null,
+      deviceId: cleanStr(item.deviceId || '', 128),
+      deviceName: cleanStr(item.deviceName || 'Browser notification device', 120),
+      userAgent: cleanStr(item.userAgent || '', 600),
+      createdAt: item.createdAt || nowIso(),
+      lastSeenAt: item.lastSeenAt || item.createdAt || nowIso(),
+      lastSuccessAt: item.lastSuccessAt || null,
+      lastFailureAt: item.lastFailureAt || null,
+      lastFailureStatus: Number(item.lastFailureStatus || 0) || null,
+      disabledAt: item.disabledAt || null
+    };
+  }).filter(Boolean).slice(-WEB_PUSH_MAX_SUBSCRIPTIONS_PER_USER);
+}
+
+function ensureWebPushVapidSettings(settings = {}) {
+  const envPublic = cleanStr(process.env.P2PFLOW_WEB_PUSH_PUBLIC_KEY || process.env.CRM_WEB_PUSH_PUBLIC_KEY || '', 256);
+  const envPrivate = cleanStr(process.env.P2PFLOW_WEB_PUSH_PRIVATE_KEY || process.env.CRM_WEB_PUSH_PRIVATE_KEY || '', 256);
+  const current = {
+    publicKey: envPublic || cleanStr(settings.webPushPublicKey || '', 256),
+    privateKey: envPrivate || cleanStr(settings.webPushPrivateKey || '', 256)
+  };
+  try {
+    validateVapidKeys(current);
+  } catch {
+    const generated = generateVapidKeys();
+    current.publicKey = generated.publicKey;
+    current.privateKey = generated.privateKey;
+  }
+  settings.webPushPublicKey = current.publicKey;
+  settings.webPushPrivateKey = current.privateKey;
+  if (!settings.webPushSubject) settings.webPushSubject = WEB_PUSH_SUBJECT || '';
+  if (settings.webPushEnabled === undefined) settings.webPushEnabled = true;
+  return current;
+}
+
+function webPushSubject(req = null) {
+  const configured = cleanStr(WEB_PUSH_SUBJECT || db?.settings?.webPushSubject || '', 300);
+  if (/^(mailto:|https:\/\/)/i.test(configured)) return configured;
+  const base = cleanStr(PUBLIC_BASE_URL || (req ? publicBaseUrl(req) : ''), 500);
+  try {
+    const parsed = new URL(base);
+    if (parsed.protocol === 'https:') return parsed.origin;
+  } catch {}
+  return 'mailto:admin@example.com';
 }
 
 const BINANCE_ACCOUNT_PERMISSION_CATALOG = Object.freeze([
@@ -519,6 +584,8 @@ const pendingOwnerMailOutageChallenges = new Map();
 const pendingDeviceChallenges = new Map();
 const pendingEmailRecoveries = new Map();
 const loginFailureMailThrottle = new Map();
+const pushEndpointValidationCache = new Map();
+const pushDispatchInFlight = new Set();
 const backgroundMailJobs = new Set();
 let localMailQuotaBlockedUntil = 0;
 let localMailQuotaLastError = '';
@@ -734,6 +801,10 @@ function defaultSettings() {
     sendOrderEmail: true,
     sendNotificationEmail: true,
     sendAssignmentPanelSms: true,
+    webPushEnabled: true,
+    webPushPublicKey: '',
+    webPushPrivateKey: '',
+    webPushSubject: WEB_PUSH_SUBJECT || '',
     binanceUsdtAvailable: 0,
     defaultUsdtRate: 0,
     binanceAutoOrderSync: true,
@@ -1191,6 +1262,7 @@ function migrateDb(target) {
   const hadAccountingOpeningCapitalUsd = Boolean(target.settings && Object.prototype.hasOwnProperty.call(target.settings, 'accountingOpeningCapitalUsd'));
   target.meta.schemaVersion = Math.max(previousSchemaVersion, APP_SCHEMA_VERSION);
   target.settings = { ...defaultSettings(), ...(target.settings || {}) };
+  ensureWebPushVapidSettings(target.settings);
   // v1.0.157: v1.0.156 unintentionally replaced the established product branding.
   // Revert only that exact automatic value during the schema upgrade; preserve any other owner customization.
   if (previousSchemaVersion <= 24 && ['RNEED P2P','Manual P2P Desk CRM','Desk CRM','P2PFlow'].includes(String(target.settings.appName || '').trim())) target.settings.appName = 'P2PFlow';
@@ -1636,6 +1708,7 @@ function migrateDb(target) {
       lastSeenAt: item.lastSeenAt || null,
       lastIpPrefix: cleanStr(item.lastIpPrefix || '', 120),
       lastUaHash: cleanStr(item.lastUaHash || '', 128),
+      lastUaFamily: cleanStr(item.lastUaFamily || '', 80),
       revokedAt: item.revokedAt || null
     })).filter(item => item.publicKeyJwk && item.publicKeyJwk.kty === 'EC' && item.publicKeyJwk.crv === 'P-256');
     if (u.securityQuestion === undefined) u.securityQuestion = '';
@@ -1644,6 +1717,9 @@ function migrateDb(target) {
     u.securityQuestion = cleanStr(u.securityQuestion || '', 240);
     if (!u.securityQuestion) u.securityAnswerHash = '';
     u.notificationPreferences = normalizeNotificationPreferences(u.notificationPreferences);
+    u.backgroundNotificationsEnabled = u.backgroundNotificationsEnabled === true;
+    u.pushSubscriptions = normalizePushSubscriptions(u.pushSubscriptions);
+    if (u.workAvailable === undefined) u.workAvailable = true;
     if (!u.email && u.role === 'admin' && OWNER_EMAIL) u.email = OWNER_EMAIL;
     if (!u.loginSecretHash && u.role === 'admin') {
       const replacementSecret = ownerAdminCredentials().secretCode;
@@ -1686,6 +1762,7 @@ function migrateDb(target) {
     a.includeProfitInCompanyTotals = a.includeProfitInCompanyTotals !== false;
     if (!a.status || ['online','offline','busy'].includes(String(a.status).toLowerCase())) a.status = 'dynamic';
     const linkedUser = target.users.find(u => Number(u.id) === Number(a.userId));
+    if (linkedUser && linkedUser.role === 'agent' && previousSchemaVersion < 33) linkedUser.workAvailable = a.allowNewOrders !== false;
     if (linkedUser && linkedUser.role !== 'agent') {
       a.allowNewOrders = false;
       a.canRelease = false;
@@ -1795,6 +1872,9 @@ function makeUser(id, username, password, name, role, agentId, opts = {}) {
     securityAnswerHash: opts.securityAnswer ? hashPassword(String(opts.securityAnswer)) : '',
     securityQuestionUpdatedAt: opts.securityQuestion && opts.securityAnswer ? nowIso() : null,
     notificationPreferences: normalizeNotificationPreferences(opts.notificationPreferences),
+    backgroundNotificationsEnabled: opts.backgroundNotificationsEnabled === true,
+    pushSubscriptions: normalizePushSubscriptions(opts.pushSubscriptions),
+    workAvailable: opts.workAvailable !== false,
     createdAt: nowIso()
   };
 }
@@ -2014,7 +2094,10 @@ function userSafe(u) {
     allowedP2pCredentialIds: Array.isArray(u.allowedP2pCredentialIds) ? u.allowedP2pCredentialIds.map(Number).filter(Boolean) : [],
     securityQuestion: cleanStr(u.securityQuestion || '', 240),
     securityFallbackConfigured: securityQuestionFallbackConfigured(u),
-    notificationPreferences: normalizeNotificationPreferences(u.notificationPreferences)
+    notificationPreferences: normalizeNotificationPreferences(u.notificationPreferences),
+    backgroundNotificationsEnabled: u.backgroundNotificationsEnabled === true,
+    pushSubscriptionCount: normalizePushSubscriptions(u.pushSubscriptions).filter(item => !item.disabledAt).length,
+    workAvailable: u.workAvailable !== false
   };
 }
 
@@ -2231,9 +2314,7 @@ function accountView(accountItem, viewer = null) {
   };
 }
 
-function orderSummary(orderId) {
-  const order = orderById(orderId);
-  const splits = db.paymentSplits.filter(s => s.orderId === Number(orderId));
+function orderSummaryFromRows(order, splits = []) {
   const sendActual = sum(splits.filter(s => s.direction === 'send').map(s => s.actualAmount || 0));
   const receiveActual = sum(splits.filter(s => s.direction === 'receive').map(s => s.actualAmount || 0));
   const sendPlanned = sum(splits.filter(s => s.direction === 'send').map(s => s.plannedAmount || 0));
@@ -2245,8 +2326,16 @@ function orderSummary(orderId) {
   return { orderAmount: target, sendActual, receiveActual, sendPlanned, receivePlanned, relevantActual, relevantPlanned, difference: relevantActual - target, remaining: Math.max(0, target - relevantActual), tolerance, matched: relevantActual + tolerance >= target };
 }
 
-function viewerOrderSummary(order, user = null) {
-  const global = orderSummary(order.id);
+function orderSummary(orderId, splitsOverride = null) {
+  const order = orderById(orderId);
+  const splits = Array.isArray(splitsOverride) ? splitsOverride : db.paymentSplits.filter(s => s.orderId === Number(orderId));
+  return orderSummaryFromRows(order, splits);
+}
+
+function viewerOrderSummary(order, user = null, context = {}) {
+  const splits = Array.isArray(context.splits) ? context.splits : db.paymentSplits.filter(s => Number(s.orderId) === Number(order.id));
+  const assignments = Array.isArray(context.assignments) ? context.assignments : db.orderAgentAssignments.filter(a => Number(a.orderId) === Number(order.id));
+  const global = context.summary || orderSummaryFromRows(order, splits);
   const base = {
     ...global,
     isScoped: false,
@@ -2258,14 +2347,11 @@ function viewerOrderSummary(order, user = null) {
     assignmentStatus: ''
   };
   if (!user || user.role !== 'agent' || !user.agentId) return base;
-  const assignment = db.orderAgentAssignments.find(a =>
-    Number(a.orderId) === Number(order.id) &&
-    Number(a.agentId) === Number(user.agentId) &&
-    a.status !== 'left'
-  );
+  const assignment = assignments.find(a => Number(a.agentId) === Number(user.agentId) && a.status !== 'left');
   if (!assignment) return base;
   const assignedAmount = num(assignment.assignedAmount || 0);
-  const viewerActual = assignmentActual(order.id, user.agentId);
+  const direction = order.type === 'BUY' ? 'send' : 'receive';
+  const viewerActual = sum(splits.filter(split => Number(split.agentId) === Number(user.agentId) && split.direction === direction).map(split => split.actualAmount || 0));
   return {
     ...base,
     isScoped: true,
@@ -2936,7 +3022,7 @@ function agentDynamicStatus(agent) {
 function agentAvailableForAssignment(agent) {
   if (!agent || agent.allowNewOrders === false) return false;
   const linkedUser = db.users.find(u => Number(u.id) === Number(agent.userId) && u.enabled);
-  if (!linkedUser || linkedUser.role !== 'agent') return false;
+  if (!linkedUser || linkedUser.role !== 'agent' || linkedUser.workAvailable === false) return false;
   return userHasPermission(linkedUser, 'orders.view');
 }
 
@@ -4988,6 +5074,20 @@ function canAccessOrder(user, order) {
   return false;
 }
 
+function ordersAccessibleToUser(user) {
+  if (!user || !userHasPermission(user, 'orders.view')) return [];
+  const assignedOrderIds = user.role === 'agent'
+    ? new Set((db.orderAgentAssignments || []).filter(assignment => Number(assignment.agentId) === Number(user.agentId || 0) && assignment.status !== 'left').map(assignment => Number(assignment.orderId)))
+    : null;
+  return (db.orders || []).filter(order => {
+    if (assignedOrderIds && !assignedOrderIds.has(Number(order.id))) return false;
+    if (order.orderSource === 'offline') return ['admin', 'manager', 'auditor', 'agent'].includes(user.role);
+    const credentialId = Number(order.credentialId || 0);
+    if (!credentialId || !userHasBinanceCredentialPermission(user, credentialId, 'orders.view')) return false;
+    return ['admin', 'manager', 'auditor', 'agent'].includes(user.role);
+  });
+}
+
 function canUseOrderCredential(user, order, permission) {
   if (!user || !order || !permission) return false;
   if (!userHasPermission(user, permission)) return false;
@@ -5089,6 +5189,245 @@ function dispatchNotificationEmail(item = {}) {
   }
 }
 
+function activePushSubscriptionsForUser(user) {
+  if (!user || user.enabled === false || user.backgroundNotificationsEnabled !== true) return [];
+  const rows = normalizePushSubscriptions(user.pushSubscriptions).filter(item => !item.disabledAt);
+  user.pushSubscriptions = rows;
+  return rows;
+}
+
+function notificationPushRecipients(item = {}) {
+  const recipients = new Map();
+  const excludeUserId = Number(item.excludeUserId || 0);
+  const category = notificationCategoryForType(item.type, item);
+  const addUser = user => {
+    if (!user || user.enabled === false || Number(user.id || 0) === excludeUserId) return;
+    if (!notificationEnabledForUser(user, 'push', category)) return;
+    const subscriptions = activePushSubscriptionsForUser(user);
+    if (!subscriptions.length) return;
+    recipients.set(Number(user.id), { user, subscriptions });
+  };
+
+  if (item.userId) addUser((db.users || []).find(user => Number(user.id) === Number(item.userId)));
+  if (item.agentId) addUser(agentLoginUser(item.agentId));
+  const audience = String(item.audience || '').toLowerCase();
+  if (audience === 'manager') {
+    (db.users || []).filter(user => ['admin', 'manager'].includes(String(user.role || '').toLowerCase())).forEach(addUser);
+  } else if (audience === 'all') {
+    (db.users || []).forEach(addUser);
+  }
+  if (audience === 'order' || (item.orderId && !item.userId && !item.agentId && audience !== 'manager')) {
+    const order = orderById(item.orderId);
+    (db.users || []).filter(user => ['admin', 'manager'].includes(String(user.role || '').toLowerCase())).forEach(user => {
+      if (!order || canAccessOrder(user, order)) addUser(user);
+    });
+    if (order) {
+      for (const assignment of db.orderAgentAssignments || []) {
+        if (Number(assignment.orderId) !== Number(order.id) || assignment.status === 'left') continue;
+        const user = agentLoginUser(assignment.agentId);
+        if (user && canAccessOrder(user, order)) addUser(user);
+      }
+    }
+  }
+  return Array.from(recipients.values());
+}
+
+function notificationPushTitle(item = {}) {
+  const type = String(item.type || '').toLowerCase();
+  if (/chat|message/.test(type)) return 'New P2P message';
+  if (/assigned|assignment/.test(type)) return 'New order assigned';
+  if (/manager_queue|no_agent/.test(type)) return 'Order needs attention';
+  if (/security|login|password|otp|trusted|recovery/.test(type)) return 'Security alert';
+  if (/advert|ads|merchant|binance/.test(type)) return 'Binance P2P update';
+  return item.severity === 'danger' ? 'Urgent P2PFlow alert' : 'P2PFlow notification';
+}
+
+function notificationPushPayload(item = {}, recipient = null) {
+  const order = item.orderId ? orderById(item.orderId) : null;
+  const route = order && recipient?.user && canAccessOrder(recipient.user, order)
+    ? `/#/orders/${Number(order.id)}`
+    : '/#/notifications';
+  const category = notificationCategoryForType(item.type, item);
+  return {
+    title: notificationPushTitle(item),
+    body: cleanStr(item.message || 'You have a new P2PFlow notification.', 500),
+    tag: `p2pflow-${category}-${Number(item.orderId || 0) || cleanStr(item.type || 'notice', 80)}`,
+    renotify: true,
+    requireInteraction: ['danger', 'warning'].includes(String(item.severity || '').toLowerCase()),
+    silent: false,
+    vibrate: [220, 100, 220],
+    data: {
+      notificationId: Number(item.id || 0),
+      type: cleanStr(item.type || 'notification', 80),
+      category,
+      orderId: Number(item.orderId || 0) || null,
+      url: route,
+      createdAt: item.createdAt || nowIso()
+    }
+  };
+}
+
+async function assertSafePushEndpoint(endpoint) {
+  const target = parseOutboundHttpsUrl(endpoint, 'Push subscription endpoint');
+  const host = target.hostname.toLowerCase();
+  const cached = pushEndpointValidationCache.get(host);
+  if (cached && cached > Date.now()) return target.toString();
+  const safe = await assertPublicOutboundUrl(target.toString(), 'Push subscription endpoint');
+  pushEndpointValidationCache.set(host, Date.now() + 60 * 60 * 1000);
+  return safe;
+}
+
+async function sendPushToRecipient(item, recipient) {
+  const vapidKeys = ensureWebPushVapidSettings(db.settings);
+  let changed = false;
+  const payload = notificationPushPayload(item, recipient);
+  const results = [];
+  for (const subscription of recipient.subscriptions) {
+    const key = `${recipient.user.id}|${subscription.endpoint}`;
+    if (pushDispatchInFlight.has(key)) continue;
+    pushDispatchInFlight.add(key);
+    try {
+      await assertSafePushEndpoint(subscription.endpoint);
+      const result = await sendWebPush({
+        endpoint: subscription.endpoint,
+        keys: { p256dh: subscription.p256dh, auth: subscription.auth }
+      }, payload, {
+        vapidKeys,
+        subject: webPushSubject(),
+        urgency: item.severity === 'danger' ? 'high' : 'normal',
+        ttl: 24 * 60 * 60,
+        timeoutMs: WEB_PUSH_TIMEOUT_MS
+      });
+      results.push({ endpoint: subscription.endpoint, statusCode: result.statusCode, ok: result.ok });
+      if (result.ok) {
+        subscription.lastSuccessAt = nowIso();
+        subscription.lastFailureAt = null;
+        subscription.lastFailureStatus = null;
+        changed = true;
+      } else {
+        subscription.lastFailureAt = nowIso();
+        subscription.lastFailureStatus = result.statusCode || null;
+        if (result.permanentFailure) subscription.disabledAt = nowIso();
+        changed = true;
+      }
+    } catch (error) {
+      subscription.lastFailureAt = nowIso();
+      subscription.lastFailureStatus = Number(error?.statusCode || 0) || null;
+      changed = true;
+      results.push({ endpoint: subscription.endpoint, statusCode: 0, ok: false, error: cleanStr(error.message || error, 240) });
+    } finally {
+      pushDispatchInFlight.delete(key);
+    }
+  }
+  recipient.user.pushSubscriptions = normalizePushSubscriptions(recipient.user.pushSubscriptions);
+  return { changed, results };
+}
+
+function dispatchNotificationPush(item = {}) {
+  if (!db || db.settings.webPushEnabled === false || item.pushNotification === false) return;
+  const recipients = notificationPushRecipients(item);
+  if (!recipients.length) return;
+  setImmediate(async () => {
+    let changed = false;
+    for (const recipient of recipients) {
+      const result = await sendPushToRecipient(item, recipient).catch(() => ({ changed: false, results: [] }));
+      if (result.changed) changed = true;
+    }
+    if (changed) saveDb({ broadcast: false, reason: 'web_push_delivery_state' });
+  });
+}
+
+function notificationPreferencesWithAllPushEnabled(value = {}) {
+  const preferences = normalizeNotificationPreferences(value);
+  for (const category of NOTIFICATION_CATEGORY_CATALOG) preferences.push[category.id] = true;
+  return preferences;
+}
+
+function pushConfigForUser(user, req = null) {
+  const vapid = ensureWebPushVapidSettings(db.settings);
+  const subscriptions = normalizePushSubscriptions(user.pushSubscriptions).filter(item => !item.disabledAt);
+  user.pushSubscriptions = subscriptions;
+  const deviceId = requestDeviceId(req);
+  return {
+    enabled: user.backgroundNotificationsEnabled === true,
+    serverEnabled: db.settings.webPushEnabled !== false,
+    publicKey: vapid.publicKey,
+    subjectConfigured: webPushSubject(req) !== 'mailto:admin@example.com',
+    subscriptionCount: subscriptions.length,
+    currentDeviceSubscribed: Boolean(deviceId && subscriptions.some(item => item.deviceId === deviceId)),
+    deviceId,
+    categories: NOTIFICATION_CATEGORY_CATALOG.map(category => ({ ...category })),
+    preferences: normalizeNotificationPreferences(user.notificationPreferences)
+  };
+}
+
+async function handlePushNotifications(req, res, url) {
+  const user = requireAuth(req, res); if (!user) return;
+  const action = url.pathname.split('/').filter(Boolean)[2] || '';
+  if (req.method === 'GET' && !action) return sendJson(res, 200, pushConfigForUser(user, req), {}, req);
+  if (req.method === 'PATCH' && action === 'preferences') {
+    const body = await readBody(req);
+    if (typeof body.enabled !== 'boolean') return sendJson(res, 422, { error: 'enabled must be true or false.' }, {}, req);
+    user.backgroundNotificationsEnabled = body.enabled;
+    if (body.preferences) user.notificationPreferences = normalizeNotificationPreferences(body.preferences);
+    else if (body.enabled) user.notificationPreferences = notificationPreferencesWithAllPushEnabled(user.notificationPreferences);
+    logAudit(user, body.enabled ? 'background_notifications_enabled' : 'background_notifications_disabled', 'user', user.id, { deviceId: requestDeviceId(req), subscriptionCount: normalizePushSubscriptions(user.pushSubscriptions).length });
+    saveDb();
+    return sendJson(res, 200, { ok: true, ...pushConfigForUser(user, req) }, {}, req);
+  }
+  if (req.method === 'POST' && action === 'subscribe') {
+    const body = await readBody(req);
+    let normalized;
+    try { normalized = normalizeSubscription(body.subscription || body); }
+    catch (error) { return sendJson(res, 422, { error: error.message }, {}, req); }
+    try { await assertSafePushEndpoint(normalized.endpoint); }
+    catch (error) { return sendJson(res, 422, { error: error.message }, {}, req); }
+    const source = body.subscription || body;
+    const deviceId = cleanStr(body.deviceId || requestDeviceId(req), 128);
+    const rows = normalizePushSubscriptions(user.pushSubscriptions);
+    let item = rows.find(row => row.endpoint === normalized.endpoint) || (deviceId ? rows.find(row => row.deviceId === deviceId) : null);
+    if (!item) {
+      item = { id: crypto.randomBytes(12).toString('hex'), createdAt: nowIso() };
+      rows.push(item);
+    }
+    Object.assign(item, {
+      endpoint: normalized.endpoint,
+      p256dh: cleanStr(source.keys?.p256dh || source.p256dh || '', 256),
+      auth: cleanStr(source.keys?.auth || source.auth || '', 256),
+      expirationTime: Number(source.expirationTime || 0) || null,
+      deviceId,
+      deviceName: cleanStr(body.deviceName || 'Browser notification device', 120),
+      userAgent: requestUserAgent(req),
+      lastSeenAt: nowIso(),
+      disabledAt: null
+    });
+    user.pushSubscriptions = normalizePushSubscriptions(rows);
+    user.backgroundNotificationsEnabled = body.enabled !== false;
+    if (user.backgroundNotificationsEnabled) user.notificationPreferences = notificationPreferencesWithAllPushEnabled(user.notificationPreferences);
+    logAudit(user, 'web_push_subscription_saved', 'user', user.id, { deviceId, subscriptionCount: user.pushSubscriptions.length, endpointHost: normalized.endpointUrl.hostname });
+    saveDb();
+    return sendJson(res, 201, { ok: true, ...pushConfigForUser(user, req) }, {}, req);
+  }
+  if (req.method === 'DELETE' && action === 'subscribe') {
+    const body = await readBody(req);
+    const endpoint = cleanStr(body.endpoint || '', 2048);
+    const deviceId = cleanStr(body.deviceId || requestDeviceId(req), 128);
+    const before = normalizePushSubscriptions(user.pushSubscriptions);
+    user.pushSubscriptions = before.filter(item => !((endpoint && item.endpoint === endpoint) || (deviceId && item.deviceId === deviceId)));
+    if (!user.pushSubscriptions.length) user.backgroundNotificationsEnabled = false;
+    logAudit(user, 'web_push_subscription_removed', 'user', user.id, { deviceId, removed: before.length - user.pushSubscriptions.length });
+    saveDb();
+    return sendJson(res, 200, { ok: true, ...pushConfigForUser(user, req) }, {}, req);
+  }
+  if (req.method === 'POST' && action === 'test') {
+    if (!user.backgroundNotificationsEnabled || !activePushSubscriptionsForUser(user).length) return sendJson(res, 409, { error: 'Enable background notifications on this device first.' }, {}, req);
+    const item = addNotification('web_push_test', 'Background notifications are connected on this device.', 'info', { userId: user.id, audience: 'user', emailNotification: false });
+    saveDb();
+    return sendJson(res, 202, { ok: true, notificationId: item.id }, {}, req);
+  }
+  return sendJson(res, 405, { error: 'Method not allowed' }, {}, req);
+}
+
 function addNotification(type, message, severity = 'info', extra = {}) {
   const category = notificationCategoryForType(type, extra);
   const item = { id: nextId(), type, category, message, severity, status: 'unread', read: false, createdAt: nowIso(), ...extra };
@@ -5096,6 +5435,7 @@ function addNotification(type, message, severity = 'info', extra = {}) {
   db.notifications.push(item);
   broadcast({ type: 'notification.created', notification: item, at: nowIso() });
   dispatchNotificationEmail(item);
+  dispatchNotificationPush(item);
   return item;
 }
 
@@ -9039,6 +9379,24 @@ async function markBinanceOrderChatRead(req, res, user, order) {
 }
 
 
+function notifyIncomingBinanceChat(order, importedResult = {}) {
+  if (!order || Number(importedResult.incomingImported || 0) <= 0) return null;
+  const latest = latestIncomingChatForOrder(order.id);
+  const preview = latest?.messageType === 'image'
+    ? 'New photo received.'
+    : latest?.messageType === 'video'
+      ? 'New video received.'
+      : cleanStr(latest?.message || 'New Binance P2P message received.', 220);
+  return addNotification('p2p_chat_message_received', `Order ${order.orderNo || order.externalOrderNo || order.id}: ${preview}`, 'info', {
+    orderId: order.id,
+    audience: 'order',
+    emailNotification: false,
+    pushNotification: true,
+    latestMessageId: Number(importedResult.latestIncomingChatId || latest?.id || 0) || null,
+    incomingImported: Number(importedResult.incomingImported || 0)
+  });
+}
+
 function importBinanceChatRows(order, rows = []) {
   let imported = 0;
   let incomingImported = 0;
@@ -9105,6 +9463,7 @@ async function syncBinanceChat(req, res, user, order) {
   const importedResult = importBinanceChatRows(order, rows);
   order.lastBinanceChatSyncedAt = nowIso();
   logAudit(user, 'binance_chat_messages_synced', 'order', order.id, { orderNo, imported: importedResult.imported, incomingImported: importedResult.incomingImported, totalRows: rows.length, result: sanitizedBinanceResult(result) });
+  if (importedResult.incomingImported > 0) notifyIncomingBinanceChat(order, importedResult);
   saveDb();
   if (importedResult.incomingImported > 0) broadcast({ type: 'chat.message.received', orderId: order.id, orderNo: order.orderNo, externalOrderNo: orderNo, imported: importedResult.imported, incomingImported: importedResult.incomingImported, latestMessageId: importedResult.latestIncomingChatId, status: order.status, externalStatus: order.externalStatus, at: nowIso() });
   return sendJson(res, 200, { ...fullOrderView(order, user), imported: importedResult.imported, incomingImported: importedResult.incomingImported }, {}, req);
@@ -9289,6 +9648,31 @@ function requestUserAgent(req) {
 function requestUaHash(req) {
   return crypto.createHash('sha256').update(requestUserAgent(req)).digest('hex');
 }
+function userAgentFamily(value = '') {
+  const ua = cleanStr(value || '', 600).toLowerCase();
+  const browser = /edg\//.test(ua) ? 'edge'
+    : /opr\//.test(ua) ? 'opera'
+      : /samsungbrowser\//.test(ua) ? 'samsung'
+        : /crios\//.test(ua) ? 'chrome-ios'
+          : /fxios\//.test(ua) ? 'firefox-ios'
+            : /firefox\//.test(ua) ? 'firefox'
+              : /(?:chrome|chromium)\//.test(ua) ? 'chrome'
+                : /(?:\bwv\b|;\s*wv\b)/.test(ua) ? 'webview'
+                  : /safari\//.test(ua) ? 'safari'
+                    : 'browser';
+  const platform = /android/.test(ua) ? 'android'
+    : /(iphone|ipad|ipod)/.test(ua) ? 'ios'
+      : /windows/.test(ua) ? 'windows'
+        : /cros/.test(ua) ? 'chromeos'
+          : /(macintosh|mac os x)/.test(ua) ? 'macos'
+            : /linux/.test(ua) ? 'linux'
+              : 'other';
+  const form = /(mobile|iphone|ipod|android)/.test(ua) && !/ipad/.test(ua) ? 'mobile' : (/ipad|tablet/.test(ua) ? 'tablet' : 'desktop');
+  return `${browser}|${platform}|${form}`;
+}
+function requestUaFamily(req) {
+  return userAgentFamily(requestUserAgent(req));
+}
 function requestIpPrefix(req) {
   const raw = getIp(req);
   if (net.isIP(raw) === 4) {
@@ -9296,8 +9680,8 @@ function requestIpPrefix(req) {
     return parts.length === 4 ? `${parts[0]}.${parts[1]}.${parts[2]}.0/24` : raw;
   }
   if (net.isIP(raw) === 6) {
-    // A /48-style prefix is stable enough for normal IPv6 privacy-address rotation
-    // while still preventing a copied cookie from being replayed from another network.
+    // IP remains useful audit metadata, but trusted-device sessions are not
+    // invalidated solely because a mobile carrier/Wi-Fi network rotated it.
     const normalized = raw.toLowerCase().split('%')[0];
     const left = normalized.split('::')[0].split(':').filter(Boolean).slice(0, 3);
     return `${left.join(':')}::/48`;
@@ -9307,11 +9691,21 @@ function requestIpPrefix(req) {
 function requestDeviceId(req) {
   return cleanStr(req?.headers?.['x-p2pflow-device-id'] || '', 128);
 }
-function sessionBindingHash(req, deviceId = '') {
+function sessionBindingHashV1(req, deviceId = '') {
   const key = APP_KEY || 'p2pflow-session-binding-v1';
   return crypto.createHmac('sha256', key)
     .update(`${requestIpPrefix(req)}\n${requestUaHash(req)}\n${cleanStr(deviceId || '', 128)}`)
     .digest('hex');
+}
+function sessionBindingHashV2(req, deviceId = '') {
+  const key = APP_KEY || 'p2pflow-session-binding-v2';
+  return crypto.createHmac('sha256', key)
+    .update(`v2\n${cleanStr(deviceId || '', 128)}\n${requestUaFamily(req)}`)
+    .digest('hex');
+}
+function sessionBindingHash(req, deviceId = '', version = null) {
+  const selected = Number(version || (deviceId ? 2 : 1));
+  return selected >= 2 ? sessionBindingHashV2(req, deviceId) : sessionBindingHashV1(req, deviceId);
 }
 function isSseSessionRequest(req) {
   try { return new URL(req.url, 'http://localhost').pathname === '/api/events'; } catch { return false; }
@@ -9386,6 +9780,7 @@ function enrollTrustedDevice(user, enrollment, req) {
   device.lastSeenAt = at;
   device.lastIpPrefix = requestIpPrefix(req);
   device.lastUaHash = requestUaHash(req);
+  device.lastUaFamily = requestUaFamily(req);
   device.revokedAt = null;
   user.trustedDevices = user.trustedDevices
     .filter(item => item && !item.revokedAt)
@@ -10030,6 +10425,8 @@ function sessionRecord(sid, session) {
     activityLastPersistedAt: Number(session.activityLastPersistedAt || 0),
     deviceId: cleanStr(session.deviceId || '', 128),
     bindingHash: cleanStr(session.bindingHash || '', 128),
+    bindingVersion: Number(session.bindingVersion || 1),
+    bindingUaFamily: cleanStr(session.bindingUaFamily || '', 80),
     authLevel: cleanStr(session.authLevel || 'full_login', 40)
   };
 }
@@ -10065,6 +10462,8 @@ function restorePersistentSessions() {
       activityLastPersistedAt: Number(item.activityLastPersistedAt || 0),
       deviceId: cleanStr(item.deviceId || '', 128),
       bindingHash: cleanStr(item.bindingHash || '', 128),
+      bindingVersion: Number(item.bindingVersion || 1),
+      bindingUaFamily: cleanStr(item.bindingUaFamily || userAgentFamily(activityRecordById(item.activityId)?.userAgent || ''), 80),
       authLevel: cleanStr(item.authLevel || 'legacy', 40)
     });
   }
@@ -10073,6 +10472,24 @@ function restorePersistentSessions() {
 function persistSessionsNow() {
   syncPersistentSessions();
   saveDb();
+}
+
+function sessionTrustedDeviceRequestMatches(req, session, device) {
+  if (!session?.deviceId || !device) return false;
+  if (!isSseSessionRequest(req)) return requestDeviceId(req) === session.deviceId;
+  const family = requestUaFamily(req);
+  const expectedFamily = cleanStr(device.lastUaFamily || session.bindingUaFamily || '', 80);
+  if (expectedFamily) return expectedFamily === family;
+  const expectedHash = cleanStr(device.lastUaHash || '', 128);
+  return !expectedHash || expectedHash === requestUaHash(req);
+}
+
+function upgradeSessionBinding(req, session) {
+  session.bindingVersion = 2;
+  session.bindingUaFamily = requestUaFamily(req);
+  session.bindingHash = sessionBindingHash(req, session.deviceId || '', session.bindingVersion);
+  session.bindingUpdatedAt = nowIso();
+  session.lastPersistedAt = 0;
 }
 
 function getSession(req) {
@@ -10087,24 +10504,6 @@ function getSession(req) {
     saveDb({ broadcast: false });
     return null;
   }
-  // v1.4.17: a pre-device-auth session is never authorized by cookie alone,
-  // but it is preserved briefly so the same browser can upgrade it with the
-  // 6-digit secret + a newly generated cryptographic device key. This prevents
-  // update-triggered lockouts without weakening copied-cookie protection.
-  if (!session.bindingHash) return null;
-  if (session.bindingHash !== sessionBindingHash(req, session.deviceId || '')) {
-    closeUserActivitySession(session, 'session_binding_mismatch');
-    sessions.delete(sid);
-    syncPersistentSessions();
-    saveDb({ broadcast: false });
-    return null;
-  }
-  if (session.deviceId && !isSseSessionRequest(req)) {
-    // The device id is stored outside the HttpOnly session cookie. A copied
-    // cookie by itself therefore cannot authorize normal API requests.
-    if (requestDeviceId(req) !== session.deviceId) return null;
-  }
-  const now = Date.now();
   const user = db.users.find(u => u.id === session.userId && u.enabled);
   if (!user) {
     closeUserActivitySession(session, 'user_disabled');
@@ -10113,13 +10512,53 @@ function getSession(req) {
     saveDb({ broadcast: false });
     return null;
   }
-  if (session.deviceId && !activeTrustedDevice(user, session.deviceId)) {
-    closeUserActivitySession(session, 'trusted_device_revoked');
-    sessions.delete(sid);
-    syncPersistentSessions();
-    saveDb({ broadcast: false });
-    return null;
+
+  // A trusted-device session requires its separate browser device id for normal
+  // API calls. EventSource cannot attach custom headers, so SSE is accepted only
+  // with the same trusted device and stable browser family.
+  let trustedDevice = null;
+  if (session.deviceId) {
+    trustedDevice = activeTrustedDevice(user, session.deviceId);
+    if (!trustedDevice) {
+      closeUserActivitySession(session, 'trusted_device_revoked');
+      sessions.delete(sid);
+      syncPersistentSessions();
+      saveDb({ broadcast: false });
+      return null;
+    }
+    if (!sessionTrustedDeviceRequestMatches(req, session, trustedDevice)) {
+      // Do not destroy a valid server session just because a transient request
+      // omitted the local device header; the browser can retry immediately.
+      return null;
+    }
   }
+
+  // Legacy v1 sessions included the network prefix. Mobile carrier/Wi-Fi changes
+  // therefore looked like cookie theft and forced a secret-code login. Sessions
+  // now bind to a stable browser family and, when present, the trusted-device id;
+  // IP remains audit metadata only.
+  if (!session.bindingHash) return null;
+  const bindingVersion = Number(session.bindingVersion || 1);
+  const expected = sessionBindingHash(req, session.deviceId || '', bindingVersion);
+  let bindingChanged = false;
+  if (!secureCompareText(session.bindingHash, expected)) {
+    const stableFamilyMatch = bindingVersion < 2 && cleanStr(session.bindingUaFamily || '', 80) && session.bindingUaFamily === requestUaFamily(req);
+    if ((session.deviceId && trustedDevice && sessionTrustedDeviceRequestMatches(req, session, trustedDevice)) || stableFamilyMatch) {
+      upgradeSessionBinding(req, session);
+      bindingChanged = true;
+    } else {
+      closeUserActivitySession(session, 'session_binding_mismatch');
+      sessions.delete(sid);
+      syncPersistentSessions();
+      saveDb({ broadcast: false });
+      return null;
+    }
+  } else if (bindingVersion < 2) {
+    upgradeSessionBinding(req, session);
+    bindingChanged = true;
+  }
+
+  const now = Date.now();
   session.expiresAt = now + SESSION_TTL_MS;
   req._sessionRefreshSid = sid;
   user.lastActivityAt = new Date(now).toISOString();
@@ -10127,21 +10566,20 @@ function getSession(req) {
     const agent = agentById(user.agentId);
     if (agent) agent.lastActivityAt = user.lastActivityAt;
   }
-  if (session.deviceId) {
-    const device = activeTrustedDevice(user, session.deviceId);
-    if (device) {
-      device.lastSeenAt = user.lastActivityAt;
-      device.lastIpPrefix = requestIpPrefix(req);
-      device.lastUaHash = requestUaHash(req);
-    }
+  if (trustedDevice) {
+    trustedDevice.lastSeenAt = user.lastActivityAt;
+    trustedDevice.lastIpPrefix = requestIpPrefix(req);
+    trustedDevice.lastUaHash = requestUaHash(req);
+    trustedDevice.lastUaFamily = requestUaFamily(req);
   }
-  if (!session.lastPersistedAt || now - Number(session.lastPersistedAt) > SESSION_PERSIST_EVERY_MS) {
+  if (bindingChanged || !session.lastPersistedAt || now - Number(session.lastPersistedAt) > SESSION_PERSIST_EVERY_MS) {
     session.lastPersistedAt = now;
     syncPersistentSessions();
-    saveDb();
+    saveDb({ broadcast: false, reason: bindingChanged ? 'session_binding_v2_upgrade' : 'session_refresh' });
   }
   return { sid, session, user };
 }
+
 function requireAuth(req, res) {
   const session = getSession(req);
   if (!session) { sendJson(res, 401, { error: 'Not authenticated' }, {}, req); return null; }
@@ -10206,7 +10644,7 @@ function serveStatic(req, res) {
   if (ext === '.php') return sendText(res, 404, 'Not found', 'text/plain; charset=utf-8', req);
   const mimeTypes = {
     '.html':'text/html; charset=utf-8', '.js':'application/javascript; charset=utf-8', '.css':'text/css; charset=utf-8',
-    '.json':'application/json; charset=utf-8', '.svg':'image/svg+xml',
+    '.json':'application/json; charset=utf-8', '.webmanifest':'application/manifest+json; charset=utf-8', '.svg':'image/svg+xml',
     '.png':'image/png', '.jpg':'image/jpeg', '.jpeg':'image/jpeg', '.webp':'image/webp',
     '.mp4':'video/mp4', '.webm':'video/webm', '.mov':'video/quicktime'
   };
@@ -10252,7 +10690,7 @@ function serveStatic(req, res) {
     }
     fs.readFile(filePath, (err, data) => {
       if (err) return sendText(res, 404, 'Not found', 'text/plain; charset=utf-8', req);
-      const baseHeaders = { 'Content-Type': type, 'Cache-Control': cache, 'ETag': etag, 'X-P2PFlow-Version': APP_VERSION, ...(isCompressible ? { 'Vary': 'Accept-Encoding' } : {}) };
+      const baseHeaders = { 'Content-Type': type, 'Cache-Control': cache, 'ETag': etag, 'X-P2PFlow-Version': APP_VERSION, ...(isCompressible ? { 'Vary': 'Accept-Encoding' } : {}), ...(pathname === '/sw.js' ? { 'Service-Worker-Allowed': '/' } : {}) };
       if (isVideo) baseHeaders['Accept-Ranges'] = 'bytes';
       if (req.method === 'HEAD') {
         baseHeaders['Content-Length'] = String(data.length);
@@ -10327,7 +10765,7 @@ function realtimeEventForUser(event, user) {
     return visible ? { ...event, type } : null;
   }
 
-  if (type === 'agent.order_acceptance.updated') {
+  if (type === 'agent.order_acceptance.updated' || type === 'user.work_availability.updated') {
     const isSelf = Number(event.userId || 0) === Number(user.id || 0);
     const canMonitor = userHasPermission(user, 'agents.manage') || userHasPermission(user, 'routing.manage') || userHasPermission(user, 'activity.view');
     return isSelf || canMonitor ? { ...event, type } : null;
@@ -13522,7 +13960,14 @@ async function handleAdvertisements(req, res, url) {
       }
     }
     let apiCreateReadiness = null;
-    if (merchantCredential) apiCreateReadiness = await refreshAdvertisementApiCreateReadiness(merchantCredential, url.searchParams.get('refreshLive') === '1');
+    if (merchantCredential) {
+      const forceReadiness = url.searchParams.get('refreshLive') === '1';
+      if (forceReadiness) apiCreateReadiness = await refreshAdvertisementApiCreateReadiness(merchantCredential, true);
+      else {
+        apiCreateReadiness = advertisementCreateReadinessView(merchantCredential.id);
+        refreshAdvertisementApiCreateReadiness(merchantCredential, false).catch(() => {});
+      }
+    }
     let items = (db.advertisements || [])
       .filter(item => !item.archived && !item.deletedAt)
       .filter(item => canAccessAdvertisement(user, item, 'ads.view'))
@@ -15106,6 +15551,7 @@ async function handleApi(req, res) {
     if (req.method === 'POST' && url.pathname === '/api/logout') return handleLogout(req, res);
     if (req.method === 'GET' && url.pathname === '/api/me') return handleMe(req, res);
     if (url.pathname === '/api/me/order-acceptance') return await handleMyOrderAcceptance(req, res);
+    if (url.pathname === '/api/push' || url.pathname.startsWith('/api/push/')) return await handlePushNotifications(req, res, url);
     if (url.pathname.startsWith('/api/security/revert/')) return handleSecurityRevert(req, res, parts);
     if (url.pathname.startsWith('/api/me/security/trusted-device/')) return handleTrustedDeviceRevoke(req, res, parts);
     if (url.pathname === '/api/me/security/fallback') return handleMeSecurityFallback(req, res);
@@ -15135,6 +15581,7 @@ async function handleApi(req, res) {
     if (url.pathname.startsWith('/api/routing/')) return handleRoutingById(req, res, parts);
     if (url.pathname === '/api/approvals') return handleApprovals(req, res, url);
     if (url.pathname.startsWith('/api/approvals/')) return handleApprovalById(req, res, parts);
+    if (url.pathname === '/api/navigation-counts') return handleNavigationCounts(req, res);
     if (url.pathname === '/api/chat-unread') return handleChatUnread(req, res);
     if (url.pathname === '/api/chat-inbox') return handleChatInbox(req, res);
     if (url.pathname === '/api/p2p-market') return await handleP2pMarket(req, res, url);
@@ -15179,6 +15626,7 @@ function createAuthenticatedSession(user, req, page = 'login', options = {}) {
   const csrfToken = crypto.randomBytes(32).toString('hex');
   const deviceId = cleanStr(options.deviceId || '', 128);
   const activity = startUserActivitySession(user, sid, req);
+  const bindingVersion = 2;
   sessions.set(sid, {
     userId: user.id,
     csrfToken,
@@ -15190,7 +15638,9 @@ function createAuthenticatedSession(user, req, page = 'login', options = {}) {
     activityLastPage: page,
     activityLastPersistedAt: Date.now(),
     deviceId,
-    bindingHash: sessionBindingHash(req, deviceId),
+    bindingHash: sessionBindingHash(req, deviceId, bindingVersion),
+    bindingVersion,
+    bindingUaFamily: requestUaFamily(req),
     authLevel: cleanStr(options.authLevel || 'full_login', 40)
   });
   syncPersistentSessions();
@@ -15290,6 +15740,7 @@ async function handleTrustedDeviceLogin(req, res) {
   device.lastSeenAt = nowIso();
   device.lastIpPrefix = requestIpPrefix(req);
   device.lastUaHash = requestUaHash(req);
+  device.lastUaFamily = requestUaFamily(req);
   const session = createAuthenticatedSession(user, req, 'trusted_device_login', { deviceId, authLevel: 'trusted_device_secret' });
   logAudit(user, 'trusted_device_login_success', 'user', user.id, { deviceId, ip: getIp(req), emailOtpSent: false, passwordEntered: false });
   saveDb();
@@ -15322,7 +15773,9 @@ async function handleLegacySessionUpgrade(req, res) {
   const trustedDevice = enrollTrustedDevice(legacy.user, body.deviceEnrollment, req);
   if (!trustedDevice) return sendJson(res, 422, { error: 'This browser could not create a secure device key. Use a modern browser or full login.' }, {}, req);
   legacy.session.deviceId = trustedDevice.id;
-  legacy.session.bindingHash = sessionBindingHash(req, trustedDevice.id);
+  legacy.session.bindingVersion = 2;
+  legacy.session.bindingUaFamily = requestUaFamily(req);
+  legacy.session.bindingHash = sessionBindingHash(req, trustedDevice.id, 2);
   legacy.session.authLevel = 'legacy_session_upgraded';
   legacy.session.expiresAt = Date.now() + SESSION_TTL_MS;
   legacy.session.lastPersistedAt = Date.now();
@@ -15653,16 +16106,21 @@ function handleLogout(req, res) {
 }
 function orderAcceptanceForUser(user) {
   const agent = user ? (db.agents || []).find(item => Number(item.userId || 0) === Number(user.id || 0) || (Number(user.agentId || 0) && Number(item.id) === Number(user.agentId))) : null;
-  const available = Boolean(user && user.enabled !== false && user.role === 'agent' && agent && userHasPermission(user, 'orders.view'));
+  const available = Boolean(user && user.enabled !== false);
+  const accepting = Boolean(available && user.workAvailable !== false);
+  const assignable = Boolean(user && user.role === 'agent' && agent && userHasPermission(user, 'orders.view'));
   return {
     available,
-    accepting: Boolean(available && agent.allowNewOrders !== false),
+    accepting,
+    workAvailable: accepting,
+    assignable,
+    assignmentEligible: Boolean(assignable && accepting && agent.allowNewOrders !== false),
     agentId: agent ? Number(agent.id) : null,
-    presenceStatus: agent ? agentDynamicStatus(agent) : 'offline',
+    presenceStatus: agent ? agentDynamicStatus(agent) : userPresenceView(user?.id || 0).status,
     activeAssignments: agent ? activeAssignmentCount(agent.id) : 0,
     maxActiveOrders: agent ? positiveNum(agent.maxActiveOrders || 0) : 0,
-    updatedAt: agent?.orderAcceptanceUpdatedAt || null,
-    updatedBy: agent?.orderAcceptanceUpdatedBy || null
+    updatedAt: user?.workAvailabilityUpdatedAt || agent?.orderAcceptanceUpdatedAt || null,
+    updatedBy: user?.workAvailabilityUpdatedBy || agent?.orderAcceptanceUpdatedBy || null
   };
 }
 
@@ -15671,18 +16129,30 @@ async function handleMyOrderAcceptance(req, res) {
   const current = orderAcceptanceForUser(user);
   if (req.method === 'GET') return sendJson(res, 200, current, {}, req);
   if (req.method !== 'PATCH') return sendJson(res, 405, { error: 'Method not allowed' }, {}, req);
-  if (!current.available) return sendJson(res, 403, { error: 'Order acceptance is available only to enabled Agent users with Orders View permission.' }, {}, req);
+  if (!current.available) return sendJson(res, 403, { error: 'Work availability is unavailable for this disabled user.' }, {}, req);
   const body = await readBody(req);
   if (typeof body.accepting !== 'boolean') return sendJson(res, 422, { error: 'accepting must be true or false.' }, {}, req);
-  const agent = agentById(current.agentId);
-  const before = agent.allowNewOrders !== false;
-  agent.allowNewOrders = body.accepting;
-  agent.orderAcceptanceUpdatedAt = nowIso();
-  agent.orderAcceptanceUpdatedBy = user.id;
-  logAudit(user, body.accepting ? 'order_acceptance_enabled' : 'order_acceptance_disabled', 'agent', agent.id, { before, accepting: body.accepting, presenceStatus: agentDynamicStatus(agent), autoAssignmentPresenceIndependent: true });
+  const before = user.workAvailable !== false;
+  user.workAvailable = body.accepting;
+  user.workAvailabilityUpdatedAt = nowIso();
+  user.workAvailabilityUpdatedBy = user.id;
+  const agent = current.agentId ? agentById(current.agentId) : null;
+  if (agent && user.role === 'agent') {
+    agent.allowNewOrders = body.accepting;
+    agent.orderAcceptanceUpdatedAt = user.workAvailabilityUpdatedAt;
+    agent.orderAcceptanceUpdatedBy = user.id;
+  }
+  logAudit(user, body.accepting ? 'work_availability_enabled' : 'work_availability_disabled', 'user', user.id, {
+    before,
+    accepting: body.accepting,
+    agentId: agent?.id || null,
+    controlsAutoAssignment: Boolean(agent && user.role === 'agent' && userHasPermission(user, 'orders.view')),
+    presenceStatus: agent ? agentDynamicStatus(agent) : userPresenceView(user.id).status,
+    autoAssignmentPresenceIndependent: true
+  });
   saveDb();
   const next = orderAcceptanceForUser(user);
-  broadcast({ type: 'agent.order_acceptance.updated', userId: user.id, agentId: agent.id, accepting: next.accepting, presenceStatus: next.presenceStatus, updatedAt: next.updatedAt, at: nowIso() });
+  broadcast({ type: 'user.work_availability.updated', userId: user.id, agentId: agent?.id || null, accepting: next.accepting, assignable: next.assignable, assignmentEligible: next.assignmentEligible, presenceStatus: next.presenceStatus, updatedAt: next.updatedAt, at: nowIso() });
   return sendJson(res, 200, next, {}, req);
 }
 
@@ -16210,7 +16680,7 @@ async function handleAgents(req, res) {
       if (!/^\d{6}$/.test(String(body.secretCode || ''))) return sendJson(res, 422, { error: '6 digit secret code is required for new login users' }, {}, req);
       const email = cleanStr(body.email || '', 160);
       if (email && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return sendJson(res, 422, { error: 'Valid email address required' }, {}, req);
-      const u = makeUser(nextId(), username, String(body.password || ''), agent.name, loginRole, agent.id, { email, secretCode: String(body.secretCode) });
+      const u = makeUser(nextId(), username, String(body.password || ''), agent.name, loginRole, agent.id, { email, secretCode: String(body.secretCode), workAvailable: body.allowNewOrders !== false });
       try { applySecurityQuestionFallback(u, body); } catch (error) { return sendJson(res, error.statusCode || 422, { error: error.message }, {}, req); }
       u.roleProfileId = roleProfile ? roleProfile.id : defaultRoleProfileIdFor(loginRole);
       const requestedGlobalPermissions = body.permissions !== undefined
@@ -16287,7 +16757,7 @@ async function handleAgentById(req, res, parts) {
       const requestedRole = ['agent','manager','auditor'].includes(body.loginRole) ? body.loginRole : 'agent';
       const roleProfile = roleProfileById(body.userRoleId) || roleProfileById(defaultRoleProfileIdFor(requestedRole));
       const loginRole = roleProfile ? roleProfile.systemRole : requestedRole;
-      linkedUserCandidate = makeUser(0, username, String(body.password), agentCandidate.name, loginRole, agent.id, { email, secretCode: String(body.secretCode) });
+      linkedUserCandidate = makeUser(0, username, String(body.password), agentCandidate.name, loginRole, agent.id, { email, secretCode: String(body.secretCode), workAvailable: body.allowNewOrders !== false });
       linkedUserCandidate.roleProfileId = roleProfile ? roleProfile.id : defaultRoleProfileIdFor(loginRole);
       createLinkedUser = true;
     }
@@ -16314,6 +16784,11 @@ async function handleAgentById(req, res, parts) {
       }
       linkedUserCandidate.name = agentCandidate.name;
       linkedUserCandidate.enabled = body.enabled === undefined ? linkedUserCandidate.enabled : !!body.enabled;
+      if (body.allowNewOrders !== undefined) {
+        linkedUserCandidate.workAvailable = !!body.allowNewOrders;
+        linkedUserCandidate.workAvailabilityUpdatedAt = agentCandidate.orderAcceptanceUpdatedAt || nowIso();
+        linkedUserCandidate.workAvailabilityUpdatedBy = admin.id;
+      }
 
       if (body.userRoleId !== undefined || body.loginRole !== undefined) {
         const requestedRole = ['agent','manager','auditor'].includes(body.loginRole) ? body.loginRole : linkedUserCandidate.role;
@@ -17304,6 +17779,51 @@ function chatReadStateFor(userId, orderId, create = false) {
   return item || null;
 }
 
+function chatUnreadSnapshotForOrders(user, orders = []) {
+  const orderIds = new Set((orders || []).map(order => Number(order.id)));
+  const readByOrder = new Map((db.chatReadStates || [])
+    .filter(row => Number(row.userId) === Number(user?.id || 0) && orderIds.has(Number(row.orderId)))
+    .map(row => [Number(row.orderId), Number(row.lastReadChatId || 0)]));
+  const baseline = Date.parse(db.meta?.chatUnreadBaselineAt || '') || Date.now();
+  const counts = {};
+  const latestByOrder = {};
+  let total = 0;
+  for (const chat of db.chats || []) {
+    const orderId = Number(chat.orderId);
+    if (!orderIds.has(orderId) || String(chat.source || '').toLowerCase() !== 'binance') continue;
+    const chatId = Number(chat.id || 0);
+    const lastRead = readByOrder.has(orderId) ? readByOrder.get(orderId) : null;
+    const unread = lastRead === null
+      ? (Date.parse(chat.importedAt || chat.createdAt || '') || 0) > baseline
+      : chatId > lastRead;
+    if (unread) {
+      counts[String(orderId)] = Number(counts[String(orderId)] || 0) + 1;
+      total += 1;
+    }
+    const currentLatest = latestByOrder[String(orderId)];
+    if (!currentLatest || chatId > Number(currentLatest.chatId || 0)) {
+      latestByOrder[String(orderId)] = { chatId, createdAt: chat.createdAt || chat.importedAt || null };
+    }
+  }
+  return { counts, total, latestByOrder };
+}
+
+function latestC2cChatsForOrders(orders = []) {
+  const orderIds = new Set((orders || []).map(order => Number(order.id)));
+  const latest = new Map();
+  for (const chat of db.chats || []) {
+    const orderId = Number(chat.orderId);
+    if (!orderIds.has(orderId)) continue;
+    const source = String(chat.source || '').toLowerCase();
+    if (source !== 'binance' && source !== 'binance-outbound') continue;
+    const current = latest.get(orderId);
+    const currentTime = Date.parse(current?.createdAt || current?.importedAt || '') || 0;
+    const nextTime = Date.parse(chat.createdAt || chat.importedAt || '') || 0;
+    if (!current || nextTime > currentTime || (nextTime === currentTime && Number(chat.id || 0) > Number(current.id || 0))) latest.set(orderId, chat);
+  }
+  return latest;
+}
+
 function unreadChatCountForUser(user, order) {
   if (!user || !order) return 0;
   const state = chatReadStateFor(user.id, order.id, false);
@@ -17346,13 +17866,14 @@ function chatInboxMessagePreview(chat) {
 async function handleChatInbox(req, res) {
   const user = requirePermission(req, res, 'orders.view'); if (!user) return;
   if (req.method !== 'GET') return sendJson(res, 405, { error: 'Method not allowed' }, {}, req);
-  let orders = db.orders || [];
-  orders = orders.filter(order => canAccessOrder(user, order));
+  const orders = ordersAccessibleToUser(user);
+  const latestByOrder = latestC2cChatsForOrders(orders);
+  const unreadSnapshot = chatUnreadSnapshotForOrders(user, orders);
   const items = [];
   for (const order of orders) {
-    const latest = latestC2cChatForOrder(order.id);
+    const latest = latestByOrder.get(Number(order.id));
     if (!latest) continue;
-    const unread = unreadChatCountForUser(user, order);
+    const unread = Number(unreadSnapshot.counts[String(order.id)] || 0);
     const counterpartyName = cleanStr(
       order.counterpartyName || order.counterpartyStats?.nickname || order.counterpartyNickname || order.nickName || order.userName || order.counterpartyUserNo || 'Counterparty',
       120
@@ -17379,22 +17900,27 @@ async function handleChatInbox(req, res) {
   return sendJson(res, 200, { items, totalUnread: items.reduce((sum, item) => sum + Number(item.unreadCount || 0), 0) }, {}, req);
 }
 
+function handleNavigationCounts(req, res) {
+  const user = requireAuth(req, res); if (!user) return;
+  if (req.method !== 'GET') return sendJson(res, 405, { error: 'Method not allowed' }, {}, req);
+  const orders = userHasPermission(user, 'orders.view') ? ordersAccessibleToUser(user) : [];
+  const unread = orders.length ? chatUnreadSnapshotForOrders(user, orders) : { total: 0 };
+  const approvals = userHasPermission(user, 'approvals.manage') && ['admin', 'manager'].includes(user.role)
+    ? (db.approvalRequests || []).filter(item => item.status === 'pending').length
+    : 0;
+  return sendJson(res, 200, {
+    orders: orders.filter(order => !orderIsClosed(order)).length,
+    chats: Math.max(0, Number(unread.total || 0)),
+    approvals,
+    generatedAt: nowIso()
+  }, {}, req);
+}
+
 async function handleChatUnread(req, res) {
   const user = requirePermission(req, res, 'orders.view'); if (!user) return;
   if (req.method === 'GET') {
-    let orders = db.orders || [];
-    orders = orders.filter(order => canAccessOrder(user, order));
-    const counts = {};
-    const latestByOrder = {};
-    let total = 0;
-    for (const order of orders) {
-      const count = unreadChatCountForUser(user, order);
-      if (count > 0) counts[String(order.id)] = count;
-      total += count;
-      const latest = latestIncomingChatForOrder(order.id);
-      if (latest) latestByOrder[String(order.id)] = { chatId: Number(latest.id || 0), createdAt: latest.createdAt || null };
-    }
-    return sendJson(res, 200, { counts, total, latestByOrder }, {}, req);
+    const orders = ordersAccessibleToUser(user);
+    return sendJson(res, 200, chatUnreadSnapshotForOrders(user, orders), {}, req);
   }
   if (req.method === 'POST') {
     const body = await readBody(req);
@@ -17413,17 +17939,60 @@ async function handleChatUnread(req, res) {
   return sendJson(res, 405, { error: 'Method not allowed' }, {}, req);
 }
 
+function buildOrderListContext(orders = [], user = null) {
+  const orderIds = new Set(orders.map(order => Number(order.id)));
+  const splitsByOrder = new Map();
+  const assignmentsByOrder = new Map();
+  for (const split of db.paymentSplits || []) {
+    const orderId = Number(split.orderId);
+    if (!orderIds.has(orderId)) continue;
+    if (!splitsByOrder.has(orderId)) splitsByOrder.set(orderId, []);
+    splitsByOrder.get(orderId).push(split);
+  }
+  for (const assignment of db.orderAgentAssignments || []) {
+    const orderId = Number(assignment.orderId);
+    if (!orderIds.has(orderId)) continue;
+    if (!assignmentsByOrder.has(orderId)) assignmentsByOrder.set(orderId, []);
+    assignmentsByOrder.get(orderId).push(assignment);
+  }
+  const summaryByOrder = new Map();
+  for (const order of orders) summaryByOrder.set(Number(order.id), orderSummaryFromRows(order, splitsByOrder.get(Number(order.id)) || []));
+  return {
+    splitsByOrder,
+    assignmentsByOrder,
+    summaryByOrder,
+    agentsById: new Map((db.agents || []).map(agent => [Number(agent.id), agent])),
+    methodsById: new Map((db.paymentMethods || []).map(method => [Number(method.id), method])),
+    credentialsById: new Map((db.apiCredentials || []).map(credential => [Number(credential.id), credential])),
+    user
+  };
+}
+
+function orderListContextRows(context, orderId) {
+  const id = Number(orderId);
+  return {
+    splits: context?.splitsByOrder?.get(id) || null,
+    assignments: context?.assignmentsByOrder?.get(id) || null,
+    summary: context?.summaryByOrder?.get(id) || null
+  };
+}
+
 async function handleOrders(req, res, url) {
   const user = requirePermission(req, res, 'orders.view'); if (!user) return;
   if (req.method === 'GET') {
-    let orders = db.orders.filter(order => canAccessOrder(user, order));
+    let orders = ordersAccessibleToUser(user);
     const status = url.searchParams.get('status');
     const credentialId = Number(url.searchParams.get('credentialId') || 0);
     if (status) orders = orders.filter(o => o.status === status);
     if (credentialId) orders = orders.filter(order => Number(order.credentialId || 0) === credentialId);
     orders = orders.slice().sort((a,b) => new Date(b.createdAt || b.updatedAt || 0) - new Date(a.createdAt || a.updatedAt || 0));
+    const context = buildOrderListContext(orders, user);
+    const unread = chatUnreadSnapshotForOrders(user, orders);
     return sendJson(res, 200, {
-      items: orders.map(order => orderListView(order, user)),
+      items: orders.map(order => orderListView(order, user, context)),
+      unreadCounts: unread.counts,
+      unreadTotal: unread.total,
+      unreadLatestByOrder: unread.latestByOrder,
       orderAcceptance: orderAcceptanceForUser(user),
       credentialOptions: binanceCredentialOptionsForUser(user, 'orders.view', { includeDisabled: true }),
       liveCredentialOptions: usableBinanceCredentialOptionsForUser(user, 'orders.view')
@@ -17466,12 +18035,13 @@ async function handleOrders(req, res, url) {
   return sendJson(res, 405, { error: 'Method not allowed' }, {}, req);
 }
 
-function orderListView(order, user = null) {
+function orderListView(order, user = null, context = null) {
   ensureOrderFinancials(order);
-  const summary = orderSummary(order.id);
-  const viewerSummary = viewerOrderSummary(order, user);
+  const rows = orderListContextRows(context, order.id);
+  const summary = rows.summary || orderSummary(order.id, rows.splits);
+  const viewerSummary = viewerOrderSummary(order, user, { ...rows, summary });
   const assetSummary = deriveOrderAssetSummary(order);
-  const credential = order.orderSource === 'offline' ? null : binanceCredentialById(order.credentialId);
+  const credential = order.orderSource === 'offline' ? null : (context?.credentialsById?.get(Number(order.credentialId)) || binanceCredentialById(order.credentialId));
   const identity = credential ? binanceCredentialP2pIdentity(credential) : null;
   const extensionFeedbackUserNo = p2pExtensionOrderUserNo(order);
   const extensionAdvertiserUrl = extensionFeedbackUserNo ? p2pAdvertiserUrlForUserNo(extensionFeedbackUserNo) : '';
@@ -17494,9 +18064,9 @@ function orderListView(order, user = null) {
       status: credential.disabled ? 'disabled' : cleanStr(credential.status || 'saved', 40),
       disabled: Boolean(credential.disabled)
     } : null,
-    method: methodById(order.paymentMethodId),
-    leadAgent: agentById(order.leadAgentId),
-    assignments: db.orderAgentAssignments.filter(a => a.orderId === order.id).map(a => ({ ...a, agent: agentById(a.agentId) })),
+    method: context?.methodsById?.get(Number(order.paymentMethodId)) || methodById(order.paymentMethodId),
+    leadAgent: context?.agentsById?.get(Number(order.leadAgentId)) || agentById(order.leadAgentId),
+    assignments: (rows.assignments || db.orderAgentAssignments.filter(a => a.orderId === order.id)).map(a => ({ ...a, agent: context?.agentsById?.get(Number(a.agentId)) || agentById(a.agentId) })),
     summary,
     viewerSummary,
     assetSummary
@@ -17636,6 +18206,25 @@ async function handleOrderById(req, res, parts) {
   if (!canAccessOrder(user, order)) return sendJson(res, 403, { error: 'No access to this order' }, {}, req);
 
   if (req.method === 'GET' && !action) return sendJson(res, 200, fullOrderView(order, user), {}, req);
+  if (req.method === 'GET' && action === 'chat-delta') {
+    const requestUrl = new URL(req.url, 'http://localhost');
+    const afterId = Math.max(0, Number(requestUrl.searchParams.get('afterId') || 0) || 0);
+    const limit = Math.max(1, Math.min(200, Number(requestUrl.searchParams.get('limit') || 100) || 100));
+    const allRows = (db.chats || [])
+      .filter(chat => Number(chat.orderId || 0) === Number(order.id))
+      .filter(chat => chat.source === 'binance' || chat.source === 'binance-outbound')
+      .sort((a, b) => Number(a.id || 0) - Number(b.id || 0));
+    const rows = allRows.filter(chat => Number(chat.id || 0) > afterId);
+    const items = rows.slice(0, limit).map(chatView);
+    return sendJson(res, 200, {
+      items,
+      latestId: allRows.reduce((max, chat) => Math.max(max, Number(chat.id || 0)), afterId),
+      hasMore: rows.length > items.length,
+      unread: unreadChatCountForUser(user, order),
+      orderId: Number(order.id),
+      orderUpdatedAt: order.updatedAt || null
+    }, {}, req);
+  }
   if (req.method === 'POST' && action === 'heartbeat') return heartbeat(user, order, res, req);
   if (req.method === 'POST' && action === 'leave') return leaveOrder(req, res, user, order);
   if (req.method === 'POST' && action === 'assign') return managerAssign(req, res, user, order);
@@ -20226,7 +20815,8 @@ async function handleNotifications(req, res) {
   if (req.method === 'GET') return sendJson(res, 200, {
     items: notificationsForUser(user).slice().reverse(),
     preferences: normalizeNotificationPreferences(user.notificationPreferences),
-    categories: NOTIFICATION_CATEGORY_CATALOG.map(category => ({ ...category }))
+    categories: NOTIFICATION_CATEGORY_CATALOG.map(category => ({ ...category })),
+    backgroundNotifications: pushConfigForUser(user, req)
   }, {}, req);
   if (req.method === 'PATCH') {
     const body = await readBody(req);
@@ -20234,7 +20824,7 @@ async function handleNotifications(req, res) {
     user.notificationPreferences = next;
     logAudit(user, 'notification_preferences_updated', 'user', user.id, { preferences: next });
     saveDb();
-    return sendJson(res, 200, { ok: true, preferences: next, categories: NOTIFICATION_CATEGORY_CATALOG.map(category => ({ ...category })), message: 'Notification preferences saved.' }, {}, req);
+    return sendJson(res, 200, { ok: true, preferences: next, categories: NOTIFICATION_CATEGORY_CATALOG.map(category => ({ ...category })), backgroundNotifications: pushConfigForUser(user, req), message: 'Notification preferences saved.' }, {}, req);
   }
   if (req.method === 'POST') {
     const body = await readBody(req);
@@ -20323,6 +20913,7 @@ async function runBinanceAutoOrderSync(reason = 'timer') {
     }
     for (const item of aggregate.chatResults) {
       if (Number(item.incomingImported || 0) <= 0) continue;
+      notifyIncomingBinanceChat(item.order, item);
       broadcast({ type: 'chat.message.received', orderId: item.order.id, orderNo: item.order.orderNo, externalOrderNo: item.order.externalOrderNo || item.order.orderNo, credentialId: item.order.credentialId || null, imported: item.imported, incomingImported: item.incomingImported, latestMessageId: item.latestIncomingChatId, status: item.order.status, externalStatus: item.order.externalStatus, at: nowIso() });
     }
     // Payment methods are shared CRM metadata; refresh with the first usable account periodically.

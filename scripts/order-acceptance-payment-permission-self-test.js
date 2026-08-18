@@ -25,8 +25,8 @@ const section = (source, start, end) => {
   return source.slice(a, b);
 };
 
-assert(pkg.version === '1.5.19', `expected v1.5.19, got ${pkg.version}`);
-assert(server.includes('const APP_SCHEMA_VERSION = 32;'), 'schema 32 is missing.');
+assert(pkg.version === '1.5.20', `expected v1.5.20, got ${pkg.version}`);
+assert(server.includes('const APP_SCHEMA_VERSION = 33;'), 'schema 33 is missing.');
 
 // Payment-account authorization: Admin/Manager all, Agent own only, optional all-account permission for non-Agent roles.
 assert(server.includes("'accounts.manage_all': Object.freeze(['accounts.view', 'accounts.manage'])"), 'accounts.manage_all implications are missing.');
@@ -71,9 +71,9 @@ assert(availability.includes("userHasPermission(linkedUser, 'orders.view')"), 'O
 assert(!availability.includes('userPresenceView') && !availability.includes('agentDynamicStatus'), 'Presence still controls assignment eligibility.');
 const manualAssign = section(server, 'async function managerAssign', 'async function requestCoAgent');
 assert(manualAssign.includes('if (!agentAvailableForAssignment(agent))'), 'Manual assignment ignores Order Acceptance OFF.');
-assert(orders.includes('id="orderAcceptanceToggle"'), 'Orders-page Order Acceptance button is missing.');
-assert(orders.includes('স্যার, আপনি কি অর্ডার গ্রহণ করতে চান?'), 'Required Bengali Order Acceptance prompt is missing.');
-assert(users.includes('Order Acceptance'), 'Users page does not expose Agent order-acceptance state.');
+assert(orders.includes("options.id || 'orderAcceptanceToggle'") && orders.includes('data-order-acceptance-toggle'), 'Orders-page Work Status button is missing.');
+assert(orders.includes('স্যার, আপনি কি এখন কাজ করতে চান?'), 'Required Bengali Work Status prompt is missing.');
+assert(users.includes('Work Status'), 'Users page does not expose work status.');
 
 // Every catalog permission has bilingual details and a right-side eye button opened by click.
 const permissions = [
@@ -102,7 +102,7 @@ assert(!security.includes('formatDate('), 'Security page still references undefi
 console.log(JSON.stringify({
   ok: true,
   version: pkg.version,
-  schemaVersion: 32,
+  schemaVersion: 33,
   agentOwnAccountManage: true,
   managerAllAccountManage: true,
   permissionDescriptions: permissions.length,

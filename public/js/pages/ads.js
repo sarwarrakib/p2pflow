@@ -1,4 +1,4 @@
-// P2PFlow v1.5.19
+// P2PFlow v1.5.20
 // Restored FULL advertisement update payload with no-updateMode compatibility retry.
 
 const ADS_COUNTRY_CODES = ["BD","US","GB","IN","PK","AE","SA","TR","NG","KE","GH","ZA","MY","SG","ID","PH","TH","VN","AU","CA","DE","FR","IT","ES","NL","BE","PT","JP","KR","CN","HK","TW","BR","MX","AR","CO","PE","CL","EG","MA","DZ","TN","QA","KW","BH","OM","LK","NP","AW","AF","AO","AI","AX","AL","AD","AM","AS","AQ","TF","AG","AT","AZ","BI","BJ","BQ","BF","BG","BS","BA","BL","BY","BZ","BM","BO","BB","BN","BT","BV","BW","CF","CC","CH","CI","CM","CD","CG","CK","KM","CV","CR","CU","CW","CX","KY","CY","CZ","DJ","DM","DK","DO","EC","ER","EH","EE","ET","FI","FJ","FK","FO","FM","GA","GE","GG","GI","GN","GP","GM","GW","GQ","GR","GD","GL","GT","GF","GU","GY","HM","HN","HR","HT","HU","IM","IO","IE","IR","IQ","IS","IL","JM","JE","JO","KZ","KG","KH","KI","KN","LA","LB","LR","LY","LC","LI","LS","LT","LU","LV","MO","MF","MC","MD","MG","MV","MH","MK","ML","MT","MM","ME","MN","MP","MZ","MR","MS","MQ","MU","MW","YT","NA","NC","NE","NF","NI","NU","NO","NR","NZ","PA","PN","PW","PG","PL","PR","KP","PY","PS","PF","RE","RO","RU","RW","SD","SN","GS","SH","SJ","SB","SL","SV","SM","SO","PM","RS","SS","ST","SR","SK","SI","SE","SZ","SX","SC","SY","TC","TD","TG","TJ","TK","TM","TL","TO","TT","TV","TZ","UG","UA","UM","UY","UZ","VA","VC","VE","VG","VI","VU","WF","WS","YE","ZM","ZW"];
@@ -287,12 +287,12 @@ async function renderAds(prefetchedData = null) {
   let data = prefetchedData;
   if (!data) {
     try {
-      data = await api(adsPageUrl({ refreshMerchant: 1 }));
+      data = await api(adsPageUrl());
     } catch (error) {
       if (!state.adsCredentialId) throw error;
       state.adsCredentialId = 0;
       localStorage.removeItem('crmAdsCredentialId');
-      data = await api('/api/ads?refreshMerchant=1');
+      data = await api('/api/ads');
     }
   }
 
@@ -302,12 +302,12 @@ async function renderAds(prefetchedData = null) {
     selectedCredentialId = 0;
     state.adsCredentialId = 0;
     localStorage.removeItem('crmAdsCredentialId');
-    if (data.selectedCredentialId) data = await api('/api/ads?refreshMerchant=1');
+    if (data.selectedCredentialId) data = await api('/api/ads');
     credentialOptions = adsCredentialOptions(data);
   }
   if (selectedCredentialId && Number(data.selectedCredentialId || 0) !== selectedCredentialId) {
     state.adsCredentialId = selectedCredentialId;
-    data = await api(adsPageUrl({ refreshMerchant: 1 }));
+    data = await api(adsPageUrl());
     credentialOptions = adsCredentialOptions(data);
   }
 
@@ -569,11 +569,9 @@ async function renderAds(prefetchedData = null) {
   startAdsRealtimePolling();
   if (data.liveMode && data.credentialConfigured) {
     const refreshScope = selectedCredentialId ? String(selectedCredentialId) : 'all';
-    const lastForced = Number(state.adsInitialLiveRefreshAt || 0);
-    if (state.adsInitialLiveRefreshScope !== refreshScope || !lastForced || Date.now() - lastForced > 30000) {
+    if (state.adsInitialLiveRefreshScope !== refreshScope) {
       state.adsInitialLiveRefreshScope = refreshScope;
-      state.adsInitialLiveRefreshAt = Date.now();
-      setTimeout(() => refreshAdsRealtime(true), 80);
+      setTimeout(() => refreshAdsRealtime(false), 700);
     }
   }
 }

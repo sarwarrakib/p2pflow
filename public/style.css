@@ -4923,7 +4923,7 @@ tr:hover td{background:#fbfbfc}
   .order-mobile-time { font-size: 9px; }
 }
 
-/* v1.5.19 - login recovery, account-scoped Binance RBAC and account context */
+/* v1.5.20 - login recovery, account-scoped Binance RBAC and account context */
 .text-ok{color:var(--ok-text,#166534)!important}
 .text-warn{color:var(--warn-text,#92400e)!important}
 .security-recovery-panel{
@@ -5118,7 +5118,7 @@ tr:hover td{background:#fbfbfc}
 }
 
 
-/* v1.5.19 permission eye help and presence-independent order acceptance */
+/* v1.5.20 permission eye help and presence-independent order acceptance */
 .permission-option{display:flex;align-items:flex-start;gap:8px;min-width:0;padding:4px 0}
 .permission-option>label.check{flex:1;min-width:0;margin:0;align-items:flex-start}
 .permission-option>label.check>span{min-width:0;line-height:1.4}
@@ -5140,7 +5140,7 @@ tr:hover td{background:#fbfbfc}
 .order-acceptance-prompt .actions.end{justify-content:flex-end}
 @media(max-width:700px){.order-account-strip{align-items:stretch}.order-acceptance-toggle{width:100%}.permission-tooltip{font-size:12px}.order-acceptance-prompt p{font-size:17px}}
 
-/* v1.5.19 payment-account search, notification preferences and offline business */
+/* v1.5.20 payment-account search, notification preferences and offline business */
 .inline-search{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .inline-search input{min-width:min(320px,70vw)}
 .payment-account-toolbar{align-items:center;gap:12px;flex-wrap:wrap}
@@ -5210,4 +5210,53 @@ tr:hover td{background:#fbfbfc}
   .offline-allocation-account,.offline-receive-action{grid-column:1/-1}
   .offline-candidate-row{grid-template-columns:22px 26px 1fr}
   .offline-candidate-row>span:nth-last-child(-n+2){grid-column:3}
+}
+
+/* v1.5.20 stable sessions, background push, work status and smooth chat */
+.background-notification-toggle{
+  display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:38px;padding:8px 13px;
+  border-radius:999px;white-space:nowrap;font-weight:850;box-shadow:none;transition:background .16s ease,border-color .16s ease,color .16s ease,transform .16s ease;
+}
+.background-notification-toggle.compact{min-height:34px;padding:6px 11px;font-size:12px}
+.background-notification-toggle.is-on{background:#eaf8f0;color:#146b43;border:1px solid #b8e7cc}
+.background-notification-toggle.is-off{background:#f4f5f7;color:#59616d;border:1px solid #dfe3e8}
+.background-notification-toggle:hover{transform:none;filter:none}
+.background-notification-toggle:disabled{opacity:.62;cursor:wait}
+.background-notification-dot{width:9px;height:9px;border-radius:50%;background:currentColor;box-shadow:0 0 0 4px rgba(255,255,255,.68)}
+.chat-availability-bar,.chat-page-controls{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap}
+.chat-availability-bar{padding:8px 12px;border-bottom:1px solid var(--line,#e5e7eb);background:rgba(255,255,255,.97)}
+.chat-page-controls{margin:0 0 10px;padding:0 2px}
+.order-live-chat-card{position:relative}
+.chat-new-messages{
+  position:absolute;z-index:7;left:50%;bottom:20px;transform:translateX(-50%);min-height:34px;padding:7px 13px;
+  border:1px solid rgba(15,23,42,.12);border-radius:999px;background:#fff;color:#111827;font-size:12px;font-weight:850;
+  box-shadow:0 10px 26px rgba(15,23,42,.16);white-space:nowrap;
+}
+.chat-new-messages:hover{transform:translateX(-50%);filter:none;background:#f8fafc}
+.chat-new-messages[hidden]{display:none!important}
+.notification-preferences-card .section-head{gap:14px}
+.notification-preference-actions{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap}
+.notification-channel-head,.notification-preference-row{grid-template-columns:minmax(220px,1fr) 92px 92px 112px}
+.top-actions>.order-acceptance-toggle.compact{min-height:34px;padding:6px 11px;font-size:12px}
+
+@media(max-width:900px){
+  .chat-availability-bar{justify-content:space-between;padding:7px 9px}
+  .chat-availability-bar .order-acceptance-toggle,.chat-availability-bar .background-notification-toggle{flex:1 1 auto;width:auto;min-width:0}
+  .chat-page-controls{justify-content:stretch}
+  .chat-page-controls .order-acceptance-toggle,.chat-page-controls .background-notification-toggle{flex:1 1 0;width:auto;min-width:0}
+  .top-actions>.order-acceptance-toggle.compact{width:auto;min-width:0}
+}
+@media(max-width:700px){
+  .notification-preference-row{grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+  .notification-preference-info{grid-column:1/-1}
+  .notification-channel-toggle{justify-items:start;grid-template-columns:auto minmax(0,1fr);align-items:center;font-size:11px}
+  .notification-preference-actions{width:100%;justify-content:stretch}
+  .notification-preference-actions>*{flex:1 1 auto}
+  .chat-new-messages{bottom:14px;max-width:calc(100% - 24px)}
+}
+@media(max-width:480px){
+  .chat-availability-bar,.chat-page-controls{gap:6px}
+  .chat-availability-bar .order-acceptance-toggle,.chat-availability-bar .background-notification-toggle,
+  .chat-page-controls .order-acceptance-toggle,.chat-page-controls .background-notification-toggle{padding:6px 8px;font-size:10.5px}
+  .top-actions>.order-acceptance-toggle.compact{max-width:118px;overflow:hidden;text-overflow:ellipsis}
 }

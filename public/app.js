@@ -1,5 +1,5 @@
-// v1.5.19: account-scoped Binance RBAC, visible security recovery setup and individual-only profit accounting.
-// v1.5.19: first-run recovery reuses the saved Application Key and software updates are Owner-only from Control Panel.
+// v1.5.20: account-scoped Binance RBAC, visible security recovery setup and individual-only profit accounting.
+// v1.5.20: first-run recovery reuses the saved Application Key and software updates are Owner-only from Control Panel.
 // v1.0.137: Diagnose and harden Binance P2P Create Advertisement privilege flow.
 // v1.0.128: lightweight Ads UI, cached reloads and realtime Binance merchant-status sync.
 // v1.0.117: Stop order countdowns immediately after completed or cancelled status sync.
@@ -70,7 +70,15 @@ const state = {
   accountingLoading: false,
   orderAcceptance: null,
   orderAcceptancePromptShown: false,
-  orderAcceptanceBusy: false
+  orderAcceptanceBusy: false,
+  pushConfig: null,
+  pushBusy: false,
+  serviceWorkerRegistration: null,
+  currentOrderChatItems: [],
+  currentOrderChatLastId: 0,
+  currentOrderChatRefreshBusy: false,
+  currentOrderChatRefreshTimer: null,
+  currentOrderChatNewCount: 0
 };
 
 const pages = [
@@ -827,6 +835,10 @@ function bindChatImagePreviews(root=document) {
   });
 }
 function updateChatBox(chats=[], source='binance') {
+  if (source === 'binance') {
+    mergeCurrentOrderChatItems(chats, { forceScroll:false });
+    return;
+  }
   const box = $('#chatBox');
   if (!box) return;
   const nearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 90;
@@ -863,34 +875,164 @@ function setChatSyncStatus(text='Live', cls='live') {
 function isRealBinanceOrder(o) {
   return !!(o && o.orderSource === 'binance' && (o.externalOrderNo || o.orderNo));
 }
-function renderChatList(chats=[], source=null) {
+function normalizedChatList(chats=[], source=null) {
   const filtered = source === 'binance'
     ? chats.filter(c => c.source === 'binance' || c.source === 'binance-outbound')
     : (source ? chats.filter(c => c.source === source || (source === 'internal' && !c.source)) : chats);
   const seen = new Set();
-  const list = filtered.filter(c => {
+  return filtered.filter(c => {
     const normalized = normalizeChatDisplayMessage(chatRecordRaw(c), c.messageType || '', { order: state.currentOrder || {} });
     const isBinance = c.source === 'binance' || c.source === 'binance-outbound';
     const side = c.source === 'binance-outbound' || c.senderRole === 'me' ? 'me' : 'them';
     const bucket = Math.floor((Date.parse(c.createdAt || c.time || '') || 0) / (3 * 60 * 1000));
     const binId = c.binanceMessageId || c.messageId || c.msgId || c.uuid || '';
-    const key = isBinance
-      ? `${side}|${normalized.type || 'text'}|${normalized.text}|${bucket}`
-      : (c.id || `${c.source || ''}|${c.senderName || ''}|${c.createdAt || ''}|${normalized.text}`);
-    if (binId && seen.has(`id:${binId}`)) return false;
+    const key = binId
+      ? `bin:${binId}`
+      : (c.id ? `local:${c.id}` : `${isBinance ? 'binance' : c.source || ''}|${side}|${normalized.type || 'text'}|${normalized.text}|${bucket}`);
     if (seen.has(key)) return false;
-    if (binId) seen.add(`id:${binId}`);
     seen.add(key);
     return true;
-  }).sort((a,b) => new Date(a.createdAt || a.time || 0) - new Date(b.createdAt || b.time || 0));
+  }).sort((a,b) => {
+    const time = (Date.parse(a.createdAt || a.time || '') || 0) - (Date.parse(b.createdAt || b.time || '') || 0);
+    return time || Number(a.id || 0) - Number(b.id || 0);
+  });
+}
+
+function renderChatList(chats=[], source=null) {
+  const list = normalizedChatList(chats, source);
   if (!list.length) return '<div class="empty-state small">No messages yet.</div>';
   const verificationCompleted = list.some(chatVerificationCompleted);
   const chatContext = { order: state.currentOrder || {}, verificationCompleted };
   return list.map(item => chatMessageHtml(item, chatContext)).join('');
 }
+
+function chatStableKey(chat={}) {
+  const externalId = chat.binanceMessageId || chat.messageId || chat.msgId || chat.uuid || '';
+  if (externalId) return `bin:${externalId}`;
+  if (chat.id) return `local:${chat.id}`;
+  const normalized = normalizeChatDisplayMessage(chatRecordRaw(chat), chat.messageType || '', { order: state.currentOrder || {} });
+  return `${chat.source || ''}|${chat.senderRole || ''}|${chat.createdAt || chat.time || ''}|${normalized.type || 'text'}|${normalized.text}`;
+}
+
+function initializeCurrentOrderChatState(chats=[]) {
+  state.currentOrderChatItems = normalizedChatList(chats, 'binance');
+  state.currentOrderChatLastId = state.currentOrderChatItems.reduce((max, chat) => Math.max(max, Number(chat.id || 0)), 0);
+  state.currentOrderChatNewCount = 0;
+  clearTimeout(state.currentOrderChatRefreshTimer);
+  state.currentOrderChatRefreshTimer = null;
+}
+
+function chatBoxNearBottom(box=$('#chatBox')) {
+  return Boolean(box && box.scrollHeight - box.scrollTop - box.clientHeight < 100);
+}
+
+function updateChatNewMessagesButton() {
+  const button = $('#chatNewMessagesBtn');
+  if (!button) return;
+  const count = Math.max(0, Number(state.currentOrderChatNewCount || 0));
+  button.hidden = count <= 0;
+  if (count > 0) button.textContent = state.lang === 'bn' ? `${count}টি নতুন মেসেজ ↓` : `${count} new message${count === 1 ? '' : 's'} ↓`;
+}
+
+function bindChatScrollState() {
+  const box = $('#chatBox');
+  const button = $('#chatNewMessagesBtn');
+  if (box && box.dataset.smoothScrollBound !== '1') {
+    box.dataset.smoothScrollBound = '1';
+    box.addEventListener('scroll', () => {
+      if (!chatBoxNearBottom(box)) return;
+      state.currentOrderChatNewCount = 0;
+      updateChatNewMessagesButton();
+    }, { passive:true });
+  }
+  if (button && button.dataset.bound !== '1') {
+    button.dataset.bound = '1';
+    button.onclick = () => {
+      if (box) box.scrollTo({ top:box.scrollHeight, behavior:'smooth' });
+      state.currentOrderChatNewCount = 0;
+      updateChatNewMessagesButton();
+    };
+  }
+}
+
+function mergeCurrentOrderChatItems(chats=[], options={}) {
+  const incoming = normalizedChatList(Array.isArray(chats) ? chats : [], 'binance');
+  if (!incoming.length) return 0;
+  const existing = new Map((state.currentOrderChatItems || []).map(chat => [chatStableKey(chat), chat]));
+  const added = [];
+  for (const chat of incoming) {
+    const key = chatStableKey(chat);
+    if (existing.has(key)) continue;
+    existing.set(key, chat);
+    added.push(chat);
+  }
+  if (!added.length) {
+    state.currentOrderChatLastId = Math.max(state.currentOrderChatLastId || 0, ...incoming.map(chat => Number(chat.id || 0)));
+    return 0;
+  }
+  state.currentOrderChatItems = [...existing.values()].sort((a,b) => {
+    const time = (Date.parse(a.createdAt || a.time || '') || 0) - (Date.parse(b.createdAt || b.time || '') || 0);
+    return time || Number(a.id || 0) - Number(b.id || 0);
+  });
+  state.currentOrderChatLastId = state.currentOrderChatItems.reduce((max, chat) => Math.max(max, Number(chat.id || 0)), state.currentOrderChatLastId || 0);
+  if (state.currentOrder) {
+    const internal = (state.currentOrder.chats || []).filter(chat => chat.source !== 'binance' && chat.source !== 'binance-outbound');
+    state.currentOrder.chats = [...internal, ...state.currentOrderChatItems];
+  }
+  const box = $('#chatBox');
+  if (!box) return added.length;
+  const nearBottom = chatBoxNearBottom(box);
+  box.querySelector('.empty-state')?.remove();
+  const verificationCompleted = state.currentOrderChatItems.some(chatVerificationCompleted);
+  const context = { order: state.currentOrder || {}, verificationCompleted };
+  for (const chat of added) box.insertAdjacentHTML('beforeend', chatMessageHtml(chat, context));
+  bindChatImagePreviews(box);
+  bindChatScrollState();
+  if (nearBottom || options.forceScroll || options.outgoing) {
+    requestAnimationFrame(() => { box.scrollTop = box.scrollHeight; });
+    state.currentOrderChatNewCount = 0;
+  } else {
+    state.currentOrderChatNewCount = Number(state.currentOrderChatNewCount || 0) + added.length;
+  }
+  updateChatNewMessagesButton();
+  return added.length;
+}
+
+async function refreshCurrentOrderChatDelta(options={}) {
+  const orderId = Number(options.orderId || state.currentOrderId || 0);
+  if (!orderId || state.page !== 'orders' || state.currentOrderChatRefreshBusy) return 0;
+  state.currentOrderChatRefreshBusy = true;
+  try {
+    let afterId = Math.max(0, Number(state.currentOrderChatLastId || 0));
+    let added = 0;
+    for (let page = 0; page < 3; page += 1) {
+      const data = await api(`/api/orders/${orderId}/chat-delta?afterId=${afterId}&limit=100`, { silent:true, noAutoReload:true });
+      if (Number(state.currentOrderId || 0) !== orderId) return added;
+      added += mergeCurrentOrderChatItems(data.items || [], { outgoing:options.outgoing === true, forceScroll:options.forceScroll === true });
+      afterId = Math.max(afterId, Number(data.latestId || 0), Number(state.currentOrderChatLastId || 0));
+      state.currentOrderChatLastId = afterId;
+      if (!data.hasMore) break;
+    }
+    return added;
+  } finally {
+    state.currentOrderChatRefreshBusy = false;
+  }
+}
+
+function scheduleCurrentOrderChatDelta(delay=80, options={}) {
+  if (!state.currentOrderId || state.page !== 'orders') return;
+  clearTimeout(state.currentOrderChatRefreshTimer);
+  state.currentOrderChatRefreshTimer = setTimeout(() => {
+    refreshCurrentOrderChatDelta(options).catch(()=>{});
+  }, Math.max(0, Number(delay || 0)));
+}
+
 function stopChatAutoSync() {
   if (state.chatSyncTimer) clearTimeout(state.chatSyncTimer);
+  if (state.currentOrderChatRefreshTimer) clearTimeout(state.currentOrderChatRefreshTimer);
   state.chatSyncTimer = null;
+  state.currentOrderChatRefreshTimer = null;
+  state.currentOrderChatRefreshBusy = false;
   state.chatSyncBusy = false;
   state.chatSyncFailCount = 0;
 }
@@ -901,7 +1043,8 @@ async function autoSyncBinanceChat(order, updateOnly=true) {
   try {
     const updated = await api(`/api/orders/${order.id}/binance-chat-sync`, { method:'POST', silent:true, body: JSON.stringify({ binanceOrderNumber: order.externalOrderNo || order.orderNo, page: 1, rows: 50, sort: 'desc' }) });
     if (state.currentOrderId !== order.id) return false;
-    updateChatBox(updated.chats || [], 'binance');
+    if (updated && typeof updated === 'object') state.currentOrder = { ...(state.currentOrder || {}), ...updated };
+    mergeCurrentOrderChatItems(updated.chats || [], { forceScroll:false });
     state.chatSyncFailCount = 0;
     const imported = Number(updated.imported || 0);
     setChatSyncStatus('Live', 'live');
@@ -2679,7 +2822,7 @@ Object.assign(I18N_BN, {
   "Extension connection.": "Extension সংযোগ।",
   "Capacity Guard checks active account limits.": "Capacity Guard সক্রিয় অ্যাকাউন্ট সীমা চেক করে।",
   "Presence updates automatically.": "উপস্থিতি অটো আপডেট হয়।",
-  "Order Acceptance controls auto-assignment.": "অর্ডার গ্রহণের সুইচ অটো অ্যাসাইন নিয়ন্ত্রণ করে।",
+  "Work Status controls auto-assignment.": "কাজের অবস্থা অটো অ্যাসাইন নিয়ন্ত্রণ করে।",
   "Online status updates automatically.": "অনলাইন স্ট্যাটাস অটো আপডেট হয়।",
   "Open orders sync automatically.": "চলমান অর্ডার অটো সিঙ্ক হয়।",
   "Each transfer deducts its charge once.": "প্রতিটি ট্রান্সফারে চার্জ একবার কাটে।",
@@ -2719,7 +2862,7 @@ const UI_SHORT_COPY = {
   "The SMTP password is never returned to the browser or written to audit logs. It is stored only inside the encrypted database. In Local mode, SMTP remains the final automatic fallback when PHP mail/sendmail is unavailable.": "SMTP password is stored encrypted.",
   "Binance BUY paid mark reduces selected account balance through split actual entries. Binance SELL release increases selected account balance through received entries. Offline business entries are recorded separately.": "BUY deducts balance; SELL adds received balance.",
   "When Capacity Guard is ON, the system checks active account capacity. When OFF, assignment uses only method + priority; balance/limit is checked later on the split selection screen.": "Capacity Guard checks active account limits.",
-  "Presence is monitored from heartbeat, visibility, focus and interaction. Auto-assignment is controlled by each Agent’s Order Acceptance switch, not by online/offline presence.": "Order Acceptance controls auto-assignment.",
+  "Presence is monitored from heartbeat, visibility, focus and interaction. Auto-assignment is controlled by each Agent’s Work Status switch, not by online/offline presence.": "কাজের অবস্থা অটো অ্যাসাইন নিয়ন্ত্রণ করে; অনলাইন/অফলাইন উপস্থিতি করে না।",
   "Online state is automatic. Active means visible, focused and recently used; away means the page is in the background; idle means open without recent interaction.": "Online status updates automatically.",
   "The server refreshes every open Binance order detail even when no user is logged in. List and detail views receive the result through live events.": "Open orders sync automatically.",
   "Each split transfer calculates and deducts its own charge immediately. Manual actual charge entered on a split overrides the configured estimate.": "Each transfer deducts its charge once.",
@@ -3383,6 +3526,154 @@ function setupNotificationSoundControls() {
   document.addEventListener('keydown', unlockNotificationAudio, { once:true, capture:true });
 }
 
+function trustedNotificationDeviceId() {
+  return String(localStorage.getItem('p2pflowTrustedDeviceId') || '').trim();
+}
+
+function isIosWebKitDevice() {
+  return /iphone|ipad|ipod/i.test(navigator.userAgent || '') || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+}
+
+function isStandaloneWebApp() {
+  return window.matchMedia?.('(display-mode: standalone)')?.matches === true || navigator.standalone === true;
+}
+
+function backgroundNotificationSupported() {
+  return Boolean(window.isSecureContext && 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window);
+}
+
+function backgroundNotificationToggleHtml(options={}) {
+  const config = state.pushConfig || {};
+  const active = config.enabled === true && config.currentDeviceSubscribed === true;
+  const compact = options.compact === true;
+  const label = state.lang === 'bn'
+    ? `নোটিফিকেশন ${active ? 'অন' : 'অফ'}`
+    : `Notifications ${active ? 'ON' : 'OFF'}`;
+  const title = state.lang === 'bn'
+    ? (active ? 'লক বা অ্যাপ বন্ধ থাকলেও এই বন্ডেড ডিভাইসে নতুন অর্ডার ও মেসেজের সিস্টেম নোটিফিকেশন আসবে।' : 'এই বন্ডেড ডিভাইসে ব্যাকগ্রাউন্ড অর্ডার ও মেসেজ নোটিফিকেশন চালু করুন।')
+    : (active ? 'This bonded device can receive system notifications for new orders and messages while the app is inactive.' : 'Enable background order and message notifications on this bonded device.');
+  return `<button type="button" class="background-notification-toggle ${compact ? 'compact' : ''} ${active ? 'is-on' : 'is-off'}" data-background-notification-toggle aria-pressed="${active ? 'true' : 'false'}" title="${escapeAttr(title)}" ${state.pushBusy ? 'disabled' : ''}><span class="background-notification-dot" aria-hidden="true"></span><span>${escapeHtml(label)}</span></button>`;
+}
+
+function updateBackgroundNotificationControls(root=document) {
+  root.querySelectorAll?.('[data-background-notification-toggle]').forEach(button => {
+    const config = state.pushConfig || {};
+    const active = config.enabled === true && config.currentDeviceSubscribed === true;
+    button.classList.toggle('is-on', active);
+    button.classList.toggle('is-off', !active);
+    button.disabled = Boolean(state.pushBusy);
+    button.setAttribute('aria-pressed', active ? 'true' : 'false');
+    const label = button.querySelector('span:last-child');
+    if (label) label.textContent = state.lang === 'bn' ? `নোটিফিকেশন ${active ? 'অন' : 'অফ'}` : `Notifications ${active ? 'ON' : 'OFF'}`;
+  });
+}
+
+function bindBackgroundNotificationControls(root=document) {
+  root.querySelectorAll?.('[data-background-notification-toggle]').forEach(button => {
+    if (button.dataset.backgroundBound === '1') return;
+    button.dataset.backgroundBound = '1';
+    button.onclick = async () => {
+      if (state.pushBusy) return;
+      const active = state.pushConfig?.enabled === true && state.pushConfig?.currentDeviceSubscribed === true;
+      try {
+        if (active) await disableBackgroundNotifications();
+        else await enableBackgroundNotifications();
+      } catch (error) {
+        notify(error.message || 'Background notifications could not be changed.', 'danger', 6500);
+      }
+    };
+  });
+}
+
+function urlBase64ToUint8Array(value='') {
+  const padding = '='.repeat((4 - value.length % 4) % 4);
+  const base64 = (value + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const raw = atob(base64);
+  return Uint8Array.from([...raw].map(char => char.charCodeAt(0)));
+}
+
+async function registerP2PFlowServiceWorker() {
+  if (!backgroundNotificationSupported()) return null;
+  if (state.serviceWorkerRegistration) return state.serviceWorkerRegistration;
+  try {
+    state.serviceWorkerRegistration = await navigator.serviceWorker.register('/sw.js', { scope:'/' });
+    return state.serviceWorkerRegistration;
+  } catch (_) {
+    return null;
+  }
+}
+
+async function loadBackgroundNotificationConfig(options={}) {
+  if (!state.user) return null;
+  try {
+    const config = await api('/api/push', { silent: options.silent !== false, noAutoReload:true });
+    state.pushConfig = config;
+    updateBackgroundNotificationControls();
+    return config;
+  } catch (_) {
+    if (!state.pushConfig) state.pushConfig = { enabled:false, currentDeviceSubscribed:false, serverEnabled:false };
+    updateBackgroundNotificationControls();
+    return state.pushConfig;
+  }
+}
+
+function notificationDeviceName() {
+  const platform = navigator.userAgentData?.platform || navigator.platform || 'Device';
+  const browser = /edg/i.test(navigator.userAgent) ? 'Edge' : /firefox/i.test(navigator.userAgent) ? 'Firefox' : /chrome|crios/i.test(navigator.userAgent) ? 'Chrome' : /safari/i.test(navigator.userAgent) ? 'Safari' : 'Browser';
+  return `${platform} · ${browser}`.slice(0, 120);
+}
+
+async function enableBackgroundNotifications() {
+  if (state.pushBusy) return state.pushConfig;
+  state.pushBusy = true;
+  updateBackgroundNotificationControls();
+  try {
+    const deviceId = trustedNotificationDeviceId();
+    if (!deviceId) throw new Error(state.lang === 'bn' ? 'Security পেজ থেকে এই ব্রাউজারটি আগে বন্ড/ট্রাস্টেড ডিভাইস করুন।' : 'Bond this browser as a trusted device from Security first.');
+    if (!window.isSecureContext) throw new Error('Background notifications require HTTPS.');
+    if (!('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window)) throw new Error('This browser does not support background web notifications.');
+    if (isIosWebKitDevice() && !isStandaloneWebApp()) throw new Error(state.lang === 'bn' ? 'iPhone/iPad-এ প্রথমে Share → Add to Home Screen করে P2PFlow খুলুন, তারপর নোটিফিকেশন অন করুন।' : 'On iPhone/iPad, add P2PFlow to the Home Screen and open it there before enabling notifications.');
+    const config = state.pushConfig || await loadBackgroundNotificationConfig({ silent:true });
+    if (config?.serverEnabled === false) throw new Error('Background notification service is disabled on the server.');
+    const permission = Notification.permission === 'granted' ? 'granted' : await Notification.requestPermission();
+    if (permission !== 'granted') throw new Error('Notification permission was not granted in this browser.');
+    const registration = await registerP2PFlowServiceWorker();
+    if (!registration) throw new Error('The background notification worker could not be registered.');
+    const ready = await navigator.serviceWorker.ready;
+    let subscription = await ready.pushManager.getSubscription();
+    if (!subscription) {
+      const publicKey = String(config?.publicKey || '').trim();
+      if (!publicKey) throw new Error('The server push public key is unavailable.');
+      subscription = await ready.pushManager.subscribe({ userVisibleOnly:true, applicationServerKey:urlBase64ToUint8Array(publicKey) });
+    }
+    const result = await api('/api/push/subscribe', {
+      method:'POST',
+      body:JSON.stringify({ subscription:subscription.toJSON(), deviceId, deviceName:notificationDeviceName(), enabled:true })
+    });
+    state.pushConfig = result;
+    notify(state.lang === 'bn' ? 'ব্যাকগ্রাউন্ড নোটিফিকেশন চালু হয়েছে।' : 'Background notifications are ON.', 'ok');
+    return result;
+  } finally {
+    state.pushBusy = false;
+    updateBackgroundNotificationControls();
+  }
+}
+
+async function disableBackgroundNotifications() {
+  if (state.pushBusy) return state.pushConfig;
+  state.pushBusy = true;
+  updateBackgroundNotificationControls();
+  try {
+    const result = await api('/api/push/preferences', { method:'PATCH', body:JSON.stringify({ enabled:false }) });
+    state.pushConfig = result;
+    notify(state.lang === 'bn' ? 'ব্যাকগ্রাউন্ড নোটিফিকেশন বন্ধ হয়েছে।' : 'Background notifications are OFF.', 'ok');
+    return result;
+  } finally {
+    state.pushBusy = false;
+    updateBackgroundNotificationControls();
+  }
+}
+
 
 function notify(message, type='danger', timeout=3000) {
   const text = String(message || '').trim();
@@ -3453,7 +3744,7 @@ const PERMISSION_DESCRIPTIONS = Object.freeze({
   'dashboard.view': { en: 'Open the dashboard and view operational summary cards. It does not grant access to orders, accounting details, settings or other pages.', bn: 'ড্যাশবোর্ড ও অপারেশন সারাংশ দেখা যাবে। অর্ডার, অ্যাকাউন্টিং বিস্তারিত, সেটিংস বা অন্য পেজের অনুমতি এতে পাওয়া যাবে না।' },
   'orders.view': { en: 'View permitted order lists and details. Binance orders also require Orders View for the exact Binance account; Agents see only orders assigned to them.', bn: 'অনুমোদিত অর্ডার লিস্ট ও বিস্তারিত দেখা যাবে। Binance অর্ডারের জন্য নির্দিষ্ট Binance অ্যাকাউন্টেও Orders View দিতে হবে; Agent শুধু নিজের assigned অর্ডার দেখবে।' },
   'orders.create': { en: 'Create offline orders and create Binance orders for exact accounts that also have Orders Create granted. It does not allow assignment or final actions.', bn: 'Offline order এবং নির্দিষ্ট Binance অ্যাকাউন্টে Orders Create grant থাকলে Binance order তৈরি করা যাবে। এতে assign বা final action অনুমতি পাওয়া যাবে না।' },
-  'orders.assign': { en: 'Assign or reassign an order to an Agent. Binance orders require the same permission on the exact account, and the target Agent must be accepting orders and have account access.', bn: 'অর্ডার Agent-কে assign বা reassign করা যাবে। Binance অর্ডারে নির্দিষ্ট অ্যাকাউন্টের একই permission লাগবে এবং target Agent-এর Order Acceptance ON ও account access থাকতে হবে।' },
+  'orders.assign': { en: 'Assign or reassign an order to an Agent. Binance orders require the same permission on the exact account, and the target Agent must have Work Status ON and account access.', bn: 'অর্ডার Agent-কে assign বা reassign করা যাবে। Binance অর্ডারে নির্দিষ্ট অ্যাকাউন্টের একই permission লাগবে এবং target Agent-এর Work Status ON ও account access থাকতে হবে।' },
   'orders.split': { en: 'Add or update payment splits on accessible orders. Using a payment account still requires Payment Account Use and assignment to that account.', bn: 'অ্যাক্সেসযোগ্য অর্ডারে payment split add/update করা যাবে। Payment account ব্যবহার করতে আলাদাভাবে Payment Account Use এবং সেই account assignment লাগবে।' },
   'orders.final_action': { en: 'Perform paid-mark and release/final workflow where policy allows. Binance orders require this permission on the exact account and all proof/approval rules still apply.', bn: 'নীতি অনুযায়ী paid mark ও release/final workflow করা যাবে। Binance অর্ডারে নির্দিষ্ট অ্যাকাউন্টের permission এবং proof/approval-এর সব নিয়ম প্রযোজ্য থাকবে।' },
   'orders.quick_release': { en: 'Use the exceptional quick-release workflow before the normal paid-mark stage. Exact Binance-account permission, safety checks and approval limits still apply.', bn: 'স্বাভাবিক paid-mark ধাপের আগে exceptional quick release করা যাবে। নির্দিষ্ট Binance account permission, safety check ও approval limit প্রযোজ্য থাকবে।' },
@@ -3470,7 +3761,7 @@ const PERMISSION_DESCRIPTIONS = Object.freeze({
   'accounts.manage_all': { en: 'Manage every payment account, change Account User and assign or remove Agent access. Admin and Manager always have this scope. Agents remain limited to their own accounts even if this permission is accidentally selected.', bn: 'সব payment account manage, Account User পরিবর্তন এবং Agent access assign/remove করা যাবে। Admin ও Manager সবসময় এই scope পাবে। ভুল করে permission selected হলেও Agent শুধু নিজের account-এ সীমাবদ্ধ থাকবে।' },
   'ledger.adjust': { en: 'Add top-up, cash-out, correction, expense, settlement and refund statement entries. Without Manage All Payment Accounts, adjustments are limited to the logged-in user’s own accounts.', bn: 'Top-up, cash-out, correction, expense, settlement ও refund statement entry করা যাবে। Manage All Payment Accounts না থাকলে শুধু লগইন user-এর নিজের account-এ adjustment করা যাবে।' },
   'offline.transactions.manage': { en: 'Create offline receipt sessions, reserve eligible payment numbers, mark full or partial amounts received, and finalize full or partial offline orders. Only payment accounts inside the user’s allowed scope are available.', bn: 'Offline receipt session তৈরি, eligible payment number reserve, full/partial received mark এবং full/partial offline order finalize করা যাবে। User-এর allowed scope-এর payment account-ই পাওয়া যাবে।' },
-  'routing.manage': { en: 'Create and edit payment-method routing, priority, amount ranges and capacity rules used by automatic assignment. It does not bypass Order Acceptance or account permissions.', bn: 'Auto assignment-এর payment-method routing, priority, amount range ও capacity rule create/edit করা যাবে। Order Acceptance বা account permission bypass হবে না।' },
+  'routing.manage': { en: 'Create and edit payment-method routing, priority, amount ranges and capacity rules used by automatic assignment. It does not bypass Work Status or account permissions.', bn: 'Auto assignment-এর payment-method routing, priority, amount range ও capacity rule create/edit করা যাবে। Work Status বা account permission bypass হবে না।' },
   'agents.manage': { en: 'Create and edit users, login access, global permissions, Binance-account permissions, Security Question setup and Agent operating limits. Delegation cannot exceed the editor’s own access.', bn: 'User create/edit, login access, global permission, Binance-account permission, Security Question ও Agent limit manage করা যাবে। Editor নিজের permission-এর বেশি grant করতে পারবে না।' },
   'roles.manage': { en: 'Create and edit reusable User Role templates and their global permissions. Assigning exact Binance accounts remains a separate per-user step.', bn: 'Reusable User Role template ও global permission create/edit করা যাবে। নির্দিষ্ট Binance account assignment আলাদা per-user ধাপ।' },
   'reports.view': { en: 'View operational reports and export permitted report data. It does not grant mutation rights in orders, accounts or accounting.', bn: 'Operational report দেখা এবং অনুমোদিত report data export করা যাবে। Order, account বা accounting পরিবর্তনের permission এতে নেই।' },
@@ -3604,11 +3895,34 @@ function redirectToLoginPage({ preserveRoute=true }={}) {
   window.location.replace(target);
 }
 
+async function confirmSessionBeforeLogout() {
+  const headers = { 'Accept':'application/json' };
+  const trustedDeviceId = String(localStorage.getItem('p2pflowTrustedDeviceId') || '').trim();
+  if (trustedDeviceId) headers['X-P2PFlow-Device-Id'] = trustedDeviceId;
+  try {
+    await new Promise(resolve => setTimeout(resolve, 180));
+    const response = await fetch('/api/me', { credentials:'include', cache:'no-store', headers });
+    if (!response.ok || !(response.headers.get('content-type') || '').includes('application/json')) return false;
+    const data = await response.json().catch(() => null);
+    if (!data?.user || !data?.csrfToken) return false;
+    state.user = data.user;
+    state.csrfToken = data.csrfToken;
+    state.orderAcceptance = data.orderAcceptance || state.orderAcceptance;
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
 async function api(path, opts={}, attempt=0) {
   const silent = !!(opts.silent || opts.quiet);
   const fetchOpts = { ...opts };
   delete fetchOpts.silent;
   delete fetchOpts.quiet;
+  const authRetried = fetchOpts._authRetried === true;
+  const authRetryAllowed = fetchOpts.authRetry !== false;
+  delete fetchOpts._authRetried;
+  delete fetchOpts.authRetry;
   const method = (fetchOpts.method || 'GET').toUpperCase();
   const headers = { 'Accept': 'application/json', ...(fetchOpts.headers || {}) };
   const trustedDeviceId = String(localStorage.getItem('p2pflowTrustedDeviceId') || '').trim();
@@ -3634,6 +3948,10 @@ async function api(path, opts={}, attempt=0) {
     return api(path, opts, attempt + 1);
   }
   if (!res.ok || htmlResponse) {
+    if (res.status === 401 && path !== '/api/login' && path !== '/api/me' && authRetryAllowed && !authRetried) {
+      const sessionStillValid = await confirmSessionBeforeLogout();
+      if (sessionStillValid) return api(path, { ...opts, _authRetried:true }, 0);
+    }
     if (res.status === 401 && path !== '/api/login') redirectToLoginPage();
     const msg = compactApiError(path, res.status, data, type);
     const err = new Error(msg);
@@ -3944,6 +4262,7 @@ async function init() {
     const me = await api('/api/me', { silent: true, noAutoReload: true });
     state.user = me.user;
     state.csrfToken = me.csrfToken;
+    state.orderAcceptance = me.orderAcceptance || null;
     await bootApp();
   } catch {
     redirectToLoginPage();
@@ -3961,7 +4280,11 @@ async function bootApp() {
   $('#userBadge').textContent = `${state.user.name} / ${state.user.role}`;
   state.bootstrap = await api('/api/bootstrap');
   if (state.bootstrap.csrfToken) state.csrfToken = state.bootstrap.csrfToken;
+  state.orderAcceptance = state.bootstrap.orderAcceptance || state.orderAcceptance;
   renderNav();
+  if (typeof updateOrderAcceptanceControl === 'function') updateOrderAcceptanceControl();
+  registerP2PFlowServiceWorker().catch(()=>{});
+  loadBackgroundNotificationConfig({ silent:true }).then(() => bindBackgroundNotificationControls()).catch(()=>{});
   setupHeaderNotificationCenter();
   startMobileBottomNavSync();
   startEvents();
@@ -4180,18 +4503,21 @@ function handleServerEvent(event = {}) {
     if (Number(event.orderId || 0) === Number(state.currentOrderId || 0)) scheduleCurrentOrderReload(120);
     else if (state.page === 'orders') scheduleSmoothRefresh(180);
   }
-  if (event.type === 'agent.order_acceptance.updated') {
+  if (event.type === 'agent.order_acceptance.updated' || event.type === 'user.work_availability.updated') {
     const belongsToUser = Number(event.userId || 0) === Number(state.user?.id || 0) || Number(event.agentId || 0) === Number(state.user?.agentId || 0);
     if (belongsToUser) {
       state.orderAcceptance = {
         ...(state.orderAcceptance || {}),
-        available: state.user?.role === 'agent' && hasPerm('orders.view'),
+        available: state.user?.enabled !== false,
         accepting: event.accepting === true,
+        workAvailable: event.accepting === true,
+        assignable: event.assignable === true || state.orderAcceptance?.assignable === true,
+        assignmentEligible: event.assignmentEligible === true,
         agentId: Number(event.agentId || state.user?.agentId || 0) || null,
         presenceStatus: event.presenceStatus || state.orderAcceptance?.presenceStatus || 'offline',
         updatedAt: event.updatedAt || event.at || null
       };
-      if (state.page === 'orders' && !state.currentOrderId) updateOrderAcceptanceControl();
+      if (typeof updateOrderAcceptanceControl === 'function') updateOrderAcceptanceControl();
     }
     if (['agents','routing','activity'].includes(state.page) && !modalOpen()) scheduleSmoothRefresh(150);
   }
@@ -4238,6 +4564,10 @@ function handleServerEvent(event = {}) {
     if (Number(event.orderId) === Number(state.currentOrderId)) scheduleCurrentOrderReload(450);
   }
   if (event.type === 'chat.message.received' && Number(event.incomingImported || event.imported || 0) > 0) {
+    if (state.page === 'chat' && typeof renderChatInbox === 'function') {
+      clearTimeout(state.chatInboxRefreshTimer);
+      state.chatInboxRefreshTimer = setTimeout(() => renderChatInbox({ preserveFocus:true }).catch(()=>{}), 80);
+    }
     const orderNo = event.orderNo || event.externalOrderNo || ('#' + event.orderId);
     const key = ['chat', event.orderId, event.latestMessageId || event.at || event.incomingImported].join('|');
     if (!eventOnceKey(key)) {
@@ -4245,12 +4575,12 @@ function handleServerEvent(event = {}) {
       playOrderNotificationSoundOnce(key);
     }
     if (Number(event.orderId) === Number(state.currentOrderId)) {
-      scheduleCurrentOrderReload(450);
+      scheduleCurrentOrderChatDelta(60);
       const chatVisible = !window.matchMedia('(max-width: 900px)').matches || document.body.classList.contains('order-chat-open');
       if (chatVisible) setTimeout(() => markOrderChatRead(event.orderId), 800);
     }
   }
-  if (event.type === 'chat.message.sent' && Number(event.orderId) === Number(state.currentOrderId)) scheduleCurrentOrderReload(600);
+  if (event.type === 'chat.message.sent' && Number(event.orderId) === Number(state.currentOrderId)) scheduleCurrentOrderChatDelta(40, { outgoing:true, forceScroll:true });
 }
 
 function scheduleCurrentOrderReload(delay=450) {
@@ -4411,16 +4741,11 @@ async function refreshMobileBottomNavCounts() {
   if (!state.user || state.mobileNavSyncBusy) return;
   state.mobileNavSyncBusy = true;
   try {
-    const tasks = [
-      api('/api/orders', { silent:true, noAutoReload:true }).catch(() => ({ items:[] })),
-      api('/api/chat-unread', { silent:true, noAutoReload:true }).catch(() => ({ total:0 })),
-      canPage('approvals') ? api('/api/approvals?status=pending', { silent:true, noAutoReload:true }).catch(() => ({ items:[] })) : Promise.resolve({ items:[] })
-    ];
-    const [orders, unread, approvals] = await Promise.all(tasks);
+    const counts = await api('/api/navigation-counts', { silent:true, noAutoReload:true }).catch(() => state.mobileNavCounts || {});
     state.mobileNavCounts = {
-      orders: (orders?.items || []).filter(order => isOngoingOrder(order)).length,
-      chats: Math.max(0, Number(unread?.total || 0)),
-      approvals: Array.isArray(approvals?.items) ? approvals.items.length : 0
+      orders: Math.max(0, Number(counts?.orders || 0)),
+      chats: Math.max(0, Number(counts?.chats || 0)),
+      approvals: Math.max(0, Number(counts?.approvals || 0))
     };
     renderMobileBottomNav();
     refreshNavBadges();
@@ -4460,7 +4785,7 @@ function renderNav() {
   // legacy flat menu while this marker is absent, the browser/proxy is serving
   // stale frontend JavaScript rather than the active release.
   nav.dataset.navigationModel = 'grouped-control-center';
-  nav.dataset.uiRelease = '1.5.19';
+  nav.dataset.uiRelease = '1.5.20';
   nav.innerHTML = '';
   const visible = visiblePages();
   const visibleIds = new Set(visible.map(([id]) => id));
@@ -5123,6 +5448,7 @@ async function loadOrderDetail(id, showLoading=true, fromRoute=false) {
   if (showLoading) $('#content').innerHTML = '<div class="card">Loading order...</div>';
   let o = await api('/api/orders/' + id);
   state.currentOrder = o;
+  initializeCurrentOrderChatState(o.chats || []);
   const direction = o.type === 'BUY' ? 'send' : 'receive';
   const finalAction = o.orderSource === 'offline' ? 'complete' : (o.type === 'BUY' ? 'paid_mark' : 'release');
   const assetSummary = orderAssetSummaryView(o);
@@ -5254,6 +5580,10 @@ async function loadOrderDetail(id, showLoading=true, fromRoute=false) {
               ${isRealBinanceOrder(o) ? '<button class="order-chat-header-icon" id="chatP2pInfoBtn" type="button" aria-label="Open P2P information">ⓘ</button>' : '<span class="order-chat-header-spacer"></span>'}
             </header>
             <div class="order-chat-primary-actionbar">${chatTopActions}</div>
+            <div class="chat-availability-bar">
+              ${typeof orderAcceptanceButtonHtml === 'function' ? orderAcceptanceButtonHtml(state.orderAcceptance || {}, { id:'chatWorkAvailabilityToggle', compact:true }) : ''}
+              ${backgroundNotificationToggleHtml({ compact:true })}
+            </div>
 
             <div class="order-chat-panel-content">
               ${hasPerm('accounts.view') && ['admin','manager'].includes(state.user.role) ? '<button class="order-chat-rail-btn left" id="chatPaymentSplitRailBtn" type="button" aria-label="Open payment split">≡</button>' : ''}
@@ -5262,6 +5592,7 @@ async function loadOrderDetail(id, showLoading=true, fromRoute=false) {
               ${isRealBinanceOrder(o) && hasPerm('binance.chat') ? `<div class="card order-card chat-card order-live-chat-card">
                 <div class="section-head chat-head chat-desktop-head"><h3>Binance C2C Chat</h3><div class="chat-head-actions"><span id="chatSyncStatus" class="sync-status live">Live</span><button class="secondary mini-action" id="p2pInfoBtn" type="button">P2P Info</button></div></div>
                 <div class="chat" id="chatBox">${renderChatList(o.chats, 'binance')}</div>
+                <button type="button" id="chatNewMessagesBtn" class="chat-new-messages" hidden>New messages ↓</button>
               </div>` : `<div class="card order-card chat-card order-live-chat-card">
                 <div class="section-head chat-head chat-desktop-head"><h3>Internal Notes</h3><span>Private</span></div>
                 <div class="chat" id="internalNoteBox">${renderChatList(o.chats, 'internal')}</div>
@@ -5518,9 +5849,9 @@ async function loadOrderDetail(id, showLoading=true, fromRoute=false) {
             body: JSON.stringify({ paymentAccountId, sendPaymentAccount:true, binanceOrderNumber: o.externalOrderNo || o.orderNo })
           });
           state.currentOrder = sent.order || state.currentOrder;
+          mergeCurrentOrderChatItems(sent.order?.chats || [], { outgoing:true, forceScroll:true });
           notify('Payment number sent and selected for this order.', 'ok');
           setQuickPanel(false);
-          await loadOrderDetail(o.id, false, true);
         } catch (err) {
           button.disabled = false;
           button.innerHTML = original;
@@ -5597,7 +5928,7 @@ async function loadOrderDetail(id, showLoading=true, fromRoute=false) {
         renderSelectedMedia();
         setAttachmentTray(false);
         setQuickPanel(false);
-        updateChatBox(latestOrder?.chats || o.chats || [], 'binance');
+        mergeCurrentOrderChatItems(latestOrder?.chats || [], { outgoing:true, forceScroll:true });
         setChatSyncStatus('Live', 'live');
       } catch (err) {
         notify(err.message || 'Message send failed', 'danger');
@@ -5629,6 +5960,10 @@ async function loadOrderDetail(id, showLoading=true, fromRoute=false) {
     }
   };
   bindChatImagePreviews($('#orderChatPanel') || document);
+  if (typeof bindOrderAcceptanceControl === 'function') bindOrderAcceptanceControl($('#orderChatPanel') || document);
+  bindBackgroundNotificationControls($('#orderChatPanel') || document);
+  bindChatScrollState();
+  updateChatNewMessagesButton();
   startOrderDetailAutoSync(o);
   startChatAutoSync(o);
   $$('[data-update-split]').forEach(b => b.onclick = () => openUpdateSplitModal(o, Number(b.dataset.updateSplit)));
@@ -5872,7 +6207,7 @@ function openUserModal(userItem=null) {
       </fieldset>
       <div><label>Max Active Orders</label><input name="maxActiveOrders" type="number" min="0" step="1" value="${Number.isFinite(Number(userItem?.maxActiveOrders)) ? Number(userItem.maxActiveOrders) : 5}" /></div>
       <div><label>Max Release Amount</label><input name="maxReleaseAmount" type="number" min="0" step="0.01" value="${Number.isFinite(Number(userItem?.maxReleaseAmount)) ? Number(userItem.maxReleaseAmount) : 0}" /></div>
-      <div><label class="check"><input type="checkbox" name="allowNewOrders" ${userItem?.allowNewOrders === false ? '' : 'checked'} /> Accept new orders even while offline</label></div>
+      <div><label class="check"><input type="checkbox" name="allowNewOrders" ${userItem?.allowNewOrders === false ? '' : 'checked'} /> Work Status ON — accept new orders even while offline</label></div>
       <div><label class="check"><input type="checkbox" name="smsEnabled" ${userItem?.smsEnabled === false ? '' : 'checked'} /> Panel SMS on order assignment</label></div>
       <div><label class="check"><input type="checkbox" name="canRelease" ${userItem?.canRelease ? 'checked' : ''} /> Can release/final action</label></div>
       <div class="full-row profit-accounting-setting"><label class="check"><input type="checkbox" name="includeProfitInCompanyTotals" ${userItem?.includeProfitInCompanyTotals === false ? '' : 'checked'} /> Include this user's profit in company income and capital totals</label><small>Turn this off to keep the user's income visible in their individual report while excluding it from company totals.</small></div>
@@ -6401,8 +6736,11 @@ async function syncCurrentBinanceStats(order) {
 async function syncCurrentBinanceChat(order) {
   try {
     const updated = await api(`/api/orders/${order.id}/binance-chat-sync`, { method:'POST', body: JSON.stringify({ binanceOrderNumber: order.externalOrderNo || order.orderNo, page: 1, rows: 20, sort: 'desc' }) });
+    if (Number(state.currentOrderId || 0) === Number(order.id)) {
+      state.currentOrder = { ...(state.currentOrder || {}), ...updated };
+      mergeCurrentOrderChatItems(updated.chats || [], { forceScroll:false });
+    }
     notify('Binance chat messages synced.', 'ok');
-    await loadOrderDetail(updated.id || order.id, false, true);
   } catch (err) { notify(err.message || 'Binance chat sync failed', 'danger'); }
 }
 
