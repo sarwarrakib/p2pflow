@@ -27,16 +27,28 @@ Updater code এবং database আলাদা রাখে। Update install-�
 
 ## Version
 
-Internal SemVer: `1.5.22`
+Internal SemVer: `1.5.23`
 UI: `1.5`
 Database schema: `33`
 
 Normal next version: `SET_NEXT_VERSION.bat` -> `1.6.0`  
-Hotfix: `SET_HOTFIX_VERSION.bat` -> `1.5.23`
+Hotfix: `SET_HOTFIX_VERSION.bat` -> `1.5.24`
 
 ## Database history safety
 
 P2PFlow keeps authoritative business/application data in MariaDB/MySQL/PostgreSQL. State payloads are compressed with Brotli before AES-256-GCM encryption, proofs/chat media are stored as encrypted database objects, and identical newly uploaded proof/media bytes use content-addressed object IDs to avoid duplicate blobs. The default is 3 retained recovery checkpoints with a 6-hour archive interval and 5 retained automatic database backups. Older uncompressed state/history/backup payloads are upgraded incrementally after startup. Health Check reports each P2PFlow database table's allocated size/row count, current encrypted state payload size, compression saving percentage, and proof/chat object usage so database-MB growth can be inspected without terminal access. `shared/`, `.p2pflow`, `.env`, `releases/` and temporary restart/update markers are operational bootstrap/update metadata only; they are not an application/business-data store. The application runtime itself does not write proof, chat, audit, order, ledger, notification or recovery-code data to local files.
+
+## v1.5.23 Payment Account Bulk Serial Scope Fix
+
+- Bulk Add-এর false-positive Serial conflict ঠিক করা হয়েছে। পুরোনো Label-ছাড়া Payment Account আর নতুন named Label-এর account block করবে না।
+- Serial uniqueness এখন `normalized Payment Method name + normalized Label` scope-এ চলে। Label না থাকলে সেটি আলাদা **no-Label scope**; এটি named Label-এর wildcard নয়।
+- একই Payment Method + একই normalized Label + একই Serial এখনও block হবে। ভিন্ন Label, named Label বনাম no Label, অথবা ভিন্ন Payment Method-এ একই Serial ব্যবহার করা যাবে।
+- Bulk preview conflict হলে exact Account row, Serial ও Label দেখাবে। Server response-ও conflictটি current bulk row নাকি existing account—তা পরিষ্কার করে।
+- Bulk Add atomic রাখা হয়েছে: একটি সত্যিকারের conflict থাকলে কোনো row save হবে না; আগে ভুলভাবে block হওয়া labeled rows এখন save হবে।
+- Add, Edit, Bulk Add, CSV/structured import একই authoritative rule ব্যবহার করে। Trim, case-insensitive, repeated-space এবং Unicode NFKC normalization বহাল আছে।
+- Database schema `33`; কোনো migration বা existing Payment Account data পরিবর্তন প্রয়োজন নেই।
+
+বিস্তারিত: `P2PFlow_v1.5.23_RELEASE_NOTES_BN.md`, `P2PFlow_v1.5.23_MANUAL_UPDATE_BN.md` এবং `P2PFlow_v1.5.23_LAUNCH_CHECKLIST_BN.md`।
 
 ## v1.5.22 Header-only Work Status & Notification Master
 
@@ -57,7 +69,7 @@ P2PFlow keeps authoritative business/application data in MariaDB/MySQL/PostgreSQ
 - Payment Account Serial Number আর পুরো system-এ globally unique নয়; normalized Payment Method name অনুযায়ী আলাদা namespace ব্যবহার করে।
 - একই Payment Method এবং একই non-empty Label-এর মধ্যে একই Serial Number দ্বিতীয়বার save করা যাবে না।
 - একই Payment Method-এর ভিন্ন non-empty Label-এ একই Serial Number পুনরায় ব্যবহার করা যাবে।
-- Label blank থাকলে Serial Number পুরো Payment Method-এর মধ্যে unique থাকবে; একই method-এর labeled account-এর সঙ্গেও conflict হবে।
+- v1.5.21-এ Label blank থাকলে method-wide conflict করা হয়েছিল; v1.5.23 থেকে no-Label নিজস্ব fallback scope এবং named Label-কে আর block করে না।
 - ভিন্ন Payment Method-এ একই Label/Serial ব্যবহার করা যাবে।
 - Add, Edit, Bulk Add এবং CSV/structured import একই server-side rule ব্যবহার করে। Bulk modal save-এর আগেই একই scope-এর duplicate row দেখায়।
 - Comparison trim, case-insensitive, repeated-space normalization এবং Unicode NFKC normalization ব্যবহার করে।

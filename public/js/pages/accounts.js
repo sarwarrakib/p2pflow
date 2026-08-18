@@ -1,4 +1,4 @@
-// P2PFlow v1.5.22
+// P2PFlow v1.5.23
 // Permission-scoped payment accounts with owner, label and serial search.
 
 function paymentAccountChargeLabel(account={}) {

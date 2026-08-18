@@ -17074,9 +17074,10 @@ function paymentAccountSerialScopesConflict(left = {}, right = {}) {
   if (paymentAccountMethodSerialNamespace(left.paymentMethodId) !== paymentAccountMethodSerialNamespace(right.paymentMethodId)) return false;
   const leftLabel = normalizePaymentAccountSerialScopeValue(left.label || left.accountLabel || '', 80);
   const rightLabel = normalizePaymentAccountSerialScopeValue(right.label || right.accountLabel || '', 80);
-  // A blank label uses the whole payment-method namespace. When both labels
-  // exist, the same serial can be reused only across different labels.
-  return !leftLabel || !rightLabel || leftLabel === rightLabel;
+  // The serial namespace is Payment Method + normalized Label. Two named
+  // Labels are independent, and the empty Label is its own fallback scope.
+  // Therefore a legacy account without a Label must not block a labeled row.
+  return leftLabel === rightLabel;
 }
 
 function findPaymentAccountSerialConflict({ serialNumber = '', paymentMethodId = 0, label = '', excludeId = 0, accounts = null } = {}) {
@@ -17086,13 +17087,27 @@ function findPaymentAccountSerialConflict({ serialNumber = '', paymentMethodId =
   return source.find(account => Number(account.id || 0) !== Number(excludeId || 0) && paymentAccountSerialScopesConflict(candidate, account)) || null;
 }
 
-function paymentAccountSerialConflictMessage(paymentMethodId = 0, label = '') {
+function paymentAccountSerialScopeView(paymentMethodId = 0, label = '', serialNumber = '') {
   const method = methodById(paymentMethodId);
   const methodName = cleanStr(method?.name || method?.code || 'the selected Payment Method', 80);
-  const normalizedLabel = normalizePaymentAccountSerialScopeValue(label, 80);
-  return normalizedLabel
-    ? `Serial Number must be unique inside the same Label under ${methodName}. Different non-empty Labels may reuse the same serial.`
-    : `Label is blank, so Serial Number must be unique across ${methodName}.`;
+  const displayLabel = cleanStr(label || '', 80);
+  const displaySerial = cleanStr(serialNumber || '', 80);
+  return {
+    paymentMethodId: Number(paymentMethodId || 0),
+    paymentMethodName: methodName,
+    label: displayLabel || null,
+    serialNumber: displaySerial || null,
+    scopeName: displayLabel ? `Label "${displayLabel}"` : 'accounts without a Label'
+  };
+}
+
+function paymentAccountSerialConflictMessage(paymentMethodId = 0, label = '', serialNumber = '', conflict = null, { duplicateInBatch = false } = {}) {
+  const scope = paymentAccountSerialScopeView(paymentMethodId, label, serialNumber);
+  const conflictNumber = cleanStr(conflict?.accountNumber || '', 120);
+  const conflictSuffix = duplicateInBatch
+    ? (Number(conflict?.rowNumber || 0) ? ` It duplicates Account ${Number(conflict.rowNumber)} in this bulk list.` : ' It is duplicated in this bulk list.')
+    : (conflictNumber ? ` It is already used by payment account ${conflictNumber}.` : ' It is already used by an existing payment account.');
+  return `Serial Number${scope.serialNumber ? ` "${scope.serialNumber}"` : ''} must be unique inside ${scope.scopeName} under ${scope.paymentMethodName}.${conflictSuffix} A different Label, including a named Label versus no Label, uses a separate serial scope.`;
 }
 
 function paymentAccountMatchesSearch(accountItem = {}, query = '') {
@@ -17193,10 +17208,24 @@ async function handleBulkPaymentAccounts(req, res) {
       seenAccounts.add(key);
     }
     if (method && draft.serialNumber) {
-      const serialCandidate = { paymentMethodId: method.id, label: draft.label, serialNumber: draft.serialNumber };
-      const duplicateInBatch = seenSerialCandidates.some(existing => paymentAccountSerialScopesConflict(serialCandidate, existing));
+      const serialCandidate = { paymentMethodId: method.id, label: draft.label, serialNumber: draft.serialNumber, accountNumber: draft.accountNumber, rowNumber };
+      const duplicateInBatch = seenSerialCandidates.find(existing => paymentAccountSerialScopesConflict(serialCandidate, existing)) || null;
       const duplicateExisting = findPaymentAccountSerialConflict(serialCandidate);
-      if (duplicateInBatch || duplicateExisting) errors.push({ row: rowNumber, error: paymentAccountSerialConflictMessage(method.id, draft.label) });
+      const conflict = duplicateInBatch || duplicateExisting;
+      if (conflict) {
+        const scope = paymentAccountSerialScopeView(method.id, draft.label, draft.serialNumber);
+        const maySeeExisting = Boolean(duplicateExisting && canAccessAccount(user, duplicateExisting));
+        const visibleConflict = duplicateInBatch || (maySeeExisting ? duplicateExisting : null);
+        errors.push({
+          row: rowNumber,
+          code: 'PAYMENT_ACCOUNT_SERIAL_SCOPE_CONFLICT',
+          error: paymentAccountSerialConflictMessage(method.id, draft.label, draft.serialNumber, visibleConflict, { duplicateInBatch: Boolean(duplicateInBatch) }),
+          scope,
+          conflict: duplicateInBatch
+            ? { source: 'bulk', row: Number(duplicateInBatch.rowNumber || 0) || null }
+            : { source: 'existing', accountId: maySeeExisting ? Number(duplicateExisting.id || 0) || null : null, accountNumber: maySeeExisting ? cleanStr(duplicateExisting.accountNumber || '', 120) || null : null }
+        });
+      }
       seenSerialCandidates.push(serialCandidate);
     }
     drafts.push(draft);
@@ -17238,11 +17267,15 @@ async function handlePaymentAccounts(req, res, url) {
     if (ownerError) return sendJson(res, 422, { error: ownerError }, {}, req);
     if (draft.unknownAgents.length) return sendJson(res, 422, { error: `Unknown or non-agent access value(s): ${draft.unknownAgents.join(', ')}` }, {}, req);
     const serialConflict = findPaymentAccountSerialConflict({ serialNumber: draft.serialNumber, paymentMethodId, label: draft.label });
-    if (serialConflict) return sendJson(res, 409, {
-      error: paymentAccountSerialConflictMessage(paymentMethodId, draft.label),
-      code: 'PAYMENT_ACCOUNT_SERIAL_SCOPE_CONFLICT',
-      scope: { paymentMethodId, paymentMethodName: method.name || method.code || '', label: draft.label || null }
-    }, {}, req);
+    if (serialConflict) {
+      const maySeeConflict = canAccessAccount(user, serialConflict);
+      return sendJson(res, 409, {
+        error: paymentAccountSerialConflictMessage(paymentMethodId, draft.label, draft.serialNumber, maySeeConflict ? serialConflict : null),
+        code: 'PAYMENT_ACCOUNT_SERIAL_SCOPE_CONFLICT',
+        scope: paymentAccountSerialScopeView(paymentMethodId, draft.label, draft.serialNumber),
+        conflict: { accountId: maySeeConflict ? Number(serialConflict.id || 0) || null : null, accountNumber: maySeeConflict ? cleanStr(serialConflict.accountNumber || '', 120) || null : null }
+      }, {}, req);
+    }
     if (db.paymentAccounts.some(account => Number(account.paymentMethodId) === paymentMethodId && String(account.accountNumber || '').toLowerCase() === draft.accountNumber.toLowerCase())) return sendJson(res, 409, { error: 'This payment account already exists for the selected method.' }, {}, req);
     const item = createPaymentAccountFromDraft(draft, user);
     logAudit(user, 'payment_account_created', 'paymentAccount', item.id, { accountNumber: item.accountNumber, label: item.label, serialNumber: item.serialNumber, ownerUserId: item.ownerUserId, accountType: item.accountType, openingBalance: draft.openingBalance, allowedAgentIds: item.allowedAgentIds });
@@ -17299,11 +17332,15 @@ async function updatePaymentAccount(req, res, user, accountItem) {
   const nextSerialNumber = body.serialNumber !== undefined || body.serial !== undefined ? cleanStr(body.serialNumber ?? body.serial ?? '', 80) : cleanStr(accountItem.serialNumber || '', 80);
   if (!nextAccountNumber) return sendJson(res, 422, { error: 'Account number is required' }, {}, req);
   const serialConflict = findPaymentAccountSerialConflict({ serialNumber: nextSerialNumber, paymentMethodId: nextPaymentMethodId, label: nextLabel, excludeId: accountItem.id });
-  if (serialConflict) return sendJson(res, 409, {
-    error: paymentAccountSerialConflictMessage(nextPaymentMethodId, nextLabel),
-    code: 'PAYMENT_ACCOUNT_SERIAL_SCOPE_CONFLICT',
-    scope: { paymentMethodId: nextPaymentMethodId, paymentMethodName: methodById(nextPaymentMethodId)?.name || methodById(nextPaymentMethodId)?.code || '', label: nextLabel || null }
-  }, {}, req);
+  if (serialConflict) {
+    const maySeeConflict = canAccessAccount(user, serialConflict);
+    return sendJson(res, 409, {
+      error: paymentAccountSerialConflictMessage(nextPaymentMethodId, nextLabel, nextSerialNumber, maySeeConflict ? serialConflict : null),
+      code: 'PAYMENT_ACCOUNT_SERIAL_SCOPE_CONFLICT',
+      scope: paymentAccountSerialScopeView(nextPaymentMethodId, nextLabel, nextSerialNumber),
+      conflict: { accountId: maySeeConflict ? Number(serialConflict.id || 0) || null : null, accountNumber: maySeeConflict ? cleanStr(serialConflict.accountNumber || '', 120) || null : null }
+    }, {}, req);
+  }
   const duplicate = db.paymentAccounts.some(item => Number(item.id) !== Number(accountItem.id) && Number(item.paymentMethodId) === nextPaymentMethodId && String(item.accountNumber || '').trim().toLowerCase() === nextAccountNumber.toLowerCase());
   if (duplicate) return sendJson(res, 409, { error: 'This payment account already exists for the selected method.' }, {}, req);
   const nextStatus = body.status !== undefined ? cleanStr(body.status, 40).toLowerCase() : String(accountItem.status || 'active').toLowerCase();
@@ -22020,12 +22057,13 @@ function runPaymentAccountSerialScopeSelfTest() {
     };
 
     expectConflict({ paymentMethodId: 10, label: 'office phone', serialNumber: ' sim-001 ' }, true, 'Same method and normalized label must conflict');
-    expectConflict({ paymentMethodId: 10, label: 'Backup Phone', serialNumber: 'SIM-001' }, false, 'Different non-empty labels may reuse a serial');
+    expectConflict({ paymentMethodId: 10, label: 'Backup Phone', serialNumber: 'SIM-001' }, false, 'Different named labels may reuse a serial');
     expectConflict({ paymentMethodId: 20, label: 'Office Phone', serialNumber: 'SIM-001' }, true, 'Same Nagad scope must conflict with its own record');
     expectConflict({ paymentMethodId: 20, label: 'Backup Phone', serialNumber: 'SIM-001' }, false, 'Different payment-method label scope should remain independent');
-    expectConflict({ paymentMethodId: 10, label: 'Any Label', serialNumber: 'SIM-900' }, true, 'Existing blank label must reserve the serial across the payment method');
-    expectConflict({ paymentMethodId: 10, label: '', serialNumber: 'SIM-001' }, true, 'Incoming blank label must conflict with any same-method serial');
-    expectConflict({ paymentMethodId: 20, label: '', serialNumber: 'SIM-900' }, false, 'Blank-label serial may be reused by a different payment method');
+    expectConflict({ paymentMethodId: 10, label: 'Any Label', serialNumber: 'SIM-900' }, false, 'An existing no-label account must not block a named Label');
+    expectConflict({ paymentMethodId: 10, label: '', serialNumber: 'SIM-001' }, false, 'The no-label scope must not conflict with a named Label');
+    expectConflict({ paymentMethodId: 10, label: '', serialNumber: 'SIM-900' }, true, 'Two no-label accounts under the same method must conflict');
+    expectConflict({ paymentMethodId: 20, label: '', serialNumber: 'SIM-900' }, false, 'No-label serial may be reused by a different payment method');
     expectConflict({ paymentMethodId: 30, label: 'Office Phone', serialNumber: 'SIM-001' }, true, 'Equivalent payment-method names must share the namespace');
     expectConflict({ paymentMethodId: 10, label: 'Office Phone', serialNumber: 'SIM-001', excludeId: 101 }, false, 'Editing the same account must not self-conflict');
     expectConflict({ paymentMethodId: 10, label: 'Office Phone', serialNumber: '' }, false, 'Blank serial remains optional');
@@ -22033,20 +22071,29 @@ function runPaymentAccountSerialScopeSelfTest() {
     const batchCandidates = [
       { paymentMethodId: 10, label: 'Phone A', serialNumber: '01' },
       { paymentMethodId: 10, label: 'Phone B', serialNumber: '01' },
-      { paymentMethodId: 10, label: 'phone a', serialNumber: '01' }
+      { paymentMethodId: 10, label: 'phone a', serialNumber: '01' },
+      { paymentMethodId: 10, label: '', serialNumber: '01' },
+      { paymentMethodId: 10, label: '', serialNumber: '01' }
     ];
-    if (paymentAccountSerialScopesConflict(batchCandidates[0], batchCandidates[1])) throw new Error('Different labels incorrectly conflict in bulk scope.');
+    if (paymentAccountSerialScopesConflict(batchCandidates[0], batchCandidates[1])) throw new Error('Different named labels incorrectly conflict in bulk scope.');
     if (!paymentAccountSerialScopesConflict(batchCandidates[0], batchCandidates[2])) throw new Error('Same normalized label did not conflict in bulk scope.');
+    if (paymentAccountSerialScopesConflict(batchCandidates[0], batchCandidates[3])) throw new Error('Named and no-label scopes incorrectly conflict in bulk scope.');
+    if (!paymentAccountSerialScopesConflict(batchCandidates[3], batchCandidates[4])) throw new Error('Two no-label rows did not conflict in bulk scope.');
+
+    const exampleMessage = paymentAccountSerialConflictMessage(20, 'Mobile A', '03', { accountNumber: '01700000003' });
+    if (!exampleMessage.includes('Mobile A') || !exampleMessage.includes('03') || !exampleMessage.includes('01700000003')) throw new Error('Conflict message does not identify the exact Label, serial and existing account.');
 
     console.log(JSON.stringify({
       ok: true,
       version: APP_VERSION,
       schemaVersion: APP_SCHEMA_VERSION,
-      rule: 'payment-method-name + label; blank label reserves the method-wide serial',
+      rule: 'payment-method-name + normalized label; no Label is an independent fallback scope',
       sameMethodSameLabelConflict: true,
       sameMethodDifferentLabelAllowed: true,
       differentMethodAllowed: true,
-      blankLabelMethodWide: true
+      blankLabelSeparateScope: true,
+      legacyBlankLabelDoesNotBlockNamedLabel: true,
+      diagnosticConflictMessage: true
     }, null, 2));
   } finally {
     db = previousDb;

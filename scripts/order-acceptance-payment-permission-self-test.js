@@ -27,7 +27,7 @@ const section = (source, start, end) => {
   return source.slice(a, b);
 };
 
-assert(pkg.version === '1.5.22', `expected v1.5.22, got ${pkg.version}`);
+assert(pkg.version === '1.5.23', `expected v1.5.23, got ${pkg.version}`);
 assert(server.includes('const APP_SCHEMA_VERSION = 33;'), 'schema 33 is missing.');
 
 // Payment-account authorization: Admin/Manager all, Agent own only, optional all-account permission for non-Agent roles.

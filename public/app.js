@@ -1,5 +1,5 @@
-// v1.5.22: Header-only Work Status, chat-only notification master, and coupled sound/push controls.
-// v1.5.22: Payment Account serial uniqueness remains scoped by normalized Payment Method name and Label.
+// v1.5.23: Header-only Work Status, chat-only notification master, and coupled sound/push controls.
+// v1.5.23: Payment Account serial scope treats each normalized Label, including no Label, as an independent namespace.
 // v1.5.20: account-scoped Binance RBAC, visible security recovery setup and individual-only profit accounting.
 // v1.5.20: first-run recovery reuses the saved Application Key and software updates are Owner-only from Control Panel.
 // v1.0.137: Diagnose and harden Binance P2P Create Advertisement privilege flow.
@@ -4839,7 +4839,7 @@ function renderNav() {
   // legacy flat menu while this marker is absent, the browser/proxy is serving
   // stale frontend JavaScript rather than the active release.
   nav.dataset.navigationModel = 'grouped-control-center';
-  nav.dataset.uiRelease = '1.5.22';
+  nav.dataset.uiRelease = '1.5.23';
   nav.innerHTML = '';
   const visible = visiblePages();
   const visibleIds = new Set(visible.map(([id]) => id));
@@ -6440,7 +6440,7 @@ function openAccountModal() {
       <div><label>Account Type</label>${paymentAccountTypeSelect(defaultType)}</div>
       <div><label>Account Number</label><input name="accountNumber" required /></div>
       <div><label>Label</label><input name="label" maxlength="80" placeholder="Example: Office Phone 1" /></div>
-      <div><label>Serial Number</label><input name="serialNumber" maxlength="80" placeholder="Example: SIM-001" title="Unique within the same Payment Method and Label. If Label is blank, unique across the Payment Method." /></div>
+      <div><label>Serial Number</label><input name="serialNumber" maxlength="80" placeholder="Example: SIM-001" title="Unique within the same Payment Method and Label. No Label is a separate fallback scope." /></div>
       <div><label>Account Name</label><input name="accountName" /></div>
       <div><label>Opening Balance</label><input name="currentBalance" type="number" min="0" step="any" value="0" /></div>
       <div><label>Status</label>${accountStatusSelect('active')}</div>
@@ -6479,7 +6479,7 @@ function openEditAccountModal(id) {
       <div><label>Account Type</label>${paymentAccountTypeSelect(account.accountType)}</div>
       <div><label>Account Number</label><input name="accountNumber" value="${escapeAttr(account.accountNumber)}" required /></div>
       <div><label>Label</label><input name="label" maxlength="80" value="${escapeAttr(account.label || '')}" placeholder="Example: Office Phone 1" /></div>
-      <div><label>Serial Number</label><input name="serialNumber" maxlength="80" value="${escapeAttr(account.serialNumber || '')}" placeholder="Example: SIM-001" title="Unique within the same Payment Method and Label. If Label is blank, unique across the Payment Method." /></div>
+      <div><label>Serial Number</label><input name="serialNumber" maxlength="80" value="${escapeAttr(account.serialNumber || '')}" placeholder="Example: SIM-001" title="Unique within the same Payment Method and Label. No Label is a separate fallback scope." /></div>
       <div><label>Account Name</label><input name="accountName" value="${escapeAttr(account.accountName || '')}" /></div>
       <div><label>Status</label>${accountStatusSelect(account.status)}</div>
       ${paymentAccountChargeFieldsHtml(account)}
@@ -6539,8 +6539,18 @@ function normalizePaymentAccountSerialClientValue(value='') {
   return String(value || '').normalize('NFKC').trim().replace(/\s+/g, ' ').toLowerCase();
 }
 
-function bulkPaymentAccountSerialConflictIndexes(items=[]) {
-  const conflicts = new Set();
+function bulkPaymentAccountSerialConflictDetails(items=[]) {
+  const conflicts = new Map();
+  const addConflict = (index, otherIndex) => {
+    const item = items[index] || {};
+    const current = conflicts.get(index) || {
+      serialNumber: String(item.serialNumber || '').trim(),
+      label: String(item.label || '').trim(),
+      otherRows: []
+    };
+    if (!current.otherRows.includes(otherIndex + 1)) current.otherRows.push(otherIndex + 1);
+    conflicts.set(index, current);
+  };
   for (let leftIndex = 0; leftIndex < items.length; leftIndex += 1) {
     const leftSerial = normalizePaymentAccountSerialClientValue(items[leftIndex]?.serialNumber);
     if (!leftSerial) continue;
@@ -6549,13 +6559,24 @@ function bulkPaymentAccountSerialConflictIndexes(items=[]) {
       const rightSerial = normalizePaymentAccountSerialClientValue(items[rightIndex]?.serialNumber);
       if (leftSerial !== rightSerial) continue;
       const rightLabel = normalizePaymentAccountSerialClientValue(items[rightIndex]?.label);
-      if (!leftLabel || !rightLabel || leftLabel === rightLabel) {
-        conflicts.add(leftIndex);
-        conflicts.add(rightIndex);
+      if (leftLabel === rightLabel) {
+        addConflict(leftIndex, rightIndex);
+        addConflict(rightIndex, leftIndex);
       }
     }
   }
   return conflicts;
+}
+
+function bulkPaymentAccountSerialConflictIndexes(items=[]) {
+  return new Set(bulkPaymentAccountSerialConflictDetails(items).keys());
+}
+
+function bulkPaymentAccountSerialConflictText(detail={}) {
+  const rows = Array.isArray(detail.otherRows) ? detail.otherRows.filter(Boolean).sort((a,b) => a-b) : [];
+  const rowText = rows.length ? `Account ${rows.join(', ')}` : 'another account';
+  const scopeText = String(detail.label || '').trim() ? `Label "${String(detail.label).trim()}"` : 'the no-Label scope';
+  return `Serial "${String(detail.serialNumber || '').trim()}" duplicates ${rowText} inside ${scopeText}.`;
 }
 
 function updateBulkAccountSerialWarnings() {
@@ -6564,12 +6585,17 @@ function updateBulkAccountSerialWarnings() {
     label: row.querySelector('[data-bulk-account-label]')?.value || '',
     serialNumber: row.querySelector('[data-bulk-account-serial]')?.value || ''
   }));
-  const conflicts = bulkPaymentAccountSerialConflictIndexes(entries);
+  const details = bulkPaymentAccountSerialConflictDetails(entries);
   rows.forEach((row, index) => {
-    row.classList.toggle('has-serial-error', conflicts.has(index));
-    row.querySelector('[data-bulk-serial-warning]')?.classList.toggle('hidden', !conflicts.has(index));
+    const detail = details.get(index) || null;
+    row.classList.toggle('has-serial-error', Boolean(detail));
+    const warning = row.querySelector('[data-bulk-serial-warning]');
+    if (warning) {
+      warning.classList.toggle('hidden', !detail);
+      warning.textContent = detail ? bulkPaymentAccountSerialConflictText(detail) : '';
+    }
   });
-  return conflicts;
+  return details;
 }
 
 function renderBulkAccountPreview({ applyDefaults=false } = {}) {
@@ -6595,9 +6621,9 @@ function renderBulkAccountPreview({ applyDefaults=false } = {}) {
     const serialNumber = applyDefaults ? bulkSerialValue(serialStart, index) : (old.serialNumber ?? bulkSerialValue(serialStart, index));
     return `<div class="bulk-account-preview-row bulk-account-preview-row-v2 ${duplicates.has(number) ? 'has-error' : ''}" data-bulk-account-row data-account-number="${escapeAttr(number)}">
       <span class="bulk-account-serial">${index + 1}</span>
-      <div class="bulk-account-number"><b>${escapeHtml(number)}</b>${duplicates.has(number) ? '<small>Duplicate number</small>' : ''}<small data-bulk-serial-warning class="hidden">Duplicate serial in this Payment Method/Label scope</small></div>
+      <div class="bulk-account-number"><b>${escapeHtml(number)}</b>${duplicates.has(number) ? '<small>Duplicate number</small>' : ''}<small data-bulk-serial-warning class="hidden">Duplicate serial in the same Label scope</small></div>
       <label><span>Label</span><input data-bulk-account-label maxlength="80" value="${escapeAttr(label)}" /></label>
-      <label><span>Serial</span><input data-bulk-account-serial maxlength="80" value="${escapeAttr(serialNumber)}" title="Unique within the same Payment Method and Label. A blank Label uses the whole Payment Method." /></label>
+      <label><span>Serial</span><input data-bulk-account-serial maxlength="80" value="${escapeAttr(serialNumber)}" title="Unique within the same Payment Method and Label. No Label is a separate fallback scope." /></label>
       <label><span>Opening Balance</span><input data-bulk-account-balance type="number" min="0" step="any" value="${escapeAttr(balance)}" /></label>
     </div>`;
   }).join('')}</div>`;
@@ -6627,7 +6653,7 @@ function openBulkAccountModal() {
       </div>
       <div class="full-row bulk-account-balance-tools bulk-account-default-tools">
         <label>Default Label <input id="bulkDefaultLabel" maxlength="80" placeholder="Office Phone 1" /></label>
-        <label>Starting Serial <input id="bulkSerialStart" maxlength="80" placeholder="SIM-001" title="Serials are unique by Payment Method and Label. A blank Label reserves the serial across the Payment Method." /></label>
+        <label>Starting Serial <input id="bulkSerialStart" maxlength="80" placeholder="SIM-001" title="Serials are unique by Payment Method and Label. No Label is a separate fallback scope." /></label>
         <label>Default Opening Balance <input id="bulkDefaultOpeningBalance" type="number" min="0" step="any" value="0" /></label>
         <button type="button" class="secondary" id="bulkApplyDefaults">Apply Defaults</button>
       </div>
@@ -6658,7 +6684,11 @@ function openBulkAccountModal() {
       serialNumber: row.querySelector('[data-bulk-account-serial]')?.value || '',
       openingBalance: row.querySelector('[data-bulk-account-balance]')?.value || 0
     }));
-    if (bulkPaymentAccountSerialConflictIndexes(accounts).size) return setFormMessage('#bulkAccountMessage', 'Serial Number is duplicated inside the same Payment Method/Label scope. Different non-empty Labels may reuse a serial; a blank Label may not.', 'danger');
+    const serialConflicts = bulkPaymentAccountSerialConflictDetails(accounts);
+    if (serialConflicts.size) {
+      const [firstIndex, firstDetail] = serialConflicts.entries().next().value;
+      return setFormMessage('#bulkAccountMessage', `Account ${Number(firstIndex) + 1}: ${bulkPaymentAccountSerialConflictText(firstDetail)} Different Labels—including a named Label and no Label—may reuse the same serial.`, 'danger');
+    }
     try {
       const result = await api('/api/payment-accounts/bulk', { method:'POST', body: JSON.stringify({ common, accounts }) });
       notify(`${result.count || 0} payment account(s) added.`, 'ok');

@@ -22,15 +22,15 @@ const section = (source, start, end) => {
   return source.slice(a, b);
 };
 
-assert(pkg.version === '1.5.22', `expected v1.5.22, got ${pkg.version}`);
+assert(pkg.version === '1.5.23', `expected v1.5.23, got ${pkg.version}`);
 assert(server.includes('const APP_SCHEMA_VERSION = 33;'), 'schema 33 must remain unchanged for this logic-only update.');
 
 const helpers = section(server, 'function normalizePaymentAccountSerialScopeValue', 'function paymentAccountMatchesSearch');
 assert(helpers.includes("normalize('NFKC')") && helpers.includes("replace(/\\s+/g, ' ')") && helpers.includes('.toLowerCase()'), 'case/space/Unicode normalization is missing.');
 assert(helpers.includes('function paymentAccountMethodSerialNamespace') && helpers.includes('method?.name'), 'payment-method-name namespace is missing.');
-assert(helpers.includes('return !leftLabel || !rightLabel || leftLabel === rightLabel;'), 'label-scoped and blank-label method-wide rule is missing.');
+assert(helpers.includes('return leftLabel === rightLabel;'), 'independent normalized Label scope rule is missing.');
 assert(helpers.includes('function findPaymentAccountSerialConflict') && helpers.includes('excludeId'), 'edit-safe conflict lookup is missing.');
-assert(helpers.includes('Different non-empty Labels may reuse the same serial'), 'clear conflict explanation is missing.');
+assert(helpers.includes('including a named Label versus no Label') && helpers.includes('function paymentAccountSerialScopeView'), 'clear exact-scope conflict explanation is missing.');
 
 const bulk = section(server, 'async function handleBulkPaymentAccounts', 'async function handlePaymentAccounts');
 assert(bulk.includes('seenSerialCandidates') && bulk.includes('paymentAccountSerialScopesConflict'), 'bulk validation does not use the composite serial scope.');
@@ -43,7 +43,7 @@ assert(list.includes("code: 'PAYMENT_ACCOUNT_SERIAL_SCOPE_CONFLICT'"), 'structur
 const update = section(server, 'async function updatePaymentAccount', 'async function addAccountLedger');
 assert(update.includes('paymentMethodId: nextPaymentMethodId') && update.includes('label: nextLabel') && update.includes('excludeId: accountItem.id'), 'account edit does not validate the final method/label scope.');
 
-assert(app.includes('function bulkPaymentAccountSerialConflictIndexes') && app.includes('Different non-empty Labels may reuse a serial'), 'bulk UI conflict preview is missing.');
+assert(app.includes('function bulkPaymentAccountSerialConflictIndexes') && app.includes('Different Labels—including a named Label and no Label—may reuse the same serial'), 'bulk UI conflict preview is missing.');
 assert(app.includes('data-bulk-serial-warning') && app.includes('has-serial-error'), 'bulk row warning state is missing.');
 assert(app.includes('Unique within the same Payment Method and Label'), 'add/edit serial guidance is missing.');
 assert(css.includes('.bulk-account-preview-row.has-error,.bulk-account-preview-row.has-serial-error'), 'bulk serial conflict styling is missing.');
@@ -64,7 +64,9 @@ assert(report?.ok === true, 'runtime report did not pass.');
 assert(report?.sameMethodSameLabelConflict === true, 'same method + same label conflict was not verified.');
 assert(report?.sameMethodDifferentLabelAllowed === true, 'different non-empty labels were not verified as reusable.');
 assert(report?.differentMethodAllowed === true, 'different payment methods were not verified as reusable.');
-assert(report?.blankLabelMethodWide === true, 'blank-label method-wide uniqueness was not verified.');
+assert(report?.blankLabelSeparateScope === true, 'no-Label fallback scope was not verified.');
+assert(report?.legacyBlankLabelDoesNotBlockNamedLabel === true, 'legacy no-Label rows still block named Labels.');
+assert(report?.diagnosticConflictMessage === true, 'exact conflict diagnostics were not verified.');
 
 console.log(JSON.stringify({
   ok: true,
@@ -73,6 +75,8 @@ console.log(JSON.stringify({
   paymentMethodNameScoped: true,
   sameLabelScoped: true,
   differentLabelReuse: true,
-  blankLabelMethodWide: true,
+  blankLabelSeparateScope: true,
+  legacyBlankLabelDoesNotBlockNamedLabel: true,
+  diagnosticConflictMessage: true,
   bulkPreviewValidation: true
 }, null, 2));
