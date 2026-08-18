@@ -32,6 +32,9 @@ assert(/adsAccountDisplayName/.test(ads) && /p2pUsername/.test(ads), 'Ads do not
 assert(/adsMerchantControls\(data, scopedCapability\)/.test(ads), 'Business, Online and Break controls are not rendered in the account scope.');
 assert(/data-mixed="1"/.test(ads), 'Aggregate mixed-state merchant controls are missing.');
 assert(!/function adCapabilityNotice/.test(ads), 'Legacy explanatory Ads capability banner remains.');
+assert(/function adsPaymentMethodsForCredential/.test(ads), 'Ads payment methods are not filtered by Binance account.');
+assert(/paymentMethodsByCredential/.test(ads), 'Ads editor does not consume credential-scoped payment methods.');
+assert(/availableForCredential !== false/.test(ads), 'Unavailable account payment methods are not hidden.');
 
 assert(/<button type="button" id="addUserBtn">Add User \+ Login<\/button>/.test(users), 'Add User + Login is not an explicit action button.');
 assert(/bindUserAction\('#addUserBtn', \(\) => openUserModal\(null\)\)/.test(users), 'Add User + Login is not bound to the modal.');
@@ -48,6 +51,8 @@ assert(/displayName:\s*identity\.displayName/.test(server), 'Credential options 
 assert(/advertisementMerchantControlsAggregate/.test(server), 'Aggregate Ads merchant controls are missing.');
 assert(/applyToAll/.test(server) && /manual_toggle_all/.test(server), 'Server-side Ads All batch action is missing.');
 assert(/merchantControlsByCredential/.test(server), 'Per-account Ads merchant states are missing.');
+assert(/paymentMethodsByCredential/.test(server), 'Server does not expose credential-scoped Ads payment methods.');
+assert(/ADS_ACCOUNT_PAYMENT_METHOD_MISMATCH/.test(server), 'Server does not fail closed on cross-account payment-method mapping.');
 
 for (const marker of [
   '.binance-account-switcher',

@@ -10907,15 +10907,29 @@ function advertisementById(id) {
   return (db.advertisements || []).find(item => Number(item.id) === Number(id) || String(item.advNo || '') === key) || null;
 }
 
-function advertisementPaymentMethodView(method, user = null) {
+function advertisementPaymentMethodView(method, user = null, credentialId = 0) {
+  const scopedCredentialId = Number(credentialId || 0);
+  const scoped = scopedCredentialId
+    ? advertisementMethodsFromIds([method.id], scopedCredentialId, [], { allowGlobalFallback: false })[0] || null
+    : null;
+  const globalPayId = positiveNum(method.binancePayId || method.lastBinancePaymentDescriptor?.payId || 0);
   const out = {
     id: method.id,
     code: method.code || '',
     name: method.name || method.code || 'Payment Method',
     enabled: method.enabled !== false,
-    binanceIdentifier: method.binanceIdentifier || method.lastBinancePaymentDescriptor?.identifier || method.code || '',
-    binancePayType: method.binancePayType || method.lastBinancePaymentDescriptor?.payType || '',
-    binancePayId: positiveNum(method.binancePayId || method.lastBinancePaymentDescriptor?.payId || 0)
+    credentialId: scopedCredentialId || null,
+    availableForCredential: scopedCredentialId ? Boolean(scoped && positiveNum(scoped.payId || 0) > 0) : true,
+    binanceIdentifier: scoped?.identifier || method.binanceIdentifier || method.lastBinancePaymentDescriptor?.identifier || method.code || '',
+    binancePayType: scoped?.payType || method.binancePayType || method.lastBinancePaymentDescriptor?.payType || '',
+    // Never expose Account A's global fallback payId as if it belonged to
+    // Account B. In a credential-scoped view, an unresolved payId is zero and
+    // the method is marked unavailable until that account is synced.
+    binancePayId: scopedCredentialId ? positiveNum(scoped?.payId || 0) : globalPayId,
+    tradeMethodName: scoped?.tradeMethodName || method.name || method.code || '',
+    payAccount: scoped?.payAccount || '',
+    payBank: scoped?.payBank || '',
+    paySubBank: scoped?.paySubBank || ''
   };
   if (user && ['admin', 'manager', 'auditor'].includes(user.role)) {
     const account = (db.paymentAccounts || []).find(item => Number(item.paymentMethodId) === Number(method.id) && item.status === 'active');
@@ -10949,27 +10963,9 @@ function normalizeAdvertisementTradeMethods(raw = []) {
   }).filter(item => item.identifier || item.payType || item.tradeMethodName);
 }
 
-function advertisementMethodIdsFromTradeMethods(methods = []) {
-  const normalized = normalizeAdvertisementTradeMethods(methods);
-  const ids = [];
-  for (const trade of normalized) {
-    const tokens = [trade.identifier, trade.payType, trade.tradeMethodName].map(v => String(v || '').trim().toLowerCase()).filter(Boolean);
-    const match = (db.paymentMethods || []).find(method => {
-      if (Number(trade.paymentMethodId || 0) === Number(method.id)) return true;
-      const payId = positiveNum(method.binancePayId || method.lastBinancePaymentDescriptor?.payId || 0);
-      if (trade.payId && payId && Number(trade.payId) === Number(payId)) return true;
-      const candidates = [method.code, method.name, method.binanceIdentifier, method.binancePayType, method.lastBinancePaymentDescriptor?.identifier, method.lastBinancePaymentDescriptor?.payType]
-        .map(v => String(v || '').trim().toLowerCase()).filter(Boolean);
-      return tokens.some(token => candidates.includes(token));
-    });
-    if (match && !ids.includes(Number(match.id))) ids.push(Number(match.id));
-  }
-  return ids.slice(0, 5);
-}
-
-function ensureAdvertisementPaymentMethods(tradeMethods = []) {
+function ensureAdvertisementPaymentMethods(tradeMethods = [], credentialId = 0) {
   const normalized = normalizeAdvertisementTradeMethods(tradeMethods);
-  const ids = advertisementMethodIdsFromTradeMethods(normalized);
+  const ids = advertisementMethodIdsFromTradeMethods(normalized, credentialId);
   for (const trade of normalized) {
     const already = (db.paymentMethods || []).find(method => {
       if (ids.includes(Number(method.id))) {
@@ -11019,7 +11015,7 @@ function advertisementFingerprint(item = {}) {
   });
 }
 
-function advertisementFieldsFromBinance(raw = {}) {
+function advertisementFieldsFromBinance(raw = {}, credentialId = 0) {
   const item = raw && typeof raw === 'object' ? raw : {};
   const advNo = cleanStr(item.advNo || item.adsNo || item.adNo || item.advOrderNumber || '', 120);
   const statusValue = item.advStatus !== undefined ? item.advStatus : (item.status !== undefined ? item.status : item.onlineNow);
@@ -11049,7 +11045,7 @@ function advertisementFieldsFromBinance(raw = {}) {
     takerAdditionalKycRequired: positiveNum(item.takerAdditionalKycRequired || 0),
     userTradeType: positiveNum(item.userTradeType || 0),
     tradeMethods,
-    paymentMethodIds: ensureAdvertisementPaymentMethods(tradeMethods),
+    paymentMethodIds: ensureAdvertisementPaymentMethods(tradeMethods, credentialId),
     commissionRate: Math.max(0, num(item.commissionRate || 0)),
     createTime: item.createTime || null,
     advUpdateTime: item.advUpdateTime || item.updateTime || null,
@@ -11119,9 +11115,9 @@ function advertisementCredentialMeta(item = {}) {
 }
 
 function upsertBinanceAdvertisement(raw, user = null, credential = null) {
-  const incoming = advertisementFieldsFromBinance(raw);
   const credentialId = Number(credential?.id || 0);
   if (!credentialId) return { item: null, created: false, changed: false, skipped: true, reason: 'missing_credential' };
+  const incoming = advertisementFieldsFromBinance(raw, credentialId);
   const credentialName = binanceCredentialLabel(credential);
   let item = incoming.advNo ? (db.advertisements || []).find(ad => Number(ad.credentialId || 0) === credentialId && String(ad.advNo || '') === incoming.advNo) : null;
   const created = !item;
@@ -11148,21 +11144,162 @@ function upsertBinanceAdvertisement(raw, user = null, credential = null) {
   return { item, created, changed };
 }
 
-function advertisementMethodsFromIds(ids = []) {
-  const unique = Array.from(new Set((Array.isArray(ids) ? ids : []).map(Number).filter(Number.isFinite))).slice(0, 5);
-  return unique.map(id => db.paymentMethods.find(method => Number(method.id) === id && method.enabled !== false)).filter(Boolean).map(method => ({
-    identifier: cleanStr(method.binanceIdentifier || method.lastBinancePaymentDescriptor?.identifier || method.code || '', 80),
-    payId: positiveNum(method.binancePayId || method.lastBinancePaymentDescriptor?.payId || 0),
-    payType: cleanStr(method.binancePayType || method.lastBinancePaymentDescriptor?.payType || method.binanceIdentifier || method.code || '', 80),
-    tradeMethodName: cleanStr(method.name || method.code || '', 120),
-    paymentMethodId: method.id
-  }));
+function advertisementPaymentToken(value = '') {
+  return String(value || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '');
 }
 
-function normalizeAdvertisementInput(body = {}, existing = {}) {
+function advertisementTradeMethodFromOwnerProfile(row = {}) {
+  const source = row && typeof row === 'object' ? row : {};
+  const nested = source.tradeMethod && typeof source.tradeMethod === 'object' ? source.tradeMethod : {};
+  const method = normalizeAdvertisementTradeMethods([{
+    identifier: source.identifier || source.tradeMethodIdentifier || nested.identifier || source.payType || '',
+    payType: source.payType || nested.typeCode || source.identifier || nested.identifier || '',
+    payId: positiveNum(source.id || source.payId || source.paymentId || 0),
+    tradeMethodName: source.tradeMethodName || source.tradeMethodShortName || source.name || nested.name || source.payBank || '',
+    payAccount: source.payAccount || '',
+    payBank: source.payBank || '',
+    paySubBank: source.paySubBank || '',
+    iconUrlColor: source.iconUrlColor || nested.iconUrlColor || ''
+  }])[0] || null;
+  return method && (method.identifier || method.payType || method.tradeMethodName) ? method : null;
+}
+
+function advertisementOwnerProfileTradeMethods(credentialId = 0) {
+  const id = Number(credentialId || 0);
+  if (!id) return [];
+  const profile = ownerP2pProfileRecord(id) || ownerP2pProfileBase(id);
+  return (Array.isArray(profile?.paymentMethods) ? profile.paymentMethods : [])
+    .map(advertisementTradeMethodFromOwnerProfile)
+    .filter(Boolean);
+}
+
+function advertisementKnownTradeMethodsForCredential(credentialId = 0) {
+  const id = Number(credentialId || 0);
+  if (!id) return [];
+  return (db.advertisements || [])
+    // A failed legacy draft may contain a payment ID copied from another
+    // account. Only Binance-backed advertisements are trusted as account
+    // evidence; private CRM drafts must never seed a publish payload.
+    .filter(item => Number(item.credentialId || 0) === id && item.advNo && !item.archived && !item.deletedAt)
+    .flatMap(item => normalizeAdvertisementTradeMethods(item.tradeMethods || []));
+}
+
+function advertisementPaymentMethodMatchScore(method = {}, trade = {}) {
+  if (!method || !trade) return 0;
+  if (Number(trade.paymentMethodId || 0) === Number(method.id || 0)) return 100000;
+  let score = 0;
+  const methodCanonical = canonicalPaymentMethod({
+    identifier: method.binanceIdentifier || method.code || '',
+    payType: method.binancePayType || '',
+    name: method.name || method.code || ''
+  });
+  const tradeCanonical = canonicalPaymentMethod({
+    identifier: trade.identifier || '',
+    payType: trade.payType || '',
+    name: trade.tradeMethodName || trade.payBank || ''
+  });
+  if (methodCanonical?.code && tradeCanonical?.code && methodCanonical.code === tradeCanonical.code) score += 2000;
+  const methodTokens = new Set([
+    method.code, method.name, method.binanceIdentifier, method.binancePayType,
+    method.lastBinancePaymentDescriptor?.identifier, method.lastBinancePaymentDescriptor?.payType,
+    method.lastBinancePaymentDescriptor?.name
+  ].map(advertisementPaymentToken).filter(Boolean));
+  const tradeTokens = [trade.identifier, trade.payType, trade.tradeMethodName, trade.payBank]
+    .map(advertisementPaymentToken).filter(Boolean);
+  for (const token of tradeTokens) {
+    if (methodTokens.has(token)) score += 700;
+    else if (token.length >= 4 && [...methodTokens].some(candidate => candidate.includes(token) || token.includes(candidate))) score += 120;
+  }
+  const globalPayId = positiveNum(method.binancePayId || method.lastBinancePaymentDescriptor?.payId || 0);
+  if (globalPayId && trade.payId && Number(globalPayId) === Number(trade.payId)) score += 250;
+  return score;
+}
+
+function advertisementMethodIdsFromTradeMethods(methods = [], credentialId = 0) {
+  const normalized = normalizeAdvertisementTradeMethods(methods);
+  const ids = [];
+  for (const trade of normalized) {
+    const ranked = (db.paymentMethods || [])
+      .filter(method => method.enabled !== false)
+      .map(method => ({ method, score: advertisementPaymentMethodMatchScore(method, trade) }))
+      .filter(item => item.score > 0)
+      .sort((a, b) => b.score - a.score || Number(a.method.id || 0) - Number(b.method.id || 0));
+    const match = ranked[0]?.method || null;
+    if (match && !ids.includes(Number(match.id))) ids.push(Number(match.id));
+  }
+  return ids.slice(0, 5);
+}
+
+function advertisementMethodsFromIds(ids = [], credentialId = 0, preferredTradeMethods = [], options = {}) {
+  const unique = Array.from(new Set((Array.isArray(ids) ? ids : []).map(Number).filter(Number.isFinite))).slice(0, 5);
+  const preferred = normalizeAdvertisementTradeMethods(preferredTradeMethods || []);
+  const accountProfile = advertisementOwnerProfileTradeMethods(credentialId);
+  const knownAccountMethods = advertisementKnownTradeMethodsForCredential(credentialId);
+  const candidates = [
+    ...preferred.map((trade, index) => ({ trade, priority: 3000 - index })),
+    ...accountProfile.map((trade, index) => ({ trade, priority: 2000 - index })),
+    ...knownAccountMethods.map((trade, index) => ({ trade, priority: 1000 - index }))
+  ];
+  const allowGlobalFallback = options.allowGlobalFallback !== false;
+  const resolved = [];
+  for (const id of unique) {
+    const method = (db.paymentMethods || []).find(item => Number(item.id) === id && item.enabled !== false);
+    if (!method) continue;
+    const ranked = candidates
+      .map(candidate => ({ ...candidate, score: advertisementPaymentMethodMatchScore(method, candidate.trade) }))
+      .filter(candidate => candidate.score > 0)
+      .sort((a, b) => b.score - a.score || b.priority - a.priority);
+    const accountTrade = ranked[0]?.trade || null;
+    const fallback = allowGlobalFallback ? {
+      identifier: cleanStr(method.binanceIdentifier || method.lastBinancePaymentDescriptor?.identifier || method.code || '', 80),
+      payId: positiveNum(method.binancePayId || method.lastBinancePaymentDescriptor?.payId || 0),
+      payType: cleanStr(method.binancePayType || method.lastBinancePaymentDescriptor?.payType || method.binanceIdentifier || method.code || '', 80),
+      tradeMethodName: cleanStr(method.name || method.code || '', 120)
+    } : null;
+    const selected = accountTrade || fallback;
+    if (!selected) continue;
+    resolved.push({
+      identifier: cleanStr(selected.identifier || selected.payType || method.binanceIdentifier || method.code || '', 80),
+      payId: positiveNum(selected.payId || 0),
+      payType: cleanStr(selected.payType || selected.identifier || method.binancePayType || method.code || '', 80),
+      tradeMethodName: cleanStr(selected.tradeMethodName || selected.payBank || method.name || method.code || '', 120),
+      payAccount: cleanStr(selected.payAccount || '', 120),
+      payBank: cleanStr(selected.payBank || '', 120),
+      paySubBank: cleanStr(selected.paySubBank || '', 120),
+      paymentMethodId: method.id
+    });
+  }
+  return resolved.slice(0, 5);
+}
+
+function advertisementTradeMethodResolution(item = {}, credentialId = 0, preferredTradeMethods = [], options = {}) {
+  let paymentMethodIds = Array.isArray(item.paymentMethodIds)
+    ? item.paymentMethodIds.map(Number).filter(Number.isFinite).slice(0, 5)
+    : [];
+  if (!paymentMethodIds.length && Array.isArray(item.tradeMethods) && item.tradeMethods.length) {
+    paymentMethodIds = advertisementMethodIdsFromTradeMethods(item.tradeMethods, credentialId);
+  }
+  const tradeMethods = advertisementMethodsFromIds(paymentMethodIds, credentialId, preferredTradeMethods, options);
+  const resolvedIds = new Set(tradeMethods
+    .filter(method => positiveNum(method.payId || 0) > 0)
+    .map(method => Number(method.paymentMethodId || 0))
+    .filter(Boolean));
+  return {
+    paymentMethodIds,
+    tradeMethods,
+    missingPaymentMethodIds: paymentMethodIds.filter(id => !resolvedIds.has(Number(id)))
+  };
+}
+
+function normalizeAdvertisementInput(body = {}, existing = {}, options = {}) {
   const status = advertisementStatusFromValue(body.status ?? existing.status ?? 'offline');
   const paymentMethodIds = Array.isArray(body.paymentMethodIds) ? body.paymentMethodIds.map(Number).filter(Number.isFinite).slice(0, 5) : (existing.paymentMethodIds || []);
-  const tradeMethods = advertisementMethodsFromIds(paymentMethodIds);
+  const credentialId = Number(options.credentialId || existing.credentialId || body.credentialId || 0);
+  const preferredTradeMethods = [
+    ...normalizeAdvertisementTradeMethods(options.preferredTradeMethods || []),
+    ...normalizeAdvertisementTradeMethods(existing.tradeMethods || [])
+  ];
+  const tradeMethods = advertisementMethodsFromIds(paymentMethodIds, credentialId, preferredTradeMethods);
   const rawRegions = Array.isArray(body.regions) ? body.regions : (body.region !== undefined ? body.region : (existing.regions || existing.region || 'ALL'));
   const regions = normalizeAdvertisementRegions(rawRegions);
   const termsTags = Array.isArray(body.termsTags) ? body.termsTags.map(value => cleanStr(value, 60)).filter(Boolean).slice(0, 3) : (existing.termsTags || []);
@@ -11199,8 +11336,22 @@ function normalizeAdvertisementInput(body = {}, existing = {}) {
   if (item.price <= 0) throw Object.assign(new Error('Advertisement price must be greater than zero.'), { statusCode: 422 });
   if (item.initAmount <= 0) throw Object.assign(new Error('Total advertisement amount must be greater than zero.'), { statusCode: 422 });
   if (item.minSingleTransAmount <= 0 || item.maxSingleTransAmount <= 0 || item.maxSingleTransAmount < item.minSingleTransAmount) throw Object.assign(new Error('Order limits are invalid. Maximum limit must be greater than or equal to minimum limit.'), { statusCode: 422 });
-  if (!tradeMethods.length) throw Object.assign(new Error('Select at least one payment method.'), { statusCode: 422 });
+  // Selection and Binance-account resolution are separate checks. A private
+  // draft may retain the selected local method IDs before that account's P2P
+  // Profile is synced; live create/update calls resolve and validate the exact
+  // account payIds in prepareAdvertisementTradeMethodsForCredential().
+  if (!paymentMethodIds.length) throw Object.assign(new Error('Select at least one payment method.'), { statusCode: 422 });
   return item;
+}
+
+function advertisementCreateClassifyForCredential(credentialId = 0, requested = '') {
+  const id = Number(credentialId || 0);
+  const accountAds = (db.advertisements || [])
+    .filter(item => Number(item.credentialId || 0) === id && item.advNo && cleanStr(item.classify || '', 40))
+    .sort((a, b) => (Date.parse(b.updatedAt || b.advUpdateTime || b.createdAt || '') || 0) - (Date.parse(a.updatedAt || a.advUpdateTime || a.createdAt || '') || 0));
+  if (accountAds.length) return cleanStr(accountAds[0].classify || '', 40) || 'profession';
+  const explicit = cleanStr(requested || '', 40);
+  return explicit || 'profession';
 }
 
 function advertisementBinancePayload(item = {}, options = {}) {
@@ -11219,21 +11370,22 @@ function advertisementBinancePayload(item = {}, options = {}) {
     payTimeLimit: item.payTimeLimit,
     remarks: item.remarks || '',
     autoReplyMsg: item.autoReplyMsg || '',
-    // Binance merchant CS confirmed that new professional-merchant ads must
-    // be posted with classify="profession". Existing ad updates preserve the
-    // classification returned by Binance so the working update flow is not changed.
-    classify: updating ? (cleanStr(item.classify || 'profession', 40) || 'profession') : 'profession',
     buyerBtcPositionLimit: item.buyerBtcPositionLimit || 0,
     buyerKycLimit: item.buyerKycLimit || 0,
     buyerRegDaysLimit: item.buyerRegDaysLimit || 0,
     takerAdditionalKycRequired: item.takerAdditionalKycRequired || 0,
     userTradeType: item.userTradeType || 0,
-    tradeMethods: (item.tradeMethods || []).map(method => ({ identifier: method.identifier || method.payType, payId: positiveNum(method.payId || 0), payType: method.payType || method.identifier })),
+    tradeMethods: (item.tradeMethods || []).map(method => ({
+      identifier: method.identifier || method.payType,
+      payId: positiveNum(method.payId || 0),
+      payType: method.payType || method.identifier
+    })),
     saveAsTemplate: 0
   };
   if (updating) {
-    // AdUpdateReq does not document onlineNow or countries. Sending publish-only
-    // fields on /ads/update can produce Binance -31002 "illegal parameter".
+    // Binance's AdUpdateReq does not contain classify, onlineNow or countries.
+    // Keeping create-only fields out is important because different merchant
+    // accounts can be routed to stricter Binance validation clusters.
     payload.advNo = options.advNo;
     payload.advStatus = advertisementStatusCode(item.status);
     if (options.includeUpdateMode !== false) {
@@ -11241,11 +11393,32 @@ function advertisementBinancePayload(item = {}, options = {}) {
       if (mode) payload.updateMode = mode;
     }
   } else {
+    payload.classify = cleanStr(item.classify || 'profession', 40) || 'profession';
     payload.onlineNow = item.status === 'online';
     const regions = normalizeAdvertisementRegions(item.regions || item.region || 'ALL');
     if (!regions.includes('ALL')) payload.countries = regions;
   }
   return compactBinancePayload(payload);
+}
+
+const ADVERTISEMENT_UPDATE_ALLOWED_KEYS = new Set([
+  'advNo', 'advStatus', 'asset', 'authType', 'autoReplyMsg', 'buyerBtcPositionLimit',
+  'buyerKycLimit', 'buyerRegDaysLimit', 'code', 'emailVerifyCode', 'fiatUnit',
+  'googleVerifyCode', 'initAmount', 'maxSingleTransAmount', 'minSingleTransAmount',
+  'mobileVerifyCode', 'payTimeLimit', 'price', 'priceFloatingRatio', 'priceType',
+  'rateFloatingRatio', 'remarks', 'saveAsTemplate', 'takerAdditionalKycRequired',
+  'templateName', 'tradeMethods', 'tradeType', 'updateMode', 'userAllTradeCountMax',
+  'userAllTradeCountMin', 'userBuyTradeCountMax', 'userBuyTradeCountMin',
+  'userSellTradeCountMax', 'userSellTradeCountMin', 'userTradeCompleteCountMin',
+  'userTradeCompleteRateFilterTime', 'userTradeCompleteRateMin',
+  'userTradeCountFilterTime', 'userTradeType', 'userTradeVolumeAsset',
+  'userTradeVolumeFilterTime', 'userTradeVolumeMax', 'userTradeVolumeMin',
+  'yubikeyVerifyCode'
+]);
+
+function strictAdvertisementUpdatePayload(payload = {}) {
+  const compact = compactBinancePayload(payload);
+  return Object.fromEntries(Object.entries(compact).filter(([key]) => ADVERTISEMENT_UPDATE_ALLOWED_KEYS.has(key)));
 }
 
 function extractAdvertisementNumber(resp) {
@@ -11324,13 +11497,97 @@ async function fetchLiveAdvertisementDetail(credential, advNo) {
   return unwrapBinanceData(result) || {};
 }
 
+async function fetchAdvertisementAccountPaymentMethods(credential) {
+  if (!credential || !credential.apiKey || !credential.secretKey || credential.disabled) {
+    throw Object.assign(new Error('The selected Binance API credential is disabled or incomplete.'), { statusCode: 422 });
+  }
+  const warnings = [];
+  const response = await callOwnerProfileSapi(credential, 'P2P payment methods for advertisement', [
+    { endpointName: 'getPaymentMethodByUserId', query: {}, timeoutMs: 15000 },
+    { endpointName: 'agentGetPaymentMethodByUserId', query: {}, timeoutMs: 15000 }
+  ], warnings);
+  const detailed = await enrichOwnerPaymentMethodsById(credential, response, warnings);
+  const rows = ownerProfilePaymentMethods(detailed);
+  const methods = rows.map(advertisementTradeMethodFromOwnerProfile).filter(Boolean);
+  if (rows.length) {
+    const profile = ownerP2pProfileBase(credential.id);
+    profile.paymentMethods = rows;
+    profile.paymentMethodsSyncedAt = nowIso();
+    if (warnings.length) profile.warnings = Array.from(new Set([...(profile.warnings || []), ...warnings])).slice(0, 30);
+    saveOwnerP2pProfileForCredential(credential, profile);
+  }
+  return { rows, methods, warnings };
+}
+
+function advertisementConfiguredCredentialCount() {
+  return (db.apiCredentials || []).filter(credential => credential && credential.apiKey && credential.secretKey).length;
+}
+
+function advertisementPaymentMethodScopeError(credentialId = 0, missingPaymentMethodIds = []) {
+  const error = Object.assign(new Error(`A selected payment method is not linked to this Binance account. Sync this account's P2P Profile and reopen the advertisement.`), { statusCode: 422 });
+  error.code = 'ADS_ACCOUNT_PAYMENT_METHOD_MISMATCH';
+  error.credentialId = Number(credentialId || 0) || null;
+  error.missingPaymentMethodIds = (missingPaymentMethodIds || []).map(Number).filter(Number.isFinite);
+  return error;
+}
+
+async function prepareAdvertisementTradeMethodsForCredential(item = {}, credential = null, options = {}) {
+  const credentialId = Number(credential?.id || item.credentialId || 0);
+  if (!credentialId) throw advertisementPaymentMethodScopeError(0, item.paymentMethodIds || []);
+  const liveMethods = normalizeAdvertisementTradeMethods(
+    options.liveDetail?.tradeMethods || options.liveDetail?.payMethodDtos || options.liveDetail?.tradeMethodList || []
+  );
+  let preferred = [
+    ...liveMethods,
+    ...normalizeAdvertisementTradeMethods(options.preferredTradeMethods || [])
+  ];
+  let resolution = advertisementTradeMethodResolution(item, credentialId, preferred, { allowGlobalFallback: false });
+
+  if (resolution.missingPaymentMethodIds.length && options.refresh !== false) {
+    const refreshed = await fetchAdvertisementAccountPaymentMethods(credential);
+    preferred = [...liveMethods, ...refreshed.methods, ...normalizeAdvertisementTradeMethods(options.preferredTradeMethods || [])];
+    resolution = advertisementTradeMethodResolution(item, credentialId, preferred, { allowGlobalFallback: false });
+  }
+
+  // Preserve the old single-account behavior only when cross-account leakage is impossible.
+  if (resolution.missingPaymentMethodIds.length && advertisementConfiguredCredentialCount() <= 1) {
+    resolution = advertisementTradeMethodResolution(item, credentialId, preferred, { allowGlobalFallback: true });
+  }
+
+  if (!resolution.tradeMethods.length || resolution.missingPaymentMethodIds.length) {
+    throw advertisementPaymentMethodScopeError(credentialId, resolution.missingPaymentMethodIds);
+  }
+
+  return {
+    ...item,
+    credentialId,
+    paymentMethodIds: resolution.paymentMethodIds,
+    tradeMethods: resolution.tradeMethods
+  };
+}
+
 function advertisementUpdatePayload(normalized = {}, liveDetail = {}, advNo = '', options = {}) {
   const desiredSurplusAmount = roundAsset(positiveNum(normalized.initAmount || 0));
   const snapshot = advertisementAmountSnapshot(liveDetail, normalized);
   const cumulativeInitAmount = advertisementCumulativeInitAmount(desiredSurplusAmount, snapshot);
   const priceScale = Number.isFinite(Number(liveDetail?.priceScale)) ? Number(liveDetail.priceScale) : 8;
+  const credentialId = Number(options.credentialId || normalized.credentialId || 0);
+  const liveTradeMethods = normalizeAdvertisementTradeMethods(
+    liveDetail?.tradeMethods || liveDetail?.payMethodDtos || liveDetail?.tradeMethodList || []
+  );
+  const methodResolution = advertisementTradeMethodResolution(
+    normalized,
+    credentialId,
+    [...liveTradeMethods, ...normalizeAdvertisementTradeMethods(normalized.tradeMethods || [])],
+    { allowGlobalFallback: !credentialId }
+  );
+  if (credentialId && methodResolution.missingPaymentMethodIds.length) {
+    throw advertisementPaymentMethodScopeError(credentialId, methodResolution.missingPaymentMethodIds);
+  }
   const payloadItem = {
     ...normalized,
+    paymentMethodIds: methodResolution.paymentMethodIds,
+    tradeMethods: methodResolution.tradeMethods.length ? methodResolution.tradeMethods : normalizeAdvertisementTradeMethods(normalized.tradeMethods || []),
     price: decimalScale(normalized.price, priceScale),
     initAmount: cumulativeInitAmount
   };
@@ -11351,10 +11608,11 @@ function advertisementUpdatePayload(normalized = {}, liveDetail = {}, advNo = ''
     if (liveDetail && liveDetail[key] !== undefined && liveDetail[key] !== null) payload[key] = liveDetail[key];
   });
   return {
-    payload: compactBinancePayload(payload),
+    payload: strictAdvertisementUpdatePayload(payload),
     desiredSurplusAmount,
     cumulativeInitAmount,
-    snapshot
+    snapshot,
+    tradeMethods: payloadItem.tradeMethods
   };
 }
 
@@ -12967,6 +13225,7 @@ async function postAdvertisementWithOnlineRetry(user, credential, payload, reaso
   }
   let preflight = null;
   let forcedRetry = null;
+  let activePayload = { ...(payload || {}) };
   const postAttempts = [];
   const primaryClientType = cleanStr(credential.clientType || 'web', 40) || 'web';
   const compatibilityClientType = primaryClientType.toUpperCase();
@@ -12980,66 +13239,92 @@ async function postAdvertisementWithOnlineRetry(user, credential, payload, reaso
       merchantStatus: error.merchantStatus || null,
       attempts: error.merchantOnlineAttempts || []
     };
-    error.createPrivilegeDiagnostic = error.createPrivilegeDiagnostic || advertisementCreateSupportDiagnostic({ error, preflight: error.merchantOnlinePreflight, payload, attempts: postAttempts });
+    error.createPrivilegeDiagnostic = error.createPrivilegeDiagnostic || advertisementCreateSupportDiagnostic({ error, preflight: error.merchantOnlinePreflight, payload: activePayload, attempts: postAttempts });
     throw error;
   }
 
-  const sendPost = async (clientType, label) => {
+  const sendPost = async (clientType, label, requestPayload = activePayload) => {
     const startedAt = nowIso();
     try {
       const result = await callSignedSapi({
         apiKey: credential.apiKey,
         secretKey: credential.secretKey,
         endpointName: 'postAd',
-        body: payload,
+        body: requestPayload,
         clientType,
         dryRun: false
       });
       assertSuccessfulSapiResponse(result, 'postAd');
-      postAttempts.push({ label, clientType, startedAt, finishedAt: nowIso(), ok: true });
+      postAttempts.push({ label, clientType, classify: cleanStr(requestPayload.classify || '', 40), startedAt, finishedAt: nowIso(), ok: true });
       return result;
     } catch (error) {
       const info = advertisementUpdateErrorInfo(error);
-      postAttempts.push({ label, clientType, startedAt, finishedAt: nowIso(), ok: false, code: info.code || null, message: info.message || cleanStr(error.message || error, 300) });
+      postAttempts.push({ label, clientType, classify: cleanStr(requestPayload.classify || '', 40), startedAt, finishedAt: nowIso(), ok: false, code: info.code || null, message: info.message || cleanStr(error.message || error, 300) });
       throw error;
     }
   };
 
+  let firstError = null;
   try {
-    const result = await sendPost(primaryClientType, 'initial');
-    return { result, preflight, forcedRetry, postAttempts };
-  } catch (firstError) {
-    if (!isAdvertisementPrivilegeLagError(firstError)) {
-      firstError.merchantOnlinePreflight = preflight;
-      firstError.createPrivilegeDiagnostic = advertisementCreateSupportDiagnostic({ error: firstError, preflight, payload, attempts: postAttempts });
-      throw firstError;
-    }
+    const result = await sendPost(primaryClientType, 'initial', activePayload);
+    return { result, preflight, forcedRetry, postAttempts, payloadUsed: activePayload };
+  } catch (error) {
+    firstError = error;
+  }
 
+  // Some merchant accounts use a different Binance ad classification. A concrete
+  // illegal-parameter response is a server-side rejection, so one alternate
+  // classification attempt is safe and cannot duplicate an accepted ad.
+  if (isAdvertisementIllegalParameterError(firstError)) {
+    const currentClassify = cleanStr(activePayload.classify || 'profession', 40).toLowerCase() || 'profession';
+    const alternateClassify = currentClassify === 'profession' ? 'mass' : 'profession';
+    const alternatePayload = { ...activePayload, classify: alternateClassify };
     try {
-      forcedRetry = await forceAdvertisementMerchantOnlineSettlement(user, credential, `${reason}:retry_83749`);
-      await waitMs(BINANCE_AD_CREATE_PRIVILEGE_SETTLE_MS);
-      const reverified = await ensureAdvertisementCreateReady(user, credential, `${reason}:retry_83749_verify`);
-      preflight = { ...preflight, ...reverified, forcedRetry, retryReason: '83749', createPrivilegeSettledMs: BINANCE_AD_CREATE_PRIVILEGE_SETTLE_MS };
-      const result = await sendPost(compatibilityClientType, 'after_forced_online_settlement');
-      return { result, preflight, forcedRetry, postAttempts };
-    } catch (secondError) {
-      const merchantCheck = await readAdvertisementCreatePrivilegeSnapshot(credential);
-      preflight = { ...preflight, forcedRetry, retryReason: '83749', createPrivilegeSettledMs: BINANCE_AD_CREATE_PRIVILEGE_SETTLE_MS, finalMerchantStatus: merchantCheck?.snapshot || null };
-      secondError.merchantOnlinePreflight = preflight;
-      secondError.merchantOnlineAttempts = [
-        ...(preflight?.attempts || []),
-        ...(forcedRetry?.attempts || [])
-      ];
-      secondError.createPrivilegeDiagnostic = advertisementCreateSupportDiagnostic({
-        error: secondError,
+      const result = await sendPost(compatibilityClientType, `alternate_classify_${alternateClassify}`, alternatePayload);
+      return {
+        result,
         preflight,
         forcedRetry,
-        merchantCheck,
-        payload,
-        attempts: postAttempts
-      });
-      throw secondError;
+        postAttempts,
+        payloadUsed: alternatePayload,
+        classifyRetry: { from: currentClassify, to: alternateClassify }
+      };
+    } catch (error) {
+      firstError = error;
+      activePayload = alternatePayload;
     }
+  }
+
+  if (!isAdvertisementPrivilegeLagError(firstError)) {
+    firstError.merchantOnlinePreflight = preflight;
+    firstError.createPrivilegeDiagnostic = advertisementCreateSupportDiagnostic({ error: firstError, preflight, payload: activePayload, attempts: postAttempts });
+    throw firstError;
+  }
+
+  try {
+    forcedRetry = await forceAdvertisementMerchantOnlineSettlement(user, credential, `${reason}:retry_83749`);
+    await waitMs(BINANCE_AD_CREATE_PRIVILEGE_SETTLE_MS);
+    const reverified = await ensureAdvertisementCreateReady(user, credential, `${reason}:retry_83749_verify`);
+    preflight = { ...preflight, ...reverified, forcedRetry, retryReason: '83749', createPrivilegeSettledMs: BINANCE_AD_CREATE_PRIVILEGE_SETTLE_MS };
+    const result = await sendPost(compatibilityClientType, 'after_forced_online_settlement', activePayload);
+    return { result, preflight, forcedRetry, postAttempts, payloadUsed: activePayload };
+  } catch (secondError) {
+    const merchantCheck = await readAdvertisementCreatePrivilegeSnapshot(credential);
+    preflight = { ...preflight, forcedRetry, retryReason: '83749', createPrivilegeSettledMs: BINANCE_AD_CREATE_PRIVILEGE_SETTLE_MS, finalMerchantStatus: merchantCheck?.snapshot || null };
+    secondError.merchantOnlinePreflight = preflight;
+    secondError.merchantOnlineAttempts = [
+      ...(preflight?.attempts || []),
+      ...(forcedRetry?.attempts || [])
+    ];
+    secondError.createPrivilegeDiagnostic = advertisementCreateSupportDiagnostic({
+      error: secondError,
+      preflight,
+      forcedRetry,
+      merchantCheck,
+      payload: activePayload,
+      attempts: postAttempts
+    });
+    throw secondError;
   }
 }
 
@@ -13271,13 +13556,19 @@ async function handleAdvertisements(req, res, url) {
         apiCreateReadiness: advertisementCreateReadinessView(option.id)
       };
     });
+    const enabledPaymentMethods = (db.paymentMethods || []).filter(method => method.enabled !== false);
+    const paymentMethodsByCredential = Object.fromEntries(credentialOptions.map(option => [
+      String(Number(option.id)),
+      enabledPaymentMethods.map(method => advertisementPaymentMethodView(method, user, option.id))
+    ]));
     return sendJson(res, 200, {
       items,
       capability,
       credentialOptions,
       merchantControlTargets,
       selectedCredentialId: selectedCredential ? Number(selectedCredential.id) : null,
-      paymentMethods: (db.paymentMethods || []).filter(method => method.enabled !== false).map(method => advertisementPaymentMethodView(method, user)),
+      paymentMethods: enabledPaymentMethods.map(method => advertisementPaymentMethodView(method, user, selectedCredential?.id || 0)),
+      paymentMethodsByCredential,
       ...advertisementOptionLists(),
       liveMode: db.settings.apiMode === 'live',
       credentialConfigured: selectedCredential ? configuredCredential(selectedCredential) : viewCredentials.length > 0,
@@ -13302,19 +13593,23 @@ async function handleAdvertisements(req, res, url) {
     if (!credential) return;
     const scopedCapability = advertisementCapability(manager, credential.id);
     if (!scopedCapability.canManage) return sendJson(res, 403, { error: scopedCapability.reason, capability: scopedCapability }, {}, req);
-    const normalized = normalizeAdvertisementInput(body, {});
-    // This CRM is operated by a professional P2P merchant. Keep the saved draft
-    // consistent with the exact Binance create parameter confirmed by merchant CS.
-    normalized.classify = 'profession';
+    let normalized = normalizeAdvertisementInput(body, {}, { credentialId: credential.id });
+    normalized.classify = advertisementCreateClassifyForCredential(credential.id, body.classify);
     const item = { id: nextId(), credentialId: Number(credential.id), credentialName: binanceCredentialLabel(credential), ...normalized, surplusAmount: normalized.initAmount, source: db.settings.apiMode === 'live' ? 'binance' : 'crm_draft', createdAt: nowIso(), updatedAt: nowIso(), createdBy: manager.id, updatedBy: manager.id };
     let binanceResult = null;
     let merchantOnlinePreflight = null;
     let createWarning = '';
     let responseStatus = 201;
     if (db.settings.apiMode === 'live') {
-      const payload = advertisementBinancePayload(normalized);
       try {
+          normalized = await prepareAdvertisementTradeMethodsForCredential(normalized, credential);
+          Object.assign(item, normalized, { credentialId: Number(credential.id), credentialName: binanceCredentialLabel(credential), surplusAmount: normalized.initAmount });
+          const payload = advertisementBinancePayload(normalized);
           const posted = await postAdvertisementWithOnlineRetry(manager, credential, payload, 'postAd_create');
+          if (posted.payloadUsed?.classify) {
+            normalized.classify = cleanStr(posted.payloadUsed.classify, 40);
+            item.classify = normalized.classify;
+          }
           merchantOnlinePreflight = posted.preflight;
           item.merchantOnlinePreflightAt = nowIso();
           item.merchantOnlineStrategy = merchantOnlinePreflight.strategy || null;
@@ -13327,7 +13622,7 @@ async function handleAdvertisements(req, res, url) {
           if (item.advNo) {
             try {
               const detailResult = await callSignedSapi({ apiKey: credential.apiKey, secretKey: credential.secretKey, endpointName: 'getAdDetail', query: { adsNo: item.advNo }, clientType: credential.clientType || 'web', dryRun: false });
-              Object.assign(item, advertisementFieldsFromBinance(unwrapBinanceData(detailResult) || {}), { id: item.id, credentialId: Number(credential.id), credentialName: binanceCredentialLabel(credential), advNo: item.advNo, createdAt: item.createdAt, createdBy: item.createdBy, source: 'binance', lastSyncedAt: nowIso() });
+              Object.assign(item, advertisementFieldsFromBinance(unwrapBinanceData(detailResult) || {}, credential.id), { id: item.id, credentialId: Number(credential.id), credentialName: binanceCredentialLabel(credential), advNo: item.advNo, createdAt: item.createdAt, createdBy: item.createdBy, source: 'binance', lastSyncedAt: nowIso() });
               if (normalized.status === 'private') { item.status = 'private'; item.advStatus = 3; }
             } catch (err) {
               item.lastSyncError = cleanStr(err.message || err, 300);
@@ -13709,8 +14004,19 @@ async function handleAdvertisementById(req, res, parts) {
     if (!credential) return;
     let merchantOnlinePreflight = null;
     try {
-      const payload = advertisementBinancePayload(item);
+      let publishItem = {
+        ...item,
+        classify: advertisementCreateClassifyForCredential(credential.id, item.classify)
+      };
+      publishItem = await prepareAdvertisementTradeMethodsForCredential(publishItem, credential);
+      const payload = advertisementBinancePayload(publishItem);
       const posted = await postAdvertisementWithOnlineRetry(manager, credential, payload, 'postAd_publish_draft');
+      if (posted.payloadUsed?.classify) publishItem.classify = cleanStr(posted.payloadUsed.classify, 40);
+      Object.assign(item, {
+        paymentMethodIds: publishItem.paymentMethodIds,
+        tradeMethods: publishItem.tradeMethods,
+        classify: publishItem.classify
+      });
       merchantOnlinePreflight = posted.preflight;
       const result = posted.result;
       const advNo = extractAdvertisementNumber(result);
@@ -13778,7 +14084,10 @@ async function handleAdvertisementById(req, res, parts) {
       return sendJson(res, 422, { error: 'BUY/SELL category cannot be changed after an advertisement is created.' }, {}, req);
     }
     body.tradeType = item.tradeType;
-    const normalized = normalizeAdvertisementInput(body, item);
+    let normalized = normalizeAdvertisementInput(body, item, {
+      credentialId: item.credentialId,
+      preferredTradeMethods: item.tradeMethods
+    });
     let binanceResult = null;
     let amountUpdate = null;
     const updateLockKey = `${Number(item.credentialId || 0)}:${String(item.advNo || `crm:${item.id}`)}`;
@@ -13802,7 +14111,18 @@ async function handleAdvertisementById(req, res, parts) {
             details: cleanStr(error.message || error, 400)
           }, {}, req);
         }
-        amountUpdate = advertisementUpdatePayload(normalized, liveDetail, item.advNo, { updateMode: 'FULL' });
+        try {
+          normalized = await prepareAdvertisementTradeMethodsForCredential(normalized, credential, { liveDetail });
+        } catch (error) {
+          return sendJson(res, Number(error.statusCode || 422), {
+            error: cleanStr(error.message || error, 500),
+            code: error.code || null,
+            credentialId: Number(credential.id),
+            credentialName: binanceCredentialLabel(credential),
+            missingPaymentMethodIds: Array.isArray(error.missingPaymentMethodIds) ? error.missingPaymentMethodIds : []
+          }, {}, req);
+        }
+        amountUpdate = advertisementUpdatePayload(normalized, liveDetail, item.advNo, { updateMode: 'FULL', credentialId: credential.id });
         const mutationKey = `ad-update:${advertisementCredentialKey(credential)}:${String(item.advNo)}:${advertisementFingerprint({ ...normalized, initAmount: amountUpdate.cumulativeInitAmount, surplusAmount: amountUpdate.desiredSurplusAmount })}`;
         try {
           binanceResult = await runAdvertisementMutationOnce(mutationKey, () => callSignedSapi({
@@ -13823,7 +14143,7 @@ async function handleAdvertisementById(req, res, parts) {
               item.merchantOnlineVerified = Boolean(retryPreflight.verified);
               await waitMs(500);
               const retryDetail = await fetchLiveAdvertisementDetail(credential, item.advNo);
-              amountUpdate = advertisementUpdatePayload(normalized, retryDetail, item.advNo, { updateMode: 'FULL' });
+              amountUpdate = advertisementUpdatePayload(normalized, retryDetail, item.advNo, { updateMode: 'FULL', credentialId: credential.id });
               const retryKey = `ad-update-privilege-retry:${advertisementCredentialKey(credential)}:${String(item.advNo)}:${amountUpdate.cumulativeInitAmount}`;
               binanceResult = await runAdvertisementMutationOnce(retryKey, () => callSignedSapi({
                 apiKey: credential.apiKey,
@@ -13860,7 +14180,7 @@ async function handleAdvertisementById(req, res, parts) {
                 binanceMessage: info.message || null
               }, {}, req);
             }
-            amountUpdate = advertisementUpdatePayload(normalized, compatibilityDetail, item.advNo, { includeUpdateMode: false });
+            amountUpdate = advertisementUpdatePayload(normalized, compatibilityDetail, item.advNo, { includeUpdateMode: false, credentialId: credential.id });
             const compatibilityKey = `ad-update-compat:${advertisementCredentialKey(credential)}:${String(item.advNo)}:${advertisementFingerprint(amountUpdate.payload)}`;
             try {
               binanceResult = await runAdvertisementMutationOnce(compatibilityKey, () => callSignedSapi({
@@ -13875,7 +14195,9 @@ async function handleAdvertisementById(req, res, parts) {
             } catch (compatibilityError) {
               const info = advertisementUpdateErrorInfo(compatibilityError);
               return sendJson(res, 422, {
-                error: 'Binance rejected the advertisement update parameters. No local change was saved. The update was retried with the previously working FULL payload and then without updateMode; refresh the advertisement and try again.',
+                error: 'Binance rejected the strict account-specific advertisement update payload. No local change was saved. The request was retried without updateMode; refresh the advertisement and try again.',
+                credentialId: Number(credential.id),
+                credentialName: binanceCredentialLabel(credential),
                 binanceCode: info.code || null,
                 binanceMessage: info.message || null,
                 requestedPrice: amountUpdate.payload.price,
@@ -13886,7 +14208,7 @@ async function handleAdvertisementById(req, res, parts) {
             let refreshedDetail = null;
             await waitMs(BINANCE_AD_DETAIL_REFRESH_SETTLE_MS);
             try { refreshedDetail = await fetchLiveAdvertisementDetail(credential, item.advNo); } catch (_) {}
-            const refreshed = refreshedDetail ? advertisementUpdatePayload(normalized, refreshedDetail, item.advNo, { updateMode: 'FULL' }) : null;
+            const refreshed = refreshedDetail ? advertisementUpdatePayload(normalized, refreshedDetail, item.advNo, { updateMode: 'FULL', credentialId: credential.id }) : null;
             const stateChanged = Boolean(refreshed && (
               refreshed.snapshot.initAmount !== amountUpdate.snapshot.initAmount ||
               refreshed.snapshot.surplusAmount !== amountUpdate.snapshot.surplusAmount ||
@@ -20637,7 +20959,7 @@ function runAccountingSelfTest() {
     if (updateCheck.payload.updateMode !== 'FULL') throw new Error('Previously working FULL update mode was not restored.');
     if (updateCheck.payload.advNo !== 'ADV-152') throw new Error('Advertisement number missing from update payload.');
     if (updateCheck.payload.userAllTradeCountMin !== 5) throw new Error('Existing Binance audience filter was not preserved.');
-    for (const forbidden of ['onlineNow', 'countries']) {
+    for (const forbidden of ['classify', 'onlineNow', 'countries']) {
       if (Object.prototype.hasOwnProperty.call(updateCheck.payload, forbidden)) throw new Error(`Publish-only update field present: ${forbidden}`);
     }
     const noModeUpdate = advertisementUpdatePayload({
@@ -20658,7 +20980,14 @@ function runAccountingSelfTest() {
       payTimeLimit: 15, status: 'online', classify: 'mass',
       tradeMethods: [{ identifier: 'BKASH', payType: 'BKASH', payId: 7 }]
     });
-    if (createPayload.classify !== 'profession') throw new Error(`Create payload classify mismatch: ${createPayload.classify}`);
+    if (createPayload.classify !== 'mass') throw new Error(`Create payload classify mismatch: ${createPayload.classify}`);
+    const defaultCreatePayload = advertisementBinancePayload({
+      asset: 'USDT', fiatUnit: 'BDT', tradeType: 'BUY', priceType: 1, price: 101,
+      initAmount: 100, minSingleTransAmount: 1000, maxSingleTransAmount: 10000,
+      payTimeLimit: 15, status: 'online',
+      tradeMethods: [{ identifier: 'BKASH', payType: 'BKASH', payId: 7 }]
+    });
+    if (defaultCreatePayload.classify !== 'profession') throw new Error(`Default create payload classify mismatch: ${defaultCreatePayload.classify}`);
     if (advertisementApiTradePermissionError({ permission: null, error: 'permission endpoint unavailable' }) !== null) throw new Error('Unknown API Trade permission still blocks advertisement creation.');
     if (advertisementApiTradePermissionError({ permission: { tradeEnabled: false } }) !== null) throw new Error('Generic Spot/Margin Trading OFF still blocks C2C advertisement creation.');
     const closeTarget = accountingCloseTargetMs('2026-08-03');
@@ -20676,7 +21005,7 @@ function runAccountingSelfTest() {
       migrationSafety: { schemaPreserved: migrationTarget.meta.schemaVersion, accountTypes: migrationTarget.paymentAccounts.map(item => item.accountType), futureFieldsPreserved: true, weakOwnerSecretRejected: true, ownerAuthorityPreserved: migrationTarget.users[0].isOwner === true },
       advertisementUpdate: updateCheck,
       merchantCreateFallback: merchantFallback,
-      advertisementCreate: { classify: createPayload.classify, genericTradePermissionBlocks: false },
+      advertisementCreate: { classify: createPayload.classify, defaultClassify: defaultCreatePayload.classify, genericTradePermissionBlocks: false },
       exactCloseTarget: new Date(closeTarget).toISOString()
     }, null, 2));
   } finally {
@@ -20820,6 +21149,183 @@ async function runAdsMerchantAccountIsolationSelfTest() {
   }
 }
 
+async function runAdsMultiAccountPayloadSelfTest() {
+  const previousDb = db;
+  try {
+    db = {
+      meta: { nextId: 5000, schemaVersion: APP_SCHEMA_VERSION },
+      settings: { ...defaultSettings() },
+      apiCredentials: [
+        { id: 101, name: 'Primary Binance', apiKey: 'primary-key', secretKey: 'primary-secret', createdAt: '2026-01-01T00:00:00.000Z' },
+        { id: 202, name: 'Secondary Binance', apiKey: 'secondary-key', secretKey: 'secondary-secret', createdAt: '2026-01-02T00:00:00.000Z' }
+      ],
+      paymentMethods: [{
+        id: 301,
+        code: 'BKASH',
+        name: 'bKash',
+        enabled: true,
+        binanceIdentifier: 'BANK',
+        binancePayType: 'BANK',
+        binancePayId: 111,
+        lastBinancePaymentDescriptor: { identifier: 'BANK', payType: 'BANK', payId: 111, name: 'bKash' }
+      }],
+      paymentAccounts: [],
+      advertisements: [
+        {
+          id: 401,
+          credentialId: 101,
+          credentialName: 'Primary Binance',
+          advNo: 'ADV-A',
+          classify: 'profession',
+          paymentMethodIds: [301],
+          tradeMethods: [{ identifier: 'BANK', payType: 'BANK', payId: 111, tradeMethodName: 'bKash' }],
+          updatedAt: '2026-02-01T00:00:00.000Z'
+        },
+        {
+          id: 402,
+          credentialId: 202,
+          credentialName: 'Secondary Binance',
+          advNo: 'ADV-B',
+          classify: 'mass',
+          paymentMethodIds: [301],
+          tradeMethods: [{ identifier: 'BANK', payType: 'BANK', payId: 222, tradeMethodName: 'bKash' }],
+          updatedAt: '2026-02-02T00:00:00.000Z'
+        },
+        {
+          id: 403,
+          credentialId: 202,
+          credentialName: 'Secondary Binance',
+          advNo: '',
+          source: 'crm_draft',
+          classify: 'mass',
+          paymentMethodIds: [301],
+          // Simulate a draft saved by an older release after it copied the
+          // primary account payment ID. It must not be trusted during publish.
+          tradeMethods: [{ identifier: 'BANK', payType: 'BANK', payId: 111, tradeMethodName: 'bKash' }],
+          updatedAt: '2026-02-03T00:00:00.000Z'
+        }
+      ],
+      ownerP2pProfiles: [
+        {
+          credentialId: 101,
+          credentialName: 'Primary Binance',
+          paymentMethods: [{ id: 111, identifier: 'BANK', payType: 'BANK', tradeMethodName: 'bKash' }],
+          stats: emptyCounterpartyStats(),
+          feedbackRows: { positive: [], negative: [] },
+          warnings: []
+        },
+        {
+          credentialId: 202,
+          credentialName: 'Secondary Binance',
+          paymentMethods: [{ id: 222, identifier: 'BANK', payType: 'BANK', tradeMethodName: 'bKash' }],
+          stats: emptyCounterpartyStats(),
+          feedbackRows: { positive: [], negative: [] },
+          warnings: []
+        }
+      ],
+      ownerP2pProfile: {
+        paymentMethods: [],
+        stats: emptyCounterpartyStats(),
+        feedbackRows: { positive: [], negative: [] },
+        warnings: []
+      },
+      auditLogs: []
+    };
+
+    const primaryCredential = db.apiCredentials[0];
+    const secondaryCredential = db.apiCredentials[1];
+    const secondaryKnownMethods = advertisementKnownTradeMethodsForCredential(secondaryCredential.id);
+    if (!secondaryKnownMethods.length || secondaryKnownMethods.some(method => Number(method.payId || 0) !== 222)) {
+      throw new Error(`A legacy CRM draft contaminated the secondary account payment mapping: ${JSON.stringify(secondaryKnownMethods)}`);
+    }
+    const base = {
+      asset: 'USDT',
+      fiatUnit: 'BDT',
+      tradeType: 'BUY',
+      priceType: 1,
+      price: 120,
+      initAmount: 100,
+      minSingleTransAmount: 1000,
+      maxSingleTransAmount: 10000,
+      payTimeLimit: 15,
+      status: 'online',
+      paymentMethodIds: [301]
+    };
+
+    const normalizedSecondary = normalizeAdvertisementInput(base, db.advertisements[1], {
+      credentialId: secondaryCredential.id,
+      preferredTradeMethods: db.advertisements[1].tradeMethods
+    });
+    const preparedSecondary = await prepareAdvertisementTradeMethodsForCredential(normalizedSecondary, secondaryCredential, {
+      liveDetail: {
+        priceScale: 2,
+        initAmount: 100,
+        surplusAmount: 100,
+        tradeMethods: [{ identifier: 'BANK', payType: 'BANK', payId: 222, tradeMethodName: 'bKash' }]
+      },
+      refresh: false
+    });
+    const secondaryPayId = Number(preparedSecondary.tradeMethods[0]?.payId || 0);
+    if (secondaryPayId !== 222 || secondaryPayId === 111) {
+      throw new Error(`Secondary account reused the primary account payment ID: ${secondaryPayId}`);
+    }
+
+    const secondaryUpdate = advertisementUpdatePayload(preparedSecondary, {
+      priceScale: 2,
+      initAmount: 100,
+      surplusAmount: 100,
+      userAllTradeCountMin: 3,
+      tradeMethods: [{ identifier: 'BANK', payType: 'BANK', payId: 222, tradeMethodName: 'bKash' }]
+    }, 'ADV-B', { updateMode: 'FULL', credentialId: secondaryCredential.id });
+    if (Number(secondaryUpdate.payload.tradeMethods?.[0]?.payId || 0) !== 222) {
+      throw new Error(`Secondary update payload payment ID mismatch: ${JSON.stringify(secondaryUpdate.payload.tradeMethods)}`);
+    }
+    for (const forbidden of ['classify', 'onlineNow', 'countries']) {
+      if (Object.prototype.hasOwnProperty.call(secondaryUpdate.payload, forbidden)) {
+        throw new Error(`Create-only field leaked into the secondary update payload: ${forbidden}`);
+      }
+    }
+    for (const key of Object.keys(secondaryUpdate.payload)) {
+      if (!ADVERTISEMENT_UPDATE_ALLOWED_KEYS.has(key)) throw new Error(`Undocumented update field leaked into payload: ${key}`);
+    }
+
+    const normalizedPrimary = normalizeAdvertisementInput(base, db.advertisements[0], {
+      credentialId: primaryCredential.id,
+      preferredTradeMethods: db.advertisements[0].tradeMethods
+    });
+    const preparedPrimary = await prepareAdvertisementTradeMethodsForCredential(normalizedPrimary, primaryCredential, {
+      liveDetail: {
+        priceScale: 2,
+        initAmount: 100,
+        surplusAmount: 100,
+        tradeMethods: [{ identifier: 'BANK', payType: 'BANK', payId: 111, tradeMethodName: 'bKash' }]
+      },
+      refresh: false
+    });
+    if (Number(preparedPrimary.tradeMethods[0]?.payId || 0) !== 111) {
+      throw new Error(`Primary account payment ID changed unexpectedly: ${JSON.stringify(preparedPrimary.tradeMethods)}`);
+    }
+
+    if (advertisementCreateClassifyForCredential(101) !== 'profession') throw new Error('Primary account create classify was not preserved.');
+    if (advertisementCreateClassifyForCredential(202) !== 'mass') throw new Error('Secondary account create classify was not preserved.');
+    const scopedView = advertisementPaymentMethodView(db.paymentMethods[0], { id: 1, role: 'admin' }, 202);
+    if (Number(scopedView.binancePayId || 0) !== 222 || scopedView.availableForCredential !== true) {
+      throw new Error(`Secondary payment method view is not account-scoped: ${JSON.stringify(scopedView)}`);
+    }
+
+    console.log(JSON.stringify({
+      ok: true,
+      schemaVersion: APP_SCHEMA_VERSION,
+      primary: { credentialId: 101, payId: preparedPrimary.tradeMethods[0].payId, classify: advertisementCreateClassifyForCredential(101) },
+      secondary: { credentialId: 202, payId: secondaryUpdate.payload.tradeMethods[0].payId, classify: advertisementCreateClassifyForCredential(202) },
+      updateKeys: Object.keys(secondaryUpdate.payload).sort(),
+      createOnlyFieldsExcluded: ['classify', 'onlineNow', 'countries']
+    }, null, 2));
+  } finally {
+    db = previousDb;
+  }
+}
+
 async function runMailCommandMode() {
   if (!db) db = await initDb();
   if (process.argv.includes('--mail-probe')) {
@@ -20846,6 +21352,11 @@ if (process.argv.includes('--accounting-self-test')) {
 } else if (process.argv.includes('--ads-merchant-account-self-test')) {
   runAdsMerchantAccountIsolationSelfTest().then(() => process.exit(0)).catch(err => {
     console.error(`Ads merchant account isolation self-test failed: ${err.message}`);
+    process.exit(1);
+  });
+} else if (process.argv.includes('--ads-multi-account-payload-self-test')) {
+  runAdsMultiAccountPayloadSelfTest().then(() => process.exit(0)).catch(err => {
+    console.error(`Ads multi-account payload self-test failed: ${err.message}`);
     process.exit(1);
   });
 } else if (process.argv.includes('--mail-test') || process.argv.includes('--mail-probe')) {

@@ -1,5 +1,5 @@
-// v1.5.18: account-scoped Binance RBAC, visible security recovery setup and individual-only profit accounting.
-// v1.5.18: first-run recovery reuses the saved Application Key and software updates are Owner-only from Control Panel.
+// v1.5.19: account-scoped Binance RBAC, visible security recovery setup and individual-only profit accounting.
+// v1.5.19: first-run recovery reuses the saved Application Key and software updates are Owner-only from Control Panel.
 // v1.0.137: Diagnose and harden Binance P2P Create Advertisement privilege flow.
 // v1.0.128: lightweight Ads UI, cached reloads and realtime Binance merchant-status sync.
 // v1.0.117: Stop order countdowns immediately after completed or cancelled status sync.
@@ -4460,7 +4460,7 @@ function renderNav() {
   // legacy flat menu while this marker is absent, the browser/proxy is serving
   // stale frontend JavaScript rather than the active release.
   nav.dataset.navigationModel = 'grouped-control-center';
-  nav.dataset.uiRelease = '1.5.18';
+  nav.dataset.uiRelease = '1.5.19';
   nav.innerHTML = '';
   const visible = visiblePages();
   const visibleIds = new Set(visible.map(([id]) => id));

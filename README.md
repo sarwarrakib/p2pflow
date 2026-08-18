@@ -27,18 +27,18 @@ Updater code এবং database আলাদা রাখে। Update install-�
 
 ## Version
 
-Internal SemVer: `1.5.18`
+Internal SemVer: `1.5.19`
 UI: `1.5`
 Database schema: `32`
 
 Normal next version: `SET_NEXT_VERSION.bat` -> `1.6.0`  
-Hotfix: `SET_HOTFIX_VERSION.bat` -> `1.5.19`
+Hotfix: `SET_HOTFIX_VERSION.bat` -> `1.5.20`
 
 ## Database history safety
 
 P2PFlow keeps authoritative business/application data in MariaDB/MySQL/PostgreSQL. State payloads are compressed with Brotli before AES-256-GCM encryption, proofs/chat media are stored as encrypted database objects, and identical newly uploaded proof/media bytes use content-addressed object IDs to avoid duplicate blobs. The default is 3 retained recovery checkpoints with a 6-hour archive interval and 5 retained automatic database backups. Older uncompressed state/history/backup payloads are upgraded incrementally after startup. Health Check reports each P2PFlow database table's allocated size/row count, current encrypted state payload size, compression saving percentage, and proof/chat object usage so database-MB growth can be inspected without terminal access. `shared/`, `.p2pflow`, `.env`, `releases/` and temporary restart/update markers are operational bootstrap/update metadata only; they are not an application/business-data store. The application runtime itself does not write proof, chat, audit, order, ledger, notification or recovery-code data to local files.
 
-## v1.5.18 Payment Account Scope, Notification Preferences ও Offline Business
+## v1.5.19 Payment Account Scope, Notification Preferences ও Offline Business
 
 - Add/Bulk Add Payment Account-এ Account User logged-in user হিসেবে default selected হয়। Admin/Manager সব account manage করে; Agent `accounts.manage` থাকলে শুধু নিজের account manage করে। Custom non-Agent role-এর জন্য `accounts.manage_all` আছে।
 - Payment Account-এ Label ও unique Serial Number যোগ হয়েছে; number, label ও serial দিয়ে permission-scoped search করা যায়।
@@ -50,7 +50,7 @@ P2PFlow keeps authoritative business/application data in MariaDB/MySQL/PostgreSQ
 - Database schema `32`; migration additive এবং existing users, orders, Ads, payment accounts, ledger, accounting ও security data preserve করে।
 - v1.5.17-এর Order Acceptance, Agent payment permission fixes এবং v1.5.16-এর multi-account Orders/Ads behavior বহাল আছে।
 
-বিস্তারিত: `P2PFlow_v1.5.18_RELEASE_NOTES_BN.md`, `P2PFlow_v1.5.18_MANUAL_UPDATE_BN.md` এবং `P2PFlow_v1.5.18_LAUNCH_CHECKLIST_BN.md`।
+বিস্তারিত: `P2PFlow_v1.5.19_RELEASE_NOTES_BN.md`, `P2PFlow_v1.5.19_MANUAL_UPDATE_BN.md` এবং `P2PFlow_v1.5.19_LAUNCH_CHECKLIST_BN.md`।
 
 ## v1.5.13 Settings Workspace & Compact Mail Failover UI
 

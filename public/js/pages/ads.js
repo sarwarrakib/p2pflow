@@ -1,4 +1,4 @@
-// P2PFlow v1.5.18
+// P2PFlow v1.5.19
 // Restored FULL advertisement update payload with no-updateMode compatibility retry.
 
 const ADS_COUNTRY_CODES = ["BD","US","GB","IN","PK","AE","SA","TR","NG","KE","GH","ZA","MY","SG","ID","PH","TH","VN","AU","CA","DE","FR","IT","ES","NL","BE","PT","JP","KR","CN","HK","TW","BR","MX","AR","CO","PE","CL","EG","MA","DZ","TN","QA","KW","BH","OM","LK","NP","AW","AF","AO","AI","AX","AL","AD","AM","AS","AQ","TF","AG","AT","AZ","BI","BJ","BQ","BF","BG","BS","BA","BL","BY","BZ","BM","BO","BB","BN","BT","BV","BW","CF","CC","CH","CI","CM","CD","CG","CK","KM","CV","CR","CU","CW","CX","KY","CY","CZ","DJ","DM","DK","DO","EC","ER","EH","EE","ET","FI","FJ","FK","FO","FM","GA","GE","GG","GI","GN","GP","GM","GW","GQ","GR","GD","GL","GT","GF","GU","GY","HM","HN","HR","HT","HU","IM","IO","IE","IR","IQ","IS","IL","JM","JE","JO","KZ","KG","KH","KI","KN","LA","LB","LR","LY","LC","LI","LS","LT","LU","LV","MO","MF","MC","MD","MG","MV","MH","MK","ML","MT","MM","ME","MN","MP","MZ","MR","MS","MQ","MU","MW","YT","NA","NC","NE","NF","NI","NU","NO","NR","NZ","PA","PN","PW","PG","PL","PR","KP","PY","PS","PF","RE","RO","RU","RW","SD","SN","GS","SH","SJ","SB","SL","SV","SM","SO","PM","RS","SS","ST","SR","SK","SI","SE","SZ","SX","SC","SY","TC","TD","TG","TJ","TK","TM","TL","TO","TT","TV","TZ","UG","UA","UM","UY","UZ","VA","VC","VE","VG","VI","VU","WF","WS","YE","ZM","ZW"];
@@ -63,6 +63,17 @@ function adsAccountHasPermission(option, permission) {
 
 function adsAccountDisplayName(value = {}) {
   return value.displayName || value.p2pUsername || value.nickname || value.binanceAccount?.displayName || value.binanceAccount?.p2pUsername || value.binanceAccount?.name || value.credentialDisplayName || value.credentialName || (value.id || value.credentialId ? `API ${value.id || value.credentialId}` : 'Unassigned account');
+}
+
+function adsPaymentMethodsForCredential(data = {}, credentialId = 0) {
+  const id = Number(credentialId || 0);
+  const scoped = id ? data.paymentMethodsByCredential?.[String(id)] : null;
+  const methods = Array.isArray(scoped) ? scoped : (Array.isArray(data.paymentMethods) ? data.paymentMethods : []);
+  return methods.filter(method => method && method.enabled !== false && method.availableForCredential !== false);
+}
+
+function adsPaymentDataForCredential(data = {}, credentialId = 0) {
+  return { ...data, paymentMethods: adsPaymentMethodsForCredential(data, credentialId) };
 }
 
 function adsAccountSwitcherHtml(options = [], selectedId = 0) {
@@ -608,7 +619,7 @@ function paymentMethodMatchesTrade(method = {}, trade = {}) {
 }
 
 function resolvedAdPaymentIds(ad = {}, data = {}) {
-  const available = Array.isArray(data.paymentMethods) ? data.paymentMethods : [];
+  const available = adsPaymentMethodsForCredential(data, ad.credentialId || data.selectedCredentialId || state.adsCredentialId || 0);
   const ids = new Set((ad.paymentMethodIds || []).map(Number).filter(Number.isFinite));
   for (const trade of (ad.tradeMethods || [])) {
     const match = available.find(method => paymentMethodMatchesTrade(method, trade));
@@ -651,7 +662,7 @@ function openPaymentMethodSheet(data, selectedIds, onApply) {
   const methods = Array.isArray(data.paymentMethods) ? data.paymentMethods : [];
   const draft = new Set([...selectedIds].map(Number));
   openAdsSheet('Payment Method', `<div class="ads-sheet-note">Select up to 5 methods. Only selected methods will appear on this advertisement.</div>
-    <div class="ads-sheet-list payment-list">${methods.length ? methods.map(method => `<label class="ads-sheet-option"><input type="checkbox" value="${Number(method.id)}" ${draft.has(Number(method.id)) ? 'checked' : ''}><span><b>${escapeHtml(method.name || method.code || 'Payment Method')}</b><small>${escapeHtml(method.binanceIdentifier || method.binancePayType || method.code || '')}${method.accountPreview?.accountNumber ? ` · ${escapeHtml(method.accountPreview.accountNumber)}` : ''}</small></span></label>`).join('') : '<div class="notice warn">No enabled payment method is available.</div>'}</div>
+    <div class="ads-sheet-list payment-list">${methods.length ? methods.map(method => `<label class="ads-sheet-option"><input type="checkbox" value="${Number(method.id)}" ${draft.has(Number(method.id)) ? 'checked' : ''}><span><b>${escapeHtml(method.name || method.code || 'Payment Method')}</b><small>${escapeHtml(method.binanceIdentifier || method.binancePayType || method.code || '')}${method.payAccount ? ` · ${escapeHtml(method.payAccount)}` : (method.accountPreview?.accountNumber ? ` · ${escapeHtml(method.accountPreview.accountNumber)}` : '')}</small></span></label>`).join('') : '<div class="notice warn">No payment method is linked to this Binance account. Sync its P2P Profile first.</div>'}</div>
     <button type="button" class="ads-sheet-apply" data-apply-payment>Apply</button>`, sheet => {
       sheet.querySelectorAll('input[type="checkbox"]').forEach(box => box.onchange = () => {
         const id = Number(box.value);
@@ -730,8 +741,8 @@ function renderSelectedPaymentMethods(container, data, selectedIds, ad) {
   const tradeMethods = Array.isArray(ad?.tradeMethods) ? ad.tradeMethods : [];
   container.innerHTML = selected.length ? selected.map(method => {
     const trade = tradeMethods.find(item => paymentMethodMatchesTrade(method, item)) || {};
-    const detail = trade.payAccount || method.accountPreview?.accountNumber || '';
-    const bank = trade.payBank || method.accountPreview?.accountName || '';
+    const detail = trade.payAccount || method.payAccount || method.accountPreview?.accountNumber || '';
+    const bank = trade.payBank || method.payBank || method.accountPreview?.accountName || '';
     return `<article class="ads-selected-method"><div><i></i><b>${escapeHtml(method.name || method.code || 'Payment Method')}</b><small>${escapeHtml(detail)}</small><small>${escapeHtml(bank)}</small></div><button type="button" data-remove-method="${Number(method.id)}">×</button></article>`;
   }).join('') : '<div class="ads-empty-selection">No payment method selected.</div>';
 }
@@ -882,6 +893,7 @@ function openAdvertisementEditor(ad = null, data = {}) {
   const form = $('#advertisementForm');
   if (!form) return;
   const currentCredentialId = () => Number(form.elements.credentialId?.value || editorCredentialId || 0);
+  const currentPaymentData = () => adsPaymentDataForCredential(data, currentCredentialId());
   const refreshEditorAccount = async () => {
     const credentialId = currentCredentialId();
     if (credentialId) {
@@ -902,7 +914,7 @@ function openAdvertisementEditor(ad = null, data = {}) {
   const selectedContainer = $('#selectedAdPaymentMethods');
   const tagPreview = $('#adTagPreview');
   const renderMethods = () => {
-    renderSelectedPaymentMethods(selectedContainer, data, selectedMethodIds, ad || {});
+    renderSelectedPaymentMethods(selectedContainer, currentPaymentData(), selectedMethodIds, ad || {});
     selectedContainer?.querySelectorAll('[data-remove-method]').forEach(button => button.onclick = () => {
       selectedMethodIds = selectedMethodIds.filter(id => Number(id) !== Number(button.dataset.removeMethod));
       renderMethods();
@@ -914,7 +926,7 @@ function openAdvertisementEditor(ad = null, data = {}) {
   };
   renderMethods(); renderTags();
 
-  $('#addAdPaymentMethod').onclick = () => openPaymentMethodSheet(data, selectedMethodIds, ids => { selectedMethodIds = ids; renderMethods(); });
+  $('#addAdPaymentMethod').onclick = () => openPaymentMethodSheet(currentPaymentData(), selectedMethodIds, ids => { selectedMethodIds = ids; renderMethods(); });
   $('#chooseAdTermsTags').onclick = () => openTermsTagSheet(selectedTags, tags => { selectedTags = tags; renderTags(); scheduleFeeRefresh(); });
   $('#chooseAdRegions').onclick = () => openRegionSheet(selectedRegions, regions => {
     selectedRegions = regions;
@@ -1010,6 +1022,9 @@ function openAdvertisementEditor(ad = null, data = {}) {
   form.querySelectorAll('input[name="tradeType"]').forEach(input => input.onchange = () => { updatePairLabels(); scheduleFeeRefresh(); refreshAvailableSellBalance(true); });
   if (!isEdit && form.elements.credentialId) form.elements.credentialId.onchange = () => {
     editorCredentialId = currentCredentialId();
+    const availableIds = new Set(adsPaymentMethodsForCredential(data, editorCredentialId).map(method => Number(method.id)));
+    selectedMethodIds = selectedMethodIds.filter(id => availableIds.has(Number(id)));
+    renderMethods();
     feeOverview = null;
     scheduleFeeRefresh();
     refreshAvailableSellBalance(true);
