@@ -2859,6 +2859,22 @@ function splitHasEvidence(split = {}) {
   return Boolean(split.proofFileId || cleanStr(split.transactionReference || '', 120));
 }
 
+function finalActionSplitGateState(order) {
+  const direction = String(order?.type || '').toUpperCase() === 'BUY' ? 'send' : 'receive';
+  const relevantSplits = db.paymentSplits.filter(split => Number(split.orderId) === Number(order?.id) && split.direction === direction && num(split.actualAmount) > 0);
+  const enabled = order?.orderSource === 'offline' || db.settings.requirePaymentSplitForFinalAction !== false;
+  const proofRequired = db.settings.paymentSplitProofRequired !== false;
+  const missingProofCount = proofRequired ? relevantSplits.filter(split => !split.proofFileId).length : 0;
+  return {
+    enabled,
+    direction,
+    proofRequired,
+    relevantSplitCount: relevantSplits.length,
+    missingProofCount,
+    satisfied: !enabled || (relevantSplits.length > 0 && missingProofCount === 0)
+  };
+}
+
 function activeSplitAccountsForAgent(order, agentId, direction, requiredAmount = 0) {
   const reservedAccountIds = pendingPaymentAccountReservedIds();
   return db.paymentAccounts
@@ -7213,9 +7229,24 @@ async function performLiveBinanceFinalAction(user, order, action, body) {
     if (!payId) throw new Error('Binance selectedPayId/payId could not be detected from order detail. Re-open the order after live detail sync and try again.');
     const payload = buildReleasePayload(orderNumber, payId, body);
     const checkPayload = compactBinancePayload(payload);
-    const check = await callSignedSapi({ apiKey: credential.apiKey, secretKey: credential.secretKey, endpointName: 'checkIfCanReleaseCoin', body: checkPayload, clientType, dryRun: false });
+    let check;
+    try {
+      check = await callSignedSapi({ apiKey: credential.apiKey, secretKey: credential.secretKey, endpointName: 'checkIfCanReleaseCoin', body: checkPayload, clientType, dryRun: false });
+    } catch (err) {
+      const msg = sanitizeErrorText(err);
+      const req = inferReleaseRequirementsFromError(err);
+      const e = new Error(req.hasSpecificRequirement
+        ? `Binance needs extra release verification before release can continue. Fill the required field on the verification page and retry. Raw: ${msg}`
+        : `Binance release eligibility check failed. Raw: ${msg}`);
+      e.releaseRequirements = req;
+      e.binanceRawError = msg;
+      throw e;
+    }
     if (!binanceBooleanOk(check)) {
-      throw new Error('Binance checkIfCanReleaseCoin did not allow release: ' + JSON.stringify(sanitizedBinanceResult(check)));
+      const checkError = new Error('Binance checkIfCanReleaseCoin did not allow release: ' + JSON.stringify(sanitizedBinanceResult(check)));
+      const req = inferReleaseRequirementsFromError(checkError);
+      if (req.hasSpecificRequirement) checkError.releaseRequirements = req;
+      throw checkError;
     }
     try {
       const result = await callSignedSapi({ apiKey: credential.apiKey, secretKey: credential.secretKey, endpointName: 'releaseCoin', body: payload, clientType, dryRun: false });
@@ -19297,6 +19328,7 @@ function fullOrderView(order, user = null) {
     activeLock: orderLockView(activeLock(order.id)),
     coAgentRequests: db.coAgentRequests.filter(r => r.orderId === order.id),
     approvals: orderApprovalRequests(order.id).map(approvalView),
+    finalActionSplitGate: finalActionSplitGateState(order),
     settings: publicSettings()
   };
 }
@@ -19895,10 +19927,19 @@ async function completeAction(req, res, user, order) {
   try {
     binanceAction = await performLiveBinanceFinalAction(user, order, action, body);
   } catch (err) {
-    logAudit(user, 'binance_live_action_failed', 'order', order.id, { action, beforeStatus, privilegedDirectDecision, approvalBypassed: privilegedDirectDecision && issues.length > 0, issues, error: err.message, releaseRequirements: err.releaseRequirements || null, apiMode: db.settings.apiMode, binanceAction });
+    const safeFailureMessage = cleanStr(sanitizeErrorText(err), 1200);
+    order.lastFinalActionFailure = {
+      action,
+      at: nowIso(),
+      message: safeFailureMessage,
+      releaseRequirements: err.releaseRequirements || null
+    };
+    order.updatedAt = nowIso();
+    logAudit(user, 'binance_live_action_failed', 'order', order.id, { action, beforeStatus, privilegedDirectDecision, approvalBypassed: privilegedDirectDecision && issues.length > 0, issues, error: safeFailureMessage, releaseRequirements: err.releaseRequirements || null, apiMode: db.settings.apiMode, binanceAction });
     saveDb();
-    return sendJson(res, 502, { error: 'Binance live action failed: ' + err.message, releaseRequirements: err.releaseRequirements || null }, {}, req);
+    return sendJson(res, 502, { error: 'Binance live action failed: ' + safeFailureMessage, releaseRequirements: err.releaseRequirements || null, order: fullOrderView(order, user) }, {}, req);
   }
+  delete order.lastFinalActionFailure;
   if (action === 'paid_mark') order.externalStatus = binanceAction && binanceAction.mode === 'live' ? 'BINANCE_PAID_MARKED' : 'PAID_MARK_READY_FOR_BINANCE';
   if (action === 'release' || action === 'quick_release') order.externalStatus = binanceAction && binanceAction.mode === 'live' ? (action === 'quick_release' ? 'BINANCE_QUICK_RELEASED' : 'BINANCE_RELEASED') : 'RELEASE_READY_FOR_BINANCE';
   if (action === 'complete') order.externalStatus = 'COMPLETED_BY_CRM';
@@ -23331,6 +23372,20 @@ function runPaymentSplitFinalActionSelfTest() {
     toggleIssues = finalActionIssueList(admin, { orderSource:'binance', amount:1000 }, 'release', { matched:true, difference:0, remaining:0 }, [{ actualAmount:1000, proofFileId:null }]);
     assert(!toggleIssues.some(issue => issue.code === 'proof_missing'), 'Optional proof setting still blocked the final action.');
 
+    const gateOrder = { id: 499, type:'SELL', orderSource:'binance' };
+    db.settings.requirePaymentSplitForFinalAction = true;
+    db.settings.paymentSplitProofRequired = true;
+    db.paymentSplits = [{ id:399, orderId:499, direction:'receive', actualAmount:500, proofFileId:77 }];
+    let gateState = finalActionSplitGateState(gateOrder);
+    assert(gateState.satisfied === true && gateState.relevantSplitCount === 1 && gateState.missingProofCount === 0, 'Saved split with required proof did not satisfy final-action gate.');
+    db.paymentSplits[0].proofFileId = null;
+    gateState = finalActionSplitGateState(gateOrder);
+    assert(gateState.satisfied === false && gateState.missingProofCount === 1, 'Missing required proof did not keep final-action gate unsatisfied.');
+    db.settings.paymentSplitProofRequired = false;
+    gateState = finalActionSplitGateState(gateOrder);
+    assert(gateState.satisfied === true, 'Optional proof mode did not allow saved split to satisfy final-action gate.');
+    db.paymentSplits = [];
+
     const selectedPay = extractPayIdFromOrder({ rawBinanceDetail:{ id:999999, orderStatus:1, tradeMethods:[{ id:222, payType:'BKASH', tradeMethodName:'bKash' }] } });
     assert(selectedPay === 222, `Payment candidate payId was not selected safely: ${selectedPay}`);
     const unrelatedId = extractPayIdFromOrder({ rawBinanceDetail:{ id:999999, orderStatus:1, userId:888888 } });
@@ -23344,7 +23399,7 @@ function runPaymentSplitFinalActionSelfTest() {
       schemaVersion:APP_SCHEMA_VERSION,
       splitEdit:{ send1000To500RestoresLimit:true, receive1000To500RestoresLimit:true, configuredChargeRecalculated:true, receiveDoesNotApplySendMoneyCharge:true },
       splitDelete:{ balanceRestored:true, sendLimitRestored:true, receiveLimitRestored:true },
-      finalAction:{ genericIdRejectedAsPayId:true, paymentCandidatePayIdSelected:true, unpaidStatusNotMisclassified:true, splitGateToggle:true, proofMandatoryOptional:true }
+      finalAction:{ genericIdRejectedAsPayId:true, paymentCandidatePayIdSelected:true, unpaidStatusNotMisclassified:true, splitGateToggle:true, proofMandatoryOptional:true, savedSplitGateSatisfied:true, missingProofGateUnsatisfied:true }
     }, null, 2));
   } finally {
     db = previousDb;

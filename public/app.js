@@ -1,4 +1,4 @@
-// v1.5.27: separate wallet rules, Agent-type behaviour, instant payment-account filters and account-scoped notifications.
+// v1.5.28: saved Payment Split bypasses repeat split prompts and retries open the dedicated Binance final-action verification step.
 // v1.5.23: Payment Account serial scope treats each normalized Label, including no Label, as an independent namespace.
 // v1.5.22: Header-only Work Status, chat-only notification master, and coupled sound/push controls.
 // v1.5.20: account-scoped Binance RBAC, visible security recovery setup and individual-only profit accounting.
@@ -4920,7 +4920,7 @@ function renderNav() {
   // legacy flat menu while this marker is absent, the browser/proxy is serving
   // stale frontend JavaScript rather than the active release.
   nav.dataset.navigationModel = 'grouped-control-center';
-  nav.dataset.uiRelease = '1.5.27';
+  nav.dataset.uiRelease = '1.5.28';
   nav.innerHTML = '';
   const visible = visiblePages();
   const visibleIds = new Set(visible.map(([id]) => id));
@@ -5359,6 +5359,38 @@ function orderViewerSummary(o={}) {
 
 function orderViewerAmount(o={}) {
   return orderViewerSummary(o).assignedAmount;
+}
+
+function finalActionSplitGateStateForOrder(order={}, finalAction='') {
+  if (finalAction === 'complete') return { enabled:false, satisfied:true, relevantSplitCount:0, missingProofCount:0 };
+  const serverState = order.finalActionSplitGate && typeof order.finalActionSplitGate === 'object' ? order.finalActionSplitGate : null;
+  if (serverState) {
+    return {
+      enabled: serverState.enabled !== false,
+      satisfied: serverState.satisfied === true,
+      relevantSplitCount: Number(serverState.relevantSplitCount || 0),
+      missingProofCount: Number(serverState.missingProofCount || 0),
+      direction: serverState.direction || (String(order.type || '').toUpperCase() === 'BUY' ? 'send' : 'receive')
+    };
+  }
+  const enabled = order.orderSource === 'offline' || order.settings?.requirePaymentSplitForFinalAction !== false;
+  const direction = String(order.type || '').toUpperCase() === 'BUY' ? 'send' : 'receive';
+  const relevant = (order.paymentSplits || []).filter(split => split.direction === direction && Number(split.actualAmount || 0) > 0);
+  const proofRequired = order.settings?.paymentSplitProofRequired !== false;
+  const missingProofCount = proofRequired ? relevant.filter(split => !split.hasProof).length : 0;
+  return {
+    enabled,
+    direction,
+    relevantSplitCount: relevant.length,
+    missingProofCount,
+    satisfied: !enabled || (relevant.length > 0 && missingProofCount === 0)
+  };
+}
+
+function openOrderFinalActionFlow(order, finalAction) {
+  const gate = finalActionSplitGateStateForOrder(order, finalAction);
+  if (!gate.enabled || gate.satisfied) return openFinalActionModal(order, finalAction);
+  return openPaymentSplitActionModal(order, finalAction);
 }
 
 function currentUserOrderAssignment(o={}) {
@@ -5856,14 +5888,13 @@ async function loadOrderDetail(id, showLoading=true, fromRoute=false) {
     const button = $('#' + id);
     if (button) button.onclick = () => openCoAgentDoneModal(o, currentUserOrderAssignment(o));
   });
-  const splitGateEnabled = o.settings?.requirePaymentSplitForFinalAction !== false;
   ['finalActionBtn','mobileTopFinalActionBtn','chatTopFinalActionBtn'].forEach(id => {
     const button = $('#' + id);
-    if (button && !button.disabled) button.onclick = () => (finalAction === 'complete' || !splitGateEnabled) ? openFinalActionModal(o, finalAction) : openPaymentSplitActionModal(o, finalAction);
+    if (button && !button.disabled) button.onclick = () => openOrderFinalActionFlow(o, finalAction);
   });
   ['quickReleaseBtn','mobileTopQuickReleaseBtn','chatTopQuickReleaseBtn'].forEach(id => {
     const button = $('#' + id);
-    if (button) button.onclick = () => splitGateEnabled ? openPaymentSplitActionModal(o, 'quick_release') : openFinalActionModal(o, 'quick_release');
+    if (button) button.onclick = () => openOrderFinalActionFlow(o, 'quick_release');
   });
   ['p2pInfoBtn','mobileP2pInfoBtn','chatP2pInfoBtn'].forEach(id => {
     const button = $('#' + id);
@@ -7348,11 +7379,6 @@ async function openPaymentSplitActionModal(order, finalAction) {
       : `<div class="full-row"><label>Payment Account</label><select name="paymentAccountId" ${accounts.length ? '' : 'disabled'}>${accounts.map(account => `<option value="${Number(account.id)}" ${Number(account.id) === selectedAccountId ? 'selected' : ''}>${escapeHtml(account.accountNumber || '')} · ${escapeHtml([account.label, account.serialNumber].filter(Boolean).join(' · '))} · ${money(direction === 'send' ? account.sendAvailable : account.receiveAvailable)} available</option>`).join('')}</select>${accounts.length ? '' : '<small class="danger-text">No assigned payment account is available.</small>'}</div>
         <div class="full-row"><label>Amount</label><input name="amount" type="number" min="0" step="0.01" value="${escapeAttr(currentRemaining)}" /></div>
         <div><label>Actual Charge / Commission (Optional)</label><input name="actualCharge" type="number" min="0" step="0.01" placeholder="Uses account rule when empty" /></div>`;
-  const liveMode = order.settings?.apiMode === 'live' && order.orderSource !== 'offline';
-  const liveFields = liveMode ? `
-    <input type="hidden" name="binanceOrderNumber" value="${escapeAttr(order.externalOrderNo || order.orderNo || '')}" />
-    <input type="hidden" name="payId" value="${Number(order.binancePayId || 0) || ''}" />
-    ${(finalAction === 'release' || finalAction === 'quick_release') ? '<div id="releaseDynamicFields" class="full-row hidden"></div>' : ''}` : '';
   const relevantExisting = (order.paymentSplits || []).filter(split => split.direction === direction && Number(split.actualAmount || 0) > 0);
   const readyExisting = relevantExisting.filter(split => !proofRequired || split.hasProof);
   modal('Payment Split', `<div class="payment-split-action-summary"><span>${viewerSummary.isScoped ? 'Your Assigned Amount' : 'Order Amount'}</span><b>${money(viewerSummary.assignedAmount)}</b><small>${order.type === 'BUY' ? 'Payment' : 'Received'} · Remaining ${money(currentRemaining)}</small></div>
@@ -7363,9 +7389,8 @@ async function openPaymentSplitActionModal(order, finalAction) {
       <div><label>Transaction ID</label><input name="transactionReference" maxlength="120" placeholder="Optional transaction / reference ID" /></div>
       <div><label>Proof Screenshot · ${proofRequired ? 'Mandatory' : 'Optional'}</label><input type="file" id="paymentSplitActionProof" accept="image/png,image/jpeg,image/webp" /><small>${proofRequired ? 'A proof screenshot is required before the final action.' : 'Proof can be attached, but it is not required.'}</small></div>
       <div class="full-row"><label>Note</label><input name="note" placeholder="Optional note" /></div>
-      ${liveFields}
       <div class="full-row" id="paymentSplitActionMessage">${readyExisting.length ? `<div class="okbox">${readyExisting.length} ready split(s) already saved.</div>` : ''}</div>
-      <div class="full-row payment-split-action-buttons"><button type="button" class="secondary" id="savePaymentSplitActionBtn">Save Split</button><button type="button" class="success" id="submitPaymentFinalActionBtn">${escapeHtml(label)}</button></div>
+      <div class="full-row payment-split-action-buttons"><button type="button" class="secondary" id="savePaymentSplitActionBtn">Save Split</button><button type="button" class="success" id="submitPaymentFinalActionBtn">Continue to ${escapeHtml(label)}</button></div>
     </form>`);
 
   const form = $('#paymentSplitActionForm');
@@ -7455,21 +7480,18 @@ async function openPaymentSplitActionModal(order, finalAction) {
       const splits = relevantWorkingSplits();
       if (!splits.length) throw new Error(`Save a Payment Split before ${label}.`);
       if (proofRequired && splits.some(split => !split.hasProof)) throw new Error(`Attach a proof screenshot to every Payment Split before ${label}.`);
-      const actionPayload = formObj(form);
-      actionPayload.action = finalAction;
-      const updated = await api(`/api/orders/${order.id}/complete-action`, { method:'POST', body: JSON.stringify(actionPayload) });
-      if (updated.approvalRequired) {
-        const issueText = (updated.issues || []).map(issue => issue.code).join(', ');
-        setFormMessage('#paymentSplitActionMessage', 'Approval request sent to manager: ' + issueText, 'warn');
-        notify('Manager approval required. Request added to Approval Queue.', 'warn');
-        return;
-      }
-      notify(liveMode ? `${label} completed with Binance live call.` : `${label} completed.`, 'ok');
+      workingOrder.finalActionSplitGate = {
+        enabled: true,
+        satisfied: true,
+        direction,
+        relevantSplitCount: splits.length,
+        missingProofCount: 0
+      };
+      state.currentOrder = workingOrder;
       closeModal();
-      await loadOrderDetail(updated.id || order.id, false, true);
+      setTimeout(() => openFinalActionModal(workingOrder, finalAction), 60);
     } catch (err) {
-      const shownReleaseFields = (finalAction === 'release' || finalAction === 'quick_release') && showReleaseRequirementsInModal(err);
-      setFormMessage('#paymentSplitActionMessage', err.message || `${label} failed.`, shownReleaseFields ? 'warn' : 'danger');
+      setFormMessage('#paymentSplitActionMessage', err.message || `Payment Split is not ready for ${label}.`, 'danger');
     } finally {
       if ($('#submitPaymentFinalActionBtn')) $('#submitPaymentFinalActionBtn').disabled = false;
       if ($('#savePaymentSplitActionBtn')) $('#savePaymentSplitActionBtn').disabled = false;
@@ -7480,19 +7502,24 @@ async function openPaymentSplitActionModal(order, finalAction) {
 function openFinalActionModal(order, finalAction) {
   const label = finalAction === 'complete' ? 'Complete Offline Order' : finalAction === 'paid_mark' ? 'Mark as Paid' : finalAction === 'quick_release' ? 'Quick Release' : 'Release Coin';
   const liveMode = order.settings?.apiMode === 'live' && order.orderSource !== 'offline' && finalAction !== 'complete';
+  const previousFailure = order.lastFinalActionFailure && order.lastFinalActionFailure.action === finalAction ? order.lastFinalActionFailure : null;
+  const previousRequirements = previousFailure?.releaseRequirements || null;
   const liveFields = liveMode ? `
     <div class="full-row notice danger-note"><b>Live Binance Mode:</b> Binance order number and selected payment ID are taken from the synced order details.</div>
-    ${(finalAction === 'release' || finalAction === 'quick_release') ? '<div class="full-row notice"><b>Direct Release:</b> Only the required order number and payment ID are sent. Any additional Binance verification field will appear here when required.</div>' : ''}
+    ${(finalAction === 'release' || finalAction === 'quick_release') ? '<div class="full-row notice"><b>Release Verification:</b> Payment Split is already saved. This page only handles the Binance release/verification step.</div>' : '<div class="full-row notice"><b>Mark Paid Verification:</b> Payment Split is already saved. This page only confirms the Binance paid-mark action.</div>'}
+    ${previousFailure ? `<div class="full-row notice warn"><b>Previous attempt failed.</b><br>${escapeHtml(previousFailure.message || 'Retry the Binance final action.')}</div>` : ''}
     <input type="hidden" name="binanceOrderNumber" value="${escapeAttr(order.externalOrderNo || order.orderNo || '')}" />
     <input type="hidden" name="payId" value="${Number(order.binancePayId || 0) || ''}" />
-    ${(finalAction === 'release' || finalAction === 'quick_release') ? '<div id="releaseDynamicFields" class="full-row hidden"></div>' : ''}` : '';
+    ${(finalAction === 'release' || finalAction === 'quick_release') ? `<div id="releaseDynamicFields" class="full-row ${previousRequirements ? '' : 'hidden'}">${previousRequirements ? releaseRequirementFieldsHtml(previousRequirements) : ''}</div>` : ''}` : '';
   const privilegedDirectDecision = ['admin','manager'].includes(state.user.role);
-  const splitGateEnabled = order.orderSource === 'offline' || order.settings?.requirePaymentSplitForFinalAction !== false;
-  const directNotice = !splitGateEnabled && finalAction !== 'complete'
+  const splitGate = finalActionSplitGateStateForOrder(order, finalAction);
+  const directNotice = !splitGate.enabled && finalAction !== 'complete'
     ? 'Payment Split requirement is disabled in Settings. This final action will run directly without opening or requiring a split.'
-    : privilegedDirectDecision
-      ? 'Admin/Manager direct decision: this action will take effect immediately without assignment or a separate approval. Actor, time, action, issues and result will remain in Audit Log.'
-      : 'Before final action, the configured split, proof and approval rules will be checked.';
+    : splitGate.satisfied && finalAction !== 'complete'
+      ? 'Payment Split is already saved. This page only handles the final Binance action and any verification Binance requires.'
+      : privilegedDirectDecision
+        ? 'Admin/Manager direct decision: this action will take effect immediately without assignment or a separate approval. Actor, time, action, issues and result will remain in Audit Log.'
+        : 'Before final action, the configured split, proof and approval rules will be checked.';
   modal(label, `
     <div class="notice">${directNotice}</div>
     <form id="finalActionForm" class="form-grid">
@@ -7518,6 +7545,10 @@ function openFinalActionModal(order, finalAction) {
       closeModal();
       await loadOrderDetail(updated.id || order.id, false, true);
     } catch (err) {
+      if (err?.data?.order && typeof err.data.order === 'object') {
+        Object.assign(order, err.data.order);
+        state.currentOrder = order;
+      }
       const shownReleaseFields = (finalAction === 'release' || finalAction === 'quick_release') && showReleaseRequirementsInModal(err);
       setFormMessage('#finalActionMessage', err.message || 'Final action failed', shownReleaseFields ? 'warn' : 'danger');
     }

@@ -35,7 +35,11 @@ assert(server.includes('requirePaymentSplitForFinalAction') && server.includes('
 assert(server.includes("action === 'splits-batch'") && server.includes('addSplitBatch'), 'Atomic multi-account Payment Split endpoint is missing.');
 assert(app.includes('paymentAccountIds') && app.includes('Send Selected') && app.includes('window.confirm'), 'Confirmed multi-select payment-number send UI is missing.');
 assert(app.includes('splitBatchRowsHtml') && app.includes('collectSplitBatchItems'), 'Multi-number split amount rows are missing.');
-assert(app.includes("o.settings?.requirePaymentSplitForFinalAction !== false") && app.includes("openFinalActionModal(o, finalAction)"), 'Final action UI does not bypass the split popup when disabled.');
+assert(app.includes('finalActionSplitGateStateForOrder') && app.includes('openOrderFinalActionFlow'), 'Final action split-gate routing helper is missing.');
+assert(app.includes('if (!gate.enabled || gate.satisfied) return openFinalActionModal(order, finalAction);'), 'Saved/ready Payment Split does not bypass the split popup.');
+assert(app.includes('Continue to ${escapeHtml(label)}') && app.includes('setTimeout(() => openFinalActionModal(workingOrder, finalAction), 60);'), 'Split step does not transition to the dedicated final-action verification page.');
+assert(server.includes('finalActionSplitGate: finalActionSplitGateState(order)'), 'Server does not expose authoritative Payment Split readiness.');
+assert(server.includes('lastFinalActionFailure') && app.includes('previousRequirements'), 'Failed Binance verification is not preserved for direct retry.');
 assert(orders.includes('Serial:') && orders.includes('Label:'), 'Split rows do not show payment-account Label and Serial.');
 const runtime = spawnSync(process.execPath, ['app-server.js', '--payment-split-final-action-self-test'], { cwd:root, encoding:'utf8', env:{...process.env, NODE_ENV:'test'} });
 if (runtime.stdout) process.stdout.write(runtime.stdout);
@@ -50,6 +54,7 @@ assert(report?.splitEdit?.receiveDoesNotApplySendMoneyCharge === true, 'SELL/rec
 assert(report?.splitDelete?.balanceRestored === true && report?.splitDelete?.sendLimitRestored === true && report?.splitDelete?.receiveLimitRestored === true, 'split delete restoration assertions failed.');
 assert(report?.finalAction?.genericIdRejectedAsPayId === true && report?.finalAction?.unpaidStatusNotMisclassified === true, 'final-action payId/status assertions failed.');
 assert(report?.finalAction?.splitGateToggle === true && report?.finalAction?.proofMandatoryOptional === true, 'Payment Split gate/proof mode runtime assertions failed.');
+assert(report?.finalAction?.savedSplitGateSatisfied === true && report?.finalAction?.missingProofGateUnsatisfied === true, 'Saved Payment Split readiness runtime assertions failed.');
 
 console.log(JSON.stringify({
   ok:true,
@@ -60,6 +65,8 @@ console.log(JSON.stringify({
   receiveSplitChargeFree:true,
   splitGateToggle:true,
   proofMandatoryOptional:true,
+  savedSplitDirectRetry:true,
+  finalVerificationPage:true,
   multiNumberSelection:true,
   safePayIdResolution:true,
   liveFinalActionRefresh:true,

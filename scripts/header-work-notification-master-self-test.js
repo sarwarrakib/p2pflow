@@ -19,7 +19,7 @@ const fail = message => { throw new Error(`Header work / notification master sel
 const assert = (condition, message) => { if (!condition) fail(message); };
 const count = (source, value) => source.split(value).length - 1;
 
-assert(pkg.version === '1.5.27', `expected v1.5.27, got ${pkg.version}`);
+assert(pkg.version === '1.5.28', `expected v1.5.28, got ${pkg.version}`);
 assert(count(index, 'data-order-acceptance-toggle') === 1, 'the header must contain the only Work Status button');
 assert(index.includes('id="globalWorkAvailabilityToggle"'), 'global header Work Status control is missing');
 assert(!orders.includes('orderAcceptanceButtonHtml') && !orders.includes('class="order-acceptance-toggle'), 'Orders list still renders a duplicate Work Status button');

@@ -5259,7 +5259,7 @@ tr:hover td{background:#fbfbfc}
 
 /* v1.5.23 payment-account serial scope */
 
-/* P2PFlow v1.5.27 payment-account rules and filtered management */
+/* P2PFlow v1.5.28 payment-account rules and filtered management */
 .payment-account-select{display:grid;place-items:center;margin:0;min-width:30px}
 .payment-account-select input{width:18px;height:18px;margin:0;accent-color:var(--primary,#2563eb)}
 .payment-account-bulk-bar{display:flex;align-items:center;justify-content:space-between;gap:14px;margin-bottom:12px;padding:12px 14px}
@@ -5274,7 +5274,7 @@ tr:hover td{background:#fbfbfc}
   .payment-account-bulk-bar .actions button:first-child{grid-column:1/-1}
 }
 
-/* v1.5.27 - compact Payment Accounts filters, icons, and transaction-specific rules */
+/* v1.5.28 - compact Payment Accounts filters, icons, and transaction-specific rules */
 .payment-account-toolbar-v2{display:grid;grid-template-columns:auto minmax(360px,1fr) auto;align-items:center;gap:10px}
 .payment-account-filterbar{display:grid;grid-template-columns:minmax(220px,1.5fr) minmax(130px,.65fr) minmax(140px,.8fr) minmax(150px,.9fr);gap:8px;min-width:0}
 .payment-account-filterbar input,.payment-account-filterbar select{width:100%;min-width:0;height:38px;margin:0}
@@ -5311,14 +5311,14 @@ tr:hover td{background:#fbfbfc}
   .payment-rule-grid,.bulk-payment-rule-card .payment-rule-grid{grid-template-columns:1fr}
 }
 
-/* v1.5.27 payment split edit/delete controls */
+/* v1.5.28 payment split edit/delete controls */
 .split-row-actions{display:flex;align-items:center;gap:6px;flex:0 0 auto}
 .split-icon-btn{width:34px;height:34px;min-width:34px;padding:0;display:inline-grid;place-items:center;border-radius:9px}
 .split-icon-btn svg{width:17px;height:17px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
 .split-icon-btn.danger{border-color:rgba(190,38,51,.35)}
 @media (max-width:700px){.split-icon-btn{width:32px;height:32px;min-width:32px}.split-row .toolbar.compact{align-items:flex-start}}
 
-/* v1.5.27 payment-number multi-select and split allocation */
+/* v1.5.28 payment-number multi-select and split allocation */
 .selected-payment-account-row{display:grid;gap:1px;padding:2px 0}
 .selected-payment-account-row+ .selected-payment-account-row{margin-top:5px;padding-top:6px;border-top:1px solid rgba(22,163,74,.16)}
 .selected-payment-account-row b{white-space:normal!important;overflow:visible!important;text-overflow:clip!important}

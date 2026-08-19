@@ -1,6 +1,6 @@
 {
   "name": "p2pflow",
-  "version": "1.5.27",
+  "version": "1.5.28",
   "description": "P2PFlow unified package for fresh install, manual update, GitHub release publishing, and in-panel signed automatic updates.",
   "main": "server.js",
   "scripts": {
