@@ -1,4 +1,4 @@
-// P2PFlow v1.5.28
+// P2PFlow v1.5.29
 // Settings workspace: categorized navigation, compact email delivery and ordered failover routes.
 
 const P2PFLOW_EMAIL_SYSTEMS = [
@@ -29,11 +29,72 @@ const P2PFLOW_SMTP_PRESETS = {
   aol:{host:'smtp.aol.com',port:465,security:'ssl'},
   fastmail:{host:'smtp.fastmail.com',port:465,security:'ssl'},
   gmx:{host:'smtp.mail.com',port:587,security:'starttls'},
-  yandex:{host:'smtp.yandex.com',port:465,security:'ssl'},
+  yandex:{host:'smtp.yandex.com',port:465,security:'starttls'},
   sendgrid:{host:'smtp.sendgrid.net',port:587,security:'starttls'},
   mailgun:{host:'smtp.mailgun.org',port:587,security:'starttls'},
   brevo:{host:'smtp-relay.brevo.com',port:587,security:'starttls'}
 };
+
+const P2PFLOW_BINANCE_RELEASE_VERIFICATION_METHODS = [
+  ['AUTO','Binance Auto'],
+  ['FIDO2','FIDO2 / Fingerprint'],
+  ['FUND_PWD','Fund Transfer Password'],
+  ['GOOGLE','Google Authenticator'],
+  ['SMS','SMS / Mobile OTP'],
+  ['EMAIL','Email OTP'],
+  ['YUBIKEY','YubiKey']
+];
+const P2PFLOW_LOCAL_RELEASE_VERIFICATION_METHODS = [
+  ['USER_PASSWORD','User Password'],
+  ['SECRET_CODE','6-digit Secret Code'],
+  ['EMAIL_OTP','Email OTP']
+];
+
+function p2pflowReleaseMethodOptions(selected = 'AUTO') {
+  return P2PFLOW_BINANCE_RELEASE_VERIFICATION_METHODS.map(([value,label]) => `<option value="${value}" ${selected===value?'selected':''}>${label}</option>`).join('');
+}
+
+function p2pflowLocalReleaseMethodOptions(selected = 'USER_PASSWORD', { allowNone = false } = {}) {
+  const list = allowNone ? [['NONE','None'], ...P2PFLOW_LOCAL_RELEASE_VERIFICATION_METHODS] : P2PFLOW_LOCAL_RELEASE_VERIFICATION_METHODS;
+  return list.map(([value,label]) => `<option value="${value}" ${selected===value?'selected':''}>${label}</option>`).join('');
+}
+
+function p2pflowReleaseVerificationProfileHtml(profile = {}, canManageFundPassword = false) {
+  const credentialId = Number(profile.credentialId || 0);
+  const method = String(profile.binanceMethod || 'AUTO');
+  const localEnabled = profile.localVerificationEnabled === true;
+  const autoFund = profile.autoFundPassword === true;
+  const fundConfigured = profile.fundPasswordConfigured === true;
+  const name = profile.credentialName || profile.p2pUsername || `Binance Account ${credentialId}`;
+  return `<article class="settings-release-profile" data-release-profile="${credentialId}">
+    <div class="settings-release-profile-head">
+      <div><b>${escapeHtml(name)}</b><small>API #${credentialId}${profile.disabled ? ' · Disabled' : ''}</small></div>
+      <div>${badge(method === 'AUTO' ? 'Auto' : method, method === 'AUTO' ? 'muted' : 'ok')} ${fundConfigured ? badge('Fund password saved','ok') : badge('No fund password','muted')}</div>
+    </div>
+    <div class="settings-field-grid settings-release-grid">
+      <div><label>Binance verification</label><select data-release-field="binanceMethod">${p2pflowReleaseMethodOptions(method)}</select></div>
+      <div class="settings-inline-check settings-release-local-toggle"><label class="check"><input type="checkbox" data-release-field="localVerificationEnabled" ${localEnabled?'checked':''}/> Require P2PFlow verification before Release</label></div>
+      <div><label>Primary P2PFlow verification</label><select data-release-field="localPrimary">${p2pflowLocalReleaseMethodOptions(profile.localPrimary || 'USER_PASSWORD')}</select></div>
+      <div><label>Secondary P2PFlow verification</label><select data-release-field="localSecondary">${p2pflowLocalReleaseMethodOptions(profile.localSecondary || 'NONE', { allowNone:true })}</select></div>
+    </div>
+    <div class="settings-release-fund-box" data-release-fund-box>
+      <div class="settings-option-row compact"><span><b>Automatic Fund Transfer Password</b><small>After the configured P2PFlow verification succeeds, the saved password is applied server-side. It is never returned to the browser.</small></span><input type="checkbox" data-release-field="autoFundPassword" ${autoFund?'checked':''}/></div>
+      <div class="settings-field-grid">
+        <div><label>Fund Transfer Password</label><input data-release-field="fundPassword" type="password" value="" placeholder="${fundConfigured ? 'Saved — leave blank to keep' : 'Enter fund transfer password'}" autocomplete="new-password" ${canManageFundPassword?'':'disabled'} /></div>
+        <div class="settings-inline-check"><label class="check"><input type="checkbox" data-release-field="clearFundPassword" ${canManageFundPassword?'':'disabled'} /> Clear saved password</label></div>
+      </div>
+      ${canManageFundPassword ? '' : '<div class="settings-route-help">You can change verification preferences, but credentials.manage permission is required to save or clear the Fund Transfer Password.</div>'}
+    </div>
+  </article>`;
+}
+
+function p2pflowRefreshReleaseVerificationCards() {
+  document.querySelectorAll('[data-release-profile]').forEach(card => {
+    const method = card.querySelector('[data-release-field="binanceMethod"]')?.value || 'AUTO';
+    const fundBox = card.querySelector('[data-release-fund-box]');
+    if (fundBox) fundBox.classList.toggle('hidden', method !== 'FUND_PWD');
+  });
+}
 
 function p2pflowMailSystemOptions(selected = 'auto') {
   return P2PFLOW_EMAIL_SYSTEMS.map(([value,label]) => `<option value="${value}" ${selected===value?'selected':''}>${label}</option>`).join('');
@@ -126,6 +187,8 @@ async function renderSettings() {
   const fallbackRoutesHtml = Array.from({ length: P2PFLOW_MAX_MAIL_FALLBACKS }, (_, index) => p2pflowFallbackRouteHtml(fallbackRoutes[index] || {}, index + 1)).join('');
   const enabledBackups = Number(s.mailFailoverEnabledCount || 0);
   const primaryStatus = p2pflowMailRouteStatus(s, { primary:true });
+  const releaseVerificationProfiles = Array.isArray(data.releaseVerificationProfiles) ? data.releaseVerificationProfiles : [];
+  const canManageFundPassword = data.canManageFundPassword === true;
 
   const generalPanel = p2pflowSettingsPanel('general', 'General', 'Core business rules and final-action controls.', `
     <div class="settings-field-grid">
@@ -152,6 +215,13 @@ async function renderSettings() {
     </div>
     <div class="settings-option-list">
       <label class="settings-option-row"><span><b>Auto import Binance orders</b><small>Periodically imports the latest orders in the background.</small></span><input type="checkbox" name="binanceAutoOrderSync" ${s.binanceAutoOrderSync!==false?'checked':''}/></label>
+    </div>`);
+
+  const releaseVerificationPanel = p2pflowSettingsPanel('release-verification', 'Release Verification', 'Choose the preferred Binance release verification per API account and optionally add a P2PFlow step-up gate.', `
+    <div class="settings-callout warn"><b>Binance still decides whether a verification method is accepted.</b><span>The selected method controls which documented field P2PFlow shows and sends. Binance Auto keeps the existing behavior and follows the verification requirement returned by Binance. FIDO2 is exposed as the documented API auth type; this package does not invent an undocumented browser fingerprint assertion flow. Voice/phone-call verification is not a selectable authType in the supplied C2C SAPI v7.4, so use Binance Auto for any unlisted server-side challenge.</span></div>
+    <div class="settings-callout"><b>Primary + Secondary P2PFlow verification</b><span>Choose User Password, 6-digit Secret Code or Email OTP. If Primary fails, the operator can click Change Verification System and complete the configured Secondary method.</span></div>
+    <div class="settings-release-profile-list">
+      ${releaseVerificationProfiles.length ? releaseVerificationProfiles.map(profile => p2pflowReleaseVerificationProfileHtml(profile, canManageFundPassword)).join('') : '<div class="notice">Add a Binance API Credential first. Release verification preferences are stored per Binance account.</div>'}
     </div>`);
 
   const securityPanel = p2pflowSettingsPanel('security', 'Login & Security', 'Keep the normal login path simple and define recovery behavior here.', `
@@ -244,13 +314,14 @@ async function renderSettings() {
       <aside class="settings-nav" role="tablist" aria-label="Settings sections">
         <button type="button" data-settings-section="general"><span>General</span><small>Rules & actions</small></button>
         <button type="button" data-settings-section="binance"><span>Binance & Sync</span><small>Orders & balance</small></button>
+        <button type="button" data-settings-section="release-verification"><span>Release Verification</span><small>Binance + step-up</small></button>
         <button type="button" data-settings-section="security"><span>Login & Security</span><small>OTP & recovery</small></button>
         <button type="button" data-settings-section="email"><span>Email Delivery</span><small>Primary & backups</small></button>
         <button type="button" data-settings-section="notifications"><span>Notifications</span><small>Email & sound</small></button>
         <button type="button" data-settings-section="activity"><span>Presence & Activity</span><small>Online timing</small></button>
       </aside>
       <form id="settingsForm" class="settings-form">
-        <div class="settings-panel-stack">${generalPanel}${binancePanel}${securityPanel}${emailPanel}${notificationsPanel}${activityPanel}</div>
+        <div class="settings-panel-stack">${generalPanel}${binancePanel}${releaseVerificationPanel}${securityPanel}${emailPanel}${notificationsPanel}${activityPanel}</div>
         <div class="settings-savebar"><div><b>Unsaved changes stay on this screen</b><span>Save once after editing any section.</span></div><button type="submit">Save Settings</button></div>
       </form>
     </div>
@@ -263,6 +334,8 @@ async function renderSettings() {
   let initialSection = 'general';
   try { initialSection = localStorage.getItem('p2pflow.settings.section') || 'general'; } catch (_) {}
   p2pflowActivateSettingsSection(initialSection);
+  document.querySelectorAll('[data-release-field="binanceMethod"]').forEach(select => { select.onchange = p2pflowRefreshReleaseVerificationCards; });
+  p2pflowRefreshReleaseVerificationCards();
 
   const systemSelect = $('#mailSendingSystemSelect');
   if (systemSelect) systemSelect.onchange = () => {
@@ -327,6 +400,25 @@ async function renderSettings() {
       for (const suffix of ['Enabled','System','MailFrom','MailFromName','MailReplyTo','MailEnvelopeFrom','SmtpHost','SmtpPort','SmtpSecurity','SmtpUser','SmtpPassword','SmtpHelo','ClearSmtpPassword']) delete obj[`fallback${slot}${suffix}`];
       return route;
     });
+    let releaseProfileValidationError = '';
+    obj.binanceReleaseVerificationProfiles = [...document.querySelectorAll('[data-release-profile]')].map(card => {
+      const get = name => card.querySelector(`[data-release-field="${name}"]`);
+      const profile = {
+        credentialId: Number(card.dataset.releaseProfile || 0),
+        binanceMethod: get('binanceMethod')?.value || 'AUTO',
+        localVerificationEnabled: get('localVerificationEnabled')?.checked === true,
+        localPrimary: get('localPrimary')?.value || 'USER_PASSWORD',
+        localSecondary: get('localSecondary')?.value || 'NONE',
+        autoFundPassword: get('autoFundPassword')?.checked === true,
+        fundPassword: get('fundPassword')?.value || '',
+        clearFundPassword: get('clearFundPassword')?.checked === true
+      };
+      if (!releaseProfileValidationError && profile.localVerificationEnabled && profile.localPrimary === profile.localSecondary && profile.localSecondary !== 'NONE') releaseProfileValidationError = `Binance account #${profile.credentialId}: Primary and Secondary verification must be different.`;
+      if (!releaseProfileValidationError && profile.autoFundPassword && profile.binanceMethod !== 'FUND_PWD') releaseProfileValidationError = `Binance account #${profile.credentialId}: Select Fund Transfer Password before enabling automatic password use.`;
+      if (!releaseProfileValidationError && profile.autoFundPassword && !profile.localVerificationEnabled) releaseProfileValidationError = `Binance account #${profile.credentialId}: Enable P2PFlow verification before automatic Fund Transfer Password use.`;
+      return profile;
+    });
+    if (releaseProfileValidationError) { notify(releaseProfileValidationError, 'danger'); return; }
     delete obj.smtpSecurity;
     delete obj.mailTestRecipient;
     await api('/api/settings', { method:'PATCH', body: JSON.stringify(obj) });

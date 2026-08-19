@@ -5349,3 +5349,33 @@ tr:hover td{background:#fbfbfc}
   .split-batch-value.compact{grid-column:auto}
   .quick-number-confirmbar{align-items:flex-start}
 }
+
+/* v1.5.29 - per-Binance release verification and local step-up gate */
+.settings-release-profile-list{display:grid;gap:12px}
+.settings-release-profile{overflow:hidden;border:1px solid var(--line);border-radius:15px;background:#fff}
+.settings-release-profile-head{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:13px 14px;border-bottom:1px solid #eef0f2;background:#fafafa}
+.settings-release-profile-head b,.settings-release-profile-head small{display:block}
+.settings-release-profile-head b{font-size:12px;color:#1f2937}
+.settings-release-profile-head small{margin-top:3px;color:var(--muted);font-size:9px}
+.settings-release-profile-head>div:last-child{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
+.settings-release-grid{padding:14px}
+.settings-release-local-toggle{align-items:center;padding-bottom:0}
+.settings-release-fund-box{margin:0 14px 14px;border:1px solid var(--line);border-radius:13px;background:#fbfbfc}
+.settings-release-fund-box.hidden{display:none}
+.settings-release-fund-box .settings-option-row.compact{padding:11px 12px}
+.settings-release-fund-box .settings-field-grid{padding:12px}
+.final-action-local-verify{display:grid;gap:10px;padding:13px 14px;border:1px solid var(--info-line);border-radius:13px;background:var(--info-soft)}
+.final-action-local-verify-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
+.final-action-local-verify-head b,.final-action-local-verify-head small{display:block}
+.final-action-local-verify-head b{font-size:12px}
+.final-action-local-verify-head small{margin-top:3px;color:var(--muted);font-size:10px;line-height:1.4}
+.final-action-local-input{display:grid;gap:5px}
+.final-action-local-input label{margin:0;font-size:11px}
+.final-action-local-actions{display:flex;gap:8px;flex-wrap:wrap}
+.final-action-local-actions .small{min-height:34px;padding:7px 10px}
+@media(max-width:720px){
+  .settings-release-profile-head{align-items:flex-start;flex-direction:column}
+  .settings-release-profile-head>div:last-child{justify-content:flex-start}
+  .final-action-local-actions{display:grid;grid-template-columns:1fr}
+  .final-action-local-actions button{width:100%}
+}

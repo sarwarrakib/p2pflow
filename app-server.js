@@ -584,6 +584,9 @@ const pendingSecurityQuestionChallenges = new Map();
 const pendingOwnerMailOutageChallenges = new Map();
 const pendingDeviceChallenges = new Map();
 const pendingEmailRecoveries = new Map();
+const pendingFinalActionVerificationChallenges = new Map();
+const finalActionVerificationTokens = new Map();
+const finalActionSecondaryFallbacks = new Map();
 const loginFailureMailThrottle = new Map();
 const pushEndpointValidationCache = new Map();
 const pushDispatchInFlight = new Set();
@@ -762,6 +765,45 @@ function normalizedAdvertisementMerchantSettings(source = {}) {
     if (Object.prototype.hasOwnProperty.call(input, key)) output[key] = input[key];
   }
   return output;
+}
+
+const BINANCE_RELEASE_VERIFICATION_METHODS = Object.freeze({
+  AUTO: 'Binance Auto',
+  FIDO2: 'FIDO2 / Fingerprint',
+  FUND_PWD: 'Fund Transfer Password',
+  GOOGLE: 'Google Authenticator',
+  SMS: 'SMS / Mobile OTP',
+  EMAIL: 'Email OTP',
+  YUBIKEY: 'YubiKey'
+});
+const LOCAL_RELEASE_VERIFICATION_METHODS = Object.freeze({
+  USER_PASSWORD: 'User Password',
+  SECRET_CODE: '6-digit Secret Code',
+  EMAIL_OTP: 'Email OTP',
+  NONE: 'None'
+});
+const FINAL_ACTION_LOCAL_VERIFICATION_TTL_MS = 5 * 60 * 1000;
+const FINAL_ACTION_LOCAL_VERIFICATION_MAX_ATTEMPTS = 6;
+
+function normalizeBinanceReleaseVerificationMethod(value) {
+  const key = cleanStr(value || 'AUTO', 30).toUpperCase();
+  return Object.prototype.hasOwnProperty.call(BINANCE_RELEASE_VERIFICATION_METHODS, key) ? key : 'AUTO';
+}
+
+function normalizeLocalReleaseVerificationMethod(value, fallback = 'USER_PASSWORD') {
+  const key = cleanStr(value || fallback, 30).toUpperCase();
+  return Object.prototype.hasOwnProperty.call(LOCAL_RELEASE_VERIFICATION_METHODS, key) ? key : fallback;
+}
+
+function normalizeCredentialReleaseVerification(credential = {}) {
+  credential.releaseVerificationMethod = normalizeBinanceReleaseVerificationMethod(credential.releaseVerificationMethod || 'AUTO');
+  credential.releaseLocalVerificationEnabled = credential.releaseLocalVerificationEnabled === true;
+  credential.releaseLocalPrimary = normalizeLocalReleaseVerificationMethod(credential.releaseLocalPrimary || 'USER_PASSWORD', 'USER_PASSWORD');
+  credential.releaseLocalSecondary = normalizeLocalReleaseVerificationMethod(credential.releaseLocalSecondary || 'SECRET_CODE', 'SECRET_CODE');
+  if (credential.releaseLocalSecondary === credential.releaseLocalPrimary) credential.releaseLocalSecondary = 'NONE';
+  credential.releaseAutoFundPassword = credential.releaseAutoFundPassword === true;
+  if (credential.releaseFundPassword === undefined || credential.releaseFundPassword === null) credential.releaseFundPassword = '';
+  return credential;
 }
 
 function defaultSettings() {
@@ -1548,6 +1590,7 @@ function migrateDb(target) {
     if (c.ownerP2pMerchantNo === undefined) c.ownerP2pMerchantNo = '';
     if (c.ownerP2pNickname === undefined) c.ownerP2pNickname = '';
     if (c.ownerP2pProfileLastSyncAt === undefined) c.ownerP2pProfileLastSyncAt = null;
+    normalizeCredentialReleaseVerification(c);
   });
   // Schema 30: merchant Business / Online / Break state is owned by the exact
   // Binance credential. The previous shared fields could make account B inherit
@@ -6869,6 +6912,359 @@ function binanceCredentialById(id) {
   return (db.apiCredentials || []).find(item => Number(item.id) === Number(id)) || null;
 }
 
+function releaseVerificationMethodLabel(method) {
+  const normalized = normalizeBinanceReleaseVerificationMethod(method);
+  return BINANCE_RELEASE_VERIFICATION_METHODS[normalized] || BINANCE_RELEASE_VERIFICATION_METHODS.AUTO;
+}
+
+function localReleaseVerificationMethodLabel(method) {
+  const normalized = normalizeLocalReleaseVerificationMethod(method, 'NONE');
+  return LOCAL_RELEASE_VERIFICATION_METHODS[normalized] || LOCAL_RELEASE_VERIFICATION_METHODS.NONE;
+}
+
+function releaseVerificationPolicyForCredential(credentialOrId, viewer = null) {
+  const credential = typeof credentialOrId === 'object' && credentialOrId ? credentialOrId : binanceCredentialById(credentialOrId);
+  if (!credential) return {
+    credentialId: null,
+    credentialName: '',
+    binanceMethod: 'AUTO',
+    binanceMethodLabel: releaseVerificationMethodLabel('AUTO'),
+    fundPasswordConfigured: false,
+    autoFundPassword: false,
+    localVerificationEnabled: false,
+    localPrimary: 'USER_PASSWORD',
+    localPrimaryLabel: localReleaseVerificationMethodLabel('USER_PASSWORD'),
+    localSecondary: 'NONE',
+    localSecondaryLabel: localReleaseVerificationMethodLabel('NONE'),
+    canManageFundPassword: Boolean(viewer && userHasPermission(viewer, 'credentials.manage'))
+  };
+  normalizeCredentialReleaseVerification(credential);
+  return {
+    credentialId: Number(credential.id),
+    credentialName: binanceCredentialDisplayName(credential) || binanceCredentialLabel(credential),
+    binanceMethod: credential.releaseVerificationMethod,
+    binanceMethodLabel: releaseVerificationMethodLabel(credential.releaseVerificationMethod),
+    fundPasswordConfigured: Boolean(String(credential.releaseFundPassword || '')),
+    autoFundPassword: credential.releaseAutoFundPassword === true,
+    localVerificationEnabled: credential.releaseLocalVerificationEnabled === true,
+    localPrimary: credential.releaseLocalPrimary,
+    localPrimaryLabel: localReleaseVerificationMethodLabel(credential.releaseLocalPrimary),
+    localSecondary: credential.releaseLocalSecondary,
+    localSecondaryLabel: localReleaseVerificationMethodLabel(credential.releaseLocalSecondary),
+    canManageFundPassword: Boolean(viewer && userHasPermission(viewer, 'credentials.manage')),
+    localAvailability: viewer ? {
+      USER_PASSWORD: Boolean(viewer.passwordHash),
+      SECRET_CODE: Boolean(viewer.loginSecretHash),
+      EMAIL_OTP: Boolean(validEmailAddress(viewer.email || ''))
+    } : undefined
+  };
+}
+
+function releaseVerificationProfilesForSettings(viewer) {
+  return [...(db.apiCredentials || [])]
+    .sort((a, b) => Number(a.id || 0) - Number(b.id || 0))
+    .map(credential => ({
+      ...releaseVerificationPolicyForCredential(credential, viewer),
+      disabled: credential.disabled === true,
+      apiKeyMasked: mask(credential.apiKey),
+      p2pUsername: cleanStr(credential.ownerP2pNickname || '', 120)
+    }));
+}
+
+function finalActionVerificationTokenHash(token) {
+  return crypto.createHash('sha256').update(String(token || '')).digest('hex');
+}
+
+function pruneFinalActionVerificationState() {
+  const now = Date.now();
+  for (const [id, item] of pendingFinalActionVerificationChallenges.entries()) {
+    if (!item || Number(item.expiresAt || 0) <= now) pendingFinalActionVerificationChallenges.delete(id);
+  }
+  for (const [hash, item] of finalActionVerificationTokens.entries()) {
+    if (!item || Number(item.expiresAt || 0) <= now) finalActionVerificationTokens.delete(hash);
+  }
+  for (const [key, item] of finalActionSecondaryFallbacks.entries()) {
+    if (!item || Number(item.expiresAt || 0) <= now) finalActionSecondaryFallbacks.delete(key);
+  }
+  if (pendingFinalActionVerificationChallenges.size > 1000) {
+    const rows = [...pendingFinalActionVerificationChallenges.entries()].sort((a,b) => Number(a[1]?.createdAt || 0) - Number(b[1]?.createdAt || 0));
+    for (const [id] of rows.slice(0, pendingFinalActionVerificationChallenges.size - 800)) pendingFinalActionVerificationChallenges.delete(id);
+  }
+  if (finalActionVerificationTokens.size > 1000) {
+    const rows = [...finalActionVerificationTokens.entries()].sort((a,b) => Number(a[1]?.verifiedAtMs || 0) - Number(b[1]?.verifiedAtMs || 0));
+    for (const [hash] of rows.slice(0, finalActionVerificationTokens.size - 800)) finalActionVerificationTokens.delete(hash);
+  }
+  if (finalActionSecondaryFallbacks.size > 1000) {
+    const rows = [...finalActionSecondaryFallbacks.entries()].sort((a,b) => Number(a[1]?.createdAt || 0) - Number(b[1]?.createdAt || 0));
+    for (const [key] of rows.slice(0, finalActionSecondaryFallbacks.size - 800)) finalActionSecondaryFallbacks.delete(key);
+  }
+}
+
+function finalActionVerificationScopeKey(req, user, order, action) {
+  const raw = [sessionCookieSid(req), Number(user?.id || 0), Number(order?.id || 0), Number(order?.credentialId || 0), cleanStr(action || '', 30)].join('|');
+  return crypto.createHash('sha256').update(raw).digest('hex');
+}
+
+function finalActionSecondaryFallbackInfo(req, user, order, action, policy = {}) {
+  const secondary = normalizeLocalReleaseVerificationMethod(policy.localSecondary || 'NONE', 'NONE');
+  if (!secondary || secondary === 'NONE' || secondary === policy.localPrimary) return { available:false, secondaryMethod:'NONE', secondaryMethodLabel:localReleaseVerificationMethodLabel('NONE') };
+  const key = finalActionVerificationScopeKey(req, user, order, action);
+  const item = finalActionSecondaryFallbacks.get(key);
+  const available = Boolean(item && Number(item.expiresAt || 0) > Date.now() && item.primary === policy.localPrimary && item.secondary === secondary);
+  return { available, key, secondaryMethod:secondary, secondaryMethodLabel:localReleaseVerificationMethodLabel(secondary) };
+}
+
+function allowFinalActionSecondaryFallback(req, user, order, action, policy = {}, reason = 'primary_failed') {
+  const info = finalActionSecondaryFallbackInfo(req, user, order, action, policy);
+  if (info.secondaryMethod === 'NONE') return { ...info, available:false };
+  const key = info.key || finalActionVerificationScopeKey(req, user, order, action);
+  finalActionSecondaryFallbacks.set(key, {
+    userId:Number(user?.id || 0),
+    orderId:Number(order?.id || 0),
+    credentialId:Number(order?.credentialId || 0),
+    action:cleanStr(action || '', 30),
+    primary:policy.localPrimary,
+    secondary:info.secondaryMethod,
+    reason:cleanStr(reason || 'primary_failed', 80),
+    createdAt:Date.now(),
+    expiresAt:Date.now() + FINAL_ACTION_LOCAL_VERIFICATION_TTL_MS
+  });
+  return { ...info, available:true, key };
+}
+
+function clearFinalActionSecondaryFallback(req, user, order, action) {
+  finalActionSecondaryFallbacks.delete(finalActionVerificationScopeKey(req, user, order, action));
+}
+
+function finalActionLocalMethodConfigured(policy = {}, method = '') {
+  const normalized = normalizeLocalReleaseVerificationMethod(method, 'NONE');
+  return normalized !== 'NONE' && [policy.localPrimary, policy.localSecondary].includes(normalized);
+}
+
+function finalActionLocalVerificationAccessError(user, order, action) {
+  if (!['release','quick_release'].includes(action)) return 'Local release verification is only used for Release / Quick Release.';
+  if (!userHasPermission(user, 'orders.final_action')) return 'Permission denied: orders.final_action';
+  if (order.orderSource === 'offline') return 'Offline orders do not use Binance release verification.';
+  if (!canUseOrderCredential(user, order, 'orders.final_action')) return 'No orders.final_action access to this Binance account.';
+  if (action === 'quick_release' && (!canQuickReleaseUser(user) || !canUseOrderCredential(user, order, 'orders.quick_release'))) return 'Permission denied: orders.quick_release for this Binance account';
+  if (user.role === 'agent' && Number(order.leadAgentId || order.currentAgentId || 0) !== Number(user.agentId || 0)) return 'Only the lead agent can verify this release. Manager/Admin can override.';
+  if (user.role === 'agent' && !db.settings.allowAgentFinalAction) return 'Agent final action is disabled by settings.';
+  return '';
+}
+
+function localVerificationValueOk(user, method, value, challenge) {
+  const input = String(value || '');
+  if (method === 'USER_PASSWORD') return Boolean(user.passwordHash && verifyPassword(input, user.passwordHash));
+  if (method === 'SECRET_CODE') return Boolean(user.loginSecretHash && /^\d{6}$/.test(input.trim()) && verifyPassword(input.trim(), user.loginSecretHash));
+  if (method === 'EMAIL_OTP') {
+    if (!challenge?.otpHash || !challenge?.id) return false;
+    const hash = crypto.createHash('sha256').update(`${challenge.id}\n${input.trim()}`).digest('hex');
+    return secureCompareText(hash, challenge.otpHash);
+  }
+  return false;
+}
+
+async function startFinalActionLocalVerification(req, res, user, order) {
+  const body = await readBody(req);
+  const action = cleanStr(body.action || 'release', 30);
+  const accessError = finalActionLocalVerificationAccessError(user, order, action);
+  if (accessError) return sendJson(res, 403, { error: accessError }, {}, req);
+  const policy = releaseVerificationPolicyForCredential(order.credentialId, user);
+  if (!policy.localVerificationEnabled) return sendJson(res, 200, { required:false, policy }, {}, req);
+  const method = normalizeLocalReleaseVerificationMethod(body.method || policy.localPrimary, 'NONE');
+  if (!finalActionLocalMethodConfigured(policy, method)) return sendJson(res, 422, { error: 'Selected P2PFlow verification method is not configured for this Binance account.', policy }, {}, req);
+  if (method === policy.localSecondary && method !== policy.localPrimary) {
+    const fallback = finalActionSecondaryFallbackInfo(req, user, order, action, policy);
+    if (!fallback.available) return sendJson(res, 409, { error: 'Secondary verification becomes available only after the configured Primary verification fails.', canUseSecondary:false, policy }, {}, req);
+  }
+  const primaryUnavailable = message => {
+    const fallback = method === policy.localPrimary ? allowFinalActionSecondaryFallback(req, user, order, action, policy, 'primary_unavailable') : finalActionSecondaryFallbackInfo(req, user, order, action, policy);
+    return sendJson(res, 422, { error:message, canUseSecondary:fallback.available, secondaryMethod:fallback.secondaryMethod, secondaryMethodLabel:fallback.secondaryMethodLabel, policy }, {}, req);
+  };
+  if (method === 'USER_PASSWORD' && !user.passwordHash) return primaryUnavailable('This user does not have a password available for step-up verification.');
+  if (method === 'SECRET_CODE' && !user.loginSecretHash) return primaryUnavailable('This user does not have a 6-digit Secret Code configured.');
+  if (method === 'EMAIL_OTP' && !validEmailAddress(user.email || '')) return primaryUnavailable('This user does not have a valid email address for Email OTP.');
+  pruneFinalActionVerificationState();
+  const sessionId = sessionCookieSid(req);
+  const now = Date.now();
+  if (method === 'EMAIL_OTP') {
+    const recent = [...pendingFinalActionVerificationChallenges.values()].find(item => item && item.userId === user.id && item.orderId === order.id && item.action === action && item.method === method && Number(item.sentAt || 0) > now - OTP_RESEND_COOLDOWN_MS);
+    if (recent) return sendJson(res, 429, { error: `Please wait ${Math.ceil((OTP_RESEND_COOLDOWN_MS - (now - Number(recent.sentAt || 0))) / 1000)} seconds before requesting another release OTP.` }, {}, req);
+  }
+  const id = crypto.randomBytes(24).toString('base64url');
+  const challenge = {
+    id,
+    userId: user.id,
+    orderId: order.id,
+    credentialId: Number(order.credentialId || 0),
+    action,
+    method,
+    sessionId,
+    createdAt: now,
+    sentAt: null,
+    expiresAt: now + FINAL_ACTION_LOCAL_VERIFICATION_TTL_MS,
+    attempts: 0,
+    otpHash: ''
+  };
+  if (method === 'EMAIL_OTP') {
+    const code = String(crypto.randomInt(0, 1000000)).padStart(6, '0');
+    challenge.otpHash = crypto.createHash('sha256').update(`${id}\n${code}`).digest('hex');
+    challenge.sentAt = Date.now();
+    try {
+      await sendTrackedMail(user.email, 'P2PFlow Release Verification OTP', `A Binance release action is waiting for P2PFlow verification.\n\nOrder: ${order.orderNo || order.externalOrderNo || order.id}\nVerification OTP: ${code}\n\nThis code expires in 5 minutes. If you did not request this release, do not share the code.`, { type:'final_action_otp', userId:user.id, orderId:order.id });
+    } catch (err) {
+      const diagnosis = classifyMailDeliveryError(err);
+      logAudit(user, 'final_action_local_verification_mail_failed', 'order', order.id, { action, method, error: cleanStr(err.message || err, 300), code: diagnosis.code });
+      const fallback = method === policy.localPrimary ? allowFinalActionSecondaryFallback(req, user, order, action, policy, 'primary_email_delivery_failed') : finalActionSecondaryFallbackInfo(req, user, order, action, policy);
+      return sendJson(res, 503, { error: diagnosis.message, code: diagnosis.code, canUseSecondary:fallback.available, secondaryMethod:fallback.secondaryMethod, secondaryMethodLabel:fallback.secondaryMethodLabel }, {}, req);
+    }
+  }
+  pendingFinalActionVerificationChallenges.set(id, challenge);
+  logAudit(user, 'final_action_local_verification_started', 'order', order.id, { action, method, credentialId: order.credentialId || null });
+  return sendJson(res, 200, {
+    required: true,
+    challengeId: id,
+    method,
+    methodLabel: localReleaseVerificationMethodLabel(method),
+    expiresInSeconds: Math.round(FINAL_ACTION_LOCAL_VERIFICATION_TTL_MS / 1000),
+    emailMasked: method === 'EMAIL_OTP' ? maskEmail(user.email) : '',
+    policy
+  }, {}, req);
+}
+
+async function verifyFinalActionLocalVerification(req, res, user, order) {
+  const body = await readBody(req);
+  const action = cleanStr(body.action || 'release', 30);
+  const accessError = finalActionLocalVerificationAccessError(user, order, action);
+  if (accessError) return sendJson(res, 403, { error: accessError }, {}, req);
+  const policy = releaseVerificationPolicyForCredential(order.credentialId, user);
+  if (!policy.localVerificationEnabled) return sendJson(res, 200, { required:false, verified:true, policy }, {}, req);
+  pruneFinalActionVerificationState();
+  const id = cleanStr(body.challengeId || '', 120);
+  const challenge = pendingFinalActionVerificationChallenges.get(id);
+  if (!challenge || Number(challenge.expiresAt || 0) <= Date.now()) {
+    let fallback = finalActionSecondaryFallbackInfo(req, user, order, action, policy);
+    if (challenge && challenge.method === policy.localPrimary) fallback = allowFinalActionSecondaryFallback(req, user, order, action, policy, 'primary_challenge_expired');
+    if (id) pendingFinalActionVerificationChallenges.delete(id);
+    return sendJson(res, 422, { error: 'P2PFlow verification challenge expired. Start verification again.', canUseSecondary:fallback.available, secondaryMethod:fallback.secondaryMethod, secondaryMethodLabel:fallback.secondaryMethodLabel, policy }, {}, req);
+  }
+  const sessionId = sessionCookieSid(req);
+  if (challenge.userId !== user.id || challenge.orderId !== order.id || challenge.action !== action || Number(challenge.credentialId || 0) !== Number(order.credentialId || 0) || String(challenge.sessionId || '') !== String(sessionId || '')) {
+    pendingFinalActionVerificationChallenges.delete(id);
+    return sendJson(res, 403, { error: 'P2PFlow verification challenge does not belong to this session/order.' }, {}, req);
+  }
+  if (!finalActionLocalMethodConfigured(policy, challenge.method)) {
+    pendingFinalActionVerificationChallenges.delete(id);
+    return sendJson(res, 422, { error: 'The configured P2PFlow verification methods changed. Start again.', policy }, {}, req);
+  }
+  challenge.attempts = Number(challenge.attempts || 0) + 1;
+  if (challenge.attempts > FINAL_ACTION_LOCAL_VERIFICATION_MAX_ATTEMPTS) {
+    pendingFinalActionVerificationChallenges.delete(id);
+    logAudit(user, 'final_action_local_verification_locked', 'order', order.id, { action, method:challenge.method });
+    return sendJson(res, 429, { error: 'Too many failed verification attempts. Start verification again.' }, {}, req);
+  }
+  if (!localVerificationValueOk(user, challenge.method, body.value, challenge)) {
+    logAudit(user, 'final_action_local_verification_failed', 'order', order.id, { action, method:challenge.method, attempt:challenge.attempts });
+    const fallback = challenge.method === policy.localPrimary
+      ? allowFinalActionSecondaryFallback(req, user, order, action, policy, 'primary_verification_failed')
+      : finalActionSecondaryFallbackInfo(req, user, order, action, policy);
+    return sendJson(res, 422, {
+      error: `${localReleaseVerificationMethodLabel(challenge.method)} verification failed.`,
+      method: challenge.method,
+      canUseSecondary: fallback.available,
+      secondaryMethod: fallback.secondaryMethod,
+      secondaryMethodLabel: fallback.secondaryMethodLabel,
+      attemptsRemaining: Math.max(0, FINAL_ACTION_LOCAL_VERIFICATION_MAX_ATTEMPTS - challenge.attempts)
+    }, {}, req);
+  }
+  pendingFinalActionVerificationChallenges.delete(id);
+  clearFinalActionSecondaryFallback(req, user, order, action);
+  const token = crypto.randomBytes(32).toString('base64url');
+  const tokenHash = finalActionVerificationTokenHash(token);
+  finalActionVerificationTokens.set(tokenHash, {
+    userId:user.id,
+    orderId:order.id,
+    credentialId:Number(order.credentialId || 0),
+    action,
+    method:challenge.method,
+    sessionId,
+    verifiedAt:nowIso(),
+    verifiedAtMs:Date.now(),
+    expiresAt:Date.now() + FINAL_ACTION_LOCAL_VERIFICATION_TTL_MS
+  });
+  logAudit(user, 'final_action_local_verification_passed', 'order', order.id, { action, method:challenge.method, credentialId: order.credentialId || null });
+  return sendJson(res, 200, {
+    required:true,
+    verified:true,
+    token,
+    method:challenge.method,
+    methodLabel:localReleaseVerificationMethodLabel(challenge.method),
+    expiresInSeconds:Math.round(FINAL_ACTION_LOCAL_VERIFICATION_TTL_MS / 1000),
+    policy
+  }, {}, req);
+}
+
+function validateFinalActionVerificationToken(req, user, order, action, token) {
+  const policy = releaseVerificationPolicyForCredential(order.credentialId, user);
+  if (!['release','quick_release'].includes(action) || !policy.localVerificationEnabled) return { required:false, verified:true, policy, tokenHash:'' };
+  pruneFinalActionVerificationState();
+  const tokenHash = finalActionVerificationTokenHash(token);
+  const item = tokenHash ? finalActionVerificationTokens.get(tokenHash) : null;
+  const sessionId = sessionCookieSid(req);
+  const verified = Boolean(item && Number(item.expiresAt || 0) > Date.now() && item.userId === user.id && item.orderId === order.id && item.action === action && Number(item.credentialId || 0) === Number(order.credentialId || 0) && String(item.sessionId || '') === String(sessionId || ''));
+  return { required:true, verified, policy, tokenHash: verified ? tokenHash : '', method: verified ? item.method : '' };
+}
+
+function releaseVerificationBodyForCredential(credential, body = {}, localVerification = {}) {
+  const policy = releaseVerificationPolicyForCredential(credential);
+  const out = { ...body };
+  for (const key of ['authType','code','googleVerifyCode','mobileVerifyCode','emailVerifyCode','yubikeyVerifyCode']) delete out[key];
+  const method = policy.binanceMethod;
+  if (method === 'AUTO') {
+    for (const key of ['authType','code','googleVerifyCode','mobileVerifyCode','emailVerifyCode','yubikeyVerifyCode']) {
+      if (body[key] !== undefined && String(body[key] || '').trim() !== '') out[key] = body[key];
+    }
+    return out;
+  }
+  if (method === 'FIDO2') {
+    const code = cleanStr(body.code || '', 120);
+    if (!code) throw Object.assign(new Error('FIDO2 / Fingerprint is selected in Settings. Enter the Binance FIDO2 token/code shown for this API release.'), { statusCode:422 });
+    out.authType = 'FIDO2'; out.code = code; return out;
+  }
+  if (method === 'FUND_PWD') {
+    // Preserve the Fund Transfer Password exactly as entered/saved. Do not trim or normalize secrets.
+    let code = body.code === undefined || body.code === null ? '' : String(body.code).slice(0, 180);
+    if (policy.autoFundPassword) {
+      if (!policy.localVerificationEnabled || localVerification.verified !== true) throw Object.assign(new Error('Stored Fund Transfer Password can only be used after the configured P2PFlow verification succeeds.'), { statusCode:428, localVerificationRequired:true });
+      code = String(credential.releaseFundPassword || '');
+      if (!code) throw Object.assign(new Error('Fund Transfer Password auto-use is enabled but no password is saved for this Binance account.'), { statusCode:422 });
+    }
+    if (!code) throw Object.assign(new Error('Fund Transfer Password is selected in Settings. Enter the password/code required by Binance.'), { statusCode:422 });
+    out.authType = 'FUND_PWD'; out.code = code; return out;
+  }
+  if (method === 'GOOGLE') {
+    const code = cleanStr(body.googleVerifyCode || '', 40);
+    if (!code) throw Object.assign(new Error('Google Authenticator is selected in Settings. Enter the Google verification code.'), { statusCode:422 });
+    out.authType = 'GOOGLE'; out.googleVerifyCode = code; return out;
+  }
+  if (method === 'SMS') {
+    const code = cleanStr(body.mobileVerifyCode || '', 40);
+    if (!code) throw Object.assign(new Error('SMS / Mobile OTP is selected in Settings. Enter the mobile verification code.'), { statusCode:422 });
+    out.authType = 'SMS'; out.mobileVerifyCode = code; return out;
+  }
+  if (method === 'EMAIL') {
+    const code = cleanStr(body.emailVerifyCode || '', 40);
+    if (!code) throw Object.assign(new Error('Email OTP is selected in Settings. Enter the Binance email verification code.'), { statusCode:422 });
+    out.emailVerifyCode = code; return out;
+  }
+  if (method === 'YUBIKEY') {
+    const code = cleanStr(body.yubikeyVerifyCode || '', 160);
+    if (!code) throw Object.assign(new Error('YubiKey is selected in Settings. Enter the Binance YubiKey verification code.'), { statusCode:422 });
+    out.yubikeyVerifyCode = code; return out;
+  }
+  return out;
+}
+
 function binanceCredentialLabel(credential) {
   return credential ? cleanStr(credential.name || `API ${credential.id}`, 120) : '';
 }
@@ -7164,7 +7560,10 @@ function buildReleasePayload(orderNumber, payId, body = {}) {
   // accounts reject an unnecessary value with -31002 illegal parameter.
   if (confirmPaidTypeRaw) payload.confirmPaidType = normalizeConfirmPaidType(confirmPaidTypeRaw);
   const authType = cleanStr(body.authType || '', 30).toUpperCase();
-  const code = cleanStr(body.code || '', 120);
+  // Fund Transfer Password is a secret, so preserve its exact bytes/spacing instead of passing it through cleanStr().
+  const code = authType === 'FUND_PWD'
+    ? (body.code === undefined || body.code === null ? '' : String(body.code).slice(0, 180))
+    : cleanStr(body.code || '', 120);
   const googleVerifyCode = cleanStr(body.googleVerifyCode || '', 30);
   const mobileVerifyCode = cleanStr(body.mobileVerifyCode || '', 30);
   const emailVerifyCode = cleanStr(body.emailVerifyCode || '', 30);
@@ -7173,8 +7572,14 @@ function buildReleasePayload(orderNumber, payId, body = {}) {
     payload.code = code;
     if (['FIDO2', 'FUND_PWD', 'GOOGLE', 'SMS'].includes(authType)) payload.authType = authType;
   }
-  if (googleVerifyCode) payload.googleVerifyCode = googleVerifyCode;
-  if (mobileVerifyCode) payload.mobileVerifyCode = mobileVerifyCode;
+  if (googleVerifyCode) {
+    payload.googleVerifyCode = googleVerifyCode;
+    if (authType === 'GOOGLE') payload.authType = 'GOOGLE';
+  }
+  if (mobileVerifyCode) {
+    payload.mobileVerifyCode = mobileVerifyCode;
+    if (authType === 'SMS') payload.authType = 'SMS';
+  }
   if (emailVerifyCode) payload.emailVerifyCode = emailVerifyCode;
   if (yubikeyVerifyCode) payload.yubikeyVerifyCode = yubikeyVerifyCode;
   return compactBinancePayload(payload);
@@ -17139,7 +17544,7 @@ async function handleCredentials(req, res) {
     const apiKey = cleanStr(body.apiKey, 200);
     const secretKey = cleanStr(body.secretKey, 300);
     if (!name || !apiKey || !secretKey) return sendJson(res, 422, { error: 'name, apiKey and secretKey are required' }, {}, req);
-    const item = { id: nextId(), name, apiKey, secretKey, clientType: cleanStr(body.clientType || 'web', 40), status: 'saved', disabled: false, lastTestedAt: null, ownerP2pUserNo: '', ownerP2pMerchantNo: '', ownerP2pNickname: '', ownerP2pProfileLastSyncAt: null, createdAt: nowIso(), updatedAt: nowIso() };
+    const item = { id: nextId(), name, apiKey, secretKey, clientType: cleanStr(body.clientType || 'web', 40), status: 'saved', disabled: false, lastTestedAt: null, ownerP2pUserNo: '', ownerP2pMerchantNo: '', ownerP2pNickname: '', ownerP2pProfileLastSyncAt: null, releaseVerificationMethod:'AUTO', releaseLocalVerificationEnabled:false, releaseLocalPrimary:'USER_PASSWORD', releaseLocalSecondary:'SECRET_CODE', releaseAutoFundPassword:false, releaseFundPassword:'', createdAt: nowIso(), updatedAt: nowIso() };
     db.apiCredentials.push(item);
     advertisementMerchantSettingsRecord(item.id, true);
     logAudit(user, 'api_credential_created', 'apiCredential', item.id, { name: item.name, apiKeyMasked: mask(item.apiKey) });
@@ -19299,6 +19704,8 @@ async function handleOrderById(req, res, parts) {
   if (req.method === 'POST' && action === 'binance-chat-send') return sendBinanceChatMessage(req, res, user, order);
   if (req.method === 'POST' && action === 'binance-chat-read') return markBinanceOrderChatRead(req, res, user, order);
   if (req.method === 'POST' && action === 'complete-agent-task') return completeAgentTask(req, res, user, order);
+  if (req.method === 'POST' && action === 'final-action-verification-start') return startFinalActionLocalVerification(req, res, user, order);
+  if (req.method === 'POST' && action === 'final-action-verification-verify') return verifyFinalActionLocalVerification(req, res, user, order);
   if (req.method === 'POST' && action === 'complete-action') return completeAction(req, res, user, order);
   return sendJson(res, 404, { error: 'Unknown order action' }, {}, req);
 }
@@ -19329,6 +19736,7 @@ function fullOrderView(order, user = null) {
     coAgentRequests: db.coAgentRequests.filter(r => r.orderId === order.id),
     approvals: orderApprovalRequests(order.id).map(approvalView),
     finalActionSplitGate: finalActionSplitGateState(order),
+    releaseVerificationPolicy: order.orderSource === 'offline' ? null : releaseVerificationPolicyForCredential(order.credentialId, user),
     settings: publicSettings()
   };
 }
@@ -19923,9 +20331,34 @@ async function completeAction(req, res, user, order) {
       }, {}, req);
     }
   }
+  let localVerification = { required:false, verified:true, policy:null, tokenHash:'', method:'' };
+  let actionBody = body;
+  if (['release','quick_release'].includes(action) && order.orderSource !== 'offline') {
+    localVerification = validateFinalActionVerificationToken(req, user, order, action, body.localVerificationToken || '');
+    if (localVerification.required && !localVerification.verified) {
+      return sendJson(res, 428, {
+        error: 'Complete the configured P2PFlow verification before Binance Release.',
+        localVerificationRequired: true,
+        releaseVerificationPolicy: localVerification.policy,
+        order: fullOrderView(order, user)
+      }, {}, req);
+    }
+    const credentialForVerification = binanceCredentialById(order.credentialId);
+    try {
+      actionBody = releaseVerificationBodyForCredential(credentialForVerification, body, localVerification);
+    } catch (verificationError) {
+      return sendJson(res, verificationError.statusCode || 422, {
+        error: verificationError.message,
+        localVerificationRequired: verificationError.localVerificationRequired === true,
+        releaseVerificationPolicy: releaseVerificationPolicyForCredential(credentialForVerification, user),
+        order: fullOrderView(order, user)
+      }, {}, req);
+    }
+  }
+
   let binanceAction = null;
   try {
-    binanceAction = await performLiveBinanceFinalAction(user, order, action, body);
+    binanceAction = await performLiveBinanceFinalAction(user, order, action, actionBody);
   } catch (err) {
     const safeFailureMessage = cleanStr(sanitizeErrorText(err), 1200);
     order.lastFinalActionFailure = {
@@ -19940,6 +20373,7 @@ async function completeAction(req, res, user, order) {
     return sendJson(res, 502, { error: 'Binance live action failed: ' + safeFailureMessage, releaseRequirements: err.releaseRequirements || null, order: fullOrderView(order, user) }, {}, req);
   }
   delete order.lastFinalActionFailure;
+  if (localVerification.tokenHash) finalActionVerificationTokens.delete(localVerification.tokenHash);
   if (action === 'paid_mark') order.externalStatus = binanceAction && binanceAction.mode === 'live' ? 'BINANCE_PAID_MARKED' : 'PAID_MARK_READY_FOR_BINANCE';
   if (action === 'release' || action === 'quick_release') order.externalStatus = binanceAction && binanceAction.mode === 'live' ? (action === 'quick_release' ? 'BINANCE_QUICK_RELEASED' : 'BINANCE_RELEASED') : 'RELEASE_READY_FOR_BINANCE';
   if (action === 'complete') order.externalStatus = 'COMPLETED_BY_CRM';
@@ -21833,7 +22267,7 @@ function handleReports(req, res, url) {
 }
 async function handleSettings(req, res) {
   const user = requirePermission(req, res, 'settings.manage'); if (!user) return;
-  if (req.method === 'GET') return sendJson(res, 200, { settings: publicSettings() }, {}, req);
+  if (req.method === 'GET') return sendJson(res, 200, { settings: publicSettings(), releaseVerificationProfiles: releaseVerificationProfilesForSettings(user), canManageFundPassword: userHasPermission(user, 'credentials.manage') }, {}, req);
   if (req.method === 'PATCH') {
     const body = await readBody(req);
     const beforeMailConfig = runtimeMailConfig();
@@ -21885,6 +22319,49 @@ async function handleSettings(req, res) {
       db.settings.requireProofForFinalAction = required;
     }
     if (body.requirePaymentSplitForFinalAction !== undefined) db.settings.requirePaymentSplitForFinalAction = !!body.requirePaymentSplitForFinalAction;
+
+    if (body.binanceReleaseVerificationProfiles !== undefined) {
+      if (!Array.isArray(body.binanceReleaseVerificationProfiles)) return sendJson(res, 422, { error: 'binanceReleaseVerificationProfiles must be an array.' }, {}, req);
+      const seenCredentialIds = new Set();
+      const summaries = [];
+      for (const raw of body.binanceReleaseVerificationProfiles.slice(0, 100)) {
+        if (!raw || typeof raw !== 'object') continue;
+        const credentialId = Number(raw.credentialId || 0);
+        if (!credentialId || seenCredentialIds.has(credentialId)) continue;
+        seenCredentialIds.add(credentialId);
+        const credential = binanceCredentialById(credentialId);
+        if (!credential) return sendJson(res, 422, { error: `Binance account ${credentialId} was not found.` }, {}, req);
+        normalizeCredentialReleaseVerification(credential);
+        const method = normalizeBinanceReleaseVerificationMethod(raw.binanceMethod ?? raw.releaseVerificationMethod ?? credential.releaseVerificationMethod);
+        const localEnabled = raw.localVerificationEnabled === undefined ? credential.releaseLocalVerificationEnabled === true : raw.localVerificationEnabled === true;
+        const primary = normalizeLocalReleaseVerificationMethod(raw.localPrimary ?? credential.releaseLocalPrimary, 'USER_PASSWORD');
+        const secondary = normalizeLocalReleaseVerificationMethod(raw.localSecondary ?? credential.releaseLocalSecondary, 'NONE');
+        if (primary === 'NONE' && localEnabled) return sendJson(res, 422, { error: `${binanceCredentialLabel(credential)}: Primary P2PFlow verification cannot be None while local verification is enabled.` }, {}, req);
+        if (secondary !== 'NONE' && secondary === primary) return sendJson(res, 422, { error: `${binanceCredentialLabel(credential)}: Primary and Secondary P2PFlow verification must be different.` }, {}, req);
+        const autoFundPassword = raw.autoFundPassword === undefined ? credential.releaseAutoFundPassword === true : raw.autoFundPassword === true;
+        let nextFundPassword = String(credential.releaseFundPassword || '');
+        const wantsSecretChange = raw.clearFundPassword === true || (raw.fundPassword !== undefined && String(raw.fundPassword) !== '');
+        if (wantsSecretChange && !userHasPermission(user, 'credentials.manage')) return sendJson(res, 403, { error: 'Only a user with credentials.manage permission can save or clear a Binance Fund Transfer Password.' }, {}, req);
+        if (raw.clearFundPassword === true) nextFundPassword = '';
+        else if (raw.fundPassword !== undefined && String(raw.fundPassword) !== '') {
+          const incoming = String(raw.fundPassword);
+          if (incoming.length < 1 || incoming.length > 180) return sendJson(res, 422, { error: `${binanceCredentialLabel(credential)}: Fund Transfer Password must be 1-180 characters.` }, {}, req);
+          nextFundPassword = incoming;
+        }
+        if (autoFundPassword && method !== 'FUND_PWD') return sendJson(res, 422, { error: `${binanceCredentialLabel(credential)}: Auto-use Fund Transfer Password is only available when Fund Transfer Password is the selected Binance verification method.` }, {}, req);
+        if (autoFundPassword && !localEnabled) return sendJson(res, 422, { error: `${binanceCredentialLabel(credential)}: Enable P2PFlow verification before enabling automatic Fund Transfer Password use.` }, {}, req);
+        if (autoFundPassword && !nextFundPassword) return sendJson(res, 422, { error: `${binanceCredentialLabel(credential)}: Save the Fund Transfer Password before enabling automatic use.` }, {}, req);
+        credential.releaseVerificationMethod = method;
+        credential.releaseLocalVerificationEnabled = localEnabled;
+        credential.releaseLocalPrimary = primary;
+        credential.releaseLocalSecondary = secondary;
+        credential.releaseAutoFundPassword = autoFundPassword;
+        credential.releaseFundPassword = nextFundPassword;
+        credential.releaseVerificationUpdatedAt = nowIso();
+        summaries.push({ credentialId, method, localEnabled, primary, secondary, autoFundPassword, fundPasswordConfigured:Boolean(nextFundPassword) });
+      }
+      if (summaries.length) logAudit(user, 'binance_release_verification_settings_updated', 'settings', 1, { profiles:summaries });
+    }
 
     const mailSystemInput = body.mailSendingSystem !== undefined ? body.mailSendingSystem : body.mailDriver;
     const previousMailSystem = normalizeMailSendingSystem(db.settings.mailSendingSystem || db.settings.mailDriver || 'auto');
@@ -23295,8 +23772,10 @@ function runPaymentSplitFinalActionSelfTest() {
     db = {
       meta: { nextId: 41000, schemaVersion: APP_SCHEMA_VERSION, dataCompatibilityEpoch: APP_DATA_COMPATIBILITY_EPOCH },
       settings: {},
-      users: [{ id: 1, username:'admin', name:'Admin', role:'admin', enabled:true, permissions:PERMISSION_CATALOG.slice() }],
+      users: [{ id: 1, username:'admin', name:'Admin', role:'admin', enabled:true, email:'admin@example.test', passwordHash:hashPassword('SelfTestAdminPassword!'), loginSecretHash:hashPassword('739251'), permissions:PERMISSION_CATALOG.slice() }],
       agents: [],
+      apiCredentials: [{ id:50, name:'Release Test API', apiKey:'test-key', secretKey:'test-secret', disabled:false, releaseVerificationMethod:'FUND_PWD', releaseLocalVerificationEnabled:true, releaseLocalPrimary:'USER_PASSWORD', releaseLocalSecondary:'SECRET_CODE', releaseAutoFundPassword:true, releaseFundPassword:'  Fund-Pass 77  ' }],
+      ownerP2pProfiles: [],
       paymentMethods: [{ id:10, code:'BKASH', name:'bKash', enabled:true }],
       paymentAccounts: [
         {
@@ -23393,13 +23872,38 @@ function runPaymentSplitFinalActionSelfTest() {
     assert(binanceOrderPaidMarked({ externalStatus:'BINANCE_UNPAID', status:'assigned' }) === false, 'BINANCE_UNPAID was incorrectly treated as paid.');
     assert(binanceOrderPaidMarked({ externalStatus:'BINANCE_WAIT_FOR_RELEASE', status:'assigned' }) === true, 'WAIT_FOR_RELEASE was not treated as paid.');
 
+    const releaseCredential = db.apiCredentials[0];
+    const safeReleasePolicy = releaseVerificationPolicyForCredential(releaseCredential, admin);
+    assert(safeReleasePolicy.binanceMethod === 'FUND_PWD' && safeReleasePolicy.localPrimary === 'USER_PASSWORD' && safeReleasePolicy.localSecondary === 'SECRET_CODE', 'Release verification policy normalization failed.');
+    assert(safeReleasePolicy.fundPasswordConfigured === true && !Object.prototype.hasOwnProperty.call(safeReleasePolicy, 'releaseFundPassword') && !JSON.stringify(safeReleasePolicy).includes('Fund-Pass 77'), 'Fund Transfer Password leaked through the public release policy.');
+    let localGateRequiredForAutoFund = false;
+    try { releaseVerificationBodyForCredential(releaseCredential, {}, { required:true, verified:false }); }
+    catch (error) { localGateRequiredForAutoFund = error?.statusCode === 428 && error?.localVerificationRequired === true; }
+    assert(localGateRequiredForAutoFund, 'Automatic Fund Transfer Password did not require P2PFlow step-up verification.');
+    const fundPayload = releaseVerificationBodyForCredential(releaseCredential, {}, { required:true, verified:true });
+    assert(fundPayload.authType === 'FUND_PWD' && fundPayload.code === '  Fund-Pass 77  ', 'Stored Fund Transfer Password was not preserved exactly for server-side use.');
+    const builtFundPayload = buildReleasePayload('ORDER-SELFTEST', 77, fundPayload);
+    assert(builtFundPayload.authType === 'FUND_PWD' && builtFundPayload.code === '  Fund-Pass 77  ', 'Fund Transfer Password was normalized/trimmed before Binance payload construction.');
+    const profilesJson = JSON.stringify(releaseVerificationProfilesForSettings(admin));
+    assert(!profilesJson.includes('Fund-Pass 77') && profilesJson.includes('fundPasswordConfigured'), 'Settings profile exposed the stored Fund Transfer Password.');
+    releaseCredential.releaseAutoFundPassword = false;
+    releaseCredential.releaseVerificationMethod = 'GOOGLE';
+    const googleBody = releaseVerificationBodyForCredential(releaseCredential, { googleVerifyCode:'123456' }, { verified:true });
+    const googlePayload = buildReleasePayload('ORDER-SELFTEST', 77, googleBody);
+    assert(googlePayload.authType === 'GOOGLE' && googlePayload.googleVerifyCode === '123456', 'Google Authenticator verification was not mapped to the documented payload fields.');
+    releaseCredential.releaseVerificationMethod = 'SMS';
+    const smsBody = releaseVerificationBodyForCredential(releaseCredential, { mobileVerifyCode:'654321' }, { verified:true });
+    const smsPayload = buildReleasePayload('ORDER-SELFTEST', 77, smsBody);
+    assert(smsPayload.authType === 'SMS' && smsPayload.mobileVerifyCode === '654321', 'SMS verification was not mapped to the documented payload fields.');
+
     console.log(JSON.stringify({
       ok:true,
       version:APP_VERSION,
       schemaVersion:APP_SCHEMA_VERSION,
       splitEdit:{ send1000To500RestoresLimit:true, receive1000To500RestoresLimit:true, configuredChargeRecalculated:true, receiveDoesNotApplySendMoneyCharge:true },
       splitDelete:{ balanceRestored:true, sendLimitRestored:true, receiveLimitRestored:true },
-      finalAction:{ genericIdRejectedAsPayId:true, paymentCandidatePayIdSelected:true, unpaidStatusNotMisclassified:true, splitGateToggle:true, proofMandatoryOptional:true, savedSplitGateSatisfied:true, missingProofGateUnsatisfied:true }
+      finalAction:{ genericIdRejectedAsPayId:true, paymentCandidatePayIdSelected:true, unpaidStatusNotMisclassified:true, splitGateToggle:true, proofMandatoryOptional:true, savedSplitGateSatisfied:true, missingProofGateUnsatisfied:true },
+      releaseVerification:{ fundPasswordExactPreserved:true, fundPasswordNotExposed:true, googleAndSmsMapped:true, localGateRequiredForAutoFund:true, primarySecondaryConfigured:true }
     }, null, 2));
   } finally {
     db = previousDb;

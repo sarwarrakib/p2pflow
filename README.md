@@ -27,28 +27,37 @@ Updater code এবং database আলাদা রাখে। Update install-�
 
 ## Version
 
-Internal SemVer: `1.5.28`
+Internal SemVer: `1.5.29`
 UI: `1.5`
 Database schema: `35`
 
 Normal next version: `SET_NEXT_VERSION.bat` -> `1.6.0`  
-Hotfix: `SET_HOTFIX_VERSION.bat` -> `1.5.29`
+Hotfix: `SET_HOTFIX_VERSION.bat` -> `1.5.30`
 
 ## Database history safety
 
 P2PFlow keeps authoritative business/application data in MariaDB/MySQL/PostgreSQL. State payloads are compressed with Brotli before AES-256-GCM encryption, proofs/chat media are stored as encrypted database objects, and identical newly uploaded proof/media bytes use content-addressed object IDs to avoid duplicate blobs. The default is 3 retained recovery checkpoints with a 6-hour archive interval and 5 retained automatic database backups. Older uncompressed state/history/backup payloads are upgraded incrementally after startup. Health Check reports each P2PFlow database table's allocated size/row count, current encrypted state payload size, compression saving percentage, and proof/chat object usage so database-MB growth can be inspected without terminal access. `shared/`, `.p2pflow`, `.env`, `releases/` and temporary restart/update markers are operational bootstrap/update metadata only; they are not an application/business-data store. The application runtime itself does not write proof, chat, audit, order, ledger, notification or recovery-code data to local files.
 
+## v1.5.29 Configurable Release Verification & P2PFlow Step-up
+
+- Settings-এ প্রতি Binance API account-এর জন্য Release verification profile আছে: Binance Auto, FIDO2/Fingerprint, Fund Transfer Password, Google Authenticator, SMS/Mobile OTP, Email OTP এবং YubiKey। Selected method P2PFlow কোন documented field পাঠাবে তা নির্ধারণ করে; Binance server-side policy এখনও acceptance/alternate challenge নির্ধারণ করতে পারে।
+- Optional P2PFlow step-up gate-এ Primary এবং Secondary method রাখা যায়: User Password, 6-digit Secret Code অথবা Email OTP। Primary fail হলে Change Verification System দিয়ে configured Secondary method ব্যবহার করা যায়।
+- Fund Transfer Password server-side save করে automatic use করা যায়, তবে `credentials.manage` permission, local P2PFlow verification এবং explicit FUND_PWD method প্রয়োজন। Saved secret browser/API policy response-এ ফেরত যায় না এবং Audit Log-এ password value লেখা হয় না।
+- Local verification challenge/token exact user + session + order + credential + action-এর সঙ্গে bound এবং 5 মিনিট valid। Successful Release-এ token invalidate হয়।
+- Supplied C2C SAPI v7.4-এ Voice/phone-call selectable authType documented নয়; unlisted server-side challenge-এর জন্য Binance Auto ব্যবহার করতে হবে। FIDO2 auth type documented হলেও WebAuthn assertion exchange supplied document-এ নেই, তাই application fabricated fingerprint assertion তৈরি করে না।
+- Database schema `35`; নতুন migration প্রয়োজন নেই।
+
+বিস্তারিত: `P2PFlow_v1.5.29_RELEASE_NOTES_BN.md`, `P2PFlow_v1.5.29_MANUAL_UPDATE_BN.md` এবং `P2PFlow_v1.5.29_LAUNCH_CHECKLIST_BN.md`।
+
 ## v1.5.28 Saved Split Direct Final Action & Verification Retry
 
 - Mark Paid/Release/Quick Release-এর relevant Payment Split আগে থেকেই validভাবে save থাকলে final-action button আর Payment Split popup পুনরায় খুলবে না; সরাসরি dedicated final-action/Binance verification modal খুলবে।
-- Split প্রথমবার প্রয়োজন হলে Split modal শুধু split save/complete করবে, তারপর `Continue` দিয়ে final verification step-এ যাবে।
+- Split প্রথমবার প্রয়োজন হলে Split modal শুধু split save/complete করবে, তারপর Continue দিয়ে final verification step-এ যাবে।
 - Binance final action fail হলেও saved split অক্ষত থাকে; retry-তে balance/limit movement duplicate হয় না এবং Split page আবার আসে না।
 - Failed Release-এর parsed additional verification requirement order state-এ preserve হয়; একই action retry করলে required field সরাসরি verification modal-এ দেখা যায়।
 - Release eligibility `checkIfCanReleaseCoin` error-ও verification parser-এর মাধ্যমে handled হয়; check fail/deny হলে `releaseCoin` পাঠানো হয় না।
-- Full order response-এ authoritative `finalActionSplitGate` state যোগ হয়েছে, তাই frontend stale local remaining state-এর বদলে server readiness অনুসরণ করে।
+- Full order response-এ authoritative `finalActionSplitGate` state থাকে, তাই frontend stale local remaining state-এর বদলে server readiness অনুসরণ করে।
 - Database schema `35`; migration প্রয়োজন নেই।
-
-বিস্তারিত: `P2PFlow_v1.5.28_RELEASE_NOTES_BN.md`, `P2PFlow_v1.5.28_MANUAL_UPDATE_BN.md` এবং `P2PFlow_v1.5.28_LAUNCH_CHECKLIST_BN.md`।
 
 ## v1.5.27 Separate Wallet Rules, Fast Filters & Account-scoped Notifications
 

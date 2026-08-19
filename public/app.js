@@ -1,4 +1,4 @@
-// v1.5.28: saved Payment Split bypasses repeat split prompts and retries open the dedicated Binance final-action verification step.
+// v1.5.29: saved Payment Split bypasses repeat split prompts and retries open the dedicated Binance final-action verification step.
 // v1.5.23: Payment Account serial scope treats each normalized Label, including no Label, as an independent namespace.
 // v1.5.22: Header-only Work Status, chat-only notification master, and coupled sound/push controls.
 // v1.5.20: account-scoped Binance RBAC, visible security recovery setup and individual-only profit accounting.
@@ -1998,6 +1998,28 @@ Object.assign(I18N_BN, {
   "Running health checks...": "সিস্টেম পরীক্ষা চলছে...",
   "Save filter for next use": "ফিল্টার সেভ করুন",
   "Settings saved securely.": "সেটিংস নিরাপদে সেভ হয়েছে।",
+  "Release Verification": "রিলিজ ভেরিফিকেশন",
+  "Binance + step-up": "Binance + অতিরিক্ত ভেরিফিকেশন",
+  "Binance verification": "Binance ভেরিফিকেশন",
+  "Require P2PFlow verification before Release": "রিলিজের আগে P2PFlow ভেরিফিকেশন প্রয়োজন",
+  "Primary P2PFlow verification": "প্রাইমারি P2PFlow ভেরিফিকেশন",
+  "Secondary P2PFlow verification": "সেকেন্ডারি P2PFlow ভেরিফিকেশন",
+  "Automatic Fund Transfer Password": "অটোমেটিক Fund Transfer Password",
+  "Fund Transfer Password": "Fund Transfer Password",
+  "Clear saved password": "সেভ করা পাসওয়ার্ড মুছুন",
+  "Binance Auto": "Binance Auto",
+  "FIDO2 / Fingerprint": "FIDO2 / Fingerprint",
+  "Google Authenticator": "Google Authenticator",
+  "SMS / Mobile OTP": "SMS / Mobile OTP",
+  "Email OTP": "ইমেইল OTP",
+  "YubiKey": "YubiKey",
+  "User Password": "ইউজার পাসওয়ার্ড",
+  "6-digit Secret Code": "৬ ডিজিট সিক্রেট কোড",
+  "None": "কোনোটিই নয়",
+  "P2PFlow Verification": "P2PFlow ভেরিফিকেশন",
+  "Change Verification System": "ভেরিফিকেশন সিস্টেম পরিবর্তন",
+  "Verify": "ভেরিফাই",
+  "Send Email OTP": "ইমেইল OTP পাঠান",
   "Sum of User/Agent Profit": "ইউজার/এজেন্ট লাভের মোট",
   "Verification unavailable": "যাচাই উপলব্ধ নয়",
   "All advertisements loaded": "সব বিজ্ঞাপন লোড হয়েছে",
@@ -2675,6 +2697,28 @@ Object.assign(I18N_BN, {
   "Saved — leave blank to keep": "সেভ আছে — রাখতে খালি রাখুন",
   "Enter SMTP password": "SMTP পাসওয়ার্ড দিন",
   "Settings saved securely.": "সেটিংস নিরাপদে সেভ হয়েছে।",
+  "Release Verification": "রিলিজ ভেরিফিকেশন",
+  "Binance + step-up": "Binance + অতিরিক্ত ভেরিফিকেশন",
+  "Binance verification": "Binance ভেরিফিকেশন",
+  "Require P2PFlow verification before Release": "রিলিজের আগে P2PFlow ভেরিফিকেশন প্রয়োজন",
+  "Primary P2PFlow verification": "প্রাইমারি P2PFlow ভেরিফিকেশন",
+  "Secondary P2PFlow verification": "সেকেন্ডারি P2PFlow ভেরিফিকেশন",
+  "Automatic Fund Transfer Password": "অটোমেটিক Fund Transfer Password",
+  "Fund Transfer Password": "Fund Transfer Password",
+  "Clear saved password": "সেভ করা পাসওয়ার্ড মুছুন",
+  "Binance Auto": "Binance Auto",
+  "FIDO2 / Fingerprint": "FIDO2 / Fingerprint",
+  "Google Authenticator": "Google Authenticator",
+  "SMS / Mobile OTP": "SMS / Mobile OTP",
+  "Email OTP": "ইমেইল OTP",
+  "YubiKey": "YubiKey",
+  "User Password": "ইউজার পাসওয়ার্ড",
+  "6-digit Secret Code": "৬ ডিজিট সিক্রেট কোড",
+  "None": "কোনোটিই নয়",
+  "P2PFlow Verification": "P2PFlow ভেরিফিকেশন",
+  "Change Verification System": "ভেরিফিকেশন সিস্টেম পরিবর্তন",
+  "Verify": "ভেরিফাই",
+  "Send Email OTP": "ইমেইল OTP পাঠান",
   "Test email accepted.": "টেস্ট ইমেইল গ্রহণ হয়েছে।",
   "Test email failed.": "টেস্ট ইমেইল ব্যর্থ।",
   "Database backup is complete. P2PFlow is restarting with the verified code.": "ডাটাবেস ব্যাকআপ সম্পন্ন। P2PFlow রিস্টার্ট হচ্ছে।",
@@ -4920,7 +4964,7 @@ function renderNav() {
   // legacy flat menu while this marker is absent, the browser/proxy is serving
   // stale frontend JavaScript rather than the active release.
   nav.dataset.navigationModel = 'grouped-control-center';
-  nav.dataset.uiRelease = '1.5.28';
+  nav.dataset.uiRelease = '1.5.29';
   nav.innerHTML = '';
   const visible = visiblePages();
   const visibleIds = new Set(visible.map(([id]) => id));
@@ -7288,11 +7332,173 @@ function releaseRequirementFieldsHtml(req) {
   return `<div class="notice warn"><b>Binance needs extra verification.</b><br>Only the required field is shown below. Fill it and press Release again.</div>${hiddenHtml}<div class="form-grid mt-sm">${fieldsHtml}</div>`;
 }
 
-function showReleaseRequirementsInModal(err) {
+function orderReleaseVerificationPolicy(order = {}) {
+  const policy = order.releaseVerificationPolicy && typeof order.releaseVerificationPolicy === 'object' ? order.releaseVerificationPolicy : {};
+  const method = String(policy.binanceMethod || 'AUTO').toUpperCase();
+  return {
+    credentialId: Number(policy.credentialId || order.credentialId || 0) || null,
+    credentialName: policy.credentialName || order.credentialDisplayName || order.credentialName || '',
+    binanceMethod: ['AUTO','FIDO2','FUND_PWD','GOOGLE','SMS','EMAIL','YUBIKEY'].includes(method) ? method : 'AUTO',
+    binanceMethodLabel: policy.binanceMethodLabel || ({AUTO:'Binance Auto',FIDO2:'FIDO2 / Fingerprint',FUND_PWD:'Fund Transfer Password',GOOGLE:'Google Authenticator',SMS:'SMS / Mobile OTP',EMAIL:'Email OTP',YUBIKEY:'YubiKey'}[method] || 'Binance Auto'),
+    fundPasswordConfigured: policy.fundPasswordConfigured === true,
+    autoFundPassword: policy.autoFundPassword === true,
+    localVerificationEnabled: policy.localVerificationEnabled === true,
+    localPrimary: String(policy.localPrimary || 'USER_PASSWORD').toUpperCase(),
+    localPrimaryLabel: policy.localPrimaryLabel || ({USER_PASSWORD:'User Password',SECRET_CODE:'6-digit Secret Code',EMAIL_OTP:'Email OTP'}[String(policy.localPrimary || 'USER_PASSWORD').toUpperCase()] || 'User Password'),
+    localSecondary: String(policy.localSecondary || 'NONE').toUpperCase(),
+    localSecondaryLabel: policy.localSecondaryLabel || ({USER_PASSWORD:'User Password',SECRET_CODE:'6-digit Secret Code',EMAIL_OTP:'Email OTP',NONE:'None'}[String(policy.localSecondary || 'NONE').toUpperCase()] || 'None'),
+    localAvailability: policy.localAvailability || {}
+  };
+}
+
+function configuredReleaseVerificationFieldsHtml(policy = {}, req = null) {
+  const method = String(policy.binanceMethod || 'AUTO').toUpperCase();
+  if (method === 'AUTO') {
+    if (req) return releaseRequirementFieldsHtml(req);
+    return `<div class="notice"><b>Binance Auto verification</b><br>P2PFlow will first try the release without inventing extra verification fields. If Binance asks for a concrete field, that field will appear here.</div>`;
+  }
+  if (method === 'FIDO2') return `<div class="notice warn"><b>FIDO2 / Fingerprint selected</b><br>Enter the FIDO2 token/code only when Binance provides one for this API release. P2PFlow does not fabricate an undocumented browser biometric assertion.</div><input type="hidden" name="authType" value="FIDO2"/><div class="form-grid mt-sm"><div><label>FIDO2 verification token/code</label><input name="code" autocomplete="one-time-code" placeholder="Binance FIDO2 token/code" required /></div></div>`;
+  if (method === 'FUND_PWD') {
+    if (policy.autoFundPassword && policy.fundPasswordConfigured) return `<div class="notice okbox"><b>Fund Transfer Password is saved.</b><br>After the configured P2PFlow verification succeeds, the server will apply the saved password automatically. The password is not sent back to this browser.</div><input type="hidden" name="authType" value="FUND_PWD"/>`;
+    return `<div class="notice warn"><b>Fund Transfer Password selected</b><br>Enter the Binance fund/release password for this attempt.</div><input type="hidden" name="authType" value="FUND_PWD"/><div class="form-grid mt-sm"><div><label>Fund Transfer Password</label><input name="code" type="password" autocomplete="one-time-code" placeholder="Fund Transfer Password" required /></div></div>`;
+  }
+  if (method === 'GOOGLE') return `<div class="notice"><b>Google Authenticator selected</b></div><input type="hidden" name="authType" value="GOOGLE"/><div class="form-grid mt-sm"><div><label>Google Authenticator code</label><input name="googleVerifyCode" inputmode="numeric" autocomplete="one-time-code" placeholder="Authenticator code" required /></div></div>`;
+  if (method === 'SMS') return `<div class="notice"><b>SMS / Mobile OTP selected</b></div><input type="hidden" name="authType" value="SMS"/><div class="form-grid mt-sm"><div><label>SMS / mobile verification code</label><input name="mobileVerifyCode" inputmode="numeric" autocomplete="one-time-code" placeholder="Mobile verification code" required /></div></div>`;
+  if (method === 'EMAIL') return `<div class="notice"><b>Binance Email OTP selected</b></div><div class="form-grid mt-sm"><div><label>Binance email verification code</label><input name="emailVerifyCode" inputmode="numeric" autocomplete="one-time-code" placeholder="Email verification code" required /></div></div>`;
+  if (method === 'YUBIKEY') return `<div class="notice"><b>YubiKey selected</b></div><div class="form-grid mt-sm"><div><label>YubiKey verification code</label><input name="yubikeyVerifyCode" autocomplete="one-time-code" placeholder="YubiKey code" required /></div></div>`;
+  return req ? releaseRequirementFieldsHtml(req) : '';
+}
+
+function localFinalActionVerificationPanelHtml(policy = {}) {
+  if (!policy.localVerificationEnabled) return '';
+  const primary = policy.localPrimary || 'USER_PASSWORD';
+  const hasSecondary = policy.localSecondary && policy.localSecondary !== 'NONE' && policy.localSecondary !== primary;
+  return `<div id="localFinalActionVerificationPanel" class="full-row final-action-local-verify" data-primary="${escapeAttr(primary)}" data-secondary="${escapeAttr(policy.localSecondary || 'NONE')}">
+    <div class="final-action-local-verify-head"><div><b>P2PFlow Verification</b><small>Complete this step before Binance Release can use the selected verification method.</small></div><span id="localFinalActionVerificationStatus" class="badge warn">Required</span></div>
+    <div id="localFinalActionVerificationMethod"></div>
+    <div class="final-action-local-actions">
+      <button type="button" class="secondary small hidden" id="sendFinalActionEmailOtpBtn">Send Email OTP</button>
+      <button type="button" class="secondary small" id="verifyFinalActionLocalBtn">Verify</button>
+      ${hasSecondary ? '<button type="button" class="ghost small hidden" id="changeFinalActionLocalVerificationBtn">Change Verification System</button>' : ''}
+    </div>
+    <input type="hidden" name="localVerificationToken" id="localFinalActionVerificationToken" value="" />
+    <div id="localFinalActionVerificationMessage"></div>
+  </div>`;
+}
+
+function localFinalActionMethodInputHtml(method, policy = {}) {
+  const labelMap = { USER_PASSWORD:'User Password', SECRET_CODE:'6-digit Secret Code', EMAIL_OTP:'Email OTP' };
+  const label = labelMap[method] || method;
+  if (method === 'USER_PASSWORD') return `<div class="final-action-local-input"><label>${label}</label><input id="localFinalActionVerificationValue" type="password" autocomplete="current-password" placeholder="Enter your P2PFlow password" /></div>`;
+  if (method === 'SECRET_CODE') return `<div class="final-action-local-input"><label>${label}</label><input id="localFinalActionVerificationValue" type="password" inputmode="numeric" maxlength="6" autocomplete="one-time-code" placeholder="6-digit Secret Code" /></div>`;
+  if (method === 'EMAIL_OTP') return `<div class="final-action-local-input"><label>${label}</label><input id="localFinalActionVerificationValue" inputmode="numeric" maxlength="6" autocomplete="one-time-code" placeholder="Send OTP, then enter 6 digits" /></div>`;
+  return `<div class="notice danger-note">This P2PFlow verification method is not available.</div>`;
+}
+
+function bindLocalFinalActionVerification(order, finalAction, policy, gateState) {
+  const panel = $('#localFinalActionVerificationPanel');
+  if (!panel || !policy.localVerificationEnabled) return;
+  const primary = policy.localPrimary || 'USER_PASSWORD';
+  const secondary = policy.localSecondary || 'NONE';
+  gateState.method = primary;
+  const methodBox = $('#localFinalActionVerificationMethod');
+  const messageBox = '#localFinalActionVerificationMessage';
+  const verifyBtn = $('#verifyFinalActionLocalBtn');
+  const sendOtpBtn = $('#sendFinalActionEmailOtpBtn');
+  const changeBtn = $('#changeFinalActionLocalVerificationBtn');
+  const status = $('#localFinalActionVerificationStatus');
+  const tokenInput = $('#localFinalActionVerificationToken');
+
+  const renderMethod = ({ showFallback = false } = {}) => {
+    gateState.challengeId = '';
+    gateState.token = '';
+    if (tokenInput) tokenInput.value = '';
+    methodBox.innerHTML = localFinalActionMethodInputHtml(gateState.method, policy);
+    if (sendOtpBtn) {
+      sendOtpBtn.classList.toggle('hidden', gateState.method !== 'EMAIL_OTP');
+      sendOtpBtn.disabled = false;
+    }
+    if (verifyBtn) verifyBtn.disabled = false;
+    if (changeBtn) {
+      const hasFallback = Boolean(secondary && secondary !== 'NONE' && secondary !== primary);
+      changeBtn.classList.toggle('hidden', !hasFallback || !showFallback);
+      changeBtn.disabled = false;
+    }
+    if (status) { status.textContent = 'Required'; status.className = 'badge warn'; }
+    setFormMessage(messageBox, `${gateState.method === primary ? 'Primary' : 'Secondary'} verification: ${{USER_PASSWORD:'User Password',SECRET_CODE:'6-digit Secret Code',EMAIL_OTP:'Email OTP'}[gateState.method] || gateState.method}`, '');
+  };
+  gateState.reset = () => {
+    gateState.method = primary;
+    renderMethod();
+  };
+
+  const startChallenge = async () => {
+    const out = await api(`/api/orders/${order.id}/final-action-verification-start`, { method:'POST', body:JSON.stringify({ action:finalAction, method:gateState.method }) });
+    gateState.challengeId = out.challengeId || '';
+    if (gateState.method === 'EMAIL_OTP') setFormMessage(messageBox, `OTP sent to ${out.emailMasked || 'your registered email'}.`, 'ok');
+    return out;
+  };
+
+  if (sendOtpBtn) sendOtpBtn.onclick = async () => {
+    sendOtpBtn.disabled = true;
+    try { await startChallenge(); }
+    catch (err) {
+      if (changeBtn && err?.data?.canUseSecondary === true) changeBtn.classList.remove('hidden');
+      setFormMessage(messageBox, err.message || 'Could not send Email OTP.', 'danger');
+    }
+    finally { sendOtpBtn.disabled = false; }
+  };
+
+  if (verifyBtn) verifyBtn.onclick = async () => {
+    verifyBtn.disabled = true;
+    try {
+      if (!gateState.challengeId) {
+        if (gateState.method === 'EMAIL_OTP') throw new Error('Send the Email OTP first.');
+        await startChallenge();
+      }
+      const value = String($('#localFinalActionVerificationValue')?.value || '');
+      if (!value.trim()) throw new Error('Enter the verification value first.');
+      const out = await api(`/api/orders/${order.id}/final-action-verification-verify`, { method:'POST', body:JSON.stringify({ action:finalAction, challengeId:gateState.challengeId, value }) });
+      gateState.token = out.token || '';
+      if (tokenInput) tokenInput.value = gateState.token;
+      if (status) { status.textContent = 'Verified'; status.className = 'badge ok'; }
+      setFormMessage(messageBox, `${out.methodLabel || 'P2PFlow verification'} verified. You can continue to Binance Release.`, 'ok');
+      const input = $('#localFinalActionVerificationValue'); if (input) { input.value = ''; input.disabled = true; }
+      verifyBtn.disabled = true;
+      if (sendOtpBtn) sendOtpBtn.disabled = true;
+      if (changeBtn) changeBtn.disabled = true;
+    } catch (err) {
+      gateState.challengeId = '';
+      if (changeBtn && err?.data?.canUseSecondary === true) changeBtn.classList.remove('hidden');
+      setFormMessage(messageBox, err.message || 'P2PFlow verification failed.', 'danger');
+    } finally {
+      if (!gateState.token) verifyBtn.disabled = false;
+    }
+  };
+
+  if (changeBtn) changeBtn.onclick = () => {
+    const next = gateState.method === primary ? secondary : primary;
+    if (!next || next === 'NONE') return;
+    gateState.method = next;
+    renderMethod({ showFallback:true });
+  };
+  renderMethod();
+}
+
+function showReleaseRequirementsInModal(err, policy = {}) {
   const box = $('#releaseDynamicFields');
   if (!box) return false;
   const req = err?.releaseRequirements || err?.data?.releaseRequirements || null;
   if (!req) return false;
+  if (String(policy.binanceMethod || 'AUTO').toUpperCase() !== 'AUTO') {
+    const notice = $('#releaseBinanceRequirementNotice');
+    if (notice) {
+      notice.innerHTML = `<div class="notice warn"><b>Binance returned another verification requirement.</b><br>${escapeHtml(req.rawMessage || err.message || 'Binance rejected the configured verification method.')}<br><small>P2PFlow is keeping the verification method selected in Settings: ${escapeHtml(policy.binanceMethodLabel || policy.binanceMethod)}.</small></div>`;
+      notice.classList.remove('hidden');
+      notice.scrollIntoView({ behavior:'smooth', block:'nearest' });
+    }
+    return true;
+  }
   box.innerHTML = releaseRequirementFieldsHtml(req);
   box.classList.remove('hidden');
   box.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
@@ -7502,15 +7708,21 @@ async function openPaymentSplitActionModal(order, finalAction) {
 function openFinalActionModal(order, finalAction) {
   const label = finalAction === 'complete' ? 'Complete Offline Order' : finalAction === 'paid_mark' ? 'Mark as Paid' : finalAction === 'quick_release' ? 'Quick Release' : 'Release Coin';
   const liveMode = order.settings?.apiMode === 'live' && order.orderSource !== 'offline' && finalAction !== 'complete';
+  const isReleaseAction = finalAction === 'release' || finalAction === 'quick_release';
+  const releasePolicy = isReleaseAction ? orderReleaseVerificationPolicy(order) : null;
+  const localGateState = { token:'', challengeId:'', method:releasePolicy?.localPrimary || 'USER_PASSWORD' };
   const previousFailure = order.lastFinalActionFailure && order.lastFinalActionFailure.action === finalAction ? order.lastFinalActionFailure : null;
   const previousRequirements = previousFailure?.releaseRequirements || null;
+  const releaseFieldsHtml = isReleaseAction
+    ? configuredReleaseVerificationFieldsHtml(releasePolicy, releasePolicy.binanceMethod === 'AUTO' ? previousRequirements : null)
+    : '';
   const liveFields = liveMode ? `
     <div class="full-row notice danger-note"><b>Live Binance Mode:</b> Binance order number and selected payment ID are taken from the synced order details.</div>
-    ${(finalAction === 'release' || finalAction === 'quick_release') ? '<div class="full-row notice"><b>Release Verification:</b> Payment Split is already saved. This page only handles the Binance release/verification step.</div>' : '<div class="full-row notice"><b>Mark Paid Verification:</b> Payment Split is already saved. This page only confirms the Binance paid-mark action.</div>'}
+    ${isReleaseAction ? `<div class="full-row notice"><b>Release Verification:</b> Payment Split is already saved. Preferred Binance verification: <b>${escapeHtml(releasePolicy.binanceMethodLabel)}</b>.</div>` : '<div class="full-row notice"><b>Mark Paid Verification:</b> Payment Split is already saved. This page only confirms the Binance paid-mark action.</div>'}
     ${previousFailure ? `<div class="full-row notice warn"><b>Previous attempt failed.</b><br>${escapeHtml(previousFailure.message || 'Retry the Binance final action.')}</div>` : ''}
     <input type="hidden" name="binanceOrderNumber" value="${escapeAttr(order.externalOrderNo || order.orderNo || '')}" />
     <input type="hidden" name="payId" value="${Number(order.binancePayId || 0) || ''}" />
-    ${(finalAction === 'release' || finalAction === 'quick_release') ? `<div id="releaseDynamicFields" class="full-row ${previousRequirements ? '' : 'hidden'}">${previousRequirements ? releaseRequirementFieldsHtml(previousRequirements) : ''}</div>` : ''}` : '';
+    ${isReleaseAction ? `${localFinalActionVerificationPanelHtml(releasePolicy)}<div id="releaseDynamicFields" class="full-row">${releaseFieldsHtml}</div><div id="releaseBinanceRequirementNotice" class="full-row hidden"></div>` : ''}` : '';
   const privilegedDirectDecision = ['admin','manager'].includes(state.user.role);
   const splitGate = finalActionSplitGateStateForOrder(order, finalAction);
   const directNotice = !splitGate.enabled && finalAction !== 'complete'
@@ -7529,9 +7741,18 @@ function openFinalActionModal(order, finalAction) {
       <div class="full-row" id="finalActionMessage"></div>
       <div class="full-row"><button class="success" type="submit">${label}</button></div>
     </form>`);
+
+  if (isReleaseAction && releasePolicy.localVerificationEnabled) bindLocalFinalActionVerification(order, finalAction, releasePolicy, localGateState);
+
   $('#finalActionForm').onsubmit = async e => {
     e.preventDefault();
+    if (isReleaseAction && releasePolicy.localVerificationEnabled && !localGateState.token) {
+      setFormMessage('#finalActionMessage', `Complete ${releasePolicy.localPrimaryLabel || 'the configured P2PFlow verification'} before ${label}. If Primary fails, use Change Verification System for the configured Secondary method.`, 'warn');
+      $('#localFinalActionVerificationPanel')?.scrollIntoView({ behavior:'smooth', block:'nearest' });
+      return;
+    }
     const obj = formObj(e.target);
+    if (isReleaseAction && localGateState.token) obj.localVerificationToken = localGateState.token;
     try {
       const updated = await api(`/api/orders/${order.id}/complete-action`, { method:'POST', body: JSON.stringify(obj) });
       if (updated.approvalRequired) {
@@ -7549,7 +7770,12 @@ function openFinalActionModal(order, finalAction) {
         Object.assign(order, err.data.order);
         state.currentOrder = order;
       }
-      const shownReleaseFields = (finalAction === 'release' || finalAction === 'quick_release') && showReleaseRequirementsInModal(err);
+      const shownReleaseFields = isReleaseAction && showReleaseRequirementsInModal(err, releasePolicy);
+      if (err?.data?.localVerificationRequired) {
+        localGateState.token = '';
+        const tokenInput = $('#localFinalActionVerificationToken'); if (tokenInput) tokenInput.value = '';
+        if (typeof localGateState.reset === 'function') localGateState.reset();
+      }
       setFormMessage('#finalActionMessage', err.message || 'Final action failed', shownReleaseFields ? 'warn' : 'danger');
     }
   };
