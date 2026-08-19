@@ -1,4 +1,4 @@
-// P2PFlow v1.5.26
+// P2PFlow v1.5.27
 // Binance-style P2P message inbox. Threads open the corresponding order chat.
 
 function stopChatInboxAutoRefresh() {

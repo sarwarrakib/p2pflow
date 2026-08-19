@@ -1,4 +1,4 @@
-// P2PFlow v1.5.26
+// P2PFlow v1.5.27
 // Page module: orders. Edit this file for the orders page UI.
 
 function orderAccountOptions(data = {}) {
@@ -406,20 +406,25 @@ function renderSplit(s) {
     ? `<br/><a class="pill-link" href="${escapeAttr(safeWebUrl(s.proofUrl))}" target="_blank" rel="noopener noreferrer">View proof</a>`
     : s.hasTransactionReference
       ? '<br/><span class="badge ok">Transaction ID saved</span>'
-      : '<br/><span class="badge warn">No evidence</span>';
-  const restricted = state.user?.role === 'agent' || s.account?.restricted;
+      : '<br/><span class="badge warn">No proof</span>';
+  const restricted = Boolean(s.account?.restricted);
   const accountLabel = restricted ? 'Managed payment account' : (s.account?.accountNumber || 'System-managed account');
-  const methodLabel = restricted ? '' : (s.account?.method?.name || '');
+  const accountMeta = restricted ? '' : [
+    s.account?.label ? `Label: ${s.account.label}` : '',
+    s.account?.serialNumber ? `Serial: ${s.account.serialNumber}` : '',
+    s.account?.method?.name || ''
+  ].filter(Boolean).join(' · ');
   const editIcon = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h4l11-11-4-4L4 16v4Z"></path><path d="m13.5 6.5 4 4"></path></svg>';
   const deleteIcon = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16"></path><path d="M9 7V4h6v3"></path><path d="m7 7 1 13h8l1-13"></path><path d="M10 11v5M14 11v5"></path></svg>';
   const actions = `${s.viewerCanEdit ? `<button type="button" class="split-icon-btn" data-update-split="${s.id}" aria-label="Edit payment split" title="Edit payment split">${editIcon}</button>` : ''}${s.viewerCanDelete ? `<button type="button" class="split-icon-btn danger" data-delete-split="${s.id}" aria-label="Delete payment split" title="Delete payment split">${deleteIcon}</button>` : ''}`;
   return `<div class="split-row">
-    <div class="toolbar compact">
-      <div><b>${escapeHtml(accountLabel)}</b>${methodLabel ? ` - ${escapeHtml(methodLabel)}` : ''}<br/><span class="sub">${s.agent?.name ? `User: ${escapeHtml(s.agent.name)}` : ''}</span></div>
-      ${actions ? `<div class="split-row-actions">${actions}</div>` : ''}
+    <div class="toolbar compact split-account-toolbar">
+      <div class="split-account-identity"><b>${escapeHtml(accountLabel)}</b>${accountMeta ? `<small>${escapeHtml(accountMeta)}</small>` : ''}${s.agent?.name ? `<small>User: ${escapeHtml(s.agent.name)}</small>` : ''}</div>
+      <div class="split-amount-side"><span>${money(s.actualAmount)}</span>${actions ? `<div class="split-row-actions">${actions}</div>` : ''}</div>
     </div>
-    Amount: <b>${money(s.actualAmount)}</b> | Charge / commission: <b>${money(s.transactionChargeAmount || 0)}</b> | Status: ${badge(s.status, statusClass(s.status))}
+    <span class="sub">Charge / commission: <b>${money(s.transactionChargeAmount || 0)}</b> · Status: ${badge(s.status, statusClass(s.status))}</span>
     ${proof}
     ${s.note ? `<br/><span class="sub">Note: ${escapeHtml(s.note)}</span>` : ''}
   </div>`;
 }
+

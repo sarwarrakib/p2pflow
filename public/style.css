@@ -5259,7 +5259,7 @@ tr:hover td{background:#fbfbfc}
 
 /* v1.5.23 payment-account serial scope */
 
-/* P2PFlow v1.5.26 payment-account rules and filtered management */
+/* P2PFlow v1.5.27 payment-account rules and filtered management */
 .payment-account-select{display:grid;place-items:center;margin:0;min-width:30px}
 .payment-account-select input{width:18px;height:18px;margin:0;accent-color:var(--primary,#2563eb)}
 .payment-account-bulk-bar{display:flex;align-items:center;justify-content:space-between;gap:14px;margin-bottom:12px;padding:12px 14px}
@@ -5274,7 +5274,7 @@ tr:hover td{background:#fbfbfc}
   .payment-account-bulk-bar .actions button:first-child{grid-column:1/-1}
 }
 
-/* v1.5.26 - compact Payment Accounts filters, icons, and transaction-specific rules */
+/* v1.5.27 - compact Payment Accounts filters, icons, and transaction-specific rules */
 .payment-account-toolbar-v2{display:grid;grid-template-columns:auto minmax(360px,1fr) auto;align-items:center;gap:10px}
 .payment-account-filterbar{display:grid;grid-template-columns:minmax(220px,1.5fr) minmax(130px,.65fr) minmax(140px,.8fr) minmax(150px,.9fr);gap:8px;min-width:0}
 .payment-account-filterbar input,.payment-account-filterbar select{width:100%;min-width:0;height:38px;margin:0}
@@ -5311,9 +5311,41 @@ tr:hover td{background:#fbfbfc}
   .payment-rule-grid,.bulk-payment-rule-card .payment-rule-grid{grid-template-columns:1fr}
 }
 
-/* v1.5.26 payment split edit/delete controls */
+/* v1.5.27 payment split edit/delete controls */
 .split-row-actions{display:flex;align-items:center;gap:6px;flex:0 0 auto}
 .split-icon-btn{width:34px;height:34px;min-width:34px;padding:0;display:inline-grid;place-items:center;border-radius:9px}
 .split-icon-btn svg{width:17px;height:17px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
 .split-icon-btn.danger{border-color:rgba(190,38,51,.35)}
 @media (max-width:700px){.split-icon-btn{width:32px;height:32px;min-width:32px}.split-row .toolbar.compact{align-items:flex-start}}
+
+/* v1.5.27 payment-number multi-select and split allocation */
+.selected-payment-account-row{display:grid;gap:1px;padding:2px 0}
+.selected-payment-account-row+ .selected-payment-account-row{margin-top:5px;padding-top:6px;border-top:1px solid rgba(22,163,74,.16)}
+.selected-payment-account-row b{white-space:normal!important;overflow:visible!important;text-overflow:clip!important}
+.quick-number-row{grid-template-columns:28px minmax(0,1fr) auto}
+.quick-number-check{display:grid;place-items:center;width:22px;height:22px;border:1px solid #cbd5e1;border-radius:7px;background:#fff;color:#166534;font-size:13px;font-weight:950}
+.quick-number-row.is-picked .quick-number-check{border-color:#86efac;background:#dcfce7}
+.quick-number-confirmbar{position:sticky;bottom:-10px;z-index:3;display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:9px;padding:9px 2px 0;background:#f8fafc;border-top:1px solid #e2e8f0}
+.quick-number-confirmbar>span{font-size:11px;color:#64748b}
+.quick-number-confirmbar>div{display:flex;gap:6px}
+.quick-number-confirmbar button{min-height:34px;padding:7px 10px;border-radius:10px;font-size:11px}
+.split-batch-list{display:grid;gap:8px}
+.split-batch-row{display:grid;grid-template-columns:minmax(170px,1.4fr) minmax(110px,.7fr) minmax(120px,.75fr);gap:10px;align-items:end;padding:10px;border:1px solid #e2e8f0;border-radius:13px;background:#f8fafc}
+.split-batch-account{min-width:0;align-self:center}
+.split-batch-account b,.split-batch-account small{display:block}
+.split-batch-account b{font-size:14px;color:#0f172a;overflow:hidden;text-overflow:ellipsis}
+.split-batch-account small{margin-top:3px;font-size:10px;line-height:1.35;color:#64748b}
+.split-batch-value label{font-size:9px;text-transform:uppercase;letter-spacing:.04em;color:#64748b}
+.split-batch-value input{min-height:38px;height:38px}
+.split-account-toolbar{align-items:flex-start}
+.split-account-identity{display:grid;gap:2px;min-width:0}
+.split-account-identity>b{font-size:13px;overflow-wrap:anywhere}
+.split-account-identity small{display:block;color:#64748b;font-size:10px}
+.split-amount-side{display:flex;align-items:center;gap:8px;margin-left:auto}
+.split-amount-side>span{font-size:14px;font-weight:900;white-space:nowrap}
+@media (max-width:700px){
+  .split-batch-row{grid-template-columns:minmax(0,1fr) minmax(95px,.55fr)}
+  .split-batch-account{grid-column:1/-1}
+  .split-batch-value.compact{grid-column:auto}
+  .quick-number-confirmbar{align-items:flex-start}
+}

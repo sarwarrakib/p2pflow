@@ -29,6 +29,14 @@ assert(app.includes('Check Paid & Release') && !app.includes('Waiting for Buyer 
 assert(server.includes('UNPAID|NOT[_\\s-]*PAID') && app.includes('orderTextExplicitlyUnpaid'), 'UNPAID status regression guard is missing.');
 assert(css.includes('.split-icon-btn'), 'Compact split action styling is missing.');
 
+
+assert(server.includes("if (direction === 'receive') return 'none'"), 'Personal/Merchant receive split can still inherit a Send Money charge.');
+assert(server.includes('requirePaymentSplitForFinalAction') && server.includes('paymentSplitProofRequired'), 'Payment Split gate/proof settings are missing.');
+assert(server.includes("action === 'splits-batch'") && server.includes('addSplitBatch'), 'Atomic multi-account Payment Split endpoint is missing.');
+assert(app.includes('paymentAccountIds') && app.includes('Send Selected') && app.includes('window.confirm'), 'Confirmed multi-select payment-number send UI is missing.');
+assert(app.includes('splitBatchRowsHtml') && app.includes('collectSplitBatchItems'), 'Multi-number split amount rows are missing.');
+assert(app.includes("o.settings?.requirePaymentSplitForFinalAction !== false") && app.includes("openFinalActionModal(o, finalAction)"), 'Final action UI does not bypass the split popup when disabled.');
+assert(orders.includes('Serial:') && orders.includes('Label:'), 'Split rows do not show payment-account Label and Serial.');
 const runtime = spawnSync(process.execPath, ['app-server.js', '--payment-split-final-action-self-test'], { cwd:root, encoding:'utf8', env:{...process.env, NODE_ENV:'test'} });
 if (runtime.stdout) process.stdout.write(runtime.stdout);
 if (runtime.stderr) process.stderr.write(runtime.stderr);
@@ -38,8 +46,10 @@ let report;
 try { report = JSON.parse(String(runtime.stdout || '').trim()); } catch { fail('runtime report is not JSON.'); }
 assert(report?.ok === true, 'runtime self-test did not report ok.');
 assert(report?.splitEdit?.send1000To500RestoresLimit === true && report?.splitEdit?.receive1000To500RestoresLimit === true, 'split edit limit restoration assertions failed.');
+assert(report?.splitEdit?.receiveDoesNotApplySendMoneyCharge === true, 'SELL/receive split still applies the Send Money charge.');
 assert(report?.splitDelete?.balanceRestored === true && report?.splitDelete?.sendLimitRestored === true && report?.splitDelete?.receiveLimitRestored === true, 'split delete restoration assertions failed.');
 assert(report?.finalAction?.genericIdRejectedAsPayId === true && report?.finalAction?.unpaidStatusNotMisclassified === true, 'final-action payId/status assertions failed.');
+assert(report?.finalAction?.splitGateToggle === true && report?.finalAction?.proofMandatoryOptional === true, 'Payment Split gate/proof mode runtime assertions failed.');
 
 console.log(JSON.stringify({
   ok:true,
@@ -47,6 +57,10 @@ console.log(JSON.stringify({
   splitEditDelete:true,
   limitRestoration:true,
   configuredChargeRecalculation:true,
+  receiveSplitChargeFree:true,
+  splitGateToggle:true,
+  proofMandatoryOptional:true,
+  multiNumberSelection:true,
   safePayIdResolution:true,
   liveFinalActionRefresh:true,
   unpaidStatusGuard:true

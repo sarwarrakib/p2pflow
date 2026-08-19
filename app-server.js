@@ -767,7 +767,9 @@ function normalizedAdvertisementMerchantSettings(source = {}) {
 function defaultSettings() {
   return {
     appName: 'P2PFlow',
-    requireProofForFinalAction: true,
+    requireProofForFinalAction: true, // legacy mirror of paymentSplitProofRequired
+    requirePaymentSplitForFinalAction: true,
+    paymentSplitProofRequired: true,
     mismatchTolerance: 0,
     highAmountApprovalThreshold: 100000,
     activeLockSeconds: 180,
@@ -1254,6 +1256,11 @@ function seedDb() {
 function migrateDb(target) {
   target.meta = target.meta || { nextId: 1000, createdAt: nowIso() };
   const previousSchemaVersion = Number(target.meta.schemaVersion || 0);
+  const existingSettingsBeforeDefaults = target.settings && typeof target.settings === 'object' ? target.settings : {};
+  const hadPaymentSplitProofRequired = Object.prototype.hasOwnProperty.call(existingSettingsBeforeDefaults, 'paymentSplitProofRequired');
+  const legacyProofRequirement = Object.prototype.hasOwnProperty.call(existingSettingsBeforeDefaults, 'requireProofForFinalAction')
+    ? existingSettingsBeforeDefaults.requireProofForFinalAction !== false
+    : true;
   const existingCompatibilityEpoch = Number(target.meta.dataCompatibilityEpoch || APP_DATA_COMPATIBILITY_EPOCH);
   if (!Number.isSafeInteger(existingCompatibilityEpoch) || existingCompatibilityEpoch < 1) throw new Error('Database data compatibility epoch is invalid.');
   if (existingCompatibilityEpoch !== APP_DATA_COMPATIBILITY_EPOCH) {
@@ -1263,6 +1270,9 @@ function migrateDb(target) {
   const hadAccountingOpeningCapitalUsd = Boolean(target.settings && Object.prototype.hasOwnProperty.call(target.settings, 'accountingOpeningCapitalUsd'));
   target.meta.schemaVersion = Math.max(previousSchemaVersion, APP_SCHEMA_VERSION);
   target.settings = { ...defaultSettings(), ...(target.settings || {}) };
+  if (!hadPaymentSplitProofRequired) target.settings.paymentSplitProofRequired = legacyProofRequirement;
+  target.settings.requireProofForFinalAction = target.settings.paymentSplitProofRequired !== false;
+  target.settings.requirePaymentSplitForFinalAction = target.settings.requirePaymentSplitForFinalAction !== false;
   ensureWebPushVapidSettings(target.settings);
   // v1.0.157: v1.0.156 unintentionally replaced the established product branding.
   // Revert only that exact automatic value during the schema upgrade; preserve any other owner customization.
@@ -1745,6 +1755,12 @@ function migrateDb(target) {
       o.credentialId = null;
       o.credentialName = '';
     }
+    const normalizedSelectedPaymentAccountIds = Array.from(new Set([
+      ...(Array.isArray(o.selectedPaymentAccountIds) ? o.selectedPaymentAccountIds : []),
+      o.selectedPaymentAccountId
+    ].map(value => Number(value || 0)).filter(Boolean)));
+    o.selectedPaymentAccountIds = normalizedSelectedPaymentAccountIds;
+    if (!o.selectedPaymentAccountId && normalizedSelectedPaymentAccountIds.length) o.selectedPaymentAccountId = normalizedSelectedPaymentAccountIds[0];
     ensureOrderFinancials(o);
   });
   target.advertisements.forEach(ad => {
@@ -2347,9 +2363,31 @@ function paymentAdjustmentRuleKey(accountItem = {}, transactionType = '', direct
 }
 
 function paymentSplitAdjustmentKind(accountItem = {}, split = {}) {
+  const accountType = normalizePaymentAccountType(accountItem.accountType);
+  const direction = cleanStr(split.direction || '', 20).toLowerCase();
   const stored = cleanStr(split.transactionAdjustmentKind || '', 20).toLowerCase();
-  if (['charge', 'commission'].includes(stored)) return stored;
-  return normalizePaymentAccountType(accountItem.accountType) === 'agent' ? 'commission' : 'charge';
+  // Agent wallets earn commission in both order directions. Personal/Merchant
+  // wallets only pay the Send Money charge when money leaves the wallet; a
+  // SELL-order receive split must never inherit the legacy send-money charge.
+  if (accountType === 'agent') {
+    // Preserve old finalized Agent rows that were explicitly stored as charges,
+    // otherwise use the current commission model.
+    if (stored === 'charge' && positiveNum(split.transactionChargeAmount || 0) > 0) return 'charge';
+    return 'commission';
+  }
+  if (direction === 'receive') return 'none';
+  if (stored === 'commission') return 'commission';
+  return 'charge';
+}
+
+function paymentSplitChargeInfo(accountItem = {}, split = {}, amount = 0, manualCharge = null) {
+  const adjustmentKind = paymentSplitAdjustmentKind(accountItem, split);
+  if (adjustmentKind === 'none') {
+    return { adjustmentKind, chargeInfo: { amount: 0, mode: 'none', source: 'not_applicable', ruleKey: null } };
+  }
+  const direction = cleanStr(split.direction || 'send', 20).toLowerCase() === 'receive' ? 'receive' : 'send';
+  const ruleKey = paymentAdjustmentRuleKey(accountItem, '', direction);
+  return { adjustmentKind, chargeInfo: paymentTransferCharge(accountItem, amount, direction, manualCharge, ruleKey) };
 }
 
 function createAutomaticAgentCommissionEntry({
@@ -2547,9 +2585,7 @@ function createManualPaymentAccountTransaction(user, accountItem, body = {}) {
 function splitWalletMovementPreview(split = {}, accountItem = {}, newActual = 0, manualCharge = null) {
   const oldActual = positiveNum(split.actualAmount || 0);
   const oldCharge = positiveNum(split.transactionChargeAmount || 0);
-  const adjustmentKind = paymentSplitAdjustmentKind(accountItem, split);
-  const ruleKey = paymentAdjustmentRuleKey(accountItem, '', split.direction || 'send');
-  const chargeInfo = paymentTransferCharge(accountItem, newActual, split.direction || 'send', manualCharge, ruleKey);
+  const { adjustmentKind, chargeInfo } = paymentSplitChargeInfo(accountItem, split, newActual, manualCharge);
   const newCharge = positiveNum(chargeInfo.amount || 0);
   const amountDelta = round2(positiveNum(newActual) - oldActual);
   const chargeDelta = round2(newCharge - oldCharge);
@@ -2831,8 +2867,8 @@ function activeSplitAccountsForAgent(order, agentId, direction, requiredAmount =
     .map(account => ({ account, view: accountView(account) }))
     .filter(({ account, view }) => {
       const amount = Math.max(0, num(requiredAmount || 0));
-      const adjustmentKind = paymentSplitAdjustmentKind(account);
-      const charge = paymentTransferCharge(account, amount, direction, null, paymentAdjustmentRuleKey(account, '', direction)).amount;
+      const { adjustmentKind, chargeInfo } = paymentSplitChargeInfo(account, { direction }, amount, null);
+      const charge = chargeInfo.amount;
       if (direction === 'send') {
         const balanceRequired = amount + (adjustmentKind === 'charge' ? charge : 0);
         return num(view.currentBalance) + 1e-9 >= balanceRequired && num(view.sendLimitAvailable ?? view.sendAvailable) + 1e-9 >= amount;
@@ -2879,9 +2915,8 @@ function validateNewSplit(order, accountItem, splitAgentId, direction, planned, 
     return `Payment account ${accountItem.accountNumber || accountItem.id} is reserved by pending order ${reservation.orderNo || reservation.orderId || ''}.`;
   }
   const view = accountView(accountItem);
-  const adjustmentKind = paymentSplitAdjustmentKind(accountItem);
-  const chargeInfo = paymentTransferCharge(accountItem, amount, direction, options.manualCharge, paymentAdjustmentRuleKey(accountItem, '', direction));
-  if (chargeInfo.mode === 'manual' && chargeInfo.source === 'manual_required_not_supplied') {
+  const { adjustmentKind, chargeInfo } = paymentSplitChargeInfo(accountItem, { direction }, amount, options.manualCharge);
+  if (adjustmentKind !== 'none' && chargeInfo.mode === 'manual' && chargeInfo.source === 'manual_required_not_supplied') {
     return `${adjustmentKind === 'commission' ? 'Commission' : 'Charge'} amount is required because this payment account uses a manual rule.`;
   }
   const charge = chargeInfo.amount;
@@ -3141,6 +3176,9 @@ function publicSettings() {
   });
   settings.mailFailoverEnabledCount = runtimeMailFallbackConfigs().length;
   settings.p2pExtensionConfigured = Boolean(db.settings.p2pExtensionToken);
+  settings.requirePaymentSplitForFinalAction = db.settings.requirePaymentSplitForFinalAction !== false;
+  settings.paymentSplitProofRequired = db.settings.paymentSplitProofRequired !== false;
+  settings.requireProofForFinalAction = settings.paymentSplitProofRequired;
   settings.applicationVersion = APP_VERSION;
   settings.databaseSchemaVersion = Number(db.meta?.schemaVersion || 0);
   settings.storageProvider = DATABASE_PROVIDER;
@@ -6741,14 +6779,15 @@ function approvalView(item) {
 
 function finalActionIssueList(user, order, action, summary, relevantSplits) {
   const issues = [];
-  if (summary && !summary.matched) {
+  const splitGateEnabled = action === 'complete' || order.orderSource === 'offline' || db.settings.requirePaymentSplitForFinalAction !== false;
+  if (splitGateEnabled && summary && !summary.matched) {
     issues.push({ code: 'mismatch', label: 'Payment amount mismatch', detail: `Difference ${summary.difference}; remaining ${summary.remaining}` });
   }
   if (num(order.amount) >= num(db.settings.highAmountApprovalThreshold || 0) && num(db.settings.highAmountApprovalThreshold || 0) > 0) {
     issues.push({ code: 'high_amount', label: 'High amount order', detail: `Order amount ${order.amount} >= threshold ${db.settings.highAmountApprovalThreshold}` });
   }
-  if (order.orderSource !== 'offline' && db.settings.requireProofForFinalAction && relevantSplits.some(s => !splitHasEvidence(s))) {
-    issues.push({ code: 'proof_missing', label: 'Payment evidence missing', detail: 'One or more actual payment split rows have neither a proof screenshot nor a transaction ID.' });
+  if (splitGateEnabled && order.orderSource !== 'offline' && db.settings.paymentSplitProofRequired !== false && relevantSplits.some(s => !s.proofFileId)) {
+    issues.push({ code: 'proof_missing', label: 'Payment proof missing', detail: 'One or more actual Payment Split rows do not have a proof screenshot.' });
   }
   return issues;
 }
@@ -9868,26 +9907,40 @@ async function sendBinanceChatMessage(req, res, user, order) {
   const credential = requireOrderBinanceCredential(req, res, user, order, 'binance.chat'); if (!credential) return;
   const body = await readBody(req);
   const orderNo = binanceOrderNumberFor(order, body);
-  let selectedPaymentAccount = null;
-  if (body.paymentAccountId !== undefined && body.paymentAccountId !== null && body.paymentAccountId !== '') {
-    selectedPaymentAccount = accountById(Number(body.paymentAccountId));
-    if (!selectedPaymentAccount) return sendJson(res, 404, { error: 'Payment account not found.' }, {}, req);
-    if (!canUsePaymentAccount(user, selectedPaymentAccount)) return sendJson(res, 403, { error: 'No permission to use this payment account.' }, {}, req);
-    if (String(selectedPaymentAccount.status || '').toLowerCase() !== 'active') return sendJson(res, 422, { error: 'Only an active payment account can be sent and selected.' }, {}, req);
+  const requestedPaymentAccountIds = Array.isArray(body.paymentAccountIds)
+    ? body.paymentAccountIds
+    : (body.paymentAccountId !== undefined && body.paymentAccountId !== null && body.paymentAccountId !== '' ? [body.paymentAccountId] : []);
+  const paymentAccountIds = Array.from(new Set(requestedPaymentAccountIds.map(value => Number(value || 0)).filter(Boolean)));
+  if (paymentAccountIds.length > 30) return sendJson(res, 422, { error: 'Select at most 30 payment accounts at a time.' }, {}, req);
+  const selectedPaymentAccounts = [];
+  for (const paymentAccountId of paymentAccountIds) {
+    const accountItem = accountById(paymentAccountId);
+    if (!accountItem) return sendJson(res, 404, { error: `Payment account ${paymentAccountId} was not found.` }, {}, req);
+    if (!canUsePaymentAccount(user, accountItem)) return sendJson(res, 403, { error: 'No permission to use one or more selected payment accounts.' }, {}, req);
+    if (String(accountItem.status || '').toLowerCase() !== 'active') return sendJson(res, 422, { error: 'Only active payment accounts can be sent and selected.' }, {}, req);
+    if (Number(accountItem.paymentMethodId || 0) !== Number(order.paymentMethodId || 0)) return sendJson(res, 422, { error: 'A selected payment account does not match this order payment method.' }, {}, req);
+    if (!cleanStr(accountItem.accountNumber || '', 120)) return sendJson(res, 422, { error: 'A selected payment account does not have a payment number.' }, {}, req);
+    selectedPaymentAccounts.push(accountItem);
   }
+  const selectedPaymentAccount = selectedPaymentAccounts[0] || null;
   let content = cleanStr(body.message || body.content || '', 2000);
   let type = cleanStr(body.type || 'text', 20).toLowerCase();
-  if (body.sendPaymentAccount === true && selectedPaymentAccount) {
-    if (!cleanStr(selectedPaymentAccount.accountNumber || '', 120)) return sendJson(res, 422, { error: 'The selected payment account does not have a payment number.' }, {}, req);
-    const selectedMethod = methodById(selectedPaymentAccount.paymentMethodId);
-    const accountTypeValue = normalizePaymentAccountType(selectedPaymentAccount.accountType);
-    const accountTypeName = accountTypeValue === 'agent' ? 'Agent' : (accountTypeValue === 'merchant' ? 'Merchant' : 'Personal');
-    content = [
-      `Payment method: ${cleanStr(selectedMethod?.name || selectedMethod?.code || 'Payment account', 100)}`,
-      `Account type: ${accountTypeName}`,
-      selectedPaymentAccount.accountName ? `Account name: ${cleanStr(selectedPaymentAccount.accountName, 120)}` : '',
-      `Payment number: ${cleanStr(selectedPaymentAccount.accountNumber, 120)}`
-    ].filter(Boolean).join('\n');
+  if (body.sendPaymentAccount === true && selectedPaymentAccounts.length) {
+    if (selectedPaymentAccounts.length > 1) {
+      // For a multi-number send, the counterparty should receive only the clean
+      // number list. Labels and serials remain CRM-only context.
+      content = selectedPaymentAccounts.map(accountItem => cleanStr(accountItem.accountNumber, 120)).join('\n');
+    } else {
+      const selectedMethod = methodById(selectedPaymentAccount.paymentMethodId);
+      const accountTypeValue = normalizePaymentAccountType(selectedPaymentAccount.accountType);
+      const accountTypeName = accountTypeValue === 'agent' ? 'Agent' : (accountTypeValue === 'merchant' ? 'Merchant' : 'Personal');
+      content = [
+        `Payment method: ${cleanStr(selectedMethod?.name || selectedMethod?.code || 'Payment account', 100)}`,
+        `Account type: ${accountTypeName}`,
+        selectedPaymentAccount.accountName ? `Account name: ${cleanStr(selectedPaymentAccount.accountName, 120)}` : '',
+        `Payment number: ${cleanStr(selectedPaymentAccount.accountNumber, 120)}`
+      ].filter(Boolean).join('\n');
+    }
     type = 'text';
   }
   let storedMessageType = '';
@@ -9923,24 +9976,29 @@ async function sendBinanceChatMessage(req, res, user, order) {
     rawBinanceMessage: { type: payload.type, crmMessageType: storedMessageType || payload.type, content, uuid: payload.uuid, orderNo, self: true, sendStatus: 0 }, createdAt: nowIso()
   };
   db.chats.push(chat);
-  if (selectedPaymentAccount) {
-    order.selectedPaymentAccountId = selectedPaymentAccount.id;
+  if (selectedPaymentAccounts.length) {
+    const snapshots = selectedPaymentAccounts.map(accountItem => ({
+      id: accountItem.id,
+      paymentMethodId: accountItem.paymentMethodId,
+      accountNumber: accountItem.accountNumber,
+      accountName: accountItem.accountName || '',
+      accountType: accountItem.accountType || 'personal',
+      label: cleanStr(accountItem.label || '', 80),
+      serialNumber: cleanStr(accountItem.serialNumber || '', 80)
+    }));
+    order.selectedPaymentAccountIds = selectedPaymentAccounts.map(accountItem => Number(accountItem.id));
+    order.selectedPaymentAccountId = selectedPaymentAccount.id; // backward-compatible primary selection
     order.selectedPaymentAccountSetAt = nowIso();
     order.selectedPaymentAccountSetBy = user.id;
-    order.selectedPaymentAccountSnapshot = {
-      id: selectedPaymentAccount.id,
-      paymentMethodId: selectedPaymentAccount.paymentMethodId,
-      accountNumber: selectedPaymentAccount.accountNumber,
-      accountName: selectedPaymentAccount.accountName || '',
-      accountType: selectedPaymentAccount.accountType || 'personal'
-    };
+    order.selectedPaymentAccountSnapshots = snapshots;
+    order.selectedPaymentAccountSnapshot = snapshots[0];
     order.updatedAt = nowIso();
-    logAudit(user, 'order_payment_account_selected_via_chat', 'order', order.id, { paymentAccountId: selectedPaymentAccount.id, accountNumber: selectedPaymentAccount.accountNumber, paymentMethodId: selectedPaymentAccount.paymentMethodId });
+    logAudit(user, 'order_payment_accounts_selected_via_chat', 'order', order.id, { paymentAccountIds: order.selectedPaymentAccountIds, accountNumbers: selectedPaymentAccounts.map(accountItem => accountItem.accountNumber), paymentMethodId: selectedPaymentAccount.paymentMethodId });
   }
-  logAudit(user, 'binance_chat_message_sent', 'order', order.id, { orderNo, type: storedMessageType || payload.type, uuid: payload.uuid, paymentAccountId: selectedPaymentAccount?.id || null, uploadInfo: uploadInfo ? { imageUrl: uploadInfo.imageUrl || null, videoUrl: uploadInfo.videoUrl || null } : null, wsMs: sendResult.ms });
+  logAudit(user, 'binance_chat_message_sent', 'order', order.id, { orderNo, type: storedMessageType || payload.type, uuid: payload.uuid, paymentAccountId: selectedPaymentAccount?.id || null, paymentAccountIds: selectedPaymentAccounts.map(accountItem => Number(accountItem.id)), uploadInfo: uploadInfo ? { imageUrl: uploadInfo.imageUrl || null, videoUrl: uploadInfo.videoUrl || null } : null, wsMs: sendResult.ms });
   saveDb();
   broadcast({ type: 'chat.message.sent', orderId: order.id, orderNo: order.orderNo, externalOrderNo: orderNo, source: 'binance', messageType: storedMessageType || payload.type, senderUserId: user.id, senderName: user.name, senderRole: user.role, at: nowIso() });
-  if (selectedPaymentAccount) broadcast({ type: 'order.payment_account.selected', orderId: order.id, paymentAccountId: selectedPaymentAccount.id, at: nowIso() });
+  if (selectedPaymentAccounts.length) broadcast({ type: 'order.payment_account.selected', orderId: order.id, paymentAccountId: selectedPaymentAccount.id, paymentAccountIds: selectedPaymentAccounts.map(accountItem => Number(accountItem.id)), at: nowIso() });
   return sendJson(res, 201, { order: fullOrderView(order, user), sent: true, uuid: payload.uuid, messageType: storedMessageType || payload.type }, {}, req);
 }
 
@@ -19198,6 +19256,7 @@ async function handleOrderById(req, res, parts) {
   if (req.method === 'POST' && action === 'assign') return managerAssign(req, res, user, order);
   if (req.method === 'POST' && action === 'request-coagent') return requestCoAgent(req, res, user, order);
   if (req.method === 'POST' && action === 'splits') return addSplit(req, res, user, order);
+  if (req.method === 'POST' && action === 'splits-batch') return addSplitBatch(req, res, user, order);
   if (req.method === 'POST' && action === 'chat') return addChat(req, res, user, order);
   if (req.method === 'POST' && action === 'binance-auto-sync') return autoSyncBinanceOrderBundle(req, res, user, order);
   if (req.method === 'POST' && action === 'binance-refresh') return refreshBinanceOrderDetail(req, res, user, order);
@@ -19216,11 +19275,22 @@ async function handleOrderById(req, res, parts) {
 function fullOrderView(order, user = null) {
   syncOrderAssignments(order.id);
   if (order && String(order.type || '').toUpperCase() === 'SELL') applyCachedP2pExtensionDataToOrder(order);
-  const selectedPaymentAccount = order.selectedPaymentAccountId ? accountById(order.selectedPaymentAccountId) : null;
-  const canViewSelectedPaymentAccount = selectedPaymentAccount && canAccessAccount(user, selectedPaymentAccount);
+  const rawSelectedPaymentAccountIds = Array.from(new Set([
+    ...(Array.isArray(order.selectedPaymentAccountIds) ? order.selectedPaymentAccountIds : []),
+    order.selectedPaymentAccountId
+  ].map(value => Number(value || 0)).filter(Boolean)));
+  const selectedPaymentAccounts = rawSelectedPaymentAccountIds
+    .map(id => accountById(id))
+    .filter(accountItem => accountItem && !paymentAccountDeleted(accountItem) && canAccessAccount(user, accountItem))
+    .map(accountItem => accountView(accountItem, user));
+  const selectedPaymentAccount = selectedPaymentAccounts[0] || null;
+  const selectedPaymentAccountIds = selectedPaymentAccounts.map(accountItem => Number(accountItem.id));
   return {
     ...orderListView(order, user),
-    selectedPaymentAccount: canViewSelectedPaymentAccount ? accountView(selectedPaymentAccount, user) : null,
+    selectedPaymentAccountIds,
+    selectedPaymentAccountId: selectedPaymentAccount ? Number(selectedPaymentAccount.id) : null,
+    selectedPaymentAccount,
+    selectedPaymentAccounts,
     paymentSplits: db.paymentSplits.filter(s => s.orderId === order.id).map(split => splitView(split, user)),
     ledgers: db.ledgers.filter(l => l.orderId === order.id && canAccessAccount(user, accountById(l.paymentAccountId))).map(l => ledgerView(l, user)),
     chats: db.chats.filter(c => c.orderId === order.id).map(chatView),
@@ -19388,64 +19458,136 @@ async function requestCoAgent(req, res, user, order) {
   return sendJson(res, 200, fullOrderView(order, user), {}, req);
 }
 
-async function addSplit(req, res, user, order) {
-  if (!userHasPermission(user, 'orders.split')) return sendJson(res, 403, { error: 'Permission denied: orders.split' }, {}, req);
-  if (order.orderSource !== 'offline' && !canUseOrderCredential(user, order, 'orders.split')) return sendJson(res, 403, { error: 'No orders.split access to this Binance account.' }, {}, req);
-  if (['completed','released','paid_marked','cancelled'].includes(order.status)) return sendJson(res, 422, { error: 'Order is already finalized' }, {}, req);
-  const body = await readBody(req);
+function splitOperationError(message, statusCode = 422) {
+  const error = new Error(message);
+  error.statusCode = statusCode;
+  return error;
+}
+
+function createPaymentSplitForOrder(user, order, body = {}) {
   const direction = cleanStr(body.direction || (order.type === 'BUY' ? 'send' : 'receive'), 20);
-  if (!['send','receive'].includes(direction)) return sendJson(res, 422, { error: 'Invalid split direction' }, {}, req);
+  if (!['send','receive'].includes(direction)) throw splitOperationError('Invalid split direction', 422);
 
   let splitAgentId = body.agentId ? Number(body.agentId) : (user.agentId || 0);
   let assignment = null;
   if (user.role === 'agent') {
     splitAgentId = Number(user.agentId || 0);
     assignment = activeAssignmentForAgent(order.id, splitAgentId);
-    if (!assignment) return sendJson(res, 403, { error: 'You are not actively assigned to this order.' }, {}, req);
+    if (!assignment) throw splitOperationError('You are not actively assigned to this order.', 403);
   } else if (!['admin','manager'].includes(user.role)) {
-    return sendJson(res, 403, { error: 'Only an assigned agent or Admin/Manager can save a payment split.' }, {}, req);
+    throw splitOperationError('Only an assigned agent or Admin/Manager can save a payment split.', 403);
   }
 
   const amount = positiveNum(body.amount ?? body.actualAmount ?? body.plannedAmount ?? 0);
   const assignmentRemaining = assignment ? Math.max(0, num(assignment.assignedAmount || 0) - plannedForAgent(order.id, splitAgentId, direction)) : 0;
   const actual = amount || assignmentRemaining;
   const planned = actual;
+  if (actual <= 0) throw splitOperationError('Payment Split amount must be greater than zero.', 422);
 
   let accountItem = body.paymentAccountId ? accountById(body.paymentAccountId) : null;
   if (user.role === 'agent') {
-    if (!userHasPermission(user, 'accounts.use')) return sendJson(res, 403, { error: 'Permission denied: accounts.use' }, {}, req);
+    if (!userHasPermission(user, 'accounts.use')) throw splitOperationError('Permission denied: accounts.use', 403);
     if (accountItem && (!accountAssignedToAgent(accountItem, splitAgentId) || Number(accountItem.paymentMethodId) !== Number(order.paymentMethodId))) accountItem = null;
     if (!accountItem) accountItem = chooseSplitAccountForAgent(order, splitAgentId, direction, Math.max(planned, actual));
-    if (!accountItem) return sendJson(res, 422, { error: 'No active system payment account with enough capacity is assigned to you for this payment method. Ask Admin/Manager to assign or fund an account.' }, {}, req);
+    if (!accountItem) throw splitOperationError('No active system payment account with enough capacity is assigned to you for this payment method. Ask Admin/Manager to assign or fund an account.', 422);
   } else {
-    if (!accountItem) return sendJson(res, 404, { error: 'Payment account not found' }, {}, req);
-    if (!canUsePaymentAccount(user, accountItem)) return sendJson(res, 403, { error: 'No permission to use this payment account' }, {}, req);
+    if (!accountItem) throw splitOperationError('Payment account not found', 404);
+    if (!canUsePaymentAccount(user, accountItem)) throw splitOperationError('No permission to use this payment account', 403);
   }
-  if (accountItem.status !== 'active') return sendJson(res, 422, { error: 'Payment account is not active. Activate it before using in an order split.' }, {}, req);
-  if (Number(accountItem.paymentMethodId) !== Number(order.paymentMethodId)) return sendJson(res, 422, { error: 'Payment account method does not match order method' }, {}, req);
-  if (!splitAgentId) splitAgentId = Number(accountItem.agentId || 0);
+  if (accountItem.status !== 'active') throw splitOperationError('Payment account is not active. Activate it before using in an order split.', 422);
+  if (Number(accountItem.paymentMethodId) !== Number(order.paymentMethodId)) throw splitOperationError('Payment account method does not match order method', 422);
+  if (!splitAgentId) splitAgentId = Number(paymentAccountOwnerAgentId(paymentAccountOwnerUser(accountItem)) || 0);
 
   const manualCharge = body.actualCharge ?? body.transactionChargeAmount ?? null;
   const validationError = validateNewSplit(order, accountItem, splitAgentId, direction, planned, actual, { allowUnassigned: isPrivilegedOrderOperator(user), manualCharge });
-  if (validationError) return sendJson(res, 422, { error: validationError }, {}, req);
-  const split = { id: nextId(), orderId: order.id, agentId: splitAgentId, paymentAccountId: accountItem.id, paymentMethodId: accountItem.paymentMethodId, direction, plannedAmount: planned, actualAmount: 0, transactionChargeAmount: 0, transactionChargeMode: 'none', transactionChargeSource: '', transactionAdjustmentKind: paymentSplitAdjustmentKind(accountItem), status: actual === 0 ? 'planned' : (actual < planned ? 'partial' : 'completed'), proofFileId: null, transactionReference: cleanStr(body.transactionReference || '', 120), note: cleanStr(body.note || '', 300), createdBy: user.id, updatedBy: user.id, createdAt: nowIso(), updatedAt: nowIso() };
+  if (validationError) throw splitOperationError(validationError, 422);
+  const split = {
+    id: nextId(), orderId: order.id, agentId: splitAgentId, paymentAccountId: accountItem.id, paymentMethodId: accountItem.paymentMethodId,
+    direction, plannedAmount: planned, actualAmount: 0, transactionChargeAmount: 0, transactionChargeMode: 'none', transactionChargeSource: '',
+    transactionAdjustmentKind: paymentSplitAdjustmentKind(accountItem, { direction }), status: actual < planned ? 'partial' : 'completed', proofFileId: null,
+    transactionReference: cleanStr(body.transactionReference || '', 120), note: cleanStr(body.note || '', 300), createdBy: user.id, updatedBy: user.id, createdAt: nowIso(), updatedAt: nowIso()
+  };
   if (body.screenshotDataUrl) {
     const proof = saveProofDataUrlToDatabase(body.screenshotDataUrl, { orderId: split.orderId, splitId: split.id, uploadedBy: user.id, createdAt: nowIso() }, db);
-    if (!proof) return sendJson(res, 422, { error: 'Invalid or unsupported proof image' }, {}, req);
+    if (!proof) throw splitOperationError('Invalid or unsupported proof image', 422);
     split.proofFileId = proof.id;
   }
   db.paymentSplits.push(split);
   let movement = null;
   try {
-    if (actual > 0) movement = applySplitWalletMovement(split, accountItem, user, actual, { manualCharge, note: split.note || 'split added with actual amount' });
-  } catch (err) {
+    movement = applySplitWalletMovement(split, accountItem, user, actual, { manualCharge, note: split.note || 'split added with actual amount' });
+  } catch (error) {
     db.paymentSplits = db.paymentSplits.filter(item => Number(item.id) !== Number(split.id));
-    return sendJson(res, err.statusCode || 422, { error: err.message || 'Payment split wallet movement failed.' }, {}, req);
+    throw error;
   }
   syncAssignmentStatus(split.orderId, split.agentId);
-  logAudit(user, 'payment_split_created', 'paymentSplit', split.id, { orderId: order.id, accountId: accountItem.id, direction, plannedAmount: split.plannedAmount, actualAmount: split.actualAmount, transactionChargeAmount: split.transactionChargeAmount, movement, proofFileId: split.proofFileId || null, hasTransactionReference: Boolean(split.transactionReference) });
+  return { split, accountItem, movement };
+}
+
+async function addSplit(req, res, user, order) {
+  if (!userHasPermission(user, 'orders.split')) return sendJson(res, 403, { error: 'Permission denied: orders.split' }, {}, req);
+  if (order.orderSource !== 'offline' && !canUseOrderCredential(user, order, 'orders.split')) return sendJson(res, 403, { error: 'No orders.split access to this Binance account.' }, {}, req);
+  if (['completed','released','paid_marked','cancelled'].includes(order.status)) return sendJson(res, 422, { error: 'Order is already finalized' }, {}, req);
+  const body = await readBody(req);
+  let created;
+  try { created = createPaymentSplitForOrder(user, order, body); }
+  catch (error) { return sendJson(res, error.statusCode || 422, { error: error.message || 'Payment split save failed.' }, {}, req); }
+  const { split, accountItem, movement } = created;
+  logAudit(user, 'payment_split_created', 'paymentSplit', split.id, { orderId: order.id, accountId: accountItem.id, direction: split.direction, plannedAmount: split.plannedAmount, actualAmount: split.actualAmount, transactionChargeAmount: split.transactionChargeAmount, movement, proofFileId: split.proofFileId || null, hasTransactionReference: Boolean(split.transactionReference) });
   saveDb();
   broadcast({ type: 'payment.split.created', orderId: order.id, splitId: split.id, agentId: split.agentId, plannedAmount: split.plannedAmount, actualAmount: split.actualAmount, at: nowIso() });
+  return sendJson(res, 201, fullOrderView(order, user), {}, req);
+}
+
+async function addSplitBatch(req, res, user, order) {
+  if (!userHasPermission(user, 'orders.split')) return sendJson(res, 403, { error: 'Permission denied: orders.split' }, {}, req);
+  if (order.orderSource !== 'offline' && !canUseOrderCredential(user, order, 'orders.split')) return sendJson(res, 403, { error: 'No orders.split access to this Binance account.' }, {}, req);
+  if (['completed','released','paid_marked','cancelled'].includes(order.status)) return sendJson(res, 422, { error: 'Order is already finalized' }, {}, req);
+  const body = await readBody(req);
+  const items = Array.isArray(body.items) ? body.items : [];
+  if (!items.length) return sendJson(res, 422, { error: 'Select at least one payment account and enter an amount.' }, {}, req);
+  if (items.length > 30) return sendJson(res, 422, { error: 'A maximum of 30 Payment Splits can be saved together.' }, {}, req);
+  const accountIds = items.map(item => Number(item?.paymentAccountId || 0));
+  if (accountIds.some(id => !id) || new Set(accountIds).size !== accountIds.length) return sendJson(res, 422, { error: 'Each selected payment account may appear only once in a split batch.' }, {}, req);
+
+  const snapshot = {
+    nextId: Number(db.meta.nextId || 0),
+    paymentSplits: db.paymentSplits.length,
+    ledgers: db.ledgers.length,
+    businessEntries: db.businessEntries.length,
+    proofFiles: db.proofFiles.length,
+    assignments: db.orderAgentAssignments.filter(a => Number(a.orderId) === Number(order.id)).map(a => ({ id:a.id, actualAmount:a.actualAmount, status:a.status, completedAt:a.completedAt, updatedAt:a.updatedAt }))
+  };
+  const createdRows = [];
+  try {
+    for (const item of items) {
+      const payload = {
+        ...item,
+        direction: item.direction || body.direction || (order.type === 'BUY' ? 'send' : 'receive'),
+        transactionReference: item.transactionReference ?? body.transactionReference ?? '',
+        note: item.note ?? body.note ?? '',
+        screenshotDataUrl: item.screenshotDataUrl || body.screenshotDataUrl || ''
+      };
+      const created = createPaymentSplitForOrder(user, order, payload);
+      createdRows.push(created);
+    }
+  } catch (error) {
+    db.paymentSplits.splice(snapshot.paymentSplits);
+    db.ledgers.splice(snapshot.ledgers);
+    db.businessEntries.splice(snapshot.businessEntries);
+    db.proofFiles.splice(snapshot.proofFiles);
+    db.meta.nextId = snapshot.nextId;
+    snapshot.assignments.forEach(saved => {
+      const assignment = db.orderAgentAssignments.find(item => Number(item.id) === Number(saved.id));
+      if (assignment) Object.assign(assignment, saved);
+    });
+    recalculateAccountBalances();
+    return sendJson(res, error.statusCode || 422, { error: error.message || 'Payment Split batch failed. No split was saved.' }, {}, req);
+  }
+  createdRows.forEach(({ split, accountItem, movement }) => logAudit(user, 'payment_split_created', 'paymentSplit', split.id, { orderId: order.id, accountId: accountItem.id, direction: split.direction, plannedAmount: split.plannedAmount, actualAmount: split.actualAmount, transactionChargeAmount: split.transactionChargeAmount, movement, proofFileId: split.proofFileId || null, hasTransactionReference: Boolean(split.transactionReference), batch: true }));
+  logAudit(user, 'payment_split_batch_created', 'order', order.id, { splitIds: createdRows.map(row => row.split.id), paymentAccountIds: createdRows.map(row => row.accountItem.id), count: createdRows.length });
+  saveDb();
+  broadcast({ type: 'payment.split.batch_created', orderId: order.id, splitIds: createdRows.map(row => row.split.id), count: createdRows.length, at: nowIso() });
   return sendJson(res, 201, fullOrderView(order, user), {}, req);
 }
 
@@ -19612,7 +19754,7 @@ function applySplitCompletionEvidence(order, assignment, user, body = {}) {
     if (validationError) throw Object.assign(new Error(validationError), { statusCode: 422 });
     split = {
       id: nextId(), orderId: order.id, agentId, paymentAccountId: accountItem.id, paymentMethodId: accountItem.paymentMethodId,
-      direction, plannedAmount: requestedActual, actualAmount: 0, transactionChargeAmount: 0, transactionChargeMode: 'none', transactionChargeSource: '', transactionAdjustmentKind: paymentSplitAdjustmentKind(accountItem), status: 'planned', proofFileId: null,
+      direction, plannedAmount: requestedActual, actualAmount: 0, transactionChargeAmount: 0, transactionChargeMode: 'none', transactionChargeSource: '', transactionAdjustmentKind: paymentSplitAdjustmentKind(accountItem, { direction }), status: 'planned', proofFileId: null,
       transactionReference: '', note: '', createdBy: user.id, updatedBy: user.id, createdAt: nowIso(), updatedAt: nowIso()
     };
     db.paymentSplits.push(split);
@@ -19630,7 +19772,7 @@ function applySplitCompletionEvidence(order, assignment, user, body = {}) {
     if (!proof) throw Object.assign(new Error('Invalid or unsupported proof image.'), { statusCode: 422 });
     split.proofFileId = proof.id;
   }
-  if (!splitHasEvidence(split)) throw Object.assign(new Error('Add either a proof screenshot or a transaction ID before pressing Done.'), { statusCode: 422 });
+  if (db.settings.paymentSplitProofRequired !== false && !split.proofFileId) throw Object.assign(new Error('Attach a proof screenshot before pressing Done.'), { statusCode: 422 });
   const manualCharge = body.actualCharge ?? body.transactionChargeAmount ?? null;
   const movement = applySplitWalletMovement(split, accountItem, user, requestedActual, { manualCharge, note: split.note || 'co-agent completion' });
   split.updatedBy = user.id;
@@ -19661,8 +19803,8 @@ async function completeAgentTask(req, res, user, order) {
   const agentSplits = db.paymentSplits.filter(s => s.orderId === order.id && s.agentId === agentId && s.direction === relevantDirection);
   const actual = assignmentActual(order.id, agentId);
   if (actual <= 0) return sendJson(res, 422, { error: 'User work cannot be completed without an amount.' }, {}, req);
-  if (agentSplits.filter(s => num(s.actualAmount) > 0).some(s => !splitHasEvidence(s))) {
-    return sendJson(res, 422, { error: 'Every actual co-agent split must include a proof screenshot or transaction ID.' }, {}, req);
+  if (db.settings.paymentSplitProofRequired !== false && agentSplits.filter(s => num(s.actualAmount) > 0).some(s => !s.proofFileId)) {
+    return sendJson(res, 422, { error: 'Every actual co-agent split must include a proof screenshot.' }, {}, req);
   }
 
   const originalAssigned = num(assignment.assignedAmount || 0);
@@ -19723,13 +19865,14 @@ async function completeAction(req, res, user, order) {
   if (user.role === 'agent' && !db.settings.allowAgentFinalAction) return sendJson(res, 403, { error: 'Agent final action is disabled by settings.' }, {}, req);
   const relevantDirection = order.type === 'BUY' ? 'send' : 'receive';
   const relevantSplits = db.paymentSplits.filter(s => s.orderId === order.id && s.direction === relevantDirection && num(s.actualAmount) > 0);
-  if (['paid_mark', 'release', 'quick_release'].includes(action)) {
+  const splitGateEnabled = order.orderSource === 'offline' || db.settings.requirePaymentSplitForFinalAction !== false;
+  if (['paid_mark', 'release', 'quick_release'].includes(action) && splitGateEnabled) {
     if (!relevantSplits.length) {
-      return sendJson(res, 422, { error: `Save a Payment Split with an amount and evidence before ${action === 'paid_mark' ? 'Mark as Paid' : 'Release'}.` }, {}, req);
+      return sendJson(res, 422, { error: `Save a Payment Split with an amount before ${action === 'paid_mark' ? 'Mark as Paid' : 'Release'}.` }, {}, req);
     }
-    const missingEvidence = relevantSplits.filter(split => !splitHasEvidence(split));
-    if (missingEvidence.length) {
-      return sendJson(res, 422, { error: 'Add a proof screenshot or transaction ID to every Payment Split before the final action.' }, {}, req);
+    if (db.settings.paymentSplitProofRequired !== false) {
+      const missingProof = relevantSplits.filter(split => !split.proofFileId);
+      if (missingProof.length) return sendJson(res, 422, { error: 'Attach a proof screenshot to every Payment Split before the final action.' }, {}, req);
     }
   }
   const issues = finalActionIssueList(user, order, action, summary, relevantSplits);
@@ -21686,7 +21829,7 @@ async function handleSettings(req, res) {
     const beforeMailFingerprint = mailConfigFingerprint(beforeMailConfig);
     const beforeSmtpFingerprint = smtpConfigFingerprint(beforeMailConfig);
     const beforeFallbackFingerprint = fallbackFingerprint();
-    const allowed = ['requireProofForFinalAction','mismatchTolerance','highAmountApprovalThreshold','activeLockSeconds','apiMode','allowAgentFinalAction','maxProofSizeBytes','requireEmailOtp','requireLoginSecretCode','loginSecurityQuestionFallbackEnabled','sendLoginFailureEmail','sendSecurityChangeEmail','sendOrderEmail','sendNotificationEmail','binanceUsdtAvailable','defaultUsdtRate','binanceAutoOrderSync','binanceAutoSyncSeconds','binanceAutoSyncRows','binanceOpenOrderDetailRows','activityHeartbeatSeconds','activityIdleAfterSeconds','activityOfflineAfterSeconds','activityRetentionDays','p2pExtensionEnabled','p2pExtensionPollSeconds','p2pExtensionTaskTtlMinutes','p2pExtensionCachePurgeHour','p2pExtensionCachePurgeMinute','p2pAdvertiserDetailUrlTemplate'];
+    const allowed = ['requireProofForFinalAction','requirePaymentSplitForFinalAction','paymentSplitProofRequired','mismatchTolerance','highAmountApprovalThreshold','activeLockSeconds','apiMode','allowAgentFinalAction','maxProofSizeBytes','requireEmailOtp','requireLoginSecretCode','loginSecurityQuestionFallbackEnabled','sendLoginFailureEmail','sendSecurityChangeEmail','sendOrderEmail','sendNotificationEmail','binanceUsdtAvailable','defaultUsdtRate','binanceAutoOrderSync','binanceAutoSyncSeconds','binanceAutoSyncRows','binanceOpenOrderDetailRows','activityHeartbeatSeconds','activityIdleAfterSeconds','activityOfflineAfterSeconds','activityRetentionDays','p2pExtensionEnabled','p2pExtensionPollSeconds','p2pExtensionTaskTtlMinutes','p2pExtensionCachePurgeHour','p2pExtensionCachePurgeMinute','p2pAdvertiserDetailUrlTemplate'];
     for (const k of allowed) {
       if (body[k] === undefined) continue;
       if (typeof db.settings[k] === 'boolean') db.settings[k] = !!body[k];
@@ -21694,6 +21837,13 @@ async function handleSettings(req, res) {
       else if (k === 'p2pAdvertiserDetailUrlTemplate') db.settings[k] = cleanStr(body[k] || db.settings[k], 500);
       else db.settings[k] = positiveNum(body[k]);
     }
+
+    if (body.paymentSplitProofRequired !== undefined || body.requireProofForFinalAction !== undefined) {
+      const required = body.paymentSplitProofRequired !== undefined ? !!body.paymentSplitProofRequired : !!body.requireProofForFinalAction;
+      db.settings.paymentSplitProofRequired = required;
+      db.settings.requireProofForFinalAction = required;
+    }
+    if (body.requirePaymentSplitForFinalAction !== undefined) db.settings.requirePaymentSplitForFinalAction = !!body.requirePaymentSplitForFinalAction;
 
     const mailSystemInput = body.mailSendingSystem !== undefined ? body.mailSendingSystem : body.mailDriver;
     const previousMailSystem = normalizeMailSendingSystem(db.settings.mailSendingSystem || db.settings.mailDriver || 'auto');
@@ -23117,8 +23267,8 @@ function runPaymentSplitFinalActionSelfTest() {
         {
           id:101, ownerUserId:1, paymentMethodId:10, accountNumber:'RECV-101', accountName:'Receive Wallet', label:'Main', serialNumber:'R-1', accountType:'personal', allowedAgentIds:[], status:'active',
           dailyReceiveLimit:10000, dailySendLimit:10000, monthlyReceiveLimit:100000, monthlySendLimit:100000,
-          transactionRules:{ send_money:{ mode:'none', fixed:0, percent:0, tiers:[] }, cash_out:{ mode:'none', fixed:0, percent:0, tiers:[] } },
-          transactionChargeMode:'none', transactionChargePercent:0, transactionChargeFixed:0, transactionChargeTiers:[]
+          transactionRules:{ send_money:{ mode:'fixed', fixed:5, percent:0, tiers:[] }, cash_out:{ mode:'none', fixed:0, percent:0, tiers:[] } },
+          transactionChargeMode:'fixed', transactionChargePercent:0, transactionChargeFixed:5, transactionChargeTiers:[]
         }
       ],
       ledgers: [
@@ -23158,6 +23308,8 @@ function runPaymentSplitFinalActionSelfTest() {
     const receiveSplit = { id:302, orderId:402, agentId:null, paymentAccountId:101, paymentMethodId:10, direction:'receive', plannedAmount:1000, actualAmount:0, transactionChargeAmount:0, transactionAdjustmentKind:'charge', status:'completed' };
     applySplitWalletMovement(receiveSplit, receiveAccount, admin, 1000, { note:'initial receive split' });
     assert(closeEnough(calcAccountBalance(101), 1000), `Initial receive balance mismatch: ${calcAccountBalance(101)}`);
+    assert(closeEnough(receiveSplit.transactionChargeAmount, 0), `Receive split incorrectly applied the Send Money charge: ${receiveSplit.transactionChargeAmount}`);
+    assert(paymentSplitAdjustmentKind(receiveAccount, receiveSplit) === 'none', 'Personal/Merchant receive split is not charge-free.');
     assert(closeEnough(accountUsage(101).todayReceived, 1000), `Initial receive limit usage mismatch: ${accountUsage(101).todayReceived}`);
     receiveSplit.plannedAmount = 500;
     applySplitWalletMovement(receiveSplit, receiveAccount, admin, 500, { note:'receive split reduced' });
@@ -23166,6 +23318,18 @@ function runPaymentSplitFinalActionSelfTest() {
     applySplitWalletMovement(receiveSplit, receiveAccount, admin, 0, { manualCharge:0, note:'receive split deleted' });
     assert(closeEnough(calcAccountBalance(101), 0), `Deleted receive split did not restore balance: ${calcAccountBalance(101)}`);
     assert(closeEnough(accountUsage(101).todayReceived, 0), `Deleted receive split did not restore receive limit: ${accountUsage(101).todayReceived}`);
+
+
+    db.settings.requirePaymentSplitForFinalAction = false;
+    db.settings.paymentSplitProofRequired = true;
+    let toggleIssues = finalActionIssueList(admin, { orderSource:'binance', amount:1000 }, 'release', { matched:false, difference:-1000, remaining:1000 }, []);
+    assert(!toggleIssues.some(issue => ['mismatch','proof_missing'].includes(issue.code)), 'Disabled Payment Split gate still blocks direct final action.');
+    db.settings.requirePaymentSplitForFinalAction = true;
+    toggleIssues = finalActionIssueList(admin, { orderSource:'binance', amount:1000 }, 'release', { matched:true, difference:0, remaining:0 }, [{ actualAmount:1000, proofFileId:null }]);
+    assert(toggleIssues.some(issue => issue.code === 'proof_missing'), 'Mandatory proof setting did not report a missing screenshot.');
+    db.settings.paymentSplitProofRequired = false;
+    toggleIssues = finalActionIssueList(admin, { orderSource:'binance', amount:1000 }, 'release', { matched:true, difference:0, remaining:0 }, [{ actualAmount:1000, proofFileId:null }]);
+    assert(!toggleIssues.some(issue => issue.code === 'proof_missing'), 'Optional proof setting still blocked the final action.');
 
     const selectedPay = extractPayIdFromOrder({ rawBinanceDetail:{ id:999999, orderStatus:1, tradeMethods:[{ id:222, payType:'BKASH', tradeMethodName:'bKash' }] } });
     assert(selectedPay === 222, `Payment candidate payId was not selected safely: ${selectedPay}`);
@@ -23178,9 +23342,9 @@ function runPaymentSplitFinalActionSelfTest() {
       ok:true,
       version:APP_VERSION,
       schemaVersion:APP_SCHEMA_VERSION,
-      splitEdit:{ send1000To500RestoresLimit:true, receive1000To500RestoresLimit:true, configuredChargeRecalculated:true },
+      splitEdit:{ send1000To500RestoresLimit:true, receive1000To500RestoresLimit:true, configuredChargeRecalculated:true, receiveDoesNotApplySendMoneyCharge:true },
       splitDelete:{ balanceRestored:true, sendLimitRestored:true, receiveLimitRestored:true },
-      finalAction:{ genericIdRejectedAsPayId:true, paymentCandidatePayIdSelected:true, unpaidStatusNotMisclassified:true }
+      finalAction:{ genericIdRejectedAsPayId:true, paymentCandidatePayIdSelected:true, unpaidStatusNotMisclassified:true, splitGateToggle:true, proofMandatoryOptional:true }
     }, null, 2));
   } finally {
     db = previousDb;

@@ -1,4 +1,4 @@
-// v1.5.26: separate wallet rules, Agent-type behaviour, instant payment-account filters and account-scoped notifications.
+// v1.5.27: separate wallet rules, Agent-type behaviour, instant payment-account filters and account-scoped notifications.
 // v1.5.23: Payment Account serial scope treats each normalized Label, including no Label, as an independent namespace.
 // v1.5.22: Header-only Work Status, chat-only notification master, and coupled sound/push controls.
 // v1.5.20: account-scoped Binance RBAC, visible security recovery setup and individual-only profit accounting.
@@ -4920,7 +4920,7 @@ function renderNav() {
   // legacy flat menu while this marker is absent, the browser/proxy is serving
   // stale frontend JavaScript rather than the active release.
   nav.dataset.navigationModel = 'grouped-control-center';
-  nav.dataset.uiRelease = '1.5.26';
+  nav.dataset.uiRelease = '1.5.27';
   nav.innerHTML = '';
   const visible = visiblePages();
   const visibleIds = new Set(visible.map(([id]) => id));
@@ -5301,14 +5301,25 @@ function accountTypeLabel(value) {
 }
 
 function selectedPaymentAccountHtml(order={}) {
-  const account = order.selectedPaymentAccount;
-  if (!account) return '';
-  const methodName = account.method?.name || account.method?.code || 'Payment account';
+  const accounts = Array.isArray(order.selectedPaymentAccounts) && order.selectedPaymentAccounts.length
+    ? order.selectedPaymentAccounts
+    : (order.selectedPaymentAccount ? [order.selectedPaymentAccount] : []);
+  if (!accounts.length) return '';
+  const rows = accounts.map(account => {
+    const methodName = account.method?.name || account.method?.code || 'Payment account';
+    const meta = [account.label ? `Label: ${account.label}` : '', account.serialNumber ? `Serial: ${account.serialNumber}` : '', account.accountName || '', accountTypeLabel(account.accountType)].filter(Boolean).join(' · ');
+    return `<div class="selected-payment-account-row"><b>${escapeHtml(methodName)} · ${escapeHtml(account.accountNumber || '-')}</b><small>${escapeHtml(meta)}</small></div>`;
+  }).join('');
   return `<div class="card order-card selected-payment-account-card">
     <div class="selected-payment-account-icon" aria-hidden="true">✓</div>
-    <div class="selected-payment-account-copy"><span>Selected Payment Account</span><b>${escapeHtml(methodName)} · ${escapeHtml(account.accountNumber || '-')}</b><small>${escapeHtml(account.accountName || '')}${account.accountName ? ' · ' : ''}${escapeHtml(accountTypeLabel(account.accountType))}</small></div>
-    <span class="badge ok">ACTIVE</span>
+    <div class="selected-payment-account-copy"><span>${accounts.length > 1 ? 'Selected Payment Accounts' : 'Selected Payment Account'}</span>${rows}</div>
+    <span class="badge ok">${accounts.length > 1 ? `${accounts.length} ACTIVE` : 'ACTIVE'}</span>
   </div>`;
+}
+
+function updateSelectedPaymentAccountSlot(order={}) {
+  const slot = document.getElementById('selectedPaymentAccountSlot');
+  if (slot) slot.innerHTML = selectedPaymentAccountHtml(order);
 }
 
 function orderQuickMessages(order={}) {
@@ -5686,7 +5697,7 @@ async function loadOrderDetail(id, showLoading=true, fromRoute=false) {
       <div class="order-workspace order-desktop-body mt">
         <div class="order-main-stack order-detail-stack">
           ${additionalVerificationNoticeHtml(o)}
-          ${selectedPaymentAccountHtml(o)}
+          <div id="selectedPaymentAccountSlot">${selectedPaymentAccountHtml(o)}</div>
           <div class="order-payment-immediate">${customerPaymentDetailsCard(o)}</div>
 
           <div class="card order-card splits-card">
@@ -5845,13 +5856,14 @@ async function loadOrderDetail(id, showLoading=true, fromRoute=false) {
     const button = $('#' + id);
     if (button) button.onclick = () => openCoAgentDoneModal(o, currentUserOrderAssignment(o));
   });
+  const splitGateEnabled = o.settings?.requirePaymentSplitForFinalAction !== false;
   ['finalActionBtn','mobileTopFinalActionBtn','chatTopFinalActionBtn'].forEach(id => {
     const button = $('#' + id);
-    if (button && !button.disabled) button.onclick = () => finalAction === 'complete' ? openFinalActionModal(o, finalAction) : openPaymentSplitActionModal(o, finalAction);
+    if (button && !button.disabled) button.onclick = () => (finalAction === 'complete' || !splitGateEnabled) ? openFinalActionModal(o, finalAction) : openPaymentSplitActionModal(o, finalAction);
   });
   ['quickReleaseBtn','mobileTopQuickReleaseBtn','chatTopQuickReleaseBtn'].forEach(id => {
     const button = $('#' + id);
-    if (button) button.onclick = () => openPaymentSplitActionModal(o, 'quick_release');
+    if (button) button.onclick = () => splitGateEnabled ? openPaymentSplitActionModal(o, 'quick_release') : openFinalActionModal(o, 'quick_release');
   });
   ['p2pInfoBtn','mobileP2pInfoBtn','chatP2pInfoBtn'].forEach(id => {
     const button = $('#' + id);
@@ -5884,6 +5896,7 @@ async function loadOrderDetail(id, showLoading=true, fromRoute=false) {
     let selectedMedia = [];
     let quickAccounts = [];
     let quickAccountsLoaded = false;
+    let quickSelectedIds = new Set([...(Array.isArray(o.selectedPaymentAccountIds) ? o.selectedPaymentAccountIds : []), o.selectedPaymentAccountId || o.selectedPaymentAccount?.id].map(value => Number(value || 0)).filter(Boolean));
 
     const setAttachmentTray = open => {
       if (!attachmentTray || !attachmentBtn) return;
@@ -5921,13 +5934,18 @@ async function loadOrderDetail(id, showLoading=true, fromRoute=false) {
     const renderQuickHome = () => {
       if (!quickPanelBody) return;
       if (quickPanelTitle) quickPanelTitle.textContent = 'Quick Message';
-      const selected = o.selectedPaymentAccount;
+      const selectedAccounts = Array.isArray(o.selectedPaymentAccounts) && o.selectedPaymentAccounts.length ? o.selectedPaymentAccounts : (o.selectedPaymentAccount ? [o.selectedPaymentAccount] : []);
       const messages = orderQuickMessages(o);
       const canUsePaymentAccounts = hasPerm('accounts.view') && hasPerm('accounts.use') && state.user.role !== 'auditor';
+      const selectedSummary = selectedAccounts.length > 1
+        ? `Selected: ${selectedAccounts.length} numbers`
+        : selectedAccounts.length === 1
+          ? `Selected: ${escapeHtml(selectedAccounts[0].method?.name || '')} · ${escapeHtml(selectedAccounts[0].accountNumber || '')}`
+          : 'Search saved payment accounts';
       quickPanelBody.innerHTML = `
         ${canUsePaymentAccounts ? `<button class="quick-payment-entry" id="openQuickPaymentNumbers" type="button">
           <span class="quick-payment-entry-icon" aria-hidden="true">#</span>
-          <span><b>Payment Numbers</b><small>${selected ? `Selected: ${escapeHtml(selected.method?.name || '')} · ${escapeHtml(selected.accountNumber || '')}` : 'Search all saved payment accounts'}</small></span>
+          <span><b>Payment Numbers</b><small>${selectedSummary}</small></span>
           <span aria-hidden="true">›</span>
         </button>` : ''}
         <div class="quick-message-section-title">Saved Messages</div>
@@ -5942,58 +5960,79 @@ async function loadOrderDetail(id, showLoading=true, fromRoute=false) {
         textarea.focus({ preventScroll:true });
       });
     };
+    const paymentAccountSerialSort = (a={}, b={}) => {
+      const labelCmp = String(a.label || '').localeCompare(String(b.label || ''), undefined, { numeric:true, sensitivity:'base' });
+      if (labelCmp) return labelCmp;
+      const serialCmp = String(a.serialNumber || '').localeCompare(String(b.serialNumber || ''), undefined, { numeric:true, sensitivity:'base' });
+      if (serialCmp) return serialCmp;
+      return String(a.accountNumber || '').localeCompare(String(b.accountNumber || ''), undefined, { numeric:true, sensitivity:'base' });
+    };
     const renderQuickAccounts = (query='') => {
       if (!quickPanelBody) return;
       if (quickPanelTitle) quickPanelTitle.textContent = 'Payment Numbers';
       const q = String(query || '').trim().toLowerCase();
-      const visible = quickAccounts
+      const eligible = quickAccounts
         .filter(account => String(account.status || '').toLowerCase() === 'active')
+        .filter(account => accountMatchesOrderMethod(account, o));
+      const visible = eligible
         .filter(account => !q || [account.accountNumber, account.accountName, account.label, account.serialNumber, account.method?.name, account.method?.code, account.ownerUser?.name, account.accountType].some(value => String(value || '').toLowerCase().includes(q)))
-        .sort((a, b) => {
-          const selectedA = Number(a.id) === Number(o.selectedPaymentAccountId || o.selectedPaymentAccount?.id || 0) ? 1 : 0;
-          const selectedB = Number(b.id) === Number(o.selectedPaymentAccountId || o.selectedPaymentAccount?.id || 0) ? 1 : 0;
-          if (selectedA !== selectedB) return selectedB - selectedA;
-          const matchA = accountMatchesOrderMethod(a, o) ? 1 : 0;
-          const matchB = accountMatchesOrderMethod(b, o) ? 1 : 0;
-          if (matchA !== matchB) return matchB - matchA;
-          return String(a.accountNumber || '').localeCompare(String(b.accountNumber || ''));
-        });
+        .sort(paymentAccountSerialSort);
+      const selectedEligible = eligible.filter(account => quickSelectedIds.has(Number(account.id))).sort(paymentAccountSerialSort);
       quickPanelBody.innerHTML = `
-        <div class="quick-number-tools"><button class="quick-number-back" id="backQuickMessages" type="button">←</button><input id="quickNumberSearch" type="search" placeholder="Search number, label, serial or method" value="${escapeAttr(query)}" /></div>
-        <div class="quick-number-hint">Tap a number to send it and set it as this order's payment account.</div>
+        <div class="quick-number-tools"><button class="quick-number-back" id="backQuickMessages" type="button" aria-label="Back">←</button><input id="quickNumberSearch" type="search" placeholder="Search number, label or serial" value="${escapeAttr(query)}" /></div>
+        <div class="quick-number-hint">Select one or more numbers. Nothing is sent until you confirm.</div>
         <div class="quick-number-list">${visible.length ? visible.map(account => {
-          const isMatch = accountMatchesOrderMethod(account, o);
-          const isSelected = Number(account.id) === Number(o.selectedPaymentAccountId || o.selectedPaymentAccount?.id || 0);
-          return `<button class="quick-number-row${isSelected ? ' is-selected' : ''}" type="button" data-quick-payment-account="${Number(account.id) || 0}">
-            <span class="quick-number-main"><b>${escapeHtml(account.method?.name || 'Payment account')}</b><strong>${escapeHtml(account.accountNumber || '-')}</strong><small>${escapeHtml([account.label, account.serialNumber, account.accountName].filter(Boolean).join(' · '))}</small></span>
-            <span class="quick-number-meta"><em>${escapeHtml(accountTypeLabel(account.accountType))}</em>${isMatch ? '<i>MATCHED METHOD</i>' : ''}${isSelected ? '<i>SELECTED</i>' : ''}</span>
+          const isPicked = quickSelectedIds.has(Number(account.id));
+          const meta = [account.label ? `Label: ${account.label}` : '', account.serialNumber ? `Serial: ${account.serialNumber}` : ''].filter(Boolean).join(' · ');
+          return `<button class="quick-number-row${isPicked ? ' is-selected is-picked' : ''}" type="button" data-quick-payment-account="${Number(account.id) || 0}" aria-pressed="${isPicked ? 'true' : 'false'}">
+            <span class="quick-number-check" aria-hidden="true">${isPicked ? '✓' : ''}</span>
+            <span class="quick-number-main"><strong>${escapeHtml(account.accountNumber || '-')}</strong><small>${escapeHtml(meta || account.method?.name || 'Payment account')}</small></span>
+            <span class="quick-number-meta"><em>${escapeHtml(account.method?.name || '')}</em></span>
           </button>`;
-        }).join('') : '<div class="empty-state small">No active payment number matches this search.</div>'}</div>`;
+        }).join('') : '<div class="empty-state small">No active payment number matches this order and search.</div>'}</div>
+        <div class="quick-number-confirmbar"><span><b>${selectedEligible.length}</b> selected</span><div><button type="button" class="secondary" id="clearQuickPaymentNumbers" ${selectedEligible.length ? '' : 'disabled'}>Clear</button><button type="button" class="success" id="sendQuickPaymentNumbers" ${selectedEligible.length ? '' : 'disabled'}>Send Selected</button></div></div>`;
       $('#backQuickMessages')?.addEventListener('click', renderQuickHome);
       const search = $('#quickNumberSearch');
       if (search) {
         search.oninput = () => renderQuickAccounts(search.value);
         setTimeout(() => search.focus({ preventScroll:true }), 30);
       }
-      quickPanelBody.querySelectorAll('[data-quick-payment-account]').forEach(button => button.onclick = async () => {
+      quickPanelBody.querySelectorAll('[data-quick-payment-account]').forEach(button => button.onclick = () => {
         const paymentAccountId = Number(button.dataset.quickPaymentAccount || 0);
         if (!paymentAccountId) return;
-        const original = button.innerHTML;
-        button.disabled = true;
-        button.innerHTML = '<span class="quick-number-main"><b>Sending payment number…</b><small>Please wait</small></span>';
+        if (quickSelectedIds.has(paymentAccountId)) quickSelectedIds.delete(paymentAccountId);
+        else quickSelectedIds.add(paymentAccountId);
+        renderQuickAccounts(query);
+      });
+      $('#clearQuickPaymentNumbers')?.addEventListener('click', () => {
+        quickSelectedIds.clear();
+        renderQuickAccounts(query);
+      });
+      $('#sendQuickPaymentNumbers')?.addEventListener('click', async () => {
+        const selected = eligible.filter(account => quickSelectedIds.has(Number(account.id))).sort(paymentAccountSerialSort);
+        if (!selected.length) return;
+        const numberList = selected.map(account => account.accountNumber || '').filter(Boolean);
+        const confirmed = window.confirm(`Send ${selected.length} payment number${selected.length === 1 ? '' : 's'} to this Binance order?\n\n${numberList.join('\n')}`);
+        if (!confirmed) return;
+        const sendButton = $('#sendQuickPaymentNumbers');
+        if (sendButton) { sendButton.disabled = true; sendButton.textContent = 'Sending…'; }
         try {
           const sent = await api(`/api/orders/${o.id}/binance-chat-send`, {
             method:'POST',
-            body: JSON.stringify({ paymentAccountId, sendPaymentAccount:true, binanceOrderNumber: o.externalOrderNo || o.orderNo })
+            body: JSON.stringify({ paymentAccountIds: selected.map(account => Number(account.id)), sendPaymentAccount:true, binanceOrderNumber: o.externalOrderNo || o.orderNo })
           });
-          state.currentOrder = sent.order || state.currentOrder;
+          if (sent.order) {
+            state.currentOrder = sent.order;
+            Object.assign(o, sent.order);
+            quickSelectedIds = new Set((sent.order.selectedPaymentAccountIds || []).map(Number));
+            updateSelectedPaymentAccountSlot(sent.order);
+          }
           mergeCurrentOrderChatItems(sent.order?.chats || [], { outgoing:true, forceScroll:true });
-          notify('Payment number sent and selected for this order.', 'ok');
+          notify(`${selected.length} payment number${selected.length === 1 ? '' : 's'} sent and selected.`, 'ok');
           setQuickPanel(false);
         } catch (err) {
-          button.disabled = false;
-          button.innerHTML = original;
-          notify(err.message || 'Payment number could not be sent.', 'danger');
+          notify(err.message || 'Payment numbers could not be sent.', 'danger');
+          renderQuickAccounts(query);
         }
       });
     };
@@ -7229,101 +7268,167 @@ function showReleaseRequirementsInModal(err) {
   return true;
 }
 
+function paymentAccountBatchSort(a={}, b={}) {
+  const labelCmp = String(a.label || '').localeCompare(String(b.label || ''), undefined, { numeric:true, sensitivity:'base' });
+  if (labelCmp) return labelCmp;
+  const serialCmp = String(a.serialNumber || '').localeCompare(String(b.serialNumber || ''), undefined, { numeric:true, sensitivity:'base' });
+  if (serialCmp) return serialCmp;
+  return String(a.accountNumber || '').localeCompare(String(b.accountNumber || ''), undefined, { numeric:true, sensitivity:'base' });
+}
+
+function selectedPaymentAccountIdsForOrder(order={}) {
+  return Array.from(new Set([...(Array.isArray(order.selectedPaymentAccountIds) ? order.selectedPaymentAccountIds : []), order.selectedPaymentAccountId || order.selectedPaymentAccount?.id].map(value => Number(value || 0)).filter(Boolean)));
+}
+
+function selectedPaymentAccountsForSplit(order={}, accounts=[]) {
+  const ids = selectedPaymentAccountIdsForOrder(order);
+  return ids.map(id => accounts.find(account => Number(account.id) === Number(id))).filter(Boolean).sort(paymentAccountBatchSort);
+}
+
+function splitBatchSuggestedAmounts(accounts=[], direction='receive', total=0) {
+  let remaining = Math.max(0, Number(total || 0));
+  const out = new Map();
+  [...accounts].sort(paymentAccountBatchSort).forEach(account => {
+    const capacity = Math.max(0, capacityForAccount(account, direction));
+    const amount = Math.min(remaining, capacity);
+    out.set(Number(account.id), amount);
+    remaining = Math.max(0, remaining - amount);
+  });
+  return out;
+}
+
+function splitBatchRowsHtml(accounts=[], amounts=new Map(), prefix='splitBatch') {
+  return `<div class="full-row split-batch-list">${accounts.map(account => {
+    const meta = [account.label ? `Label: ${account.label}` : '', account.serialNumber ? `Serial: ${account.serialNumber}` : '', account.method?.name || ''].filter(Boolean).join(' · ');
+    return `<div class="split-batch-row" data-split-batch-account="${Number(account.id)}">
+      <div class="split-batch-account"><b>${escapeHtml(account.accountNumber || '-')}</b><small>${escapeHtml(meta)}</small></div>
+      <div class="split-batch-value"><label>Amount</label><input name="${prefix}Amount_${Number(account.id)}" data-split-batch-amount="${Number(account.id)}" type="number" min="0" step="0.01" value="${escapeAttr(amounts.get(Number(account.id)) || '')}" /></div>
+      <div class="split-batch-value compact"><label>Charge / Commission</label><input name="${prefix}Charge_${Number(account.id)}" data-split-batch-charge="${Number(account.id)}" type="number" min="0" step="0.01" placeholder="Auto" /></div>
+    </div>`;
+  }).join('')}</div>`;
+}
+
+function collectSplitBatchItems(form, accounts=[], direction='receive') {
+  return accounts.sort(paymentAccountBatchSort).map(account => {
+    const amountInput = form.querySelector(`[data-split-batch-amount="${Number(account.id)}"]`);
+    const chargeInput = form.querySelector(`[data-split-batch-charge="${Number(account.id)}"]`);
+    const amount = Number(amountInput?.value || 0);
+    return {
+      paymentAccountId: Number(account.id),
+      direction,
+      amount,
+      actualCharge: chargeInput && String(chargeInput.value || '').trim() !== '' ? Number(chargeInput.value) : null
+    };
+  }).filter(item => item.amount > 0);
+}
+
 async function openPaymentSplitActionModal(order, finalAction) {
   const label = finalAction === 'paid_mark' ? 'Mark as Paid' : finalAction === 'quick_release' ? 'Quick Release' : 'Release Coin';
   const direction = String(order.type || '').toUpperCase() === 'BUY' ? 'send' : 'receive';
   const viewerSummary = orderViewerSummary(order);
   let workingOrder = order;
   let currentRemaining = Math.max(0, Number(viewerSummary.viewerRemaining || 0));
+  const proofRequired = order.settings?.paymentSplitProofRequired !== false;
   let accounts = [];
   const canUseAccounts = hasPerm('accounts.view') && hasPerm('accounts.use') && state.user?.role !== 'auditor';
   if (canUseAccounts) {
     try {
       const response = await api('/api/payment-accounts?paymentMethodId=' + encodeURIComponent(order.paymentMethodId || ''));
-      accounts = (response.items || []).filter(account => account.status === 'active');
+      accounts = (response.items || []).filter(account => account.status === 'active' && accountMatchesOrderMethod(account, order)).sort(paymentAccountBatchSort);
     } catch (_) { accounts = []; }
   }
-  const selectedAccountId = Number(order.selectedPaymentAccountId || order.selectedPaymentAccount?.id || accounts[0]?.id || 0);
-  const accountField = canUseAccounts ? `<div class="full-row"><label>Payment Account</label><select name="paymentAccountId" ${accounts.length ? '' : 'disabled'}>${accounts.map(account => `<option value="${Number(account.id)}" ${Number(account.id) === selectedAccountId ? 'selected' : ''}>${escapeHtml(account.accountNumber || '')} · ${escapeHtml(account.method?.name || '')} · ${money(direction === 'send' ? account.sendAvailable : account.receiveAvailable)} available</option>`).join('')}</select>${accounts.length ? '' : '<small class="danger-text">No assigned payment account is available.</small>'}</div>` : '<div class="full-row notice">You do not have permission to use a payment account.</div>';
+  const selectedAccounts = selectedPaymentAccountsForSplit(order, accounts);
+  const batchMode = selectedAccounts.length > 1;
+  const selectedAccountId = Number(selectedAccounts[0]?.id || order.selectedPaymentAccountId || order.selectedPaymentAccount?.id || accounts[0]?.id || 0);
+  const batchAmounts = splitBatchSuggestedAmounts(selectedAccounts, direction, currentRemaining);
+  const accountField = !canUseAccounts
+    ? '<div class="full-row notice">You do not have permission to use a payment account.</div>'
+    : batchMode
+      ? `<div class="full-row notice"><b>${selectedAccounts.length} selected payment numbers</b><br/><small>Amounts are shown in Label / Serial order. Only rows with an amount greater than zero will be saved.</small></div>${splitBatchRowsHtml(selectedAccounts, batchAmounts, 'finalSplit')}`
+      : `<div class="full-row"><label>Payment Account</label><select name="paymentAccountId" ${accounts.length ? '' : 'disabled'}>${accounts.map(account => `<option value="${Number(account.id)}" ${Number(account.id) === selectedAccountId ? 'selected' : ''}>${escapeHtml(account.accountNumber || '')} · ${escapeHtml([account.label, account.serialNumber].filter(Boolean).join(' · '))} · ${money(direction === 'send' ? account.sendAvailable : account.receiveAvailable)} available</option>`).join('')}</select>${accounts.length ? '' : '<small class="danger-text">No assigned payment account is available.</small>'}</div>
+        <div class="full-row"><label>Amount</label><input name="amount" type="number" min="0" step="0.01" value="${escapeAttr(currentRemaining)}" /></div>
+        <div><label>Actual Charge / Commission (Optional)</label><input name="actualCharge" type="number" min="0" step="0.01" placeholder="Uses account rule when empty" /></div>`;
   const liveMode = order.settings?.apiMode === 'live' && order.orderSource !== 'offline';
   const liveFields = liveMode ? `
     <input type="hidden" name="binanceOrderNumber" value="${escapeAttr(order.externalOrderNo || order.orderNo || '')}" />
     <input type="hidden" name="payId" value="${Number(order.binancePayId || 0) || ''}" />
     ${(finalAction === 'release' || finalAction === 'quick_release') ? '<div id="releaseDynamicFields" class="full-row hidden"></div>' : ''}` : '';
   const relevantExisting = (order.paymentSplits || []).filter(split => split.direction === direction && Number(split.actualAmount || 0) > 0);
-  const evidencedExisting = relevantExisting.filter(split => split.hasEvidence || split.hasProof || split.hasTransactionReference);
+  const readyExisting = relevantExisting.filter(split => !proofRequired || split.hasProof);
   modal('Payment Split', `<div class="payment-split-action-summary"><span>${viewerSummary.isScoped ? 'Your Assigned Amount' : 'Order Amount'}</span><b>${money(viewerSummary.assignedAmount)}</b><small>${order.type === 'BUY' ? 'Payment' : 'Received'} · Remaining ${money(currentRemaining)}</small></div>
     <form id="paymentSplitActionForm" class="form-grid">
       <input type="hidden" name="action" value="${escapeAttr(finalAction)}" />
       <input type="hidden" name="direction" value="${escapeAttr(direction)}" />
       ${accountField}
-      <div class="full-row"><label>Amount</label><input name="amount" type="number" min="0.01" step="0.01" value="${escapeAttr(currentRemaining)}" /></div>
-      <div><label>Actual Charge / Commission (Optional)</label><input name="actualCharge" type="number" min="0" step="0.01" placeholder="Uses account rule when empty" /></div>
-      <div><label>Transaction ID</label><input name="transactionReference" maxlength="120" placeholder="Transaction / reference ID" /></div>
-      <div><label>Proof Screenshot</label><input type="file" id="paymentSplitActionProof" accept="image/png,image/jpeg,image/webp" /></div>
+      <div><label>Transaction ID</label><input name="transactionReference" maxlength="120" placeholder="Optional transaction / reference ID" /></div>
+      <div><label>Proof Screenshot · ${proofRequired ? 'Mandatory' : 'Optional'}</label><input type="file" id="paymentSplitActionProof" accept="image/png,image/jpeg,image/webp" /><small>${proofRequired ? 'A proof screenshot is required before the final action.' : 'Proof can be attached, but it is not required.'}</small></div>
       <div class="full-row"><label>Note</label><input name="note" placeholder="Optional note" /></div>
       ${liveFields}
-      <div class="full-row" id="paymentSplitActionMessage">${evidencedExisting.length ? `<div class="okbox">${evidencedExisting.length} evidenced split(s) already saved.</div>` : ''}</div>
-      <div class="full-row payment-split-action-buttons"><button type="button" class="secondary" id="savePaymentSplitActionBtn">Save</button><button type="button" class="success" id="submitPaymentFinalActionBtn">${escapeHtml(label)}</button></div>
+      <div class="full-row" id="paymentSplitActionMessage">${readyExisting.length ? `<div class="okbox">${readyExisting.length} ready split(s) already saved.</div>` : ''}</div>
+      <div class="full-row payment-split-action-buttons"><button type="button" class="secondary" id="savePaymentSplitActionBtn">Save Split</button><button type="button" class="success" id="submitPaymentFinalActionBtn">${escapeHtml(label)}</button></div>
     </form>`);
 
   const form = $('#paymentSplitActionForm');
   const saveButton = $('#savePaymentSplitActionBtn');
   const finalButton = $('#submitPaymentFinalActionBtn');
-  let splitSavedInModal = false;
 
-  const hasCurrentEvidence = () => {
-    const splits = (workingOrder.paymentSplits || []).filter(split => split.direction === direction && Number(split.actualAmount || 0) > 0);
-    return splits.length > 0 && splits.every(split => split.hasEvidence || split.hasProof || split.hasTransactionReference);
+  const relevantWorkingSplits = () => (workingOrder.paymentSplits || []).filter(split => split.direction === direction && Number(split.actualAmount || 0) > 0);
+  const splitsReadyForFinalAction = () => {
+    const splits = relevantWorkingSplits();
+    return splits.length > 0 && (!proofRequired || splits.every(split => split.hasProof));
+  };
+
+  const attachProofToOneExistingSplitIfPossible = async (proof, reference, note) => {
+    const missing = relevantWorkingSplits().filter(split => proofRequired ? !split.hasProof : false);
+    if (!proof || missing.length !== 1 || !missing[0].viewerCanEdit) return false;
+    const target = missing[0];
+    const payload = {
+      amount: Number(target.actualAmount || target.plannedAmount || 0),
+      status: target.status || 'completed',
+      transactionReference: reference || target.transactionReference || '',
+      note: note || target.note || '',
+      screenshotDataUrl: await toDataUrl(proof)
+    };
+    workingOrder = await api('/api/splits/' + target.id, { method:'PATCH', body: JSON.stringify(payload) });
+    state.currentOrder = workingOrder;
+    return true;
   };
 
   const saveSplit = async ({ silent = false } = {}) => {
     const obj = formObj(form);
-    const amount = Number(obj.amount || 0);
     const proof = $('#paymentSplitActionProof')?.files?.[0];
     const reference = String(obj.transactionReference || '').trim();
-    const existingRelevant = (workingOrder.paymentSplits || []).filter(split => split.direction === direction && Number(split.actualAmount || 0) > 0);
-    const missingEvidence = existingRelevant.filter(split => !(split.hasEvidence || split.hasProof || split.hasTransactionReference));
-    if (amount <= 0) {
-      if (hasCurrentEvidence()) return workingOrder;
-      if ((proof || reference) && missingEvidence.length === 1 && missingEvidence[0].viewerCanEdit) {
-        const target = missingEvidence[0];
-        const payload = {
-          amount: Number(target.actualAmount || target.plannedAmount || 0),
-          status: target.status || 'completed',
-          transactionReference: reference || target.transactionReference || '',
-          note: obj.note || target.note || ''
-        };
-        if (proof) payload.screenshotDataUrl = await toDataUrl(proof);
-        workingOrder = await api('/api/splits/' + target.id, { method:'PATCH', body: JSON.stringify(payload) });
-        state.currentOrder = workingOrder;
-        splitSavedInModal = true;
-        form.elements.transactionReference.value = '';
-        if ($('#paymentSplitActionProof')) $('#paymentSplitActionProof').value = '';
-        setFormMessage('#paymentSplitActionMessage', 'Evidence added to the existing Payment Split.', 'ok');
-        if (!silent) notify('Payment Split evidence updated.', 'ok');
-        return workingOrder;
+    const note = obj.note || '';
+    const proofDataUrl = proof ? await toDataUrl(proof) : '';
+    let hasNewAmount = false;
+    if (batchMode) {
+      const items = collectSplitBatchItems(form, selectedAccounts, direction);
+      hasNewAmount = items.length > 0;
+      if (items.length) {
+        const payload = { direction, items, transactionReference: reference, note };
+        if (proofDataUrl) payload.screenshotDataUrl = proofDataUrl;
+        workingOrder = await api(`/api/orders/${order.id}/splits-batch`, { method:'POST', body: JSON.stringify(payload) });
       }
-      if (missingEvidence.length > 1) throw new Error('More than one Payment Split is missing evidence. Edit each split and add a Transaction ID or proof before the final action.');
-      throw new Error('Add a Transaction ID or proof to the existing Payment Split before the final action.');
+    } else {
+      const amount = Number(obj.amount || 0);
+      hasNewAmount = amount > 0;
+      if (amount > 0) {
+        if (canUseAccounts && !Number(obj.paymentAccountId || 0)) throw new Error('Select an active payment account.');
+        const payload = { direction, amount, actualCharge: obj.actualCharge, transactionReference: reference, note };
+        if (Number(obj.paymentAccountId || 0)) payload.paymentAccountId = Number(obj.paymentAccountId);
+        if (proofDataUrl) payload.screenshotDataUrl = proofDataUrl;
+        workingOrder = await api(`/api/orders/${order.id}/splits`, { method:'POST', body: JSON.stringify(payload) });
+      }
     }
-    if (!proof && !reference) throw new Error('Add a proof screenshot or transaction ID before saving Payment Split.');
-    if (canUseAccounts && !Number(obj.paymentAccountId || 0)) throw new Error('Select an active payment account.');
-    const payload = {
-      direction,
-      amount,
-      actualCharge: obj.actualCharge,
-      transactionReference: reference,
-      note: obj.note || ''
-    };
-    if (Number(obj.paymentAccountId || 0)) payload.paymentAccountId = Number(obj.paymentAccountId);
-    if (proof) payload.screenshotDataUrl = await toDataUrl(proof);
-    workingOrder = await api(`/api/orders/${order.id}/splits`, { method:'POST', body: JSON.stringify(payload) });
+    if (!hasNewAmount) {
+      const attached = await attachProofToOneExistingSplitIfPossible(proof, reference, note);
+      if (!attached && !relevantWorkingSplits().length) throw new Error('Enter an amount for at least one Payment Split.');
+      if (!attached && proofRequired && relevantWorkingSplits().some(split => !split.hasProof)) throw new Error('Attach proof by editing each split that is missing a screenshot.');
+    }
     state.currentOrder = workingOrder;
-    splitSavedInModal = true;
     currentRemaining = Number(orderViewerSummary(workingOrder).viewerRemaining || 0);
-    form.elements.amount.value = currentRemaining;
-    form.elements.transactionReference.value = '';
+    if (!batchMode && form.elements.amount) form.elements.amount.value = currentRemaining;
+    if (form.elements.transactionReference) form.elements.transactionReference.value = '';
     if ($('#paymentSplitActionProof')) $('#paymentSplitActionProof').value = '';
     setFormMessage('#paymentSplitActionMessage', `Payment Split saved. Remaining ${money(currentRemaining)}.`, 'ok');
     if (!silent) notify('Payment Split saved.', 'ok');
@@ -7341,11 +7446,15 @@ async function openPaymentSplitActionModal(order, finalAction) {
     finalButton.disabled = true;
     saveButton.disabled = true;
     try {
-      const enteredAmount = Number(form.elements.amount?.value || 0);
-      const enteredReference = String(form.elements.transactionReference?.value || '').trim();
-      const enteredProof = $('#paymentSplitActionProof')?.files?.[0];
-      if (enteredAmount > 0 || enteredReference || enteredProof) await saveSplit({ silent: true });
-      if (!hasCurrentEvidence()) throw new Error(`Save an evidenced Payment Split before ${label}.`);
+      const reference = String(form.elements.transactionReference?.value || '').trim();
+      const proof = $('#paymentSplitActionProof')?.files?.[0];
+      const hasEnteredAmount = batchMode
+        ? collectSplitBatchItems(form, selectedAccounts, direction).length > 0
+        : Number(form.elements.amount?.value || 0) > 0;
+      if (hasEnteredAmount || reference || proof) await saveSplit({ silent: true });
+      const splits = relevantWorkingSplits();
+      if (!splits.length) throw new Error(`Save a Payment Split before ${label}.`);
+      if (proofRequired && splits.some(split => !split.hasProof)) throw new Error(`Attach a proof screenshot to every Payment Split before ${label}.`);
       const actionPayload = formObj(form);
       actionPayload.action = finalAction;
       const updated = await api(`/api/orders/${order.id}/complete-action`, { method:'POST', body: JSON.stringify(actionPayload) });
@@ -7378,8 +7487,14 @@ function openFinalActionModal(order, finalAction) {
     <input type="hidden" name="payId" value="${Number(order.binancePayId || 0) || ''}" />
     ${(finalAction === 'release' || finalAction === 'quick_release') ? '<div id="releaseDynamicFields" class="full-row hidden"></div>' : ''}` : '';
   const privilegedDirectDecision = ['admin','manager'].includes(state.user.role);
+  const splitGateEnabled = order.orderSource === 'offline' || order.settings?.requirePaymentSplitForFinalAction !== false;
+  const directNotice = !splitGateEnabled && finalAction !== 'complete'
+    ? 'Payment Split requirement is disabled in Settings. This final action will run directly without opening or requiring a split.'
+    : privilegedDirectDecision
+      ? 'Admin/Manager direct decision: this action will take effect immediately without assignment or a separate approval. Actor, time, action, issues and result will remain in Audit Log.'
+      : 'Before final action, the configured split, proof and approval rules will be checked.';
   modal(label, `
-    <div class="notice">${privilegedDirectDecision ? 'Admin/Manager direct decision: this action will take effect immediately without assignment or a separate approval. Actor, time, action, issues and result will remain in Audit Log.' : 'Before final action, actual amount, proof and mismatch rules will be checked.'}</div>
+    <div class="notice">${directNotice}</div>
     <form id="finalActionForm" class="form-grid">
       <input type="hidden" name="action" value="${finalAction}" />
       ${liveFields}
@@ -7494,21 +7609,30 @@ function splitValidationMessage({order, account, direction, amount, excludeSplit
 }
 
 async function openAddSplitModal(order) {
-  const accounts = await api('/api/payment-accounts?paymentMethodId=' + order.paymentMethodId);
+  const accountsResponse = await api('/api/payment-accounts?paymentMethodId=' + encodeURIComponent(order.paymentMethodId || ''));
   const direction = order.type === 'BUY' ? 'send' : 'receive';
   const defaultAmount = defaultSplitAmount(order);
-  const selectedAccountId = Number(order.selectedPaymentAccountId || order.selectedPaymentAccount?.id || 0);
-  const activeAccounts = accounts.items.filter(a => a.status === 'active').sort((a, b) => (Number(b.id) === selectedAccountId ? 1 : 0) - (Number(a.id) === selectedAccountId ? 1 : 0));
+  const activeAccounts = (accountsResponse.items || [])
+    .filter(account => account.status === 'active' && accountMatchesOrderMethod(account, order))
+    .sort(paymentAccountBatchSort);
+  const selectedAccounts = selectedPaymentAccountsForSplit(order, activeAccounts);
+  const batchMode = selectedAccounts.length > 1;
+  const selectedAccountId = Number(selectedAccounts[0]?.id || order.selectedPaymentAccountId || order.selectedPaymentAccount?.id || activeAccounts[0]?.id || 0);
+  const batchAmounts = splitBatchSuggestedAmounts(selectedAccounts, direction, defaultAmount);
+  const proofRequired = order.settings?.paymentSplitProofRequired !== false;
+  const accountInputHtml = batchMode
+    ? `<div class="full-row notice"><b>${selectedAccounts.length} selected payment numbers</b><br/><small>Enter the received / sent amount beside each number. Rows are ordered by Label and Serial.</small></div>${splitBatchRowsHtml(selectedAccounts, batchAmounts, 'addSplit')}`
+    : `<div class="full-row"><label>Payment Account</label><select name="paymentAccountId">${activeAccounts.map(account => `<option value="${Number(account.id)}" ${Number(account.id) === selectedAccountId ? 'selected' : ''}>${escapeHtml(account.accountNumber || '')} · ${escapeHtml([account.label, account.serialNumber].filter(Boolean).join(' · '))} · ${escapeHtml(account.method?.name || '')} · ${money(capacityForAccount(account, direction))} available</option>`).join('')}</select></div>
+       <div class="full-row"><label>Amount</label><input name="amount" type="number" min="0.01" step="0.01" value="${escapeAttr(defaultAmount)}" /></div>
+       <div><label>Actual Charge / Commission (Optional)</label><input name="actualCharge" type="number" min="0" step="0.01" placeholder="Uses selected account rule when empty" /></div>`;
   modal('Add Payment Split', `
     <div class="live-remaining" id="addSplitPreview"></div>
     <form id="splitForm" class="form-grid">
       <input type="hidden" name="direction" value="${escapeAttr(direction)}" />
-      <div class="full-row"><label>Payment Account</label><select name="paymentAccountId">${activeAccounts.map(a => `<option value="${a.id}" ${Number(a.id) === selectedAccountId ? 'selected' : ''}>${escapeHtml(a.accountNumber)} - ${escapeHtml(a.method?.name || '')} - ${escapeHtml(accountTypeLabel(a.accountType))} - balance ${money(a.currentBalance)} - ${escapeHtml(paymentAccountOrderRuleSummary(a, direction))}</option>`).join('')}</select></div>
-      <div class="full-row"><label>Amount</label><input name="amount" type="number" min="0.01" step="0.01" value="${defaultAmount}" /></div>
-      <div><label>Actual Charge / Commission (Optional)</label><input name="actualCharge" type="number" min="0" step="0.01" placeholder="Uses selected account rule when empty" /></div>
-      <div><label>Transaction ID</label><input name="transactionReference" maxlength="120" placeholder="Transaction / reference ID" /></div>
-      <div><label>Proof Screenshot</label><input type="file" id="addProofFile" accept="image/png,image/jpeg,image/webp" /></div>
-      <div><label>Note</label><input name="note" placeholder="Optional" /></div>
+      ${accountInputHtml}
+      <div><label>Transaction ID</label><input name="transactionReference" maxlength="120" placeholder="Optional transaction / reference ID" /></div>
+      <div><label>Proof Screenshot · ${proofRequired ? 'Mandatory before final action' : 'Optional'}</label><input type="file" id="addProofFile" accept="image/png,image/jpeg,image/webp" /></div>
+      <div class="full-row"><label>Note</label><input name="note" placeholder="Optional" /></div>
       <div class="full-row" id="splitFormMessage"></div>
       <div class="full-row"><button type="submit">Save</button></div>
     </form>
@@ -7523,40 +7647,65 @@ async function openAddSplitModal(order) {
   });
   splitModal?.querySelectorAll('[data-delete-split]').forEach(button => button.onclick = () => deletePaymentSplit(order, Number(button.dataset.deleteSplit)));
   const form = $('#splitForm');
-  const amountInput = form.querySelector('input[name="amount"]');
   const accountSelect = form.querySelector('select[name="paymentAccountId"]');
-  const getSelectedAccount = () => activeAccounts.find(a => Number(a.id) === Number(accountSelect?.value));
+  const amountInput = form.querySelector('input[name="amount"]');
+  const getSelectedAccount = () => activeAccounts.find(account => Number(account.id) === Number(accountSelect?.value));
   const updateAddPreview = () => {
-    const account = getSelectedAccount();
-    const amount = Number(amountInput.value || 0);
-    const projectedActual = Number(order.summary.relevantActual || 0) + Math.max(0, amount);
+    let added = 0;
+    let msg = '';
+    if (batchMode) {
+      const items = collectSplitBatchItems(form, selectedAccounts, direction);
+      added = items.reduce((sum, item) => sum + Number(item.amount || 0), 0);
+      for (const item of items) {
+        const account = selectedAccounts.find(row => Number(row.id) === Number(item.paymentAccountId));
+        const rowMessage = splitValidationMessage({ order, account, direction, amount: Number(item.amount || 0) });
+        if (rowMessage) { msg = `${account?.accountNumber || 'Payment account'}: ${rowMessage}`; break; }
+      }
+      if (!items.length) msg = 'Enter an amount beside at least one selected payment number.';
+    } else {
+      const account = getSelectedAccount();
+      const amount = Number(amountInput?.value || 0);
+      added = Math.max(0, amount);
+      msg = splitValidationMessage({ order, account, direction, amount });
+    }
+    const projectedActual = Number(order.summary.relevantActual || 0) + added;
     const projectedRemaining = Math.max(0, Number(order.amount || 0) - projectedActual);
-    const msg = splitValidationMessage({ order, account, direction, amount });
-    $('#addSplitPreview').innerHTML = `<b>Remaining:</b> ${money(projectedRemaining)}`;
+    $('#addSplitPreview').innerHTML = `<b>Selected:</b> ${money(added)} · <b>Remaining:</b> ${money(projectedRemaining)}`;
     setFormMessage('#splitFormMessage', msg, msg ? 'danger' : 'ok');
     setSubmitState(form, !msg, msg);
   };
-  ['input','change'].forEach(evt => {
-    amountInput.addEventListener(evt, updateAddPreview);
-    if (accountSelect) accountSelect.addEventListener(evt, updateAddPreview);
+  form.querySelectorAll('input[data-split-batch-amount], input[data-split-batch-charge], input[name="amount"], select[name="paymentAccountId"]').forEach(control => {
+    ['input','change'].forEach(eventName => control.addEventListener(eventName, updateAddPreview));
   });
   updateAddPreview();
-  form.onsubmit = async e => {
-    e.preventDefault();
-    const obj = formObj(e.target);
-    const account = getSelectedAccount();
-    const amount = Number(obj.amount || 0);
-    const msg = splitValidationMessage({ order, account, direction, amount });
-    if (msg) { setFormMessage('#splitFormMessage', msg, 'danger'); notify(msg, 'danger'); return; }
+  form.onsubmit = async event => {
+    event.preventDefault();
     try {
-      const file = $('#addProofFile').files[0];
-      if (file) obj.screenshotDataUrl = await toDataUrl(file);
-      obj.direction = direction;
-      const updated = await api(`/api/orders/${order.id}/splits`, { method:'POST', body: JSON.stringify(obj) });
-      notify('Payment split saved.', 'ok');
+      const obj = formObj(form);
+      const proof = $('#addProofFile')?.files?.[0];
+      const proofDataUrl = proof ? await toDataUrl(proof) : '';
+      let updated;
+      if (batchMode) {
+        const items = collectSplitBatchItems(form, selectedAccounts, direction);
+        if (!items.length) throw new Error('Enter an amount beside at least one selected payment number.');
+        const payload = { direction, items, transactionReference: obj.transactionReference || '', note: obj.note || '' };
+        if (proofDataUrl) payload.screenshotDataUrl = proofDataUrl;
+        updated = await api(`/api/orders/${order.id}/splits-batch`, { method:'POST', body: JSON.stringify(payload) });
+      } else {
+        const account = getSelectedAccount();
+        const amount = Number(obj.amount || 0);
+        const message = splitValidationMessage({ order, account, direction, amount });
+        if (message) throw new Error(message);
+        obj.direction = direction;
+        if (proofDataUrl) obj.screenshotDataUrl = proofDataUrl;
+        updated = await api(`/api/orders/${order.id}/splits`, { method:'POST', body: JSON.stringify(obj) });
+      }
+      notify(batchMode ? 'Payment splits saved.' : 'Payment split saved.', 'ok');
       closeModal();
       await loadOrderDetail(updated.id || order.id, false, true);
-    } catch (err) { setFormMessage('#splitFormMessage', err.message || 'Split save failed', 'danger'); }
+    } catch (error) {
+      setFormMessage('#splitFormMessage', error.message || 'Split save failed', 'danger');
+    }
   };
 }
 
@@ -7651,13 +7800,14 @@ function openCoAgentDoneModal(order, assignment = null) {
   if (!a) return notify('Active co-agent assignment was not found.', 'danger');
   const assigned = Number(a.assignedAmount || 0);
   const actualDefault = Math.max(0, assigned - Number(a.actualAmount || 0)) || assigned;
+  const proofRequired = order.settings?.paymentSplitProofRequired !== false;
   modal('Payment Split', `<div class="payment-split-action-summary"><span>Assigned Amount</span><b>${money(assigned)}</b><small>${escapeHtml(a.agent?.name || state.user?.name || 'Co-agent')} · ${escapeHtml(order.type === 'BUY' ? 'Payment' : 'Received')}</small></div>
-    <div class="notice">Enter the completed amount and proof.</div>
+    <div class="notice">Enter the completed amount. Proof is ${proofRequired ? 'mandatory' : 'optional'}.</div>
     <form id="coAgentDoneForm" class="form-grid">
       <div><label>Amount</label><input name="actualAmount" type="number" min="0.01" step="0.01" max="${escapeAttr(assigned)}" value="${escapeAttr(actualDefault)}" required /></div>
       <div><label>Actual Charge / Commission (Optional)</label><input name="actualCharge" type="number" min="0" step="0.01" placeholder="Uses account rule when empty" /></div>
       <div><label>Transaction ID</label><input name="transactionReference" maxlength="120" placeholder="Transaction / reference ID" /></div>
-      <div class="full-row"><label>Proof Screenshot</label><input type="file" id="coAgentDoneProof" accept="image/png,image/jpeg,image/webp" /></div>
+      <div class="full-row"><label>Proof Screenshot · ${proofRequired ? 'Mandatory' : 'Optional'}</label><input type="file" id="coAgentDoneProof" accept="image/png,image/jpeg,image/webp" /></div>
       <div class="full-row"><label>Note</label><input name="note" value="My assigned part is completed" /></div>
       <div class="full-row" id="coAgentDoneMessage"></div>
       <div class="full-row"><button class="success" type="submit">Done</button></div>
@@ -7666,7 +7816,7 @@ function openCoAgentDoneModal(order, assignment = null) {
     event.preventDefault();
     const obj = formObj(event.target);
     const proof = $('#coAgentDoneProof')?.files?.[0];
-    if (!proof && !String(obj.transactionReference || '').trim()) return setFormMessage('#coAgentDoneMessage', 'Add a proof screenshot or transaction ID.', 'danger');
+    if (proofRequired && !proof) return setFormMessage('#coAgentDoneMessage', 'Attach a proof screenshot.', 'danger');
     try {
       if (proof) obj.screenshotDataUrl = await toDataUrl(proof);
       if (['admin','manager'].includes(state.user.role)) obj.agentId = a.agentId;

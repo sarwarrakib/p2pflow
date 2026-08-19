@@ -1,4 +1,4 @@
-// P2PFlow v1.5.26
+// P2PFlow v1.5.27
 // Settings workspace: categorized navigation, compact email delivery and ordered failover routes.
 
 const P2PFLOW_EMAIL_SYSTEMS = [
@@ -136,7 +136,8 @@ async function renderSettings() {
       <div><label>API Mode</label><select name="apiMode"><option value="live-disabled" ${s.apiMode==='live-disabled'?'selected':''}>Live disabled</option><option value="live" ${s.apiMode==='live'?'selected':''}>Live</option></select></div>
     </div>
     <div class="settings-option-list">
-      <label class="settings-option-row"><span><b>Require proof for final action</b><small>Final action needs proof before completion.</small></span><input type="checkbox" name="requireProofForFinalAction" ${s.requireProofForFinalAction?'checked':''}/></label>
+      <label class="settings-option-row"><span><b>Require Payment Split before Mark Paid / Release</b><small>ON: the split workflow opens first and a completed split is required. OFF: Mark Paid / Release runs directly, whether a split exists or not.</small></span><input type="checkbox" name="requirePaymentSplitForFinalAction" ${s.requirePaymentSplitForFinalAction!==false?'checked':''}/></label>
+      <div class="settings-option-row"><span><b>Payment Split Proof</b><small>Choose whether a proof screenshot is mandatory before completing a split-gated final action.</small></span><select name="paymentSplitProofRequired" aria-label="Payment Split Proof requirement"><option value="mandatory" ${s.paymentSplitProofRequired!==false?'selected':''}>Mandatory</option><option value="optional" ${s.paymentSplitProofRequired===false?'selected':''}>Optional</option></select></div>
       <label class="settings-option-row"><span><b>Allow lead user final action</b><small>Lead users can complete the permitted final action.</small></span><input type="checkbox" name="allowAgentFinalAction" ${s.allowAgentFinalAction?'checked':''}/></label>
     </div>`);
 
@@ -289,7 +290,9 @@ async function renderSettings() {
   $('#settingsForm').onsubmit = async e => {
     e.preventDefault();
     const obj = formObj(e.target);
-    obj.requireProofForFinalAction = e.target.requireProofForFinalAction.checked;
+    obj.requirePaymentSplitForFinalAction = e.target.requirePaymentSplitForFinalAction.checked;
+    obj.paymentSplitProofRequired = e.target.paymentSplitProofRequired.value === 'mandatory';
+    obj.requireProofForFinalAction = obj.paymentSplitProofRequired;
     obj.binanceAutoOrderSync = e.target.binanceAutoOrderSync.checked;
     obj.allowAgentFinalAction = e.target.allowAgentFinalAction.checked;
     obj.requireEmailOtp = e.target.requireEmailOtp.checked;

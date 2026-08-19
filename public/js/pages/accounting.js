@@ -1,4 +1,4 @@
-// P2PFlow v1.5.26
+// P2PFlow v1.5.27
 // Business Accounting is separated into Overview, Expenses, Income, Capital and Daily Closing pages.
 // Individual-only Agent profit remains visible but is excluded from Company income/capital totals.
 
