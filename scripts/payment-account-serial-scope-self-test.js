@@ -22,8 +22,8 @@ const section = (source, start, end) => {
   return source.slice(a, b);
 };
 
-assert(pkg.version === '1.5.24', `expected v1.5.24, got ${pkg.version}`);
-assert(server.includes('const APP_SCHEMA_VERSION = 34;'), 'schema 34 must remain unchanged for this logic-only update.');
+assert(pkg.version === '1.5.25', `expected v1.5.25, got ${pkg.version}`);
+assert(server.includes('const APP_SCHEMA_VERSION = 35;'), 'schema 35 is required for transaction-specific payment rules.');
 
 const helpers = section(server, 'function normalizePaymentAccountSerialScopeValue', 'function paymentAccountMatchesSearch');
 assert(helpers.includes("normalize('NFKC')") && helpers.includes("replace(/\\s+/g, ' ')") && helpers.includes('.toLowerCase()'), 'case/space/Unicode normalization is missing.');
@@ -71,7 +71,7 @@ assert(report?.diagnosticConflictMessage === true, 'exact conflict diagnostics w
 console.log(JSON.stringify({
   ok: true,
   version: pkg.version,
-  schemaVersion: 34,
+  schemaVersion: 35,
   paymentMethodNameScoped: true,
   sameLabelScoped: true,
   differentLabelReuse: true,

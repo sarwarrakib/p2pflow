@@ -27,29 +27,28 @@ Updater code এবং database আলাদা রাখে। Update install-�
 
 ## Version
 
-Internal SemVer: `1.5.24`
+Internal SemVer: `1.5.25`
 UI: `1.5`
-Database schema: `34`
+Database schema: `35`
 
 Normal next version: `SET_NEXT_VERSION.bat` -> `1.6.0`  
-Hotfix: `SET_HOTFIX_VERSION.bat` -> `1.5.25`
+Hotfix: `SET_HOTFIX_VERSION.bat` -> `1.5.26`
 
 ## Database history safety
 
 P2PFlow keeps authoritative business/application data in MariaDB/MySQL/PostgreSQL. State payloads are compressed with Brotli before AES-256-GCM encryption, proofs/chat media are stored as encrypted database objects, and identical newly uploaded proof/media bytes use content-addressed object IDs to avoid duplicate blobs. The default is 3 retained recovery checkpoints with a 6-hour archive interval and 5 retained automatic database backups. Older uncompressed state/history/backup payloads are upgraded incrementally after startup. Health Check reports each P2PFlow database table's allocated size/row count, current encrypted state payload size, compression saving percentage, and proof/chat object usage so database-MB growth can be inspected without terminal access. `shared/`, `.p2pflow`, `.env`, `releases/` and temporary restart/update markers are operational bootstrap/update metadata only; they are not an application/business-data store. The application runtime itself does not write proof, chat, audit, order, ledger, notification or recovery-code data to local files.
 
-## v1.5.24 Payment Account Bulk Management, Manual Fees & Agent Commission
+## v1.5.25 Separate Wallet Rules, Fast Filters & Account-scoped Notifications
 
-- Payment Account list-এ single Delete, multi-select, Select All, Edit Selected এবং Delete Selected যোগ হয়েছে। Bulk operation atomic: একটি selected account validation fail করলে কোনো account edit/delete হবে না।
-- Delete safe soft-delete হিসেবে কাজ করে। Account balance শূন্য হতে হবে এবং pending order split বা Offline Business reservation থাকা যাবে না। Ledger, statement, audit ও accounting history মুছে যায় না।
-- Bulk Edit থেকে Status, Account Type, Label, Account Name, serial sequence, Account User, Agent access, receive/send limits এবং Charge/Commission rule একসঙ্গে পরিবর্তন করা যায়। Serial scope validation v1.5.23-এর method + label rule-ই অনুসরণ করে।
-- Manual Balance Transaction এখন Send Money, Receive Money, Cash Out, Bill Pay, Payment ও Mobile Recharge transaction type ব্যবহার করে।
-- Personal ও Merchant account-এ configured fee শুধু Send Money এবং Cash Out-এ deduct হয়। Fixed, percentage, fixed+percentage, tiered এবং manual actual amount rule সমর্থিত।
-- Agent account-এ configured rule fee নয়, earned commission। Money incoming বা outgoing—দুই ক্ষেত্রেই commission সঙ্গে সঙ্গে wallet balance-এ credit হয় এবং protected automatic accounting income হিসেবে record হয়। Reversal প্রয়োজন হলে linked automatic expense record তৈরি হয়।
-- Agent-এর `Include profit in company totals` OFF থাকলে commission individual income-এ দৃশ্যমান থাকবে, কিন্তু company income/capital total-এ যোগ হবে না।
-- Database schema `34`; migration additive এবং existing accounts, balances, ledgers, statements ও historical transfer charges preserve করে। Existing completed/historical split deductions charge হিসেবেই থাকে; শুধু untouched planned Agent split commission model নেয়।
+- Personal/Merchant Payment Account-এ `Send Money Charge` এবং `Cash Out Charge` এখন সম্পূর্ণ আলাদা rule; দুইটির fixed/percentage/tier/manual rate ভিন্ন হতে পারে।
+- `Agent` হলো Payment Account-এর transaction behaviour; এটি আর login user-এর Agent role-এর সঙ্গে বাধ্যতামূলকভাবে বাঁধা নয়। Admin/Manager/অনুমোদিত Account User-এর অধীনেও Agent-type SIM রাখা যায়।
+- Agent-type account-এ manual transaction শুধু `Received Money` এবং `Cash In`; UI-তেও শুধু Received Money Commission ও Cash In Commission rule দেখায়। Personal/Merchant-এর charge controls Agent form-এ দেখায় না।
+- Payment Account search এখন typing-এর সঙ্গে সঙ্গে instant filter করে; আলাদা Search button নেই। Account Type, Label ও Payment Method filter যোগ হয়েছে এবং row actions compact icon-based।
+- Orders/Ads-এ নির্দিষ্ট Binance account selected থাকলে current device-এ নতুন order/assignment/message-এর sound ও browser push শুধু সেই account-এর জন্য হয়। `All` selected থাকলে permitted সব account-এর notification আসে। Scope per-device push subscription-এ persist হয়।
+- Existing v1.5.24 safe soft-delete, multi-select, atomic bulk edit/delete, label+serial scope এবং protected Agent commission accounting বহাল আছে।
+- Database schema `35`; migration additive এবং schema-34 single charge/commission rule-কে relevant দুই transaction rule-এ copy করে, যাতে existing behaviour নষ্ট না হয়। Historical ledger/order-split records অপরিবর্তিত থাকে।
 
-বিস্তারিত: `P2PFlow_v1.5.24_RELEASE_NOTES_BN.md`, `P2PFlow_v1.5.24_MANUAL_UPDATE_BN.md` এবং `P2PFlow_v1.5.24_LAUNCH_CHECKLIST_BN.md`।
+বিস্তারিত: `P2PFlow_v1.5.25_RELEASE_NOTES_BN.md`, `P2PFlow_v1.5.25_MANUAL_UPDATE_BN.md` এবং `P2PFlow_v1.5.25_LAUNCH_CHECKLIST_BN.md`।
 
 ## v1.5.23 Payment Account Bulk Serial Scope Fix
 
@@ -78,7 +77,7 @@ P2PFlow keeps authoritative business/application data in MariaDB/MySQL/PostgreSQ
 - Payment Account Serial Number আর পুরো system-এ globally unique নয়; normalized Payment Method name অনুযায়ী আলাদা namespace ব্যবহার করে।
 - একই Payment Method এবং একই non-empty Label-এর মধ্যে একই Serial Number দ্বিতীয়বার save করা যাবে না।
 - একই Payment Method-এর ভিন্ন non-empty Label-এ একই Serial Number পুনরায় ব্যবহার করা যাবে।
-- v1.5.21-এ Label blank থাকলে method-wide conflict করা হয়েছিল; v1.5.24 থেকে no-Label নিজস্ব fallback scope এবং named Label-কে আর block করে না।
+- v1.5.21-এ Label blank থাকলে method-wide conflict করা হয়েছিল; v1.5.25 থেকে no-Label নিজস্ব fallback scope এবং named Label-কে আর block করে না।
 - ভিন্ন Payment Method-এ একই Label/Serial ব্যবহার করা যাবে।
 - Add, Edit, Bulk Add এবং CSV/structured import একই server-side rule ব্যবহার করে। Bulk modal save-এর আগেই একই scope-এর duplicate row দেখায়।
 - Comparison trim, case-insensitive, repeated-space normalization এবং Unicode NFKC normalization ব্যবহার করে।

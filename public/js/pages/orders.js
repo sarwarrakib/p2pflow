@@ -1,4 +1,4 @@
-// P2PFlow v1.5.24
+// P2PFlow v1.5.25
 // Page module: orders. Edit this file for the orders page UI.
 
 function orderAccountOptions(data = {}) {
@@ -143,6 +143,8 @@ async function renderOrders(opts={}) {
     state.orderCredentialId = 0;
     localStorage.removeItem('crmOrderCredentialId');
   }
+  state.orderCredentialId = requestedCredentialId;
+  setNotificationCredentialScope(requestedCredentialId, { sync:true });
   state.orderCredentialOptions = credentialOptions;
   state.orderLiveCredentialOptions = liveCredentialOptions;
   state.orderAcceptance = data.orderAcceptance || state.bootstrap?.orderAcceptance || state.orderAcceptance || null;
@@ -223,6 +225,7 @@ async function renderOrders(opts={}) {
     state.orderCredentialId = Number(button.dataset.orderAccount || 0);
     if (state.orderCredentialId) localStorage.setItem('crmOrderCredentialId', String(state.orderCredentialId));
     else localStorage.removeItem('crmOrderCredentialId');
+    setNotificationCredentialScope(state.orderCredentialId, { sync:true, immediate:true });
     state.orderSnapshot = null;
     renderOrders();
   });

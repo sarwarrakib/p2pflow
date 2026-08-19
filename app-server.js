@@ -44,7 +44,7 @@ loadEnv();
 applyP2PFlowEnvAliases(process.env);
 
 const APP_VERSION = String(packageInfo.version || '0.0.0');
-const APP_SCHEMA_VERSION = 34;
+const APP_SCHEMA_VERSION = 35;
 const APP_DATA_COMPATIBILITY_EPOCH = 1;
 const PORT = Number(process.env.PORT || 3000);
 const BIND_HOST = cleanEnv(process.env.P2PFLOW_BIND_HOST || process.env.CRM_BIND_HOST || '', '');
@@ -277,6 +277,7 @@ function normalizePushSubscriptions(value = []) {
       lastSuccessAt: item.lastSuccessAt || null,
       lastFailureAt: item.lastFailureAt || null,
       lastFailureStatus: Number(item.lastFailureStatus || 0) || null,
+      notificationCredentialId: Number(item.notificationCredentialId || item.binanceCredentialId || 0) || 0,
       disabledAt: item.disabledAt || null
     };
   }).filter(Boolean).slice(-WEB_PUSH_MAX_SUBSCRIPTIONS_PER_USER);
@@ -1775,6 +1776,9 @@ function migrateDb(target) {
     if (r.maxActiveOrders === undefined) r.maxActiveOrders = 0;
     if (r.note === undefined) r.note = '';
   });
+  // Schema 35: split payment-account fees/commissions by transaction type.
+  // The normalizer below migrates the schema-34 single rule into both relevant
+  // slots without changing historical ledger rows.
   target.paymentAccounts.forEach(a => {
     // Keep the production account taxonomy stable on every startup. A stale
     // v1.0.121 normalizer used to collapse Agent/Merchant back to Personal.
@@ -1789,15 +1793,11 @@ function migrateDb(target) {
     }
     a.label = cleanStr(a.label || a.accountLabel || '', 80);
     a.serialNumber = cleanStr(a.serialNumber || a.serial || a.simSerial || '', 80);
-    a.transactionChargeMode = normalizePaymentChargeMode(a.transactionChargeMode || 'none');
-    a.transactionChargeFixed = positiveNum(a.transactionChargeFixed || 0);
-    a.transactionChargePercent = Math.max(0, Math.min(100, Number(a.transactionChargePercent || 0) || 0));
-    a.transactionChargeTiers = normalizePaymentChargeTiers(a.transactionChargeTiers || []);
-    // Schema 34: Personal and Merchant accounts use a transfer fee only on
-    // outgoing fee-eligible transaction types. Agent accounts use the same
-    // configured rule as an earned commission on both incoming and outgoing
-    // manual money movements.
-    a.transactionChargeAppliesTo = a.accountType === 'agent' ? 'both' : 'send';
+    // Schema 35: each fee/commission-bearing transaction has its own rule.
+    // Legacy schema-34 single rules are copied into both relevant rule slots,
+    // preserving existing behaviour until an owner configures separate rates.
+    a.transactionRules = paymentTransactionRules(a);
+    syncLegacyPaymentChargeFields(a);
     if (a.deletedAt === undefined) a.deletedAt = null;
     if (a.deletedBy === undefined) a.deletedBy = null;
     if (a.deleteReason === undefined) a.deleteReason = '';
@@ -2035,10 +2035,10 @@ function paymentAccountOwnerAgentId(ownerUser) {
 
 function validatePaymentAccountOwner(accountType, ownerUser) {
   if (!ownerUser) return 'Account User is required.';
-  if (normalizePaymentAccountType(accountType) === 'agent') {
-    const ownerAgentId = paymentAccountOwnerAgentId(ownerUser);
-    if (String(ownerUser.role || '').toLowerCase() !== 'agent' || !ownerAgentId) return 'Agent account type requires an Agent user.';
-  }
+  // Payment Account Type describes wallet behaviour, not the login user's role.
+  // An Agent-type SIM/wallet may therefore be owned by Admin, Manager, Agent or
+  // another enabled user. Agent access assignment remains permission-scoped.
+  normalizePaymentAccountType(accountType);
   return '';
 }
 
@@ -2171,21 +2171,123 @@ function normalizePaymentChargeTiers(value = []) {
   })).sort((a, b) => a.min - b.min);
 }
 
-function paymentChargeConfig(accountItem = {}) {
+const PAYMENT_TRANSACTION_RULE_DEFINITIONS = Object.freeze({
+  send_money: { prefix: 'sendMoneyCharge', label: 'Send Money Charge', kind: 'charge', accountTypes: ['personal','merchant'] },
+  cash_out: { prefix: 'cashOutCharge', label: 'Cash Out Charge', kind: 'charge', accountTypes: ['personal','merchant'] },
+  receive_money: { prefix: 'receiveMoneyCommission', label: 'Receive Money Commission', kind: 'commission', accountTypes: ['agent'] },
+  cash_in: { prefix: 'cashInCommission', label: 'Cash In Commission', kind: 'commission', accountTypes: ['agent'] }
+});
+
+function paymentRuleConfig(value = {}, fallback = {}) {
+  const source = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  const base = fallback && typeof fallback === 'object' && !Array.isArray(fallback) ? fallback : {};
+  return {
+    mode: normalizePaymentChargeMode(source.mode ?? base.mode ?? 'none'),
+    fixed: positiveNum(source.fixed ?? base.fixed ?? 0),
+    percent: Math.max(0, Math.min(100, Number(source.percent ?? base.percent ?? 0) || 0)),
+    tiers: normalizePaymentChargeTiers(source.tiers ?? base.tiers ?? [])
+  };
+}
+
+function legacyPaymentChargeConfig(accountItem = {}) {
   return {
     mode: normalizePaymentChargeMode(accountItem.transactionChargeMode || 'none'),
-    appliesTo: normalizePaymentChargeAppliesTo(accountItem.transactionChargeAppliesTo || 'send'),
     fixed: positiveNum(accountItem.transactionChargeFixed || 0),
     percent: Math.max(0, Math.min(100, Number(accountItem.transactionChargePercent || 0) || 0)),
     tiers: normalizePaymentChargeTiers(accountItem.transactionChargeTiers || [])
   };
 }
 
-function paymentTransferCharge(accountItem = {}, amount = 0, direction = 'send', manualCharge = null) {
+function paymentTransactionRules(accountItem = {}) {
+  const type = normalizePaymentAccountType(accountItem.accountType);
+  const source = accountItem.transactionRules && typeof accountItem.transactionRules === 'object' && !Array.isArray(accountItem.transactionRules)
+    ? accountItem.transactionRules
+    : {};
+  const legacy = legacyPaymentChargeConfig(accountItem);
+  const none = paymentRuleConfig({ mode:'none', fixed:0, percent:0, tiers:[] });
+  const fallback = {
+    send_money: type === 'agent' ? none : legacy,
+    cash_out: type === 'agent' ? none : legacy,
+    receive_money: type === 'agent' ? legacy : none,
+    cash_in: type === 'agent' ? legacy : none
+  };
+  return Object.fromEntries(Object.keys(PAYMENT_TRANSACTION_RULE_DEFINITIONS).map(key => [key, paymentRuleConfig(source[key], fallback[key])]));
+}
+
+function paymentTransactionRule(accountItem = {}, ruleKey = '') {
+  const rules = paymentTransactionRules(accountItem);
+  return rules[String(ruleKey || '').toLowerCase()] || paymentRuleConfig({ mode:'none' });
+}
+
+function paymentRuleBodyValue(body = {}, prefix = '', field = '') {
+  const direct = `${prefix}${field}`;
+  if (Object.prototype.hasOwnProperty.call(body, direct)) return { supplied:true, value:body[direct] };
+  return { supplied:false, value:undefined };
+}
+
+function applyPaymentTransactionRulesFromBody(target = {}, body = {}, { legacyFallback = true } = {}) {
+  const existing = paymentTransactionRules(target);
+  const nested = body.transactionRules && typeof body.transactionRules === 'object' && !Array.isArray(body.transactionRules) ? body.transactionRules : {};
+  let dedicatedSupplied = false;
+  for (const [key, definition] of Object.entries(PAYMENT_TRANSACTION_RULE_DEFINITIONS)) {
+    const prefix = definition.prefix;
+    const current = paymentRuleConfig(existing[key]);
+    const nestedRule = nested[key] && typeof nested[key] === 'object' && !Array.isArray(nested[key]) ? nested[key] : {};
+    const mode = paymentRuleBodyValue(body, prefix, 'Mode');
+    const fixed = paymentRuleBodyValue(body, prefix, 'Fixed');
+    const percent = paymentRuleBodyValue(body, prefix, 'Percent');
+    const tiers = paymentRuleBodyValue(body, prefix, 'Tiers');
+    if (mode.supplied || fixed.supplied || percent.supplied || tiers.supplied || Object.keys(nestedRule).length) dedicatedSupplied = true;
+    existing[key] = paymentRuleConfig({
+      mode: mode.supplied ? mode.value : (nestedRule.mode ?? current.mode),
+      fixed: fixed.supplied ? fixed.value : (nestedRule.fixed ?? current.fixed),
+      percent: percent.supplied ? percent.value : (nestedRule.percent ?? current.percent),
+      tiers: tiers.supplied ? tiers.value : (nestedRule.tiers ?? current.tiers)
+    });
+  }
+
+  const legacySupplied = ['transactionChargeMode','transactionChargeFixed','transactionChargePercent','transactionChargeTiers']
+    .some(key => Object.prototype.hasOwnProperty.call(body, key));
+  if (legacyFallback && legacySupplied && !dedicatedSupplied) {
+    const legacy = paymentRuleConfig({
+      mode: body.transactionChargeMode ?? target.transactionChargeMode ?? 'none',
+      fixed: body.transactionChargeFixed ?? target.transactionChargeFixed ?? 0,
+      percent: body.transactionChargePercent ?? target.transactionChargePercent ?? 0,
+      tiers: body.transactionChargeTiers ?? target.transactionChargeTiers ?? []
+    });
+    if (normalizePaymentAccountType(target.accountType) === 'agent') {
+      existing.receive_money = paymentRuleConfig(legacy);
+      existing.cash_in = paymentRuleConfig(legacy);
+    } else {
+      existing.send_money = paymentRuleConfig(legacy);
+      existing.cash_out = paymentRuleConfig(legacy);
+    }
+  }
+  target.transactionRules = existing;
+  syncLegacyPaymentChargeFields(target);
+  return target.transactionRules;
+}
+
+function syncLegacyPaymentChargeFields(accountItem = {}) {
+  const type = normalizePaymentAccountType(accountItem.accountType);
+  const primary = paymentTransactionRule(accountItem, type === 'agent' ? 'receive_money' : 'send_money');
+  accountItem.transactionChargeMode = primary.mode;
+  accountItem.transactionChargeFixed = primary.fixed;
+  accountItem.transactionChargePercent = primary.percent;
+  accountItem.transactionChargeTiers = primary.tiers;
+  accountItem.transactionChargeAppliesTo = paymentAccountChargeAppliesToForType(type);
+  return accountItem;
+}
+
+function paymentChargeConfig(accountItem = {}, ruleKey = '') {
+  if (ruleKey) return paymentTransactionRule(accountItem, ruleKey);
+  return legacyPaymentChargeConfig(accountItem);
+}
+
+function paymentTransferCharge(accountItem = {}, amount = 0, direction = 'send', manualCharge = null, ruleKey = '') {
   const base = positiveNum(amount || 0);
-  if (!(base > 0)) return { amount: 0, mode: 'none', source: 'no_amount' };
-  const config = paymentChargeConfig(accountItem);
-  if (!(config.appliesTo === 'both' || config.appliesTo === direction)) return { amount: 0, mode: config.mode, source: 'not_applicable' };
+  if (!(base > 0)) return { amount: 0, mode: 'none', source: 'no_amount', ruleKey: ruleKey || null };
+  const config = paymentChargeConfig(accountItem, ruleKey);
   let charge = 0;
   let source = 'configured';
   if (manualCharge !== null && manualCharge !== undefined && manualCharge !== '') {
@@ -2200,27 +2302,48 @@ function paymentTransferCharge(accountItem = {}, amount = 0, direction = 'send',
     else source = 'tier_not_found';
   } else if (config.mode === 'manual') source = 'manual_required_not_supplied';
   else source = 'no_charge';
-  return { amount: round2(charge), mode: config.mode, source };
+  return { amount: round2(charge), mode: config.mode, source, ruleKey: ruleKey || null };
 }
 
 const MANUAL_PAYMENT_TRANSACTION_TYPES = Object.freeze({
-  send_money: { label: 'Send Money', direction: 'send', sign: -1, personalFee: true },
-  receive_money: { label: 'Receive Money', direction: 'receive', sign: 1, personalFee: false },
-  cash_out: { label: 'Cash Out', direction: 'send', sign: -1, personalFee: true },
-  bill_pay: { label: 'Bill Pay', direction: 'send', sign: -1, personalFee: false },
-  payment: { label: 'Payment', direction: 'send', sign: -1, personalFee: false },
-  mobile_recharge: { label: 'Mobile Recharge', direction: 'send', sign: -1, personalFee: false }
+  send_money: { label: 'Send Money', direction: 'send', sign: -1, accountTypes: ['personal','merchant'] },
+  receive_money: { label: 'Receive Money', direction: 'receive', sign: 1, accountTypes: ['personal','merchant','agent'] },
+  cash_out: { label: 'Cash Out', direction: 'send', sign: -1, accountTypes: ['personal','merchant'] },
+  bill_pay: { label: 'Bill Pay', direction: 'send', sign: -1, accountTypes: ['personal','merchant'] },
+  payment: { label: 'Payment', direction: 'send', sign: -1, accountTypes: ['personal','merchant'] },
+  mobile_recharge: { label: 'Mobile Recharge', direction: 'send', sign: -1, accountTypes: ['personal','merchant'] },
+  cash_in: { label: 'Cash In', direction: 'send', sign: -1, accountTypes: ['agent'] }
 });
 
 function manualPaymentTransactionDefinition(value = '') {
   return MANUAL_PAYMENT_TRANSACTION_TYPES[cleanStr(value || '', 50).toLowerCase()] || null;
 }
 
-function manualPaymentAdjustmentKind(accountItem = {}, transactionType = '') {
+function manualPaymentTransactionAllowed(accountItem = {}, transactionType = '') {
   const definition = manualPaymentTransactionDefinition(transactionType);
-  if (!definition) return 'none';
-  if (normalizePaymentAccountType(accountItem.accountType) === 'agent') return 'commission';
-  return definition.personalFee ? 'charge' : 'none';
+  if (!definition) return false;
+  return definition.accountTypes.includes(normalizePaymentAccountType(accountItem.accountType));
+}
+
+function manualPaymentAdjustmentKind(accountItem = {}, transactionType = '') {
+  const type = cleanStr(transactionType || '', 50).toLowerCase();
+  if (!manualPaymentTransactionAllowed(accountItem, type)) return 'none';
+  if (normalizePaymentAccountType(accountItem.accountType) === 'agent') return ['receive_money','cash_in'].includes(type) ? 'commission' : 'none';
+  return ['send_money','cash_out'].includes(type) ? 'charge' : 'none';
+}
+
+function paymentAdjustmentRuleKey(accountItem = {}, transactionType = '', direction = '') {
+  const type = cleanStr(transactionType || '', 50).toLowerCase();
+  const accountType = normalizePaymentAccountType(accountItem.accountType);
+  if (accountType === 'agent') {
+    if (type === 'receive_money') return 'receive_money';
+    if (type === 'cash_in') return 'cash_in';
+    return String(direction || '').toLowerCase() === 'receive' ? 'receive_money' : 'cash_in';
+  }
+  if (type === 'cash_out') return 'cash_out';
+  if (type === 'send_money') return 'send_money';
+  if (!type && String(direction || '').toLowerCase() === 'send') return 'send_money';
+  return '';
 }
 
 function paymentSplitAdjustmentKind(accountItem = {}, split = {}) {
@@ -2233,6 +2356,7 @@ function createAutomaticAgentCommissionEntry({
   amount = 0,
   accountItem = null,
   agentId = 0,
+  ownerUserId = null,
   userId = null,
   ledgerId = null,
   manualTransactionId = null,
@@ -2244,8 +2368,9 @@ function createAutomaticAgentCommissionEntry({
   reversal = false
 } = {}) {
   const normalizedAmount = positiveNum(amount || 0);
-  const normalizedAgentId = Number(agentId || 0);
-  if (!(normalizedAmount > 0) || !normalizedAgentId) return null;
+  const normalizedAgentId = Number(agentId || 0) || null;
+  const normalizedOwnerUserId = Number(ownerUserId || accountItem?.ownerUserId || 0) || null;
+  if (!(normalizedAmount > 0) || (!normalizedAgentId && !normalizedOwnerUserId)) return null;
   const sourceType = reversal ? 'agent_transaction_commission_reversal' : 'agent_transaction_commission';
   const entry = {
     id: nextId(),
@@ -2257,6 +2382,7 @@ function createAutomaticAgentCommissionEntry({
     businessDate: accountingLocalDate(at),
     paymentAccountId: Number(accountItem?.id || 0) || null,
     agentId: normalizedAgentId,
+    ownerUserId: normalizedOwnerUserId,
     createdBy: Number(userId || 0) || null,
     createdAt: at,
     updatedAt: at,
@@ -2268,7 +2394,7 @@ function createAutomaticAgentCommissionEntry({
     orderId: Number(orderId || 0) || null,
     splitId: Number(splitId || 0) || null,
     transactionType: cleanStr(transactionType || '', 50),
-    includeInCompanyTotals: agentProfitIncludedInCompanyTotals(normalizedAgentId)
+    includeInCompanyTotals: normalizedAgentId ? agentProfitIncludedInCompanyTotals(normalizedAgentId) : true
   };
   db.businessEntries.push(entry);
   return entry;
@@ -2284,8 +2410,12 @@ function suppliedManualPaymentAdjustment(body = {}) {
 function manualPaymentTransactionPreview(accountItem = {}, body = {}) {
   const type = cleanStr(body.type || body.transactionType || '', 50).toLowerCase();
   const definition = manualPaymentTransactionDefinition(type);
-  if (!definition) {
-    const error = new Error('Transaction type must be Send Money, Receive Money, Cash Out, Bill Pay, Payment or Mobile Recharge.');
+  const accountType = normalizePaymentAccountType(accountItem.accountType);
+  if (!definition || !manualPaymentTransactionAllowed(accountItem, type)) {
+    const allowed = accountType === 'agent'
+      ? 'Received Money or Cash In'
+      : 'Send Money, Receive Money, Cash Out, Bill Pay, Payment or Mobile Recharge';
+    const error = new Error(`Transaction type for ${accountType === 'agent' ? 'Agent' : accountType === 'merchant' ? 'Merchant' : 'Personal'} account must be ${allowed}.`);
     error.statusCode = 422;
     throw error;
   }
@@ -2296,21 +2426,17 @@ function manualPaymentTransactionPreview(accountItem = {}, body = {}) {
     throw error;
   }
   const adjustmentKind = manualPaymentAdjustmentKind(accountItem, type);
+  const ruleKey = paymentAdjustmentRuleKey(accountItem, type, definition.direction);
   const supplied = suppliedManualPaymentAdjustment(body);
-  const config = paymentChargeConfig(accountItem);
+  const config = ruleKey ? paymentTransactionRule(accountItem, ruleKey) : paymentRuleConfig({ mode:'none' });
   if (adjustmentKind !== 'none' && config.mode === 'manual' && !supplied.supplied) {
-    const error = new Error(`${adjustmentKind === 'commission' ? 'Commission' : 'Charge'} amount is required because this account uses a manual rule.`);
+    const error = new Error(`${adjustmentKind === 'commission' ? 'Commission' : 'Charge'} amount is required because this transaction uses a manual rule.`);
     error.statusCode = 422;
     throw error;
   }
-  let adjustmentInfo = { amount: 0, mode: config.mode, source: 'not_applicable' };
-  if (adjustmentKind !== 'none') {
-    adjustmentInfo = paymentTransferCharge(
-      { ...accountItem, transactionChargeAppliesTo: adjustmentKind === 'commission' ? 'both' : 'send' },
-      amount,
-      definition.direction,
-      supplied.supplied ? supplied.amount : null
-    );
+  let adjustmentInfo = { amount: 0, mode: config.mode, source: 'not_applicable', ruleKey };
+  if (adjustmentKind !== 'none' && ruleKey) {
+    adjustmentInfo = paymentTransferCharge(accountItem, amount, definition.direction, supplied.supplied ? supplied.amount : null, ruleKey);
   }
   const adjustmentAmount = positiveNum(adjustmentInfo.amount || 0);
   const mainEffect = definition.sign * amount;
@@ -2320,6 +2446,7 @@ function manualPaymentTransactionPreview(accountItem = {}, body = {}) {
     definition,
     amount,
     adjustmentKind,
+    ruleKey,
     adjustmentAmount,
     adjustmentInfo,
     mainEffect: round2(mainEffect),
@@ -2356,12 +2483,8 @@ function createManualPaymentAccountTransaction(user, accountItem, body = {}) {
   }
 
   const at = nowIso();
-  const ownerAgentId = paymentAccountOwnerAgentId(paymentAccountOwnerUser(accountItem));
-  if (preview.adjustmentKind === 'commission' && !ownerAgentId) {
-    const error = new Error('Agent commission requires an Agent account owned by an Agent user.');
-    error.statusCode = 422;
-    throw error;
-  }
+  const ownerUser = paymentAccountOwnerUser(accountItem);
+  const ownerAgentId = paymentAccountOwnerAgentId(ownerUser);
   const manualTransactionId = nextId();
   const mainAfter = round2(before + preview.mainEffect);
   const mainLedger = {
@@ -2398,6 +2521,7 @@ function createManualPaymentAccountTransaction(user, accountItem, body = {}) {
         amount: preview.adjustmentAmount,
         accountItem,
         agentId: ownerAgentId,
+        ownerUserId: ownerUser?.id || accountItem.ownerUserId || null,
         userId: user.id,
         ledgerId: adjustmentLedger.id,
         manualTransactionId,
@@ -2424,12 +2548,8 @@ function splitWalletMovementPreview(split = {}, accountItem = {}, newActual = 0,
   const oldActual = positiveNum(split.actualAmount || 0);
   const oldCharge = positiveNum(split.transactionChargeAmount || 0);
   const adjustmentKind = paymentSplitAdjustmentKind(accountItem, split);
-  const chargeInfo = paymentTransferCharge(
-    adjustmentKind === 'commission' ? { ...accountItem, transactionChargeAppliesTo: 'both' } : accountItem,
-    newActual,
-    split.direction || 'send',
-    manualCharge
-  );
+  const ruleKey = paymentAdjustmentRuleKey(accountItem, '', split.direction || 'send');
+  const chargeInfo = paymentTransferCharge(accountItem, newActual, split.direction || 'send', manualCharge, ruleKey);
   const newCharge = positiveNum(chargeInfo.amount || 0);
   const amountDelta = round2(positiveNum(newActual) - oldActual);
   const chargeDelta = round2(newCharge - oldCharge);
@@ -2487,7 +2607,7 @@ function appendSplitChargeLedger({ split, accountItem, user, chargeDelta, adjust
   const effect = isCommission ? chargeDelta : -chargeDelta;
   const at = nowIso();
   const commissionAgentId = isCommission
-    ? (paymentAccountOwnerAgentId(paymentAccountOwnerUser(accountItem)) || Number(split.agentId || 0) || null)
+    ? (paymentAccountOwnerAgentId(paymentAccountOwnerUser(accountItem)) || null)
     : (Number(split.agentId || 0) || null);
   const ledger = {
     id: nextId(), orderId: split.orderId, splitId: split.id, paymentAccountId: accountItem.id, agentId: commissionAgentId,
@@ -2503,6 +2623,7 @@ function appendSplitChargeLedger({ split, accountItem, user, chargeDelta, adjust
       amount: Math.abs(chargeDelta),
       accountItem,
       agentId: commissionAgentId,
+      ownerUserId: paymentAccountOwnerUser(accountItem)?.id || accountItem.ownerUserId || null,
       userId: user.id,
       ledgerId: ledger.id,
       orderId: split.orderId,
@@ -2519,11 +2640,6 @@ function appendSplitChargeLedger({ split, accountItem, user, chargeDelta, adjust
 
 function applySplitWalletMovement(split, accountItem, user, newActual, options = {}) {
   const preview = splitWalletMovementPreview(split, accountItem, newActual, options.manualCharge);
-  if (preview.adjustmentKind === 'commission' && !paymentAccountOwnerAgentId(paymentAccountOwnerUser(accountItem))) {
-    const err = new Error('Agent commission requires an Agent account owned by an Agent user.');
-    err.statusCode = 422;
-    throw err;
-  }
   const before = calcAccountBalance(accountItem.id);
   const additionalSendAmount = split.direction === 'send' ? Math.max(0, preview.amountDelta) : 0;
   const additionalCharge = preview.adjustmentKind === 'charge' ? Math.max(0, preview.chargeDelta) : 0;
@@ -2604,6 +2720,7 @@ function accountView(accountItem, viewer = null) {
     receiveAvailable,
     sendAvailable,
     accountType: normalizePaymentAccountType(accountItem.accountType),
+    transactionRules: paymentTransactionRules(accountItem),
     method: methodById(accountItem.paymentMethodId),
     ownerUser: paymentAccountOwnerView(accountItem),
     agent: null,
@@ -2678,7 +2795,7 @@ function activeSplitAccountsForAgent(order, agentId, direction, requiredAmount =
     .filter(({ account, view }) => {
       const amount = Math.max(0, num(requiredAmount || 0));
       const adjustmentKind = paymentSplitAdjustmentKind(account);
-      const charge = paymentTransferCharge(adjustmentKind === 'commission' ? { ...account, transactionChargeAppliesTo: 'both' } : account, amount, direction, null).amount;
+      const charge = paymentTransferCharge(account, amount, direction, null, paymentAdjustmentRuleKey(account, '', direction)).amount;
       const needed = direction === 'send' ? amount + (adjustmentKind === 'charge' ? charge : 0) : amount;
       return splitCapacity(view, direction) + 1e-9 >= needed;
     })
@@ -2724,7 +2841,7 @@ function validateNewSplit(order, accountItem, splitAgentId, direction, planned, 
   const view = accountView(accountItem);
   const capacity = splitCapacity(view, direction);
   const adjustmentKind = paymentSplitAdjustmentKind(accountItem);
-  const charge = paymentTransferCharge(adjustmentKind === 'commission' ? { ...accountItem, transactionChargeAppliesTo: 'both' } : accountItem, amount, direction, options.manualCharge).amount;
+  const charge = paymentTransferCharge(accountItem, amount, direction, options.manualCharge, paymentAdjustmentRuleKey(accountItem, '', direction)).amount;
   const requiredCapacity = direction === 'send' ? amount + (adjustmentKind === 'charge' ? charge : 0) : amount;
   if (requiredCapacity > capacity) {
     return direction === 'send'
@@ -5566,6 +5683,7 @@ function notificationPushPayload(item = {}, recipient = null) {
       type: cleanStr(item.type || 'notification', 80),
       category,
       orderId: Number(item.orderId || 0) || null,
+      credentialId: notificationCredentialId(item) || null,
       url: route,
       createdAt: item.createdAt || nowIso()
     }
@@ -5582,12 +5700,29 @@ async function assertSafePushEndpoint(endpoint) {
   return safe;
 }
 
+function notificationCredentialId(item = {}) {
+  const direct = Number(item.credentialId || item.binanceCredentialId || 0);
+  if (direct) return direct;
+  const order = item.orderId ? orderById(item.orderId) : null;
+  return Number(order?.credentialId || 0) || 0;
+}
+
+function pushSubscriptionAllowsNotification(subscription = {}, item = {}) {
+  const category = notificationCategoryForType(item.type, item);
+  if (!['orders','assignments','messages'].includes(category)) return true;
+  const scopeCredentialId = Number(subscription.notificationCredentialId || 0);
+  if (!scopeCredentialId) return true;
+  const itemCredentialId = notificationCredentialId(item);
+  return Boolean(itemCredentialId && itemCredentialId === scopeCredentialId);
+}
+
 async function sendPushToRecipient(item, recipient) {
   const vapidKeys = ensureWebPushVapidSettings(db.settings);
   let changed = false;
   const payload = notificationPushPayload(item, recipient);
   const results = [];
   for (const subscription of recipient.subscriptions) {
+    if (!pushSubscriptionAllowsNotification(subscription, item)) continue;
     const key = `${recipient.user.id}|${subscription.endpoint}`;
     if (pushDispatchInFlight.has(key)) continue;
     pushDispatchInFlight.add(key);
@@ -5660,6 +5795,7 @@ function pushConfigForUser(user, req = null) {
     subjectConfigured: webPushSubject(req) !== 'mailto:admin@example.com',
     subscriptionCount: subscriptions.length,
     currentDeviceSubscribed: Boolean(deviceId && subscriptions.some(item => item.deviceId === deviceId)),
+    currentDeviceNotificationCredentialId: Number(subscriptions.find(item => deviceId && item.deviceId === deviceId)?.notificationCredentialId || 0) || 0,
     deviceId,
     categories: NOTIFICATION_CATEGORY_CATALOG.map(category => ({ ...category })),
     preferences: normalizeNotificationPreferences(user.notificationPreferences)
@@ -5703,6 +5839,7 @@ async function handlePushNotifications(req, res, url) {
       deviceId,
       deviceName: cleanStr(body.deviceName || 'Browser notification device', 120),
       userAgent: requestUserAgent(req),
+      notificationCredentialId: Number(body.notificationCredentialId || body.credentialId || 0) || 0,
       lastSeenAt: nowIso(),
       disabledAt: null
     });
@@ -5712,6 +5849,29 @@ async function handlePushNotifications(req, res, url) {
     logAudit(user, 'web_push_subscription_saved', 'user', user.id, { deviceId, subscriptionCount: user.pushSubscriptions.length, endpointHost: normalized.endpointUrl.hostname });
     saveDb();
     return sendJson(res, 201, { ok: true, ...pushConfigForUser(user, req) }, {}, req);
+  }
+  if (req.method === 'PATCH' && action === 'scope') {
+    const body = await readBody(req);
+    const deviceId = cleanStr(body.deviceId || requestDeviceId(req), 128);
+    if (!deviceId) return sendJson(res, 422, { error: 'Trusted device ID is required.' }, {}, req);
+    const credentialId = Number(body.notificationCredentialId || body.credentialId || 0) || 0;
+    if (credentialId && !resolveBinanceCredentialForUser(user, credentialId, 'orders.view', { includeDisabled:true }) && !resolveBinanceCredentialForUser(user, credentialId, 'ads.view', { includeDisabled:true })) {
+      return sendJson(res, 403, { error: 'No access to the selected Binance account.' }, {}, req);
+    }
+    const rows = normalizePushSubscriptions(user.pushSubscriptions);
+    let changed = false;
+    rows.forEach(item => {
+      if (item.deviceId !== deviceId) return;
+      item.notificationCredentialId = credentialId;
+      item.lastSeenAt = nowIso();
+      changed = true;
+    });
+    user.pushSubscriptions = normalizePushSubscriptions(rows);
+    if (changed) {
+      logAudit(user, 'web_push_notification_scope_updated', 'user', user.id, { deviceId, notificationCredentialId: credentialId || null });
+      saveDb();
+    }
+    return sendJson(res, 200, { ok:true, ...pushConfigForUser(user, req) }, {}, req);
   }
   if (req.method === 'DELETE' && action === 'subscribe') {
     const body = await readBody(req);
@@ -5736,6 +5896,7 @@ async function handlePushNotifications(req, res, url) {
 function addNotification(type, message, severity = 'info', extra = {}) {
   const category = notificationCategoryForType(type, extra);
   const item = { id: nextId(), type, category, message, severity, status: 'unread', read: false, createdAt: nowIso(), ...extra };
+  if (!Number(item.credentialId || 0) && item.orderId) item.credentialId = Number(orderById(item.orderId)?.credentialId || 0) || null;
   item.category = notificationCategoryForType(type, item);
   db.notifications.push(item);
   broadcast({ type: 'notification.created', notification: item, at: nowIso() });
@@ -9770,7 +9931,7 @@ async function syncBinanceChat(req, res, user, order) {
   logAudit(user, 'binance_chat_messages_synced', 'order', order.id, { orderNo, imported: importedResult.imported, incomingImported: importedResult.incomingImported, totalRows: rows.length, result: sanitizedBinanceResult(result) });
   if (importedResult.incomingImported > 0) notifyIncomingBinanceChat(order, importedResult);
   saveDb();
-  if (importedResult.incomingImported > 0) broadcast({ type: 'chat.message.received', orderId: order.id, orderNo: order.orderNo, externalOrderNo: orderNo, imported: importedResult.imported, incomingImported: importedResult.incomingImported, latestMessageId: importedResult.latestIncomingChatId, status: order.status, externalStatus: order.externalStatus, at: nowIso() });
+  if (importedResult.incomingImported > 0) broadcast({ type: 'chat.message.received', orderId: order.id, orderNo: order.orderNo, externalOrderNo: orderNo, credentialId: order.credentialId || null, imported: importedResult.imported, incomingImported: importedResult.incomingImported, latestMessageId: importedResult.latestIncomingChatId, status: order.status, externalStatus: order.externalStatus, at: nowIso() });
   return sendJson(res, 200, { ...fullOrderView(order, user), imported: importedResult.imported, incomingImported: importedResult.incomingImported }, {}, req);
 }
 
@@ -17323,7 +17484,7 @@ function paymentAccountDraftFromBody(body = {}, paymentMethod = null, actor = nu
   const allowedAgentIds = restrictedToOwnAccount
     ? (ownerAgentId ? [ownerAgentId] : [])
     : Array.from(new Set([...resolvedAgents.ids, ...(ownerAgentId ? [ownerAgentId] : [])]));
-  return {
+  const draft = {
     paymentMethod,
     accountNumber: cleanStr(body.accountNumber || body.number || '', 120),
     accountName: cleanStr(body.accountName || body.name || '', 120),
@@ -17349,6 +17510,8 @@ function paymentAccountDraftFromBody(body = {}, paymentMethod = null, actor = nu
     allowedAgentIds,
     unknownAgents: restrictedToOwnAccount ? [] : resolvedAgents.unknown
   };
+  applyPaymentTransactionRulesFromBody(draft, body, { legacyFallback:true });
+  return draft;
 }
 
 function canCreatePaymentAccounts(user) {
@@ -17442,6 +17605,7 @@ function createPaymentAccountFromDraft(draft, user) {
     monthlySendLimit: draft.monthlySendLimit,
     minOrderAmount: draft.minOrderAmount,
     maxOrderAmount: draft.maxOrderAmount,
+    transactionRules: paymentTransactionRules(draft),
     transactionChargeMode: draft.transactionChargeMode,
     transactionChargeAppliesTo: draft.transactionChargeAppliesTo,
     transactionChargeFixed: draft.transactionChargeFixed,
@@ -17490,6 +17654,7 @@ function paymentAccountBulkUpdateCandidate(user, accountItem, changes = {}, seri
   const candidate = {
     ...accountItem,
     allowedAgentIds: accountAllowedAgentIds(accountItem),
+    transactionRules: paymentTransactionRules(accountItem),
     transactionChargeTiers: normalizePaymentChargeTiers(accountItem.transactionChargeTiers || [])
   };
   const canEditAccess = canManagePaymentAccountAccess(user, accountItem);
@@ -17555,11 +17720,7 @@ function paymentAccountBulkUpdateCandidate(user, accountItem, changes = {}, seri
   for (const key of ['dailyReceiveLimit','dailySendLimit','monthlyReceiveLimit','monthlySendLimit','minOrderAmount','maxOrderAmount']) {
     if (changes[key] !== undefined) candidate[key] = positiveNum(changes[key]);
   }
-  if (changes.transactionChargeMode !== undefined) candidate.transactionChargeMode = normalizePaymentChargeMode(changes.transactionChargeMode);
-  if (changes.transactionChargeFixed !== undefined) candidate.transactionChargeFixed = positiveNum(changes.transactionChargeFixed);
-  if (changes.transactionChargePercent !== undefined) candidate.transactionChargePercent = Math.max(0, Math.min(100, Number(changes.transactionChargePercent || 0) || 0));
-  if (changes.transactionChargeTiers !== undefined) candidate.transactionChargeTiers = normalizePaymentChargeTiers(changes.transactionChargeTiers);
-  candidate.transactionChargeAppliesTo = paymentAccountChargeAppliesToForType(candidate.accountType);
+  applyPaymentTransactionRulesFromBody(candidate, changes, { legacyFallback:true });
   candidate.updatedAt = nowIso();
   return candidate;
 }
@@ -17695,6 +17856,22 @@ async function handleBulkPaymentAccounts(req, res) {
       transactionChargeFixed: bulkField(row, 'transactionChargeFixed', 'fixedCharge'),
       transactionChargePercent: bulkField(row, 'transactionChargePercent', 'chargePercent'),
       transactionChargeTiers: bulkField(row, 'transactionChargeTiers', 'chargeTiers'),
+      sendMoneyChargeMode: bulkField(row, 'sendMoneyChargeMode'),
+      sendMoneyChargeFixed: bulkField(row, 'sendMoneyChargeFixed'),
+      sendMoneyChargePercent: bulkField(row, 'sendMoneyChargePercent'),
+      sendMoneyChargeTiers: bulkField(row, 'sendMoneyChargeTiers'),
+      cashOutChargeMode: bulkField(row, 'cashOutChargeMode'),
+      cashOutChargeFixed: bulkField(row, 'cashOutChargeFixed'),
+      cashOutChargePercent: bulkField(row, 'cashOutChargePercent'),
+      cashOutChargeTiers: bulkField(row, 'cashOutChargeTiers'),
+      receiveMoneyCommissionMode: bulkField(row, 'receiveMoneyCommissionMode'),
+      receiveMoneyCommissionFixed: bulkField(row, 'receiveMoneyCommissionFixed'),
+      receiveMoneyCommissionPercent: bulkField(row, 'receiveMoneyCommissionPercent'),
+      receiveMoneyCommissionTiers: bulkField(row, 'receiveMoneyCommissionTiers'),
+      cashInCommissionMode: bulkField(row, 'cashInCommissionMode'),
+      cashInCommissionFixed: bulkField(row, 'cashInCommissionFixed'),
+      cashInCommissionPercent: bulkField(row, 'cashInCommissionPercent'),
+      cashInCommissionTiers: bulkField(row, 'cashInCommissionTiers'),
       allowedAgentIds: bulkField(row, 'agentIds', 'allowedAgentIds', 'agents')
     };
     const method = resolvePaymentMethodForAccountRow(normalizedRow);
@@ -17748,14 +17925,29 @@ async function handlePaymentAccounts(req, res, url) {
   const user = requireAuth(req, res); if (!user) return;
   if (!canOpenPaymentAccounts(user)) return sendJson(res, 403, { error: 'Permission denied: accounts.view' }, {}, req);
   if (req.method === 'GET') {
-    let accounts = (db.paymentAccounts || []).filter(account => !paymentAccountDeleted(account) && canAccessAccount(user, account));
+    const accessibleAccounts = (db.paymentAccounts || []).filter(account => !paymentAccountDeleted(account) && canAccessAccount(user, account));
+    let accounts = accessibleAccounts.slice();
     const methodId = Number(url.searchParams.get('paymentMethodId') || 0);
     if (methodId) accounts = accounts.filter(account => Number(account.paymentMethodId) === methodId);
+    const accountType = cleanStr(url.searchParams.get('accountType') || '', 30).toLowerCase();
+    if (['personal','merchant','agent'].includes(accountType)) accounts = accounts.filter(account => normalizePaymentAccountType(account.accountType) === accountType);
+    const labelFilter = cleanStr(url.searchParams.get('label') || '', 100);
+    if (labelFilter) {
+      const expected = labelFilter === '__NO_LABEL__' ? '' : normalizePaymentAccountSerialScopeValue(labelFilter, 80);
+      accounts = accounts.filter(account => normalizePaymentAccountSerialScopeValue(account.label || '', 80) === expected);
+    }
     const search = cleanStr(url.searchParams.get('search') || url.searchParams.get('q') || '', 160);
     if (search) accounts = accounts.filter(account => paymentAccountMatchesSearch(account, search));
     accounts = accounts.slice().sort((a, b) => String(a.serialNumber || '').localeCompare(String(b.serialNumber || ''), undefined, { numeric: true }) || String(a.label || '').localeCompare(String(b.label || '')) || String(a.accountNumber || '').localeCompare(String(b.accountNumber || '')));
+    const methodIds = Array.from(new Set(accessibleAccounts.map(account => Number(account.paymentMethodId || 0)).filter(Boolean)));
+    const labels = Array.from(new Set(accessibleAccounts.map(account => cleanStr(account.label || '', 80)))).sort((a,b) => a.localeCompare(b, undefined, { numeric:true }));
     return sendJson(res, 200, {
       items: accounts.map(account => accountView(account, user)),
+      filterOptions: {
+        paymentMethods: methodIds.map(id => methodById(id)).filter(Boolean).map(method => ({ id:method.id, name:method.name, code:method.code || '' })),
+        labels,
+        accountTypes: Array.from(new Set(accessibleAccounts.map(account => normalizePaymentAccountType(account.accountType))))
+      },
       scope: { manageAll: canManageAllPaymentAccounts(user), ownerUserId: user.id, ownerAgentId: Number(user.agentId || paymentAccountOwnerAgentId(user) || 0) || null }
     }, {}, req);
   }
@@ -17874,11 +18066,7 @@ async function updatePaymentAccount(req, res, user, accountItem) {
   if (body.accountName !== undefined) accountItem.accountName = cleanStr(body.accountName, 120);
   accountItem.status = nextStatus;
   for (const key of ['dailyReceiveLimit','dailySendLimit','monthlyReceiveLimit','monthlySendLimit','minOrderAmount','maxOrderAmount']) if (body[key] !== undefined) accountItem[key] = positiveNum(body[key]);
-  if (body.transactionChargeMode !== undefined) accountItem.transactionChargeMode = normalizePaymentChargeMode(body.transactionChargeMode);
-  accountItem.transactionChargeAppliesTo = paymentAccountChargeAppliesToForType(accountItem.accountType);
-  if (body.transactionChargeFixed !== undefined) accountItem.transactionChargeFixed = positiveNum(body.transactionChargeFixed);
-  if (body.transactionChargePercent !== undefined) accountItem.transactionChargePercent = Math.max(0, Math.min(100, Number(body.transactionChargePercent || 0) || 0));
-  if (body.transactionChargeTiers !== undefined) accountItem.transactionChargeTiers = normalizePaymentChargeTiers(body.transactionChargeTiers);
+  applyPaymentTransactionRulesFromBody(accountItem, body, { legacyFallback:true });
   accountItem.updatedAt = nowIso();
   logAudit(user, 'payment_account_updated', 'paymentAccount', accountItem.id, { accountNumber: accountItem.accountNumber, label: accountItem.label, serialNumber: accountItem.serialNumber, status: accountItem.status, ownerUserId: accountItem.ownerUserId, accountType: accountItem.accountType, allowedAgentIds: accountAllowedAgentIds(accountItem) });
   saveDb();
@@ -22690,6 +22878,53 @@ function runPaymentAccountSerialScopeSelfTest() {
 }
 
 
+function runPaymentNotificationScopeSelfTest() {
+  const previousDb = db;
+  const assert = (condition, message) => { if (!condition) throw new Error(message); };
+  try {
+    db = {
+      orders: [
+        { id: 1, credentialId: 101, orderNo: 'A-1' },
+        { id: 2, credentialId: 202, orderNo: 'B-1' },
+        { id: 3, credentialId: null, orderNo: 'LOCAL-1', orderSource: 'offline' }
+      ]
+    };
+    const all = { notificationCredentialId: 0 };
+    const accountA = { notificationCredentialId: 101 };
+    const accountB = { notificationCredentialId: 202 };
+    const orderA = { type:'order_created', category:'orders', orderId:1 };
+    const orderB = { type:'order_created', category:'orders', orderId:2 };
+    const messageA = { type:'p2p_chat_message_received', category:'messages', orderId:1 };
+    const messageB = { type:'p2p_chat_message_received', category:'messages', orderId:2 };
+    const assignmentA = { type:'panel_sms_order_assigned', category:'assignments', orderId:1 };
+    const localOrder = { type:'order_created', category:'orders', orderId:3 };
+    const security = { type:'security_login_warning', category:'security' };
+    assert(pushSubscriptionAllowsNotification(all, orderA) && pushSubscriptionAllowsNotification(all, orderB) && pushSubscriptionAllowsNotification(all, localOrder), 'All scope did not allow all order notifications.');
+    assert(pushSubscriptionAllowsNotification(accountA, orderA), 'Selected Account A order was blocked.');
+    assert(!pushSubscriptionAllowsNotification(accountA, orderB), 'Selected Account A received Account B order notification.');
+    assert(pushSubscriptionAllowsNotification(accountA, messageA), 'Selected Account A message was blocked.');
+    assert(!pushSubscriptionAllowsNotification(accountA, messageB), 'Selected Account A received Account B message notification.');
+    assert(pushSubscriptionAllowsNotification(accountA, assignmentA), 'Selected Account A assignment was blocked.');
+    assert(!pushSubscriptionAllowsNotification(accountA, localOrder), 'Specific Binance-account scope accepted an unscoped local order.');
+    assert(pushSubscriptionAllowsNotification(accountA, security), 'Account scope incorrectly blocked a security notification.');
+    assert(pushSubscriptionAllowsNotification(accountB, { type:'order_created', category:'orders', credentialId:202 }), 'Direct credential ID matching failed.');
+    assert(!pushSubscriptionAllowsNotification(accountA, { type:'order_created', category:'orders', credentialId:202 }), 'Direct mismatched credential was not blocked.');
+    console.log(JSON.stringify({
+      ok:true,
+      version:APP_VERSION,
+      schemaVersion:APP_SCHEMA_VERSION,
+      allScope:true,
+      selectedOrderScope:true,
+      selectedMessageScope:true,
+      selectedAssignmentScope:true,
+      localOrderExcludedWhenSpecific:true,
+      securityUnaffected:true
+    }, null, 2));
+  } finally {
+    db = previousDb;
+  }
+}
+
 function runPaymentAccountBulkManualTransactionSelfTest() {
   const previousDb = db;
   const closeEnough = (a, b, tolerance = 0.001) => Math.abs(Number(a) - Number(b)) <= tolerance;
@@ -22724,10 +22959,10 @@ function runPaymentAccountBulkManualTransactionSelfTest() {
         { id: 11, code: 'NAGAD', name: 'Nagad', enabled: true }
       ],
       paymentAccounts: [
-        { id: 100, ownerUserId: 1, paymentMethodId: 10, accountNumber: 'P-100', accountName: 'Personal', label: 'Personal', serialNumber: 'P-1', accountType: 'personal', allowedAgentIds: [], transactionChargeMode: 'fixed', transactionChargeAppliesTo: 'send', transactionChargeFixed: 5, transactionChargePercent: 0, transactionChargeTiers: [], ...highLimits },
-        { id: 101, ownerUserId: 1, paymentMethodId: 10, accountNumber: 'M-101', accountName: 'Merchant', label: 'Merchant', serialNumber: 'M-1', accountType: 'merchant', allowedAgentIds: [], transactionChargeMode: 'percentage', transactionChargeAppliesTo: 'send', transactionChargeFixed: 0, transactionChargePercent: 1, transactionChargeTiers: [], ...highLimits },
-        { id: 102, ownerUserId: 2, paymentMethodId: 10, accountNumber: 'A-102', accountName: 'Agent', label: 'Agent', serialNumber: 'A-1', accountType: 'agent', allowedAgentIds: [20], transactionChargeMode: 'percentage', transactionChargeAppliesTo: 'both', transactionChargeFixed: 0, transactionChargePercent: 2, transactionChargeTiers: [], ...highLimits },
-        { id: 103, ownerUserId: 1, paymentMethodId: 11, accountNumber: 'MAN-103', accountName: 'Manual Rule', label: 'Manual', serialNumber: 'MAN-1', accountType: 'personal', allowedAgentIds: [], transactionChargeMode: 'manual', transactionChargeAppliesTo: 'send', transactionChargeFixed: 0, transactionChargePercent: 0, transactionChargeTiers: [], ...highLimits },
+        { id: 100, ownerUserId: 1, paymentMethodId: 10, accountNumber: 'P-100', accountName: 'Personal', label: 'Personal', serialNumber: 'P-1', accountType: 'personal', allowedAgentIds: [], transactionRules: { send_money:{ mode:'fixed', fixed:5, percent:0, tiers:[] }, cash_out:{ mode:'fixed', fixed:12, percent:0, tiers:[] } }, transactionChargeMode: 'fixed', transactionChargeAppliesTo: 'send', transactionChargeFixed: 5, transactionChargePercent: 0, transactionChargeTiers: [], ...highLimits },
+        { id: 101, ownerUserId: 1, paymentMethodId: 10, accountNumber: 'M-101', accountName: 'Merchant', label: 'Merchant', serialNumber: 'M-1', accountType: 'merchant', allowedAgentIds: [], transactionRules: { send_money:{ mode:'percentage', fixed:0, percent:0.5, tiers:[] }, cash_out:{ mode:'percentage', fixed:0, percent:1, tiers:[] } }, transactionChargeMode: 'percentage', transactionChargeAppliesTo: 'send', transactionChargeFixed: 0, transactionChargePercent: 0.5, transactionChargeTiers: [], ...highLimits },
+        { id: 102, ownerUserId: 1, paymentMethodId: 10, accountNumber: 'A-102', accountName: 'Agent', label: 'Agent', serialNumber: 'A-1', accountType: 'agent', allowedAgentIds: [20], transactionRules: { receive_money:{ mode:'percentage', fixed:0, percent:2, tiers:[] }, cash_in:{ mode:'percentage', fixed:0, percent:3, tiers:[] } }, transactionChargeMode: 'percentage', transactionChargeAppliesTo: 'both', transactionChargeFixed: 0, transactionChargePercent: 2, transactionChargeTiers: [], ...highLimits },
+        { id: 103, ownerUserId: 1, paymentMethodId: 11, accountNumber: 'MAN-103', accountName: 'Manual Rule', label: 'Manual', serialNumber: 'MAN-1', accountType: 'personal', allowedAgentIds: [], transactionRules: { send_money:{ mode:'manual', fixed:0, percent:0, tiers:[] }, cash_out:{ mode:'none', fixed:0, percent:0, tiers:[] } }, transactionChargeMode: 'manual', transactionChargeAppliesTo: 'send', transactionChargeFixed: 0, transactionChargePercent: 0, transactionChargeTiers: [], ...highLimits },
         { id: 104, ownerUserId: 1, paymentMethodId: 11, accountNumber: 'ZERO-104', accountName: 'Delete Me', label: 'Delete Scope', serialNumber: 'ZERO-1', accountType: 'personal', allowedAgentIds: [], transactionChargeMode: 'none', transactionChargeAppliesTo: 'send', transactionChargeFixed: 0, transactionChargePercent: 0, transactionChargeTiers: [], ...highLimits },
         { id: 105, ownerUserId: 1, paymentMethodId: 11, accountNumber: 'BULK-105', accountName: 'Bulk One', label: 'One', serialNumber: 'B-1', accountType: 'personal', allowedAgentIds: [], transactionChargeMode: 'none', transactionChargeAppliesTo: 'send', transactionChargeFixed: 0, transactionChargePercent: 0, transactionChargeTiers: [], ...highLimits },
         { id: 106, ownerUserId: 1, paymentMethodId: 11, accountNumber: 'BULK-106', accountName: 'Bulk Two', label: 'Two', serialNumber: 'B-2', accountType: 'personal', allowedAgentIds: [], transactionChargeMode: 'none', transactionChargeAppliesTo: 'send', transactionChargeFixed: 0, transactionChargePercent: 0, transactionChargeTiers: [], ...highLimits }
@@ -22759,8 +22994,11 @@ function runPaymentAccountBulkManualTransactionSelfTest() {
     const personalSend = createManualPaymentAccountTransaction(admin, personal, { type: 'send_money', amount: 1000, note: 'Personal Send Money' });
     assert(closeEnough(personalSend.balanceAfter, 3995), `Personal Send Money balance mismatch: ${personalSend.balanceAfter}`);
     assert(personalSend.preview.adjustmentKind === 'charge' && closeEnough(personalSend.preview.adjustmentAmount, 5), 'Personal Send Money fee was not applied.');
+    const personalCashOut = createManualPaymentAccountTransaction(admin, personal, { type: 'cash_out', amount: 100, note: 'Personal Cash Out' });
+    assert(closeEnough(personalCashOut.balanceAfter, 3883), `Personal Cash Out balance mismatch: ${personalCashOut.balanceAfter}`);
+    assert(personalCashOut.preview.adjustmentKind === 'charge' && closeEnough(personalCashOut.preview.adjustmentAmount, 12), 'Personal Cash Out did not use its separate fee rate.');
     const personalBill = createManualPaymentAccountTransaction(admin, personal, { type: 'bill_pay', amount: 100, note: 'Personal Bill Pay' });
-    assert(closeEnough(personalBill.balanceAfter, 3895), `Personal Bill Pay balance mismatch: ${personalBill.balanceAfter}`);
+    assert(closeEnough(personalBill.balanceAfter, 3783), `Personal Bill Pay balance mismatch: ${personalBill.balanceAfter}`);
     assert(personalBill.preview.adjustmentKind === 'none' && closeEnough(personalBill.preview.adjustmentAmount, 0), 'Bill Pay incorrectly received a fee.');
 
     const merchantCashOut = createManualPaymentAccountTransaction(admin, merchant, { type: 'cash_out', amount: 1000, note: 'Merchant Cash Out' });
@@ -22770,22 +23008,27 @@ function runPaymentAccountBulkManualTransactionSelfTest() {
     const agentReceive = createManualPaymentAccountTransaction(admin, agentAccount, { type: 'receive_money', amount: 1000, note: 'Agent Receive Money' });
     assert(closeEnough(agentReceive.balanceAfter, 1020), `Agent receive commission balance mismatch: ${agentReceive.balanceAfter}`);
     assert(agentReceive.preview.adjustmentKind === 'commission' && closeEnough(agentReceive.preview.adjustmentAmount, 20), 'Agent incoming commission was not credited.');
-    const agentSend = createManualPaymentAccountTransaction(admin, agentAccount, { type: 'send_money', amount: 500, note: 'Agent Send Money' });
-    assert(closeEnough(agentSend.balanceAfter, 530), `Agent outgoing commission balance mismatch: ${agentSend.balanceAfter}`);
-    assert(agentSend.preview.adjustmentKind === 'commission' && closeEnough(agentSend.preview.adjustmentAmount, 10), 'Agent outgoing commission was not credited.');
+    assert(validatePaymentAccountOwner('agent', admin) === '', 'Agent account type is incorrectly tied to the Agent login role.');
+    let invalidAgentTypeRejected = false;
+    try { createManualPaymentAccountTransaction(admin, agentAccount, { type: 'send_money', amount: 100, note: 'Invalid Agent Send Money' }); }
+    catch (error) { invalidAgentTypeRejected = /must be Received Money or Cash In/i.test(error.message); }
+    assert(invalidAgentTypeRejected, 'Agent account accepted a Personal transaction type.');
+    const agentCashIn = createManualPaymentAccountTransaction(admin, agentAccount, { type: 'cash_in', amount: 500, note: 'Agent Cash In' });
+    assert(closeEnough(agentCashIn.balanceAfter, 535), `Agent Cash In commission balance mismatch: ${agentCashIn.balanceAfter}`);
+    assert(agentCashIn.preview.adjustmentKind === 'commission' && closeEnough(agentCashIn.preview.adjustmentAmount, 15), 'Agent Cash In commission did not use its separate rate.');
     const protectedManualCommissions = db.businessEntries.filter(item => item.sourceType === 'agent_transaction_commission' && item.manualTransactionId);
     assert(protectedManualCommissions.length === 2 && protectedManualCommissions.every(item => item.automatic === true && item.protected === true), 'Manual Agent commission accounting entries are not protected automatic income.');
-    assert(protectedManualCommissions.every(item => accountingEntryIncludedInCompanyTotals(item) === false), 'Individual-only Agent commission leaked into Company totals.');
+    assert(protectedManualCommissions.every(item => accountingEntryIncludedInCompanyTotals(item) === true && Number(item.ownerUserId) === 1 && !item.agentId), 'Non-Agent owner commission was not recorded as company-account income.');
 
     const receiveSplit = { id: 301, orderId: 401, agentId: 20, paymentAccountId: 102, direction: 'receive', actualAmount: 0, transactionChargeAmount: 0, transactionAdjustmentKind: 'commission' };
     const receiveMovement = applySplitWalletMovement(receiveSplit, agentAccount, admin, 100, { note: 'Order receive' });
-    assert(closeEnough(receiveMovement.balanceAfter, 632), `Agent split receive balance mismatch: ${receiveMovement.balanceAfter}`);
+    assert(closeEnough(receiveMovement.balanceAfter, 637), `Agent split receive balance mismatch: ${receiveMovement.balanceAfter}`);
     assert(closeEnough(receiveSplit.transactionChargeAmount, 2), 'Agent split incoming commission was not recorded.');
     const sendSplit = { id: 302, orderId: 402, agentId: 20, paymentAccountId: 102, direction: 'send', actualAmount: 0, transactionChargeAmount: 0, transactionAdjustmentKind: 'commission' };
     const sendMovement = applySplitWalletMovement(sendSplit, agentAccount, admin, 200, { note: 'Order send' });
-    assert(closeEnough(sendMovement.balanceAfter, 436), `Agent split send balance mismatch: ${sendMovement.balanceAfter}`);
+    assert(closeEnough(sendMovement.balanceAfter, 443), `Agent split send balance mismatch: ${sendMovement.balanceAfter}`);
     const reducedMovement = applySplitWalletMovement(sendSplit, agentAccount, admin, 100, { note: 'Order send reduced' });
-    assert(closeEnough(reducedMovement.balanceAfter, 534), `Agent split commission reversal mismatch: ${reducedMovement.balanceAfter}`);
+    assert(closeEnough(reducedMovement.balanceAfter, 540), `Agent split commission reversal mismatch: ${reducedMovement.balanceAfter}`);
     assert(db.ledgers.some(item => item.type === 'agent_transaction_commission_reversal' && Number(item.splitId) === 302), 'Agent split commission reversal ledger is missing.');
     assert(db.businessEntries.some(item => item.sourceType === 'agent_transaction_commission_reversal' && Number(item.splitId) === 302 && item.type === 'expense' && item.protected === true), 'Agent split commission reversal accounting entry is missing.');
 
@@ -22819,17 +23062,17 @@ function runPaymentAccountBulkManualTransactionSelfTest() {
       return current.label === snapshot.label && current.serialNumber === snapshot.serialNumber && current.status === snapshot.status;
     }), 'Bulk validation mutated accounts before all rows passed.');
     const validCandidates = [
-      paymentAccountBulkUpdateCandidate(admin, bulkOne, { status: 'hold', transactionChargeMode: 'fixed', transactionChargeFixed: 3 }, 'SEQ-001'),
-      paymentAccountBulkUpdateCandidate(admin, bulkTwo, { status: 'hold', transactionChargeMode: 'fixed', transactionChargeFixed: 3 }, 'SEQ-002')
+      paymentAccountBulkUpdateCandidate(admin, bulkOne, { status: 'hold', sendMoneyChargeMode: 'fixed', sendMoneyChargeFixed: 3 }, 'SEQ-001'),
+      paymentAccountBulkUpdateCandidate(admin, bulkTwo, { status: 'hold', sendMoneyChargeMode: 'fixed', sendMoneyChargeFixed: 3 }, 'SEQ-002')
     ];
     assert(!paymentAccountSerialScopesConflict(validCandidates[0], validCandidates[1]), 'Valid sequential bulk edit incorrectly conflicts.');
     validCandidates.forEach(candidate => Object.assign(accountById(candidate.id), candidate));
-    assert([bulkOne, bulkTwo].every(item => item.status === 'hold' && item.transactionChargeMode === 'fixed' && closeEnough(item.transactionChargeFixed, 3)), 'Validated bulk changes were not applied together.');
+    assert([bulkOne, bulkTwo].every(item => item.status === 'hold' && item.transactionRules?.send_money?.mode === 'fixed' && closeEnough(item.transactionRules?.send_money?.fixed, 3)), 'Validated bulk changes were not applied together.');
 
     const migrationArrays = ['users','userRoles','apiCredentials','agents','paymentMethods','paymentAccounts','routing','orders','orderAgentAssignments','paymentSplits','ledgers','proofFiles','auditLogs','locks','notifications','offlineTransactions','chats','chatReadStates','coAgentRequests','approvalRequests','advertisements','securityRevertTokens','sessions','p2pExtensionTasks','p2pExtensionCache','userActivitySessions','businessEntries','businessDailyCloses','binanceBalanceSnapshots','chatMedia','systemUpdates','systemUpdateEvents'];
-    const migrationTarget = { meta: { nextId: 50000, schemaVersion: 33, dataCompatibilityEpoch: APP_DATA_COMPATIBILITY_EPOCH }, settings: {} };
+    const migrationTarget = { meta: { nextId: 50000, schemaVersion: 34, dataCompatibilityEpoch: APP_DATA_COMPATIBILITY_EPOCH }, settings: {} };
     migrationArrays.forEach(key => { migrationTarget[key] = []; });
-    migrationTarget.paymentAccounts = [{ id: 501, paymentMethodId: 10, accountNumber: 'LEGACY-AGENT', accountType: 'agent', currentBalance: 0, status: 'active' }];
+    migrationTarget.paymentAccounts = [{ id: 501, ownerUserId:1, paymentMethodId: 10, accountNumber: 'LEGACY-AGENT', accountType: 'agent', currentBalance: 0, status: 'active', transactionChargeMode:'percentage', transactionChargePercent:2, transactionChargeFixed:0, transactionChargeTiers:[] }];
     migrationTarget.paymentSplits = [
       { id: 601, paymentAccountId: 501, actualAmount: 100, transactionChargeAmount: 2, direction: 'send' },
       { id: 602, paymentAccountId: 501, actualAmount: 0, transactionChargeAmount: 0, direction: 'receive', status: 'planned' }
@@ -22839,28 +23082,31 @@ function runPaymentAccountBulkManualTransactionSelfTest() {
     assert(migrationTarget.meta.schemaVersion === APP_SCHEMA_VERSION, `Schema migration target mismatch: ${migrationTarget.meta.schemaVersion}`);
     assert(migrationTarget.paymentSplits.find(item => item.id === 601)?.transactionAdjustmentKind === 'charge', 'Historical Agent split charge was reinterpreted as commission.');
     assert(migrationTarget.paymentSplits.find(item => item.id === 602)?.transactionAdjustmentKind === 'commission', 'Untouched planned Agent split did not adopt commission mode.');
+    assert(closeEnough(migrationTarget.paymentAccounts[0]?.transactionRules?.receive_money?.percent, 2) && closeEnough(migrationTarget.paymentAccounts[0]?.transactionRules?.cash_in?.percent, 2), 'Legacy Agent commission rule did not migrate to Received Money and Cash In.');
 
     const typeKeys = Object.keys(MANUAL_PAYMENT_TRANSACTION_TYPES);
-    assert(typeKeys.length === 6 && ['send_money','receive_money','cash_out','bill_pay','payment','mobile_recharge'].every(key => typeKeys.includes(key)), 'Manual transaction catalog is incomplete.');
+    assert(typeKeys.length === 7 && ['send_money','receive_money','cash_out','bill_pay','payment','mobile_recharge','cash_in'].every(key => typeKeys.includes(key)), 'Manual transaction catalog is incomplete.');
 
     console.log(JSON.stringify({
       ok: true,
       version: APP_VERSION,
       schemaVersion: APP_SCHEMA_VERSION,
       bulk: { multiSelectEdit: true, atomicValidation: true, safeSoftDelete: true, statementHistoryPreserved: true },
-      personal: { sendMoneyFee: personalSend.preview.adjustmentAmount, billPayFee: personalBill.preview.adjustmentAmount, finalBalance: personalBill.balanceAfter },
+      personal: { sendMoneyFee: personalSend.preview.adjustmentAmount, cashOutFee: personalCashOut.preview.adjustmentAmount, billPayFee: personalBill.preview.adjustmentAmount, finalBalance: personalBill.balanceAfter },
       merchant: { cashOutFee: merchantCashOut.preview.adjustmentAmount, finalBalance: merchantCashOut.balanceAfter },
       agent: {
-        incomingCommission: agentReceive.preview.adjustmentAmount,
-        outgoingCommission: agentSend.preview.adjustmentAmount,
+        receivedMoneyCommission: agentReceive.preview.adjustmentAmount,
+        cashInCommission: agentCashIn.preview.adjustmentAmount,
         splitIncomingCommission: receiveSplit.transactionChargeAmount,
         splitOutgoingCommission: sendSplit.transactionChargeAmount,
         finalBalance: reducedMovement.balanceAfter,
         protectedAccounting: true,
-        individualOnlyExcluded: true
+        nonAgentOwnerAllowed: true,
+        companyAccountingIncluded: true,
+        invalidPersonalTypeRejected: true
       },
       manualRule: { missingAmountRejected: true, suppliedCharge: suppliedManual.preview.adjustmentAmount },
-      migration: { historicalSplitPreservedAsCharge: true, plannedAgentSplitUsesCommission: true }
+      migration: { historicalSplitPreservedAsCharge: true, plannedAgentSplitUsesCommission: true, legacySeparateRulesCreated: true }
     }, null, 2));
   } finally {
     db = previousDb;
@@ -22903,6 +23149,9 @@ if (process.argv.includes('--accounting-self-test')) {
 } else if (process.argv.includes('--payment-account-serial-scope-self-test')) {
   try { runPaymentAccountSerialScopeSelfTest(); process.exit(0); }
   catch (err) { console.error(`Payment-account serial scope self-test failed: ${err.message}`); process.exit(1); }
+} else if (process.argv.includes('--payment-notification-scope-self-test')) {
+  try { runPaymentNotificationScopeSelfTest(); process.exit(0); }
+  catch (err) { console.error(`Payment/notification scope self-test failed: ${err.message}`); process.exit(1); }
 } else if (process.argv.includes('--payment-account-bulk-manual-transaction-self-test')) {
   try { runPaymentAccountBulkManualTransactionSelfTest(); process.exit(0); }
   catch (err) { console.error(`Payment-account bulk/manual transaction self-test failed: ${err.message}`); process.exit(1); }

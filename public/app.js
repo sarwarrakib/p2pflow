@@ -1,4 +1,4 @@
-// v1.5.24: Payment-account multi-select, safe delete, manual transaction fees and Agent commission accounting.
+// v1.5.25: separate wallet rules, Agent-type behaviour, instant payment-account filters and account-scoped notifications.
 // v1.5.23: Payment Account serial scope treats each normalized Label, including no Label, as an independent namespace.
 // v1.5.22: Header-only Work Status, chat-only notification master, and coupled sound/push controls.
 // v1.5.20: account-scoped Binance RBAC, visible security recovery setup and individual-only profit accounting.
@@ -59,6 +59,9 @@ const state = {
   adsFilters: { asset:'', fiat:'', tradeType:'', status:'', search:'' },
   adsData: null,
   adsCredentialId: Number(localStorage.getItem('crmAdsCredentialId') || 0),
+  notificationCredentialId: Number(localStorage.getItem('crmNotificationCredentialId') || 0),
+  notificationCredentialScopeSyncTimer: null,
+  lastSyncedNotificationCredentialId: null,
   adsSearchTimer: null,
   mobileNavCounts: { orders: 0, chats: 0, approvals: 0 },
   mobileNavSyncTimer: null,
@@ -3657,6 +3660,11 @@ async function loadBackgroundNotificationConfig(options={}) {
     const config = await api('/api/push', { silent: options.silent !== false, noAutoReload:true });
     state.pushConfig = config;
     state.user.backgroundNotificationsEnabled = config.enabled === true;
+    const storedScope = localStorage.getItem('crmNotificationCredentialId');
+    if (storedScope === null && config.currentDeviceNotificationCredentialId !== undefined) {
+      state.notificationCredentialId = Number(config.currentDeviceNotificationCredentialId || 0);
+    }
+    state.lastSyncedNotificationCredentialId = Number(config.currentDeviceNotificationCredentialId || 0);
     updateBackgroundNotificationControls();
     return config;
   } catch (_) {
@@ -3670,6 +3678,48 @@ function notificationDeviceName() {
   const platform = navigator.userAgentData?.platform || navigator.platform || 'Device';
   const browser = /edg/i.test(navigator.userAgent) ? 'Edge' : /firefox/i.test(navigator.userAgent) ? 'Firefox' : /chrome|crios/i.test(navigator.userAgent) ? 'Chrome' : /safari/i.test(navigator.userAgent) ? 'Safari' : 'Browser';
   return `${platform} · ${browser}`.slice(0, 120);
+}
+
+function activeNotificationCredentialScope() {
+  if (state.page === 'orders') return Number(state.orderCredentialId || 0);
+  if (state.page === 'ads') return Number(state.adsCredentialId || 0);
+  return Number(state.notificationCredentialId || 0);
+}
+
+function notificationCredentialMatches(credentialId=0, category='orders') {
+  if (!['orders','assignments','messages'].includes(String(category || '').toLowerCase())) return true;
+  const scopeId = Number(activeNotificationCredentialScope() || 0);
+  if (!scopeId) return true;
+  return Number(credentialId || 0) === scopeId;
+}
+
+function notificationCredentialIdFromEvent(event={}) {
+  return Number(event?.credentialId || event?.notification?.credentialId || 0) || 0;
+}
+
+function setNotificationCredentialScope(credentialId=0, options={}) {
+  const next = Math.max(0, Number(credentialId || 0)) || 0;
+  state.notificationCredentialId = next;
+  if (next) localStorage.setItem('crmNotificationCredentialId', String(next));
+  else localStorage.removeItem('crmNotificationCredentialId');
+  if (options.sync === false || !state.user) return next;
+  const deviceId = trustedNotificationDeviceId();
+  const subscribed = state.pushConfig?.enabled === true && state.pushConfig?.currentDeviceSubscribed === true;
+  if (!deviceId || !subscribed) return next;
+  if (Number(state.lastSyncedNotificationCredentialId) === next && options.force !== true) return next;
+  clearTimeout(state.notificationCredentialScopeSyncTimer);
+  state.notificationCredentialScopeSyncTimer = setTimeout(async () => {
+    try {
+      const result = await api('/api/push/scope', {
+        method:'PATCH', silent:true, noAutoReload:true,
+        body:JSON.stringify({ deviceId, notificationCredentialId:next })
+      });
+      state.pushConfig = result;
+      state.lastSyncedNotificationCredentialId = Number(result?.currentDeviceNotificationCredentialId ?? next) || 0;
+      updateBackgroundNotificationControls();
+    } catch (_) {}
+  }, options.immediate ? 0 : 120);
+  return next;
 }
 
 async function enableBackgroundNotifications() {
@@ -3697,9 +3747,10 @@ async function enableBackgroundNotifications() {
     }
     const result = await api('/api/push/subscribe', {
       method:'POST',
-      body:JSON.stringify({ subscription:subscription.toJSON(), deviceId, deviceName:notificationDeviceName(), enabled:true })
+      body:JSON.stringify({ subscription:subscription.toJSON(), deviceId, deviceName:notificationDeviceName(), enabled:true, notificationCredentialId:activeNotificationCredentialScope() })
     });
     state.pushConfig = result;
+    state.lastSyncedNotificationCredentialId = Number(result?.currentDeviceNotificationCredentialId ?? activeNotificationCredentialScope()) || 0;
     if (state.user) state.user.backgroundNotificationsEnabled = true;
     notify(state.lang === 'bn' ? 'এই ডিভাইসে নোটিফিকেশন ও সাউন্ড চালু হয়েছে।' : 'Notifications and sound are ON on this device.', 'ok');
     playNotificationSound(true, { force:true });
@@ -4542,6 +4593,7 @@ function orderChangeNotice(change = {}) {
 }
 
 function notifyOrderChange(change = {}, sourceType = '') {
+  if (!notificationCredentialMatches(change.credentialId, 'orders')) return;
   const notice = orderChangeNotice(change);
   if (!notice) return;
   const key = [sourceType, change.orderId || change.id, change.orderNo || change.externalOrderNo, change.externalStatus, change.status, change.created ? 'new' : 'status'].join('|');
@@ -4617,7 +4669,7 @@ function handleServerEvent(event = {}) {
     const current = event.changedOrders.find(o => Number(o.orderId || o.id) === Number(state.currentOrderId));
     if (current && state.page === 'orders' && state.currentOrderId) scheduleCurrentOrderReload(450);
   }
-  if (event.type === 'order.created') {
+  if (event.type === 'order.created' && notificationCredentialMatches(event.credentialId, 'orders')) {
     const orderNo = event.orderNo || event.externalOrderNo || ('#' + event.orderId);
     const key = ['created', event.orderId, orderNo, event.at || ''].join('|');
     if (!eventOnceKey(key)) {
@@ -4628,7 +4680,7 @@ function handleServerEvent(event = {}) {
   if (event.type === 'notification.created' && event.notification?.type === 'panel_sms_order_assigned') {
     const notification = event.notification;
     const belongsToUser = Number(notification.userId || 0) === Number(state.user?.id || 0) || Number(notification.agentId || 0) === Number(state.user?.agentId || 0);
-    if (belongsToUser) playOrderNotificationSoundOnce(notification.orderId || notification.message, 'assignments');
+    if (belongsToUser && notificationCredentialMatches(notification.credentialId, 'assignments')) playOrderNotificationSoundOnce(notification.orderId || notification.message, 'assignments');
   }
   if (event.type === 'order.additional_kyc.verified') {
     const orderNo = event.orderNo || event.externalOrderNo || ('#' + event.orderId);
@@ -4653,7 +4705,7 @@ function handleServerEvent(event = {}) {
     }
     const orderNo = event.orderNo || event.externalOrderNo || ('#' + event.orderId);
     const key = ['chat', event.orderId, event.latestMessageId || event.at || event.incomingImported].join('|');
-    if (!eventOnceKey(key)) {
+    if (notificationCredentialMatches(event.credentialId, 'messages') && !eventOnceKey(key)) {
       notify(`New message on order ${orderNo}.`, 'ok', 3500);
       playOrderNotificationSoundOnce(key, 'messages');
     }
@@ -4868,7 +4920,7 @@ function renderNav() {
   // legacy flat menu while this marker is absent, the browser/proxy is serving
   // stale frontend JavaScript rather than the active release.
   nav.dataset.navigationModel = 'grouped-control-center';
-  nav.dataset.uiRelease = '1.5.24';
+  nav.dataset.uiRelease = '1.5.25';
   nav.innerHTML = '';
   const visible = visiblePages();
   const visibleIds = new Set(visible.map(([id]) => id));
@@ -6408,27 +6460,28 @@ function paymentAccountAgentAccessField(selectedIds=[], editable=paymentAccountS
   return paymentAccountAgentAccessHtml(selectedIds);
 }
 
+function syncPaymentAccountRuleVisibility(form) {
+  if (!form) return;
+  const accountType = String(form.querySelector('[name="accountType"]')?.value || 'personal').toLowerCase();
+  form.querySelectorAll('[data-payment-rule-group]').forEach(group => {
+    const target = String(group.dataset.paymentRuleGroup || 'personal');
+    group.classList.toggle('hidden', target === 'agent' ? accountType !== 'agent' : accountType === 'agent');
+  });
+}
+
 function syncPaymentAccountOwnerForm(form) {
   if (!form) return;
   const typeSelect = form.querySelector('[name="accountType"]');
   const ownerSelect = form.querySelector('[name="ownerUserId"]');
-  // Users without all-account scope receive a hidden, server-enforced owner field.
-  // Only an editable <select> has options that need role filtering/synchronization.
-  if (!typeSelect || !ownerSelect || ownerSelect.tagName !== 'SELECT') return;
-  const isAgentType = typeSelect.value === 'agent';
-  [...ownerSelect.options].forEach(option => {
-    if (!option.value) return;
-    option.disabled = isAgentType && option.dataset.role !== 'agent';
-  });
-  const selected = ownerSelect.selectedOptions[0];
-  if (selected?.disabled) ownerSelect.value = '';
-  if (isAgentType) {
+  // Account type controls transaction behavior. It is intentionally independent of the login user's role.
+  if (typeSelect?.value === 'agent' && ownerSelect?.tagName === 'SELECT') {
     const ownerAgentId = Number(ownerSelect.selectedOptions[0]?.dataset.agentId || 0);
     if (ownerAgentId) {
       const accessCheck = form.querySelector(`input[name="allowedAgentIds"][value="${ownerAgentId}"]`);
       if (accessCheck) accessCheck.checked = true;
     }
   }
+  syncPaymentAccountRuleVisibility(form);
 }
 
 function bindPaymentAccountOwnerForm(form) {
@@ -6440,21 +6493,70 @@ function bindPaymentAccountOwnerForm(form) {
   syncPaymentAccountOwnerForm(form);
 }
 
+function paymentAccountRuleClient(account={}, key='send_money') {
+  const direct = account?.transactionRules?.[key];
+  if (direct && typeof direct === 'object') return direct;
+  const legacy = {
+    mode:String(account.transactionChargeMode || 'none'),
+    fixed:Math.max(0, Number(account.transactionChargeFixed || 0)),
+    percent:Math.max(0, Number(account.transactionChargePercent || 0)),
+    tiers:Array.isArray(account.transactionChargeTiers) ? account.transactionChargeTiers : []
+  };
+  return legacy;
+}
+
+function paymentRuleShortSummaryClient(rule={}) {
+  const mode = String(rule?.mode || 'none');
+  const fixed = Math.max(0, Number(rule?.fixed || 0));
+  const percent = Math.max(0, Number(rule?.percent || 0));
+  if (mode === 'fixed') return `${money(fixed)} fixed`;
+  if (mode === 'percentage') return `${percent}%`;
+  if (mode === 'fixed_percentage') return `${money(fixed)} + ${percent}%`;
+  if (mode === 'tiered') return `${Array.isArray(rule?.tiers) ? rule.tiers.length : 0} tier(s)`;
+  if (mode === 'manual') return 'Manual actual';
+  return 'None';
+}
+
+function paymentAccountOrderRuleSummary(account={}, direction='send') {
+  const accountType = String(account.accountType || '').toLowerCase();
+  const normalizedDirection = String(direction || 'send').toLowerCase();
+  if (accountType === 'agent') {
+    const key = normalizedDirection === 'receive' ? 'receive_money' : 'cash_in';
+    const title = key === 'receive_money' ? 'Received commission' : 'Cash In commission';
+    return `${title}: ${paymentRuleShortSummaryClient(paymentAccountRuleClient(account, key))}`;
+  }
+  if (normalizedDirection !== 'send') return 'No receive charge';
+  return `Send Money charge: ${paymentRuleShortSummaryClient(paymentAccountRuleClient(account, 'send_money'))}`;
+}
+
+function paymentRuleEditorHtml({ prefix, title, rule={}, kind='charge' }={}) {
+  const mode = String(rule.mode || 'none');
+  const tiers = Array.isArray(rule.tiers) ? JSON.stringify(rule.tiers) : '[]';
+  const noun = kind === 'commission' ? 'Commission' : 'Charge';
+  return `<section class="payment-rule-card">
+    <div class="payment-rule-card-head"><b>${escapeHtml(title || noun)}</b><small>${kind === 'commission' ? 'Credited to balance' : 'Deducted from balance'}</small></div>
+    <div class="payment-rule-grid">
+      <label>Rule<select name="${prefix}Mode"><option value="none" ${mode==='none'?'selected':''}>None</option><option value="fixed" ${mode==='fixed'?'selected':''}>Fixed amount</option><option value="percentage" ${mode==='percentage'?'selected':''}>Percentage</option><option value="fixed_percentage" ${mode==='fixed_percentage'?'selected':''}>Fixed + percentage</option><option value="tiered" ${mode==='tiered'?'selected':''}>Tier-based</option><option value="manual" ${mode==='manual'?'selected':''}>Manual actual amount</option></select></label>
+      <label>Fixed Amount (BDT)<input name="${prefix}Fixed" type="number" min="0" step="0.01" value="${escapeAttr(rule.fixed || 0)}" /></label>
+      <label>Percentage (%)<input name="${prefix}Percent" type="number" min="0" max="100" step="0.0001" value="${escapeAttr(rule.percent || 0)}" /></label>
+      <label class="payment-rule-tier">Tier Rules (JSON)<textarea name="${prefix}Tiers" rows="2" placeholder='[{"min":0,"max":5000,"fixed":5,"percent":0}]'>${escapeHtml(tiers)}</textarea></label>
+    </div>
+  </section>`;
+}
+
 function paymentAccountChargeFieldsHtml(account={}) {
-  const mode = String(account.transactionChargeMode || 'none');
-  const tiers = Array.isArray(account.transactionChargeTiers) ? JSON.stringify(account.transactionChargeTiers) : '[]';
-  return `
-    <div><label>Charge / Commission Rule</label><select name="transactionChargeMode">
-      <option value="none" ${mode==='none'?'selected':''}>None</option>
-      <option value="fixed" ${mode==='fixed'?'selected':''}>Fixed amount</option>
-      <option value="percentage" ${mode==='percentage'?'selected':''}>Percentage</option>
-      <option value="fixed_percentage" ${mode==='fixed_percentage'?'selected':''}>Fixed + percentage</option>
-      <option value="tiered" ${mode==='tiered'?'selected':''}>Tier-based</option>
-      <option value="manual" ${mode==='manual'?'selected':''}>Manual actual amount</option>
-    </select></div>
-    <div><label>Fixed Amount (BDT)</label><input name="transactionChargeFixed" type="number" min="0" step="0.01" value="${escapeAttr(account.transactionChargeFixed || 0)}" /></div>
-    <div><label>Percentage (%)</label><input name="transactionChargePercent" type="number" min="0" max="100" step="0.0001" value="${escapeAttr(account.transactionChargePercent || 0)}" /></div>
-    <div class="full-row"><label>Tier Rules (JSON)</label><textarea name="transactionChargeTiers" rows="3" placeholder='[{"min":0,"max":5000,"fixed":5,"percent":0}]'>${escapeHtml(tiers)}</textarea><small>Personal and Merchant accounts charge only Send Money and Cash Out. Agent accounts credit commission on every money-in and money-out manual transaction. The server enforces this scope automatically.</small></div>`;
+  return `<div class="full-row payment-rule-groups">
+    <div data-payment-rule-group="personal">
+      <div class="payment-rule-group-title"><b>Personal / Merchant Charges</b><small>Send Money and Cash Out have separate rates.</small></div>
+      ${paymentRuleEditorHtml({ prefix:'sendMoneyCharge', title:'Send Money Charge', rule:paymentAccountRuleClient(account, 'send_money'), kind:'charge' })}
+      ${paymentRuleEditorHtml({ prefix:'cashOutCharge', title:'Cash Out Charge', rule:paymentAccountRuleClient(account, 'cash_out'), kind:'charge' })}
+    </div>
+    <div data-payment-rule-group="agent" class="hidden">
+      <div class="payment-rule-group-title"><b>Agent Commissions</b><small>Received Money and Cash In have separate commission rates.</small></div>
+      ${paymentRuleEditorHtml({ prefix:'receiveMoneyCommission', title:'Received Money Commission', rule:paymentAccountRuleClient(account, 'receive_money'), kind:'commission' })}
+      ${paymentRuleEditorHtml({ prefix:'cashInCommission', title:'Cash In Commission', rule:paymentAccountRuleClient(account, 'cash_in'), kind:'commission' })}
+    </div>
+  </div>`;
 }
 
 function openAccountModal() {
@@ -6539,6 +6641,30 @@ function bulkEditApplyField(form, checkboxName, fieldName, changes, transform = 
   changes[fieldName] = transform(field?.value ?? '');
 }
 
+function bulkPaymentRuleEditorHtml(prefix, title) {
+  const cap = prefix.charAt(0).toUpperCase() + prefix.slice(1);
+  return `<section class="payment-rule-card bulk-payment-rule-card">
+    <div class="payment-rule-card-head"><b>${escapeHtml(title)}</b><label class="check"><input type="checkbox" name="apply${cap}Mode" /> Apply rule</label></div>
+    <div class="payment-rule-grid">
+      <label>Rule<select name="${prefix}Mode"><option value="none">None</option><option value="fixed">Fixed amount</option><option value="percentage">Percentage</option><option value="fixed_percentage">Fixed + percentage</option><option value="tiered">Tier-based</option><option value="manual">Manual actual amount</option></select></label>
+      <label>Fixed<input name="${prefix}Fixed" type="number" min="0" step="0.01" value="0" /></label>
+      <label>Percent<input name="${prefix}Percent" type="number" min="0" max="100" step="0.0001" value="0" /></label>
+      <label class="payment-rule-tier">Tier Rules<textarea name="${prefix}Tiers" rows="2">[]</textarea></label>
+      <label class="check payment-rule-subapply"><input type="checkbox" name="apply${cap}Fixed" /> Apply fixed</label>
+      <label class="check payment-rule-subapply"><input type="checkbox" name="apply${cap}Percent" /> Apply percent</label>
+      <label class="check payment-rule-subapply"><input type="checkbox" name="apply${cap}Tiers" /> Apply tiers</label>
+    </div>
+  </section>`;
+}
+
+function applyBulkPaymentRule(form, changes, prefix) {
+  const cap = prefix.charAt(0).toUpperCase() + prefix.slice(1);
+  bulkEditApplyField(form, `apply${cap}Mode`, `${prefix}Mode`, changes);
+  bulkEditApplyField(form, `apply${cap}Fixed`, `${prefix}Fixed`, changes, Number);
+  bulkEditApplyField(form, `apply${cap}Percent`, `${prefix}Percent`, changes, Number);
+  bulkEditApplyField(form, `apply${cap}Tiers`, `${prefix}Tiers`, changes);
+}
+
 function openBulkEditAccountModal(ids=[]) {
   const selectedIds = Array.from(new Set((ids || []).map(Number).filter(Boolean)));
   const accounts = (window.lastAccounts || []).filter(account => selectedIds.includes(Number(account.id)) && account.viewerCanManage);
@@ -6557,16 +6683,27 @@ function openBulkEditAccountModal(ids=[]) {
       <div class="bulk-edit-field"><label class="check"><input type="checkbox" name="applyDailySendLimit" /> Daily Send Limit</label><input name="dailySendLimit" type="number" min="0" step="0.01" value="0" /></div>
       <div class="bulk-edit-field"><label class="check"><input type="checkbox" name="applyMonthlyReceiveLimit" /> Monthly Receive Limit</label><input name="monthlyReceiveLimit" type="number" min="0" step="0.01" value="0" /></div>
       <div class="bulk-edit-field"><label class="check"><input type="checkbox" name="applyMonthlySendLimit" /> Monthly Send Limit</label><input name="monthlySendLimit" type="number" min="0" step="0.01" value="0" /></div>
-      <div class="bulk-edit-field"><label class="check"><input type="checkbox" name="applyTransactionChargeMode" /> Charge / Commission Rule</label><select name="transactionChargeMode"><option value="none">None</option><option value="fixed">Fixed amount</option><option value="percentage">Percentage</option><option value="fixed_percentage">Fixed + percentage</option><option value="tiered">Tier-based</option><option value="manual">Manual actual amount</option></select></div>
-      <div class="bulk-edit-field"><label class="check"><input type="checkbox" name="applyTransactionChargeFixed" /> Fixed Amount</label><input name="transactionChargeFixed" type="number" min="0" step="0.01" value="0" /></div>
-      <div class="bulk-edit-field"><label class="check"><input type="checkbox" name="applyTransactionChargePercent" /> Percentage</label><input name="transactionChargePercent" type="number" min="0" max="100" step="0.0001" value="0" /></div>
-      <div class="full-row bulk-edit-field"><label class="check"><input type="checkbox" name="applyTransactionChargeTiers" /> Tier Rules (JSON)</label><textarea name="transactionChargeTiers" rows="3" placeholder='[{"min":0,"max":5000,"fixed":5,"percent":0}]'>[]</textarea></div>
+      <div class="full-row payment-rule-groups" data-bulk-payment-rules>
+        <div data-payment-rule-group="personal">
+          <div class="payment-rule-group-title"><b>Personal / Merchant Charges</b><small>Choose each rate independently.</small></div>
+          ${bulkPaymentRuleEditorHtml('sendMoneyCharge', 'Send Money Charge')}
+          ${bulkPaymentRuleEditorHtml('cashOutCharge', 'Cash Out Charge')}
+        </div>
+        <div data-payment-rule-group="agent" class="hidden">
+          <div class="payment-rule-group-title"><b>Agent Commissions</b><small>Received Money and Cash In use separate commission rates.</small></div>
+          ${bulkPaymentRuleEditorHtml('receiveMoneyCommission', 'Received Money Commission')}
+          ${bulkPaymentRuleEditorHtml('cashInCommission', 'Cash In Commission')}
+        </div>
+      </div>
       ${manageAll ? `<div class="full-row bulk-edit-field"><label class="check"><input type="checkbox" name="applyAllowedAgentIds" /> Replace Agent Access</label>${paymentAccountAgentAccessHtml(accounts[0]?.allowedAgentIds || [])}</div>` : ''}
       <div class="full-row sub">Unchecked fields remain unchanged. The update is atomic: if one selected account fails validation, none are changed.</div>
       <div class="full-row" id="bulkEditAccountMessage"></div>
       <div class="full-row"><button type="submit">Update Selected Accounts</button></div>
     </form>`);
   const form = $('#bulkEditAccountForm');
+  const accountTypeSelect = form.querySelector('[name="accountType"]');
+  if (accountTypeSelect) accountTypeSelect.addEventListener('change', () => syncPaymentAccountRuleVisibility(form));
+  syncPaymentAccountRuleVisibility(form);
   form.onsubmit = async event => {
     event.preventDefault();
     const changes = {};
@@ -6578,10 +6715,10 @@ function openBulkEditAccountModal(ids=[]) {
     bulkEditApplyField(form, 'applyDailySendLimit', 'dailySendLimit', changes, Number);
     bulkEditApplyField(form, 'applyMonthlyReceiveLimit', 'monthlyReceiveLimit', changes, Number);
     bulkEditApplyField(form, 'applyMonthlySendLimit', 'monthlySendLimit', changes, Number);
-    bulkEditApplyField(form, 'applyTransactionChargeMode', 'transactionChargeMode', changes);
-    bulkEditApplyField(form, 'applyTransactionChargeFixed', 'transactionChargeFixed', changes, Number);
-    bulkEditApplyField(form, 'applyTransactionChargePercent', 'transactionChargePercent', changes, Number);
-    bulkEditApplyField(form, 'applyTransactionChargeTiers', 'transactionChargeTiers', changes);
+    applyBulkPaymentRule(form, changes, 'sendMoneyCharge');
+    applyBulkPaymentRule(form, changes, 'cashOutCharge');
+    applyBulkPaymentRule(form, changes, 'receiveMoneyCommission');
+    applyBulkPaymentRule(form, changes, 'cashInCommission');
     if (manageAll && form.applyOwnerUserId?.checked) changes.ownerUserId = Number(form.ownerUserId?.value || 0);
     if (manageAll && form.applyAllowedAgentIds?.checked) changes.allowedAgentIds = selectedAllowedAgentIds(form);
     const serialNumbers = {};
@@ -6823,21 +6960,33 @@ function openBulkAccountModal() {
 }
 
 function manualPaymentTransactionAdjustmentKindClient(account={}, type='') {
-  if (String(account.accountType || '').toLowerCase() === 'agent') return 'commission';
-  return ['send_money','cash_out'].includes(String(type || '').toLowerCase()) ? 'charge' : 'none';
+  const accountType = String(account.accountType || '').toLowerCase();
+  const transactionType = String(type || '').toLowerCase();
+  if (accountType === 'agent') return ['receive_money','cash_in'].includes(transactionType) ? 'commission' : 'none';
+  return ['send_money','cash_out'].includes(transactionType) ? 'charge' : 'none';
 }
 
-function configuredPaymentAdjustmentClient(account={}, amount=0) {
+function paymentAdjustmentRuleKeyClient(account={}, type='') {
+  const accountType = String(account.accountType || '').toLowerCase();
+  const transactionType = String(type || '').toLowerCase();
+  if (accountType === 'agent') return ['receive_money','cash_in'].includes(transactionType) ? transactionType : '';
+  return ['send_money','cash_out'].includes(transactionType) ? transactionType : '';
+}
+
+function configuredPaymentAdjustmentClient(account={}, amount=0, type='') {
   const base = Math.max(0, Number(amount || 0));
-  const mode = String(account.transactionChargeMode || 'none');
-  const fixed = Math.max(0, Number(account.transactionChargeFixed || 0));
-  const percent = Math.max(0, Number(account.transactionChargePercent || 0));
+  const key = paymentAdjustmentRuleKeyClient(account, type);
+  if (!key) return 0;
+  const rule = paymentAccountRuleClient(account, key);
+  const mode = String(rule.mode || 'none');
+  const fixed = Math.max(0, Number(rule.fixed || 0));
+  const percent = Math.max(0, Number(rule.percent || 0));
   if (!(base > 0)) return mode === 'manual' ? null : 0;
   if (mode === 'fixed') return fixed;
   if (mode === 'percentage') return base * percent / 100;
   if (mode === 'fixed_percentage') return fixed + (base * percent / 100);
   if (mode === 'tiered') {
-    const tiers = Array.isArray(account.transactionChargeTiers) ? account.transactionChargeTiers : [];
+    const tiers = Array.isArray(rule.tiers) ? rule.tiers : [];
     const tier = tiers.find(row => base >= Number(row?.min || 0) && (!(Number(row?.max || 0) > 0) || base <= Number(row.max)));
     return tier ? Math.max(0, Number(tier.fixed || 0)) + (base * Math.max(0, Number(tier.percent || 0)) / 100) : 0;
   }
@@ -6865,8 +7014,8 @@ function syncManualPaymentTransactionForm(form, account, { resetOverride=false }
   }
   label.textContent = kind === 'commission' ? 'Commission (BDT)' : 'Charge (BDT)';
   if (resetOverride) input.dataset.dirty = 'false';
-  const configured = configuredPaymentAdjustmentClient(account, amount);
-  if (String(account.transactionChargeMode || 'none') === 'manual') {
+  const configured = configuredPaymentAdjustmentClient(account, amount, type);
+  if (String(paymentAccountRuleClient(account, paymentAdjustmentRuleKeyClient(account, type)).mode || 'none') === 'manual') {
     if (input.dataset.dirty !== 'true') input.value = '';
     input.required = true;
     help.textContent = `Manual ${kind} rule: enter the actual ${kind} amount.`;
@@ -6881,22 +7030,18 @@ function openAdjustAccountModal(id) {
   const account = (window.lastAccounts || []).find(a => Number(a.id) === Number(id));
   if (!account) return notify('Account not found. Refresh page and try again.', 'danger');
   const isAgentAccount = String(account.accountType || '').toLowerCase() === 'agent';
+  const transactionOptions = isAgentAccount
+    ? '<option value="receive_money">Received Money (+)</option><option value="cash_in">Cash In (-)</option>'
+    : '<option value="send_money">Send Money (-)</option><option value="receive_money">Receive Money (+)</option><option value="cash_out">Cash Out (-)</option><option value="bill_pay">Bill Pay (-)</option><option value="payment">Payment (-)</option><option value="mobile_recharge">Mobile Recharge (-)</option>';
   modal('Manual Balance Transaction', `
     <div class="kv"><b>Account</b><span>${escapeHtml(account.accountNumber)}</span><b>Type</b><span>${escapeHtml(accountTypeLabel(account.accountType))}</span><b>Current Balance</b><span>${money(account.currentBalance)}</span></div>
     <form id="adjustForm" class="form-grid">
-      <div><label>Transaction Type</label><select name="type">
-        <option value="send_money">Send Money (-)</option>
-        <option value="receive_money">Receive Money (+)</option>
-        <option value="cash_out">Cash Out (-)</option>
-        <option value="bill_pay">Bill Pay (-)</option>
-        <option value="payment">Payment (-)</option>
-        <option value="mobile_recharge">Mobile Recharge (-)</option>
-      </select></div>
+      <div><label>Transaction Type</label><select name="type">${transactionOptions}</select></div>
       <div><label>Amount (BDT)</label><input name="amount" type="number" min="0.01" step="0.01" value="0" required /></div>
       <div data-manual-adjustment-panel><label data-manual-adjustment-label>${isAgentAccount ? 'Commission' : 'Charge'} (BDT)</label><input name="adjustmentAmount" type="number" min="0" step="0.01" data-dirty="false" /><small data-manual-adjustment-help></small></div>
       <div><label>Reference</label><input name="reference" maxlength="120" /></div>
       <div class="full-row"><label>Note</label><input name="note" maxlength="300" /></div>
-      <div class="full-row notice small">${isAgentAccount ? 'Agent accounts receive the configured commission immediately for both incoming and outgoing transactions.' : 'Personal and Merchant accounts apply a charge only to Send Money and Cash Out.'}</div>
+      <div class="full-row notice small">${isAgentAccount ? 'Agent accounts use only Received Money and Cash In. Each can have its own commission rate.' : 'Personal and Merchant accounts use separate configured charges for Send Money and Cash Out.'}</div>
       <div class="full-row" id="adjustMessage"></div>
       <div class="full-row"><button type="submit">Save Transaction</button></div>
     </form>`);
@@ -6909,7 +7054,8 @@ function openAdjustAccountModal(id) {
   form.onsubmit = async event => {
     event.preventDefault();
     const kind = manualPaymentTransactionAdjustmentKindClient(account, form.type.value);
-    if (kind !== 'none' && String(account.transactionChargeMode || 'none') === 'manual' && String(adjustmentInput.value || '').trim() === '') {
+    const ruleKey = paymentAdjustmentRuleKeyClient(account, form.type.value);
+    if (kind !== 'none' && String(paymentAccountRuleClient(account, ruleKey).mode || 'none') === 'manual' && String(adjustmentInput.value || '').trim() === '') {
       return setFormMessage('#adjustMessage', `Enter the actual ${kind} amount.`, 'danger');
     }
     const payload = formObj(form);
@@ -7328,7 +7474,7 @@ async function openAddSplitModal(order) {
     <div class="live-remaining" id="addSplitPreview"></div>
     <form id="splitForm" class="form-grid">
       <input type="hidden" name="direction" value="${escapeAttr(direction)}" />
-      <div class="full-row"><label>Payment Account</label><select name="paymentAccountId">${activeAccounts.map(a => `<option value="${a.id}" ${Number(a.id) === selectedAccountId ? 'selected' : ''}>${escapeHtml(a.accountNumber)} - ${escapeHtml(a.method?.name || '')} - System managed - ${escapeHtml(accountTypeLabel(a.accountType))} - balance ${money(a.currentBalance)} - send ${money(a.sendAvailable)} - receive ${money(a.receiveAvailable)} - rule ${escapeHtml(a.transactionChargeMode || 'none')}</option>`).join('')}</select></div>
+      <div class="full-row"><label>Payment Account</label><select name="paymentAccountId">${activeAccounts.map(a => `<option value="${a.id}" ${Number(a.id) === selectedAccountId ? 'selected' : ''}>${escapeHtml(a.accountNumber)} - ${escapeHtml(a.method?.name || '')} - ${escapeHtml(accountTypeLabel(a.accountType))} - balance ${money(a.currentBalance)} - ${escapeHtml(paymentAccountOrderRuleSummary(a, direction))}</option>`).join('')}</select></div>
       <div class="full-row"><label>Amount</label><input name="amount" type="number" min="0.01" step="0.01" value="${defaultAmount}" /></div>
       <div><label>Actual Charge / Commission (Optional)</label><input name="actualCharge" type="number" min="0" step="0.01" placeholder="Uses selected account rule when empty" /></div>
       <div><label>Proof Screenshot</label><input type="file" id="addProofFile" accept="image/png,image/jpeg,image/webp" /></div>

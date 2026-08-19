@@ -27,8 +27,8 @@ const section = (source, start, end) => {
   return source.slice(a, b);
 };
 
-assert(pkg.version === '1.5.24', `expected v1.5.24, got ${pkg.version}`);
-assert(server.includes('const APP_SCHEMA_VERSION = 34;'), 'schema 34 is missing.');
+assert(pkg.version === '1.5.25', `expected v1.5.25, got ${pkg.version}`);
+assert(server.includes('const APP_SCHEMA_VERSION = 35;'), 'schema 35 is missing.');
 
 // Payment-account authorization: Admin/Manager all, Agent own only, optional all-account permission for non-Agent roles.
 assert(server.includes("'accounts.manage_all': Object.freeze(['accounts.view', 'accounts.manage'])"), 'accounts.manage_all implications are missing.');
@@ -58,7 +58,7 @@ assert(ledger.includes('canAdjustPaymentAccount(user, accountItem)'), 'Ledger ad
 
 assert(accounts.includes("const canCreate = hasPerm('accounts.manage');"), 'Permitted users cannot see Add Account.');
 assert(accounts.includes('account.viewerCanManage') && accounts.includes('account.viewerCanAdjust'), 'Per-account action flags are not used by the UI.');
-assert(accounts.includes('Search number, label or serial'), 'Payment account search UI is missing.');
+assert(accounts.includes('Search number, label, serial or user'), 'Instant Payment account search UI is missing.');
 assert(accounts.includes('paymentAccountIdentityHtml'), 'Label/Serial identity display is missing.');
 assert(app.includes('paymentAccountOwnerField(state.user?.id'), 'Add/Bulk Account User does not default to the logged-in user.');
 assert(app.includes('name="label"') && app.includes('name="serialNumber"'), 'Add/Edit Label and Serial fields are missing.');
@@ -108,7 +108,7 @@ assert(!security.includes('formatDate('), 'Security page still references undefi
 console.log(JSON.stringify({
   ok: true,
   version: pkg.version,
-  schemaVersion: 34,
+  schemaVersion: 35,
   agentOwnAccountManage: true,
   managerAllAccountManage: true,
   permissionDescriptions: permissions.length,

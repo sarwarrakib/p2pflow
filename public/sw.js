@@ -1,6 +1,6 @@
 'use strict';
 
-// P2PFlow v1.5.24: notification master uses per-device Push subscription state.
+// P2PFlow v1.5.25: notification master uses per-device Push subscription state.
 
 self.addEventListener('install', event => {
   event.waitUntil(self.skipWaiting());

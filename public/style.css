@@ -5259,7 +5259,7 @@ tr:hover td{background:#fbfbfc}
 
 /* v1.5.23 payment-account serial scope */
 
-/* P2PFlow v1.5.24 payment-account bulk management */
+/* P2PFlow v1.5.25 payment-account rules and filtered management */
 .payment-account-select{display:grid;place-items:center;margin:0;min-width:30px}
 .payment-account-select input{width:18px;height:18px;margin:0;accent-color:var(--primary,#2563eb)}
 .payment-account-bulk-bar{display:flex;align-items:center;justify-content:space-between;gap:14px;margin-bottom:12px;padding:12px 14px}
@@ -5272,4 +5272,41 @@ tr:hover td{background:#fbfbfc}
   .payment-account-bulk-bar{align-items:stretch;flex-direction:column}
   .payment-account-bulk-bar .actions{display:grid;grid-template-columns:1fr 1fr;width:100%}
   .payment-account-bulk-bar .actions button:first-child{grid-column:1/-1}
+}
+
+/* v1.5.25 - compact Payment Accounts filters, icons, and transaction-specific rules */
+.payment-account-toolbar-v2{display:grid;grid-template-columns:auto minmax(360px,1fr) auto;align-items:center;gap:10px}
+.payment-account-filterbar{display:grid;grid-template-columns:minmax(220px,1.5fr) minmax(130px,.65fr) minmax(140px,.8fr) minmax(150px,.9fr);gap:8px;min-width:0}
+.payment-account-filterbar input,.payment-account-filterbar select{width:100%;min-width:0;height:38px;margin:0}
+.payment-account-search-wrap{position:relative;display:flex;align-items:center;min-width:0}
+.payment-account-search-wrap input{padding-right:40px}
+.payment-account-search-wrap .icon-action-btn{position:absolute;right:3px;width:32px;height:32px;border:0;background:transparent;box-shadow:none}
+.icon-action-btn{display:inline-flex!important;align-items:center!important;justify-content:center!important;width:36px!important;height:36px!important;min-width:36px!important;padding:0!important;border-radius:9px!important;line-height:1!important}
+.icon-action-btn svg{display:block;pointer-events:none}
+.compact-icon-actions{display:flex!important;align-items:center;gap:6px!important;flex-wrap:nowrap!important}
+.payment-account-bulk-bar .compact-icon-actions{display:flex!important;width:auto!important;grid-template-columns:none!important}
+.payment-rule-groups{display:grid;gap:12px}
+.payment-rule-group-title{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin:2px 0 8px}
+.payment-rule-group-title small,.payment-rule-card-head small{color:var(--muted,#777)}
+.payment-rule-card{border:1px solid var(--line,#e7e9ed);border-radius:12px;padding:12px;margin:8px 0;background:var(--card,#fff)}
+.payment-rule-card-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:9px}
+.payment-rule-grid{display:grid;grid-template-columns:minmax(145px,.8fr) minmax(130px,.7fr) minmax(130px,.7fr) minmax(220px,1.35fr);gap:9px;align-items:end}
+.payment-rule-grid>label{display:grid;gap:5px;margin:0}
+.payment-rule-tier textarea{min-height:58px;resize:vertical}
+.payment-rule-subapply{align-self:center!important;font-size:12px!important}
+.bulk-payment-rule-card .payment-rule-grid{grid-template-columns:repeat(3,minmax(120px,.7fr)) minmax(220px,1.3fr)}
+.payment-account-table-card tr[hidden]{display:none!important}
+#paymentAccountFilteredEmpty{margin:12px}
+@media(max-width:1100px){
+  .payment-account-toolbar-v2{grid-template-columns:1fr}
+  .payment-account-toolbar-v2>.sub{margin-left:0}
+  .payment-account-filterbar{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .payment-rule-grid,.bulk-payment-rule-card .payment-rule-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
+@media(max-width:650px){
+  .payment-account-toolbar .actions,.payment-account-bulk-bar .actions{display:flex!important;width:auto!important;grid-template-columns:none!important}
+  .payment-account-filterbar{grid-template-columns:1fr 1fr}
+  .payment-account-search-wrap{grid-column:1/-1}
+  .payment-rule-group-title,.payment-rule-card-head{align-items:flex-start;flex-direction:column;gap:3px}
+  .payment-rule-grid,.bulk-payment-rule-card .payment-rule-grid{grid-template-columns:1fr}
 }
