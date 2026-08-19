@@ -26,7 +26,7 @@ const section = (source, start, end) => {
   return source.slice(a, b);
 };
 
-assert(pkg.version === '1.5.25', `expected v1.5.25, got ${pkg.version}`);
+assert(pkg.version === '1.5.26', `expected v1.5.26, got ${pkg.version}`);
 assert(server.includes('const APP_SCHEMA_VERSION = 35;'), 'schema 34 is missing.');
 
 const accountHelpers = section(server, 'function paymentAccountIdsFromBody', 'async function handleBulkPaymentAccounts');

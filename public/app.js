@@ -1,4 +1,4 @@
-// v1.5.25: separate wallet rules, Agent-type behaviour, instant payment-account filters and account-scoped notifications.
+// v1.5.26: separate wallet rules, Agent-type behaviour, instant payment-account filters and account-scoped notifications.
 // v1.5.23: Payment Account serial scope treats each normalized Label, including no Label, as an independent namespace.
 // v1.5.22: Header-only Work Status, chat-only notification master, and coupled sound/push controls.
 // v1.5.20: account-scoped Binance RBAC, visible security recovery setup and individual-only profit accounting.
@@ -4920,7 +4920,7 @@ function renderNav() {
   // legacy flat menu while this marker is absent, the browser/proxy is serving
   // stale frontend JavaScript rather than the active release.
   nav.dataset.navigationModel = 'grouped-control-center';
-  nav.dataset.uiRelease = '1.5.25';
+  nav.dataset.uiRelease = '1.5.26';
   nav.innerHTML = '';
   const visible = visiblePages();
   const visibleIds = new Set(visible.map(([id]) => id));
@@ -5149,17 +5149,24 @@ function isFulfilledOrder(o) {
   return isCancelledOrder(o) || /COMPLETED|FINISHED|RELEASED|BINANCE_RELEASED/.test(txt) || ['completed','released'].includes(String(o.status || '').toLowerCase());
 }
 function isOngoingOrder(o) { return !isFulfilledOrder(o); }
+function orderTextExplicitlyUnpaid(txt='') {
+  return /UNPAID|NOT[_\s-]*PAID|WAIT[_\s-]*FOR[_\s-]*PAYMENT|WAIT.*PAYMENT|PENDING.*PAYMENT/.test(String(txt || '').toUpperCase());
+}
 function orderPayGroup(o) {
   const txt = upperStatusText(o);
   if (/APPEAL|COMPLAIN|DISPUTE/.test(txt) || String(o.status || '').toLowerCase() === 'hold') return 'appeal';
-  if (/WAIT_FOR_RELEASE|WAIT.*RELEASE|PAID|BUYER.*PAID|CONFIRM.*PAY/.test(txt) || String(o.status || '').toLowerCase() === 'paid_marked') return 'paid';
+  if (String(o.status || '').toLowerCase() === 'paid_marked') return 'paid';
+  if (orderTextExplicitlyUnpaid(txt)) return 'unpaid';
+  if (/WAIT_FOR_RELEASE|WAIT.*RELEASE|\bPAID\b|BUYER.*PAID|CONFIRM.*PAY/.test(txt)) return 'paid';
   return 'unpaid';
 }
 function binanceDisplayStatus(o) {
   if (isCancelledOrder(o)) return 'CANCELLED';
   const txt = upperStatusText(o);
   if (/APPEAL|COMPLAIN|DISPUTE/.test(txt)) return 'APPEAL';
-  if (/WAIT_FOR_RELEASE|BUYER.*PAID|PAID|CONFIRM.*PAY/.test(txt) || String(o.status || '').toLowerCase() === 'paid_marked') return 'PAID';
+  if (String(o.status || '').toLowerCase() === 'paid_marked') return 'PAID';
+  if (orderTextExplicitlyUnpaid(txt)) return 'UNPAID';
+  if (/WAIT_FOR_RELEASE|BUYER.*PAID|\bPAID\b|CONFIRM.*PAY/.test(txt)) return 'PAID';
   if (/COMPLETED|FINISHED|RELEASED/.test(txt) || ['completed','released'].includes(String(o.status || '').toLowerCase())) return 'COMPLETED';
   return 'UNPAID';
 }
@@ -5427,9 +5434,9 @@ function finalActionButtons(o, finalAction, idPrefix='') {
   }
   if (finalAction === 'release') {
     const paid = isBuyerPaid(o);
-    const normalBtn = paid
-      ? `<button class="success" id="${finalId}">Release Coin</button>`
-      : `<button class="success" id="${finalId}" disabled title="Available after buyer marks paid">Waiting for Buyer Paid</button>`;
+    // Cached order status can lag behind Binance. The server refreshes the exact
+    // order and runs checkIfCanReleaseCoin before any release mutation.
+    const normalBtn = `<button class="success" id="${finalId}" title="${paid ? 'Release the paid order' : 'Refresh paid status with Binance, then release only if Binance allows it'}">${paid ? 'Release Coin' : 'Check Paid & Release'}</button>`;
     const quickBtn = canQuickRelease() ? `<button class="danger" id="${quickId}" title="Permission controlled release before paid mark">Quick Release</button>` : '';
     return normalBtn + quickBtn;
   }
@@ -6096,6 +6103,7 @@ async function loadOrderDetail(id, showLoading=true, fromRoute=false) {
   startOrderDetailAutoSync(o);
   startChatAutoSync(o);
   $$('[data-update-split]').forEach(b => b.onclick = () => openUpdateSplitModal(o, Number(b.dataset.updateSplit)));
+  $$('[data-delete-split]').forEach(b => b.onclick = () => deletePaymentSplit(o, Number(b.dataset.deleteSplit)));
   $$('[data-complete-agent]').forEach(b => b.onclick = () => openCompleteUserModal(o, Number(b.dataset.completeAgent)));
   applyLanguage(document.querySelector('#content') || document);
   if (state.user.role === 'agent') await api(`/api/orders/${o.id}/heartbeat`, { method:'POST', body:'{}' }).catch(()=>{});
@@ -7274,9 +7282,30 @@ async function openPaymentSplitActionModal(order, finalAction) {
     const amount = Number(obj.amount || 0);
     const proof = $('#paymentSplitActionProof')?.files?.[0];
     const reference = String(obj.transactionReference || '').trim();
+    const existingRelevant = (workingOrder.paymentSplits || []).filter(split => split.direction === direction && Number(split.actualAmount || 0) > 0);
+    const missingEvidence = existingRelevant.filter(split => !(split.hasEvidence || split.hasProof || split.hasTransactionReference));
     if (amount <= 0) {
       if (hasCurrentEvidence()) return workingOrder;
-      throw new Error('Amount must be greater than zero before saving Payment Split.');
+      if ((proof || reference) && missingEvidence.length === 1 && missingEvidence[0].viewerCanEdit) {
+        const target = missingEvidence[0];
+        const payload = {
+          amount: Number(target.actualAmount || target.plannedAmount || 0),
+          status: target.status || 'completed',
+          transactionReference: reference || target.transactionReference || '',
+          note: obj.note || target.note || ''
+        };
+        if (proof) payload.screenshotDataUrl = await toDataUrl(proof);
+        workingOrder = await api('/api/splits/' + target.id, { method:'PATCH', body: JSON.stringify(payload) });
+        state.currentOrder = workingOrder;
+        splitSavedInModal = true;
+        form.elements.transactionReference.value = '';
+        if ($('#paymentSplitActionProof')) $('#paymentSplitActionProof').value = '';
+        setFormMessage('#paymentSplitActionMessage', 'Evidence added to the existing Payment Split.', 'ok');
+        if (!silent) notify('Payment Split evidence updated.', 'ok');
+        return workingOrder;
+      }
+      if (missingEvidence.length > 1) throw new Error('More than one Payment Split is missing evidence. Edit each split and add a Transaction ID or proof before the final action.');
+      throw new Error('Add a Transaction ID or proof to the existing Payment Split before the final action.');
     }
     if (!proof && !reference) throw new Error('Add a proof screenshot or transaction ID before saving Payment Split.');
     if (canUseAccounts && !Number(obj.paymentAccountId || 0)) throw new Error('Select an active payment account.');
@@ -7477,6 +7506,7 @@ async function openAddSplitModal(order) {
       <div class="full-row"><label>Payment Account</label><select name="paymentAccountId">${activeAccounts.map(a => `<option value="${a.id}" ${Number(a.id) === selectedAccountId ? 'selected' : ''}>${escapeHtml(a.accountNumber)} - ${escapeHtml(a.method?.name || '')} - ${escapeHtml(accountTypeLabel(a.accountType))} - balance ${money(a.currentBalance)} - ${escapeHtml(paymentAccountOrderRuleSummary(a, direction))}</option>`).join('')}</select></div>
       <div class="full-row"><label>Amount</label><input name="amount" type="number" min="0.01" step="0.01" value="${defaultAmount}" /></div>
       <div><label>Actual Charge / Commission (Optional)</label><input name="actualCharge" type="number" min="0" step="0.01" placeholder="Uses selected account rule when empty" /></div>
+      <div><label>Transaction ID</label><input name="transactionReference" maxlength="120" placeholder="Transaction / reference ID" /></div>
       <div><label>Proof Screenshot</label><input type="file" id="addProofFile" accept="image/png,image/jpeg,image/webp" /></div>
       <div><label>Note</label><input name="note" placeholder="Optional" /></div>
       <div class="full-row" id="splitFormMessage"></div>
@@ -7491,6 +7521,7 @@ async function openAddSplitModal(order) {
     closeModal();
     openUpdateSplitModal(order, Number(button.dataset.updateSplit));
   });
+  splitModal?.querySelectorAll('[data-delete-split]').forEach(button => button.onclick = () => deletePaymentSplit(order, Number(button.dataset.deleteSplit)));
   const form = $('#splitForm');
   const amountInput = form.querySelector('input[name="amount"]');
   const accountSelect = form.querySelector('select[name="paymentAccountId"]');
@@ -7529,24 +7560,46 @@ async function openAddSplitModal(order) {
   };
 }
 
+async function deletePaymentSplit(order, splitId) {
+  const split = (order.paymentSplits || []).find(item => Number(item.id) === Number(splitId));
+  if (!split) return notify('Payment split was not found.', 'danger');
+  if (!split.viewerCanDelete) return notify('You do not have permission to delete this Payment Split.', 'danger');
+  const accountLabel = split.account?.restricted ? 'managed payment account' : (split.account?.accountNumber || 'payment account');
+  const confirmed = window.confirm(`Delete this Payment Split?\n\n${accountLabel} · ${money(split.actualAmount)}\n\nThe wallet balance, daily/monthly limit usage and automatic charge/commission will be reversed. Statement and audit history will be kept.`);
+  if (!confirmed) return;
+  try {
+    const updated = await api('/api/splits/' + splitId, { method:'DELETE' });
+    notify('Payment split deleted. Balance and limits were restored.', 'ok');
+    closeModal();
+    await loadOrderDetail(updated.id || order.id, false, true);
+  } catch (err) {
+    notify(err.message || 'Payment split delete failed.', 'danger');
+  }
+}
+
 function openUpdateSplitModal(order, splitId) {
-  const split = order.paymentSplits.find(s => s.id === splitId);
+  const split = (order.paymentSplits || []).find(s => Number(s.id) === Number(splitId));
+  if (!split) return notify('Payment split was not found.', 'danger');
+  if (!split.viewerCanEdit) return notify('You do not have permission to edit this Payment Split.', 'danger');
   const relevant = split.direction === (order.type === 'BUY' ? 'send' : 'receive');
   const currentActual = Number(split.actualAmount || 0);
-  const account = split.account;
+  const account = split.account || {};
   const direction = split.direction;
-  modal('Update Amount', `
-    <div class="kv"><b>Account</b><span>${escapeHtml(split.account.accountNumber)}</span><b>Current Amount</b><span>${money(split.actualAmount)}</span></div>
-    ${split.hasProof && safeWebUrl(split.proofUrl) ? `<div class="okbox"><a href="${escapeAttr(safeWebUrl(split.proofUrl))}" target="_blank" rel="noopener noreferrer">Existing proof attached</a></div>` : '<div class="notice">Proof is required before the final action.</div>'}
+  const preserveManualAdjustment = split.transactionChargeMode === 'manual' || split.transactionChargeSource === 'manual_actual';
+  const accountLabel = account.restricted ? 'Managed payment account' : (account.accountNumber || 'Payment account');
+  modal('Edit Payment Split', `
+    <div class="kv"><b>Account</b><span>${escapeHtml(accountLabel)}</span><b>Current Amount</b><span>${money(split.actualAmount)}</span></div>
+    ${split.hasProof && safeWebUrl(split.proofUrl) ? `<div class="okbox"><a href="${escapeAttr(safeWebUrl(split.proofUrl))}" target="_blank" rel="noopener noreferrer">Existing proof attached</a></div>` : '<div class="notice">Add a proof screenshot or Transaction ID before the final action.</div>'}
     <div class="live-remaining" id="splitPreview"></div>
     <form id="updateSplitForm" class="form-grid">
-      <div class="full-row"><label>Amount</label><input name="amount" type="number" min="0.01" step="0.01" value="${split.actualAmount || split.plannedAmount}" /></div>
-      <div><label>Actual Charge / Commission</label><input name="actualCharge" type="number" min="0" step="0.01" value="${escapeAttr(split.transactionChargeAmount || 0)}" /></div>
-      <div><label>Status</label><select name="status"><option>completed</option><option>partial</option><option>short</option><option>excess</option></select></div>
+      <div class="full-row"><label>Amount</label><input name="amount" type="number" min="0.01" step="0.01" value="${escapeAttr(split.actualAmount || split.plannedAmount)}" /></div>
+      <div><label>Actual Charge / Commission</label><input name="actualCharge" type="number" min="0" step="0.01" value="${preserveManualAdjustment ? escapeAttr(split.transactionChargeAmount || 0) : ''}" placeholder="Leave empty to recalculate account rule" /><small>${preserveManualAdjustment ? 'Current manual value is preserved. Clear it to use the configured rule.' : `Current: ${money(split.transactionChargeAmount || 0)} · leave empty for automatic recalculation.`}</small></div>
+      <div><label>Status</label><select name="status"><option value="completed" ${split.status === 'completed' ? 'selected' : ''}>completed</option><option value="partial" ${split.status === 'partial' ? 'selected' : ''}>partial</option><option value="short" ${split.status === 'short' ? 'selected' : ''}>short</option><option value="excess" ${split.status === 'excess' ? 'selected' : ''}>excess</option></select></div>
+      <div><label>Transaction ID</label><input name="transactionReference" maxlength="120" value="${escapeAttr(split.transactionReference || '')}" placeholder="Transaction / reference ID" /></div>
       <div><label>Proof Screenshot</label><input type="file" id="proofFile" accept="image/png,image/jpeg,image/webp" /></div>
       <div class="full-row"><label>Note</label><input name="note" value="${escapeAttr(split.note || '')}" /></div>
       <div class="full-row" id="updateSplitMessage"></div>
-      <div class="full-row"><button type="submit">Save</button></div>
+      <div class="full-row actions between"><button type="submit">Save Changes</button>${split.viewerCanDelete ? '<button type="button" class="danger" id="deleteSplitFromEditBtn">Delete Split</button>' : ''}</div>
     </form>`);
   const form = $('#updateSplitForm');
   const amountInput = form.querySelector('input[name="amount"]');
@@ -7556,27 +7609,37 @@ function openUpdateSplitModal(order, splitId) {
     const projectedRemaining = Math.max(0, Number(order.amount || 0) - projectedActual);
     const delta = nextActual - currentActual;
     let msg = '';
-    if (nextActual <= 0) msg = 'Amount must be greater than 0.';
-    else if (direction === 'send' && delta > Number(account.sendAvailable || 0)) msg = `Wallet balance is not enough. This update requires extra ${money(delta)} ; available ${money(account.sendAvailable || 0)}.`;
-    $('#splitPreview').innerHTML = `<b>Live Remaining:</b> ${money(projectedRemaining)} <span>after save</span>`;
-    setFormMessage('#updateSplitMessage', msg || 'Ready to save.', msg ? 'danger' : 'ok');
+    if (nextActual <= 0) msg = 'Amount must be greater than 0. Use Delete Split to remove it.';
+    else if (direction === 'send' && delta > 0) {
+      const sendLimit = Number(account.sendLimitAvailable ?? account.sendAvailable ?? 0);
+      const balance = Number(account.currentBalance ?? 0);
+      if (delta > sendLimit + 1e-9) msg = `Extra amount is higher than the send limit left ${money(sendLimit)}.`;
+      else if (delta > balance + 1e-9) msg = `Wallet balance is not enough for the extra ${money(delta)}. Available ${money(balance)} before charge.`;
+    } else if (direction === 'receive' && delta > 0) {
+      const receiveLimit = Number(account.receiveLimitAvailable ?? account.receiveAvailable ?? 0);
+      if (delta > receiveLimit + 1e-9) msg = `Extra amount is higher than the receive limit left ${money(receiveLimit)}.`;
+    }
+    $('#splitPreview').innerHTML = `<b>Remaining:</b> ${money(projectedRemaining)} <span>after save</span>${delta < 0 ? ` · ${money(Math.abs(delta))} limit/balance will be restored` : ''}`;
+    setFormMessage('#updateSplitMessage', msg || 'Ready to save. Only the difference will adjust balance and limits.', msg ? 'danger' : 'ok');
     setSubmitState(form, !msg, msg);
   };
   amountInput.addEventListener('input', updatePreview);
   updatePreview();
+  const deleteButton = $('#deleteSplitFromEditBtn');
+  if (deleteButton) deleteButton.onclick = () => deletePaymentSplit(order, splitId);
   form.onsubmit = async e => {
     e.preventDefault();
     const obj = formObj(e.target);
     const nextActual = Number(obj.amount || 0);
     if (nextActual <= 0) {
-      const msg = 'Amount must be greater than 0.';
+      const msg = 'Amount must be greater than 0. Use Delete Split to remove it.';
       setFormMessage('#updateSplitMessage', msg, 'danger'); notify(msg, 'danger'); return;
     }
     try {
       const file = $('#proofFile').files[0];
       if (file) obj.screenshotDataUrl = await toDataUrl(file);
       const updated = await api('/api/splits/' + splitId, { method:'PATCH', body: JSON.stringify(obj) });
-      notify('Payment split updated.', 'ok');
+      notify('Payment split updated. Balance and limits were recalculated.', 'ok');
       closeModal();
       await loadOrderDetail(updated.id || order.id, false, true);
     } catch (err) { setFormMessage('#updateSplitMessage', err.message || 'Payment split update failed', 'danger'); }

@@ -1,4 +1,4 @@
-// P2PFlow v1.5.25
+// P2PFlow v1.5.26
 // Offline business receipt sessions with payment-number reservation and partial finalization.
 
 function offlineTransactionStatusBadge(status='') {

@@ -2640,20 +2640,30 @@ function appendSplitChargeLedger({ split, accountItem, user, chargeDelta, adjust
 
 function applySplitWalletMovement(split, accountItem, user, newActual, options = {}) {
   const preview = splitWalletMovementPreview(split, accountItem, newActual, options.manualCharge);
-  const before = calcAccountBalance(accountItem.id);
-  const additionalSendAmount = split.direction === 'send' ? Math.max(0, preview.amountDelta) : 0;
-  const additionalCharge = preview.adjustmentKind === 'charge' ? Math.max(0, preview.chargeDelta) : 0;
-  const requiredBefore = round2(additionalSendAmount + additionalCharge);
-  if (requiredBefore > before + 1e-9) {
-    const label = preview.adjustmentKind === 'commission' ? 'transfer amount before commission credit' : 'amount plus transfer charge';
-    const err = new Error(`Wallet balance is not enough for ${label}. Required: ${requiredBefore}, Available: ${round2(before)}.`);
+  if (preview.newActual > 0 && preview.chargeInfo?.mode === 'manual' && preview.chargeInfo?.source === 'manual_required_not_supplied') {
+    const err = new Error(`${preview.adjustmentKind === 'commission' ? 'Commission' : 'Charge'} amount is required because this payment account uses a manual rule.`);
     err.statusCode = 422;
     throw err;
   }
-  const available = split.direction === 'send' ? num(accountView(accountItem).sendAvailable) : Infinity;
-  if (requiredBefore > available + 1e-9) {
+  const before = calcAccountBalance(accountItem.id);
+  const view = accountView(accountItem);
+  const additionalSendAmount = split.direction === 'send' ? Math.max(0, preview.amountDelta) : 0;
+  const additionalReceiveAmount = split.direction === 'receive' ? Math.max(0, preview.amountDelta) : 0;
+  const additionalCharge = preview.adjustmentKind === 'charge' ? Math.max(0, preview.chargeDelta) : 0;
+  const balanceRequired = round2(additionalSendAmount + additionalCharge);
+  if (balanceRequired > before + 1e-9) {
     const label = preview.adjustmentKind === 'commission' ? 'transfer amount before commission credit' : 'amount plus transfer charge';
-    const err = new Error(`Wallet send capacity is not enough for ${label}. Required: ${requiredBefore}, Available: ${round2(available)}.`);
+    const err = new Error(`Wallet balance is not enough for ${label}. Required: ${balanceRequired}, Available: ${round2(before)}.`);
+    err.statusCode = 422;
+    throw err;
+  }
+  if (additionalSendAmount > num(view.sendLimitAvailable ?? view.sendAvailable) + 1e-9) {
+    const err = new Error(`Wallet send limit is not enough for the additional split amount. Required: ${round2(additionalSendAmount)}, Available: ${round2(view.sendLimitAvailable ?? view.sendAvailable)}.`);
+    err.statusCode = 422;
+    throw err;
+  }
+  if (additionalReceiveAmount > num(view.receiveLimitAvailable ?? view.receiveAvailable) + 1e-9) {
+    const err = new Error(`Wallet receive limit is not enough for the additional split amount. Required: ${round2(additionalReceiveAmount)}, Available: ${round2(view.receiveLimitAvailable ?? view.receiveAvailable)}.`);
     err.statusCode = 422;
     throw err;
   }
@@ -2680,13 +2690,36 @@ function isSpendOrReceiveLedger(l) {
   return l.type === 'send' || l.type === 'receive' || String(l.type || '').startsWith('manual_') || l.direction === 'send' || l.direction === 'receive';
 }
 
+function ledgerLimitUsage(l = {}) {
+  if (!isSpendOrReceiveLedger(l)) return { send: 0, receive: 0 };
+  const amount = positiveNum(l.amount || 0);
+  const type = String(l.type || '').toLowerCase();
+  // Split edits/deletes are recorded as compensating refund rows. They must
+  // restore the original transaction-side quota instead of consuming the
+  // opposite quota. This keeps wallet limits equal to the current net split.
+  if (type === 'refund_in') return { send: -amount, receive: 0 };
+  if (type === 'refund_out') return { send: 0, receive: -amount };
+  if (String(l.direction || '').toLowerCase() === 'send') return { send: amount, receive: 0 };
+  if (String(l.direction || '').toLowerCase() === 'receive') return { send: 0, receive: amount };
+  return { send: 0, receive: 0 };
+}
+
 function accountUsage(accountId) {
-  const ledgers = db.ledgers.filter(l => l.paymentAccountId === Number(accountId) && isSpendOrReceiveLedger(l));
-  const todayReceived = sum(ledgers.filter(l => l.direction === 'receive' && isToday(l.createdAt)).map(l => l.amount));
-  const todaySent = sum(ledgers.filter(l => l.direction === 'send' && isToday(l.createdAt)).map(l => l.amount));
-  const monthReceived = sum(ledgers.filter(l => l.direction === 'receive' && isThisMonth(l.createdAt)).map(l => l.amount));
-  const monthSent = sum(ledgers.filter(l => l.direction === 'send' && isThisMonth(l.createdAt)).map(l => l.amount));
-  return { todayReceived, todaySent, monthReceived, monthSent };
+  const ledgers = db.ledgers.filter(l => Number(l.paymentAccountId) === Number(accountId) && isSpendOrReceiveLedger(l));
+  const usageFor = predicate => ledgers.filter(predicate).reduce((out, ledger) => {
+    const effect = ledgerLimitUsage(ledger);
+    out.send += effect.send;
+    out.receive += effect.receive;
+    return out;
+  }, { send: 0, receive: 0 });
+  const today = usageFor(l => isToday(l.createdAt));
+  const month = usageFor(l => isThisMonth(l.createdAt));
+  return {
+    todayReceived: round2(Math.max(0, today.receive)),
+    todaySent: round2(Math.max(0, today.send)),
+    monthReceived: round2(Math.max(0, month.receive)),
+    monthSent: round2(Math.max(0, month.send))
+  };
 }
 
 function accountView(accountItem, viewer = null) {
@@ -2696,8 +2729,10 @@ function accountView(accountItem, viewer = null) {
   const dailySendLeft = Math.max(0, num(accountItem.dailySendLimit) - usage.todaySent);
   const monthlyReceiveLeft = Math.max(0, num(accountItem.monthlyReceiveLimit) - usage.monthReceived);
   const monthlySendLeft = Math.max(0, num(accountItem.monthlySendLimit) - usage.monthSent);
-  const receiveAvailable = Math.min(dailyReceiveLeft, monthlyReceiveLeft);
-  const sendAvailable = Math.min(num(accountItem.currentBalance), dailySendLeft, monthlySendLeft);
+  const receiveLimitAvailable = Math.min(dailyReceiveLeft, monthlyReceiveLeft);
+  const sendLimitAvailable = Math.min(dailySendLeft, monthlySendLeft);
+  const receiveAvailable = receiveLimitAvailable;
+  const sendAvailable = Math.min(num(accountItem.currentBalance), sendLimitAvailable);
   const allAllowedAgentIds = accountAllowedAgentIds(accountItem);
   const viewerCanManage = Boolean(viewer && canManagePaymentAccount(viewer, accountItem));
   const viewerCanManageAccess = Boolean(viewer && canManagePaymentAccountAccess(viewer, accountItem));
@@ -2717,6 +2752,8 @@ function accountView(accountItem, viewer = null) {
     dailySendLeft,
     monthlyReceiveLeft,
     monthlySendLeft,
+    receiveLimitAvailable,
+    sendLimitAvailable,
     receiveAvailable,
     sendAvailable,
     accountType: normalizePaymentAccountType(accountItem.accountType),
@@ -2796,8 +2833,11 @@ function activeSplitAccountsForAgent(order, agentId, direction, requiredAmount =
       const amount = Math.max(0, num(requiredAmount || 0));
       const adjustmentKind = paymentSplitAdjustmentKind(account);
       const charge = paymentTransferCharge(account, amount, direction, null, paymentAdjustmentRuleKey(account, '', direction)).amount;
-      const needed = direction === 'send' ? amount + (adjustmentKind === 'charge' ? charge : 0) : amount;
-      return splitCapacity(view, direction) + 1e-9 >= needed;
+      if (direction === 'send') {
+        const balanceRequired = amount + (adjustmentKind === 'charge' ? charge : 0);
+        return num(view.currentBalance) + 1e-9 >= balanceRequired && num(view.sendLimitAvailable ?? view.sendAvailable) + 1e-9 >= amount;
+      }
+      return num(view.receiveLimitAvailable ?? view.receiveAvailable) + 1e-9 >= amount;
     })
     .sort((a, b) => splitCapacity(b.view, direction) - splitCapacity(a.view, direction));
 }
@@ -2839,16 +2879,24 @@ function validateNewSplit(order, accountItem, splitAgentId, direction, planned, 
     return `Payment account ${accountItem.accountNumber || accountItem.id} is reserved by pending order ${reservation.orderNo || reservation.orderId || ''}.`;
   }
   const view = accountView(accountItem);
-  const capacity = splitCapacity(view, direction);
   const adjustmentKind = paymentSplitAdjustmentKind(accountItem);
-  const charge = paymentTransferCharge(accountItem, amount, direction, options.manualCharge, paymentAdjustmentRuleKey(accountItem, '', direction)).amount;
-  const requiredCapacity = direction === 'send' ? amount + (adjustmentKind === 'charge' ? charge : 0) : amount;
-  if (requiredCapacity > capacity) {
-    return direction === 'send'
-      ? (adjustmentKind === 'commission'
-        ? `Amount exceeds wallet available balance before commission credit. Available: ${capacity}, Amount: ${amount}.`
-        : `Amount plus transfer charge exceeds wallet available balance. Available: ${capacity}, Amount: ${amount}, Charge: ${charge}.`)
-      : `Amount exceeds wallet receive limit left. Available: ${capacity}, Amount: ${amount}.`;
+  const chargeInfo = paymentTransferCharge(accountItem, amount, direction, options.manualCharge, paymentAdjustmentRuleKey(accountItem, '', direction));
+  if (chargeInfo.mode === 'manual' && chargeInfo.source === 'manual_required_not_supplied') {
+    return `${adjustmentKind === 'commission' ? 'Commission' : 'Charge'} amount is required because this payment account uses a manual rule.`;
+  }
+  const charge = chargeInfo.amount;
+  if (direction === 'send') {
+    const balanceRequired = round2(amount + (adjustmentKind === 'charge' ? charge : 0));
+    if (balanceRequired > num(view.currentBalance) + 1e-9) {
+      return adjustmentKind === 'commission'
+        ? `Amount exceeds wallet available balance before commission credit. Available: ${round2(view.currentBalance)}, Amount: ${amount}.`
+        : `Amount plus transfer charge exceeds wallet available balance. Available: ${round2(view.currentBalance)}, Amount: ${amount}, Charge: ${charge}.`;
+    }
+    const sendLimit = num(view.sendLimitAvailable ?? view.sendAvailable);
+    if (amount > sendLimit + 1e-9) return `Amount exceeds wallet send limit left. Available: ${round2(sendLimit)}, Amount: ${amount}.`;
+  } else {
+    const receiveLimit = num(view.receiveLimitAvailable ?? view.receiveAvailable);
+    if (amount > receiveLimit + 1e-9) return `Amount exceeds wallet receive limit left. Available: ${round2(receiveLimit)}, Amount: ${amount}.`;
   }
   if (options.allowUnassigned) return '';
   const assignment = activeAssignmentForAgent(order.id, splitAgentId);
@@ -5422,7 +5470,12 @@ function upperOrderStatusText(order = {}) {
 
 function binanceOrderPaidMarked(order = {}) {
   const txt = upperOrderStatusText(order);
-  return String(order.status || '').toLowerCase() === 'paid_marked' || /WAIT_FOR_RELEASE|WAIT.*RELEASE|BUYER.*PAID|PAID|CONFIRM.*PAY/.test(txt);
+  const localStatus = String(order.status || '').toLowerCase();
+  if (localStatus === 'paid_marked') return true;
+  // Never let strings such as BINANCE_UNPAID or NOT_PAID satisfy the generic
+  // PAID matcher. This previously hid Mark as Paid and confused release state.
+  if (/UNPAID|NOT[_\s-]*PAID|WAIT[_\s-]*FOR[_\s-]*PAYMENT|WAIT.*PAYMENT|PENDING.*PAYMENT/.test(txt)) return false;
+  return /WAIT_FOR_RELEASE|WAIT.*RELEASE|BUYER.*PAID|\bPAID\b|CONFIRM.*PAY/.test(txt);
 }
 
 function canQuickReleaseUser(user) {
@@ -5525,9 +5578,18 @@ function canAccessAccount(user, accountItem) {
   if (paymentAccountOwnedByUser(accountItem, user)) return true;
   return Number(user.agentId || 0) > 0 && accountAssignedToAgent(accountItem, user.agentId);
 }
+function paymentSplitMutable(order = {}) {
+  const status = String(order.status || '').toLowerCase();
+  const external = upperOrderStatusText(order);
+  if (['paid_marked','released','completed','cancelled'].includes(status)) return false;
+  if (/COMPLETED|FINISHED|RELEASED|CANCELLED|CANCELED|SYSTEM_CANCEL/.test(external)) return false;
+  return true;
+}
+
 function canWriteSplit(user, split) {
+  if (!user || !split) return false;
   if (['admin', 'manager'].includes(user.role)) return true;
-  return user.role === 'agent' && userHasPermission(user, 'orders.split') && split.agentId === user.agentId;
+  return user.role === 'agent' && userHasPermission(user, 'orders.split') && Number(split.agentId) === Number(user.agentId);
 }
 
 
@@ -6888,27 +6950,73 @@ function binanceOrderNumberFor(order, body = {}) {
 }
 
 function extractPayIdFromOrder(order = {}) {
-  return positiveNum(order.binancePayId || order.payMethodSnapshot?.payId || order.rawBinanceDetail?.selectedPayId || order.rawBinanceSummary?.selectedPayId || firstNumberByKey(order.rawBinanceDetail || {}, ['selectedPayId','payId','id'], 0) || firstNumberByKey(order.rawBinanceSummary || {}, ['selectedPayId','payId','id'], 0));
+  const direct = positiveNum(
+    order.binancePayId ||
+    order.payMethodSnapshot?.payId ||
+    order.customerPaymentDetails?.payId ||
+    order.rawBinanceDetail?.selectedPayId ||
+    order.rawBinanceDetail?.selectedPaymentId ||
+    order.rawBinanceDetail?.orderPayId ||
+    order.rawBinanceDetail?.payId ||
+    order.rawBinanceSummary?.selectedPayId ||
+    order.rawBinanceSummary?.selectedPaymentId ||
+    order.rawBinanceSummary?.orderPayId ||
+    order.rawBinanceSummary?.payId
+  );
+  if (direct) return direct;
+  // Only inspect payment-method candidates here. Never recurse over a generic
+  // "id" in the whole order payload because it can be a user/order/message ID.
+  const detailDescriptor = extractBinancePaymentDescriptor(order.rawBinanceDetail || {});
+  if (positiveNum(detailDescriptor?.payId || 0)) return positiveNum(detailDescriptor.payId);
+  const summaryDescriptor = extractBinancePaymentDescriptor(order.rawBinanceSummary || {});
+  return positiveNum(summaryDescriptor?.payId || 0);
 }
 
-async function resolveBinancePayIdForOrder(order, body, credential) {
-  let payId = positiveNum(body.payId || body.binancePayId || extractPayIdFromOrder(order));
-  if (payId) return payId;
+async function refreshBinanceOrderForFinalAction(user, order, credential, body = {}) {
   const orderNumber = binanceOrderNumberFor(order, body);
-  if (!orderNumber || !credential) return 0;
-  try {
-    const detailResp = await callSignedSapi({ apiKey: credential.apiKey, secretKey: credential.secretKey, endpointName: 'getUserOrderDetail', body: { adOrderNo: orderNumber }, clientType: credential.clientType || 'web', dryRun: false });
-    const detail = unwrapBinanceData(detailResp);
-    const change = upsertBinanceOrder(detail, null, credential);
-    const updated = change.order || order;
-    updated.lastBinanceDetailSyncedAt = nowIso();
-    updated.rawBinanceDetail = sanitizedBinanceResult(detail);
-    await enrichBuyPaymentDetailsByPayId(updated, credential, systemBinanceSyncUser(), 'final_action_pay_id_resolve');
-    payId = positiveNum(extractPayIdFromOrder(updated));
-    return payId;
-  } catch (err) {
-    return 0;
+  if (!orderNumber) throw new Error('Binance order number is required for live action.');
+  if (!credential || !credential.apiKey || !credential.secretKey) throw new Error('The Binance account linked to this order is unavailable.');
+  const detailResp = await callSignedSapi({
+    apiKey: credential.apiKey,
+    secretKey: credential.secretKey,
+    endpointName: 'getUserOrderDetail',
+    body: { adOrderNo: orderNumber },
+    clientType: credential.clientType || 'web',
+    dryRun: false
+  });
+  const detail = unwrapBinanceData(detailResp);
+  const change = upsertBinanceOrder(detail, user || systemBinanceSyncUser(), credential);
+  const updated = change.order || order;
+  updated.lastBinanceDetailSyncedAt = nowIso();
+  updated.rawBinanceDetail = sanitizedBinanceResult(detail);
+  const descriptor = extractBinancePaymentDescriptor(detail || {});
+  const freshPayId = positiveNum(descriptor?.payId || 0);
+  if (freshPayId) {
+    updated.binancePayId = freshPayId;
+    updated.payMethodSnapshot = mergePaymentDescriptor(updated.payMethodSnapshot || {}, { ...descriptor, payId: freshPayId, selectedOnly: true, syncedAt: nowIso() });
   }
+  // BUY orders may need the selected payment-method detail for the payment panel.
+  // A failure here must not replace the exact payId already obtained from order detail.
+  try { await enrichBuyPaymentDetailsByPayId(updated, credential, user || systemBinanceSyncUser(), 'final_action_live_refresh'); } catch {}
+  return { order: updated, detail, descriptor, payId: positiveNum(freshPayId || extractPayIdFromOrder(updated)), orderNumber };
+}
+
+async function resolveBinancePayIdForOrder(order, body, credential, user = null, refreshed = null) {
+  let target = refreshed?.order || order;
+  let payId = positiveNum(refreshed?.payId || extractPayIdFromOrder(target));
+  if (payId) return payId;
+  const orderNumber = binanceOrderNumberFor(target, body);
+  if (!orderNumber || !credential) return positiveNum(body.payId || body.binancePayId || 0);
+  try {
+    const fresh = await refreshBinanceOrderForFinalAction(user, target, credential, body);
+    target = fresh.order || target;
+    payId = positiveNum(fresh.payId || extractPayIdFromOrder(target));
+  } catch (_) {
+    payId = 0;
+  }
+  // The browser value is only a final compatibility fallback. Server-synced
+  // exact-order detail always wins when it is available.
+  return positiveNum(payId || body.payId || body.binancePayId || 0);
 }
 
 function sanitizedBinanceResult(data) {
@@ -7042,10 +7150,16 @@ async function performLiveBinanceFinalAction(user, order, action, body) {
   if (action === 'quick_release' && !userHasBinanceCredentialPermission(user, credential.id, 'orders.quick_release')) {
     throw new Error('You do not have orders.quick_release permission for this Binance account.');
   }
-  const orderNumber = binanceOrderNumberFor(order, body);
-  if (!orderNumber) throw new Error('Binance order number is required for live action.');
   const clientType = cleanStr(body.clientType || credential.clientType || 'web', 40);
-  const payId = await resolveBinancePayIdForOrder(order, body, credential);
+  let refreshed;
+  try {
+    refreshed = await refreshBinanceOrderForFinalAction(user, order, credential, body);
+    order = refreshed.order || order;
+  } catch (err) {
+    throw new Error('Could not refresh the exact Binance order before the final action: ' + sanitizeErrorText(err));
+  }
+  const orderNumber = refreshed.orderNumber || binanceOrderNumberFor(order, body);
+  const payId = await resolveBinancePayIdForOrder(order, body, credential, user, refreshed);
 
   if (action === 'paid_mark') {
     if (order.type !== 'BUY') throw new Error('Mark Order as Paid is only allowed for BUY orders.');
@@ -7266,7 +7380,7 @@ function collectPaymentMethodCandidates(raw = {}) {
     if (!v || typeof v !== 'object') return;
     if (Array.isArray(v)) return v.forEach(walk);
     const hasPaymentShape = [
-      'identifier','tradeMethodName','payType','payId','selectedPayId','id','payBank','payAccount',
+      'identifier','tradeMethodName','payType','payId','selectedPayId','paymentId','payBank','payAccount',
       'accountNo','accountNumber','bankAccount','cardNo','cardNumber','realName','accountName',
       'holderName','qrCodePath','qrCodeUrl','fieldName','fieldValue','fields'
     ].some(k => v[k] !== undefined);
@@ -7482,7 +7596,7 @@ async function enrichBuyPaymentDetailsByPayId(order, credential, user = null, re
   const payId = extractPayIdFromOrder(order);
   if (!payId) return { attempted: false, updated: false, reason: 'missing_pay_id' };
   try {
-    const result = await callSignedSapi({ apiKey: credential.apiKey, secretKey: credential.secretKey, endpointName: 'getPaymentMethodById', query: { payId }, clientType: credential.clientType || 'web', dryRun: false });
+    const result = await callSignedSapi({ apiKey: credential.apiKey, secretKey: credential.secretKey, endpointName: 'getPaymentMethodById', query: { id: payId }, clientType: credential.clientType || 'web', dryRun: false });
     const detail = unwrapBinanceData(result);
     const selectedDescriptor = extractBinancePaymentDescriptor(detail || {});
     selectedDescriptor.payId = selectedDescriptor.payId || payId;
@@ -19119,8 +19233,10 @@ function fullOrderView(order, user = null) {
 function splitView(split, user = null) {
   const proof = split.proofFileId ? proofById(split.proofFileId) : null;
   const accountItem = accountById(split.paymentAccountId);
+  const order = orderById(split.orderId);
   const visibleAccount = accountItem && canAccessAccount(user, accountItem) ? accountView(accountItem, user) : { restricted: true };
-  return { ...split, screenshotDataUrl: undefined, account: visibleAccount, agent: agentById(split.agentId), hasProof: !!proof, hasTransactionReference: Boolean(cleanStr(split.transactionReference || '', 120)), hasEvidence: splitHasEvidence(split), proofFileId: proof ? proof.id : null, proofUrl: proof ? `/api/proofs/${proof.id}` : null, proofName: proof ? proof.originalName || proof.filename : null };
+  const writable = Boolean(user && order && userHasPermission(user, 'orders.split') && canWriteSplit(user, split) && paymentSplitMutable(order));
+  return { ...split, screenshotDataUrl: undefined, account: visibleAccount, agent: agentById(split.agentId), hasProof: !!proof, hasTransactionReference: Boolean(cleanStr(split.transactionReference || '', 120)), hasEvidence: splitHasEvidence(split), proofFileId: proof ? proof.id : null, proofUrl: proof ? `/api/proofs/${proof.id}` : null, proofName: proof ? proof.originalName || proof.filename : null, viewerCanEdit: writable, viewerCanDelete: writable };
 }
 function ledgerView(l, viewer = null) {
   const accountItem = accountById(l.paymentAccountId);
@@ -19336,25 +19452,39 @@ async function addSplit(req, res, user, order) {
 async function handleSplitById(req, res, parts) {
   const user = requireAuth(req, res); if (!user) return;
   const id = Number(parts[2]);
-  const split = db.paymentSplits.find(s => s.id === id);
+  const split = db.paymentSplits.find(s => Number(s.id) === id);
   if (!split) return sendJson(res, 404, { error: 'Split not found' }, {}, req);
   const order = orderById(split.orderId);
   if (!canAccessOrder(user, order)) return sendJson(res, 403, { error: 'No access' }, {}, req);
-  if (!canWriteSplit(user, split) || !userHasPermission(user, 'orders.split')) return sendJson(res, 403, { error: 'Only the assigned split agent or manager with orders.split can update this split' }, {}, req);
+  if (!canWriteSplit(user, split) || !userHasPermission(user, 'orders.split')) return sendJson(res, 403, { error: 'Only the assigned split agent or manager with orders.split can edit or delete this split.' }, {}, req);
   if (order.orderSource !== 'offline' && !canUseOrderCredential(user, order, 'orders.split')) return sendJson(res, 403, { error: 'No orders.split access to this Binance account.' }, {}, req);
+  if (!paymentSplitMutable(order)) return sendJson(res, 422, { error: 'Payment Split is locked because this order has already been finalized.' }, {}, req);
+  const accountItem = accountById(split.paymentAccountId);
+  if (!accountItem) return sendJson(res, 422, { error: 'The payment account linked to this split no longer exists.' }, {}, req);
+
   if (req.method === 'PATCH') {
     const body = await readBody(req);
-    const accountItem = accountById(split.paymentAccountId);
     const oldActual = num(split.actualAmount || 0);
+    const oldPlanned = num(split.plannedAmount || 0);
+    const oldCharge = num(split.transactionChargeAmount || 0);
+    const previousMeta = {
+      plannedAmount: split.plannedAmount,
+      status: split.status,
+      note: split.note,
+      transactionReference: split.transactionReference,
+      proofFileId: split.proofFileId
+    };
     const newActual = positiveNum(body.amount ?? body.actualAmount ?? oldActual);
-    if (newActual <= 0) return sendJson(res, 422, { error: 'Amount must be greater than zero.' }, {}, req);
+    if (newActual <= 0) return sendJson(res, 422, { error: 'Amount must be greater than zero. Use Delete to remove the Payment Split completely.' }, {}, req);
     if (user.role === 'agent') {
       const assignment = db.orderAgentAssignments.find(a => a.orderId === split.orderId && a.agentId === split.agentId && a.status !== 'left');
       if (!assignment) return sendJson(res, 403, { error: 'You are not assigned to this order.' }, {}, req);
       const alreadyAllocated = plannedForAgent(split.orderId, split.agentId, split.direction, split.id);
       const availableAssigned = Math.max(0, num(assignment.assignedAmount || assignment.originalAssignedAmount || 0) - alreadyAllocated);
-      if (newActual > availableAssigned) return sendJson(res, 422, { error: `Amount exceeds assigned remaining. Available: ${availableAssigned}, Amount: ${newActual}.` }, {}, req);
+      if (newActual > availableAssigned + 1e-9) return sendJson(res, 422, { error: `Amount exceeds assigned remaining. Available: ${round2(availableAssigned)}, Amount: ${round2(newActual)}.` }, {}, req);
     }
+    // Keep planned/actual together for a normal split edit. Limits and balances
+    // are adjusted only by the delta through compensating ledger entries.
     split.plannedAmount = newActual;
     split.status = cleanStr(body.status || 'completed', 40);
     if (body.note !== undefined) split.note = cleanStr(body.note, 300);
@@ -19367,17 +19497,60 @@ async function handleSplitById(req, res, parts) {
     const manualCharge = body.actualCharge ?? body.transactionChargeAmount ?? null;
     let movement;
     try {
-      movement = applySplitWalletMovement(split, accountItem, user, newActual, { manualCharge, note: split.note || 'actual amount update' });
+      movement = applySplitWalletMovement(split, accountItem, user, newActual, { manualCharge, note: split.note || 'payment split amount edited' });
     } catch (err) {
+      split.plannedAmount = previousMeta.plannedAmount;
+      split.status = previousMeta.status;
+      split.note = previousMeta.note;
+      split.transactionReference = previousMeta.transactionReference;
+      split.proofFileId = previousMeta.proofFileId;
       return sendJson(res, err.statusCode || 422, { error: err.message || 'Payment split wallet movement failed.' }, {}, req);
     }
-    split.updatedBy = user.id; split.updatedAt = nowIso();
+    split.updatedBy = user.id;
+    split.updatedAt = nowIso();
     syncAssignmentStatus(split.orderId, split.agentId);
-    logAudit(user, 'payment_split_actual_updated', 'paymentSplit', split.id, { orderId: split.orderId, accountNumber: accountItem.accountNumber, oldActual, newActual, transactionChargeAmount: split.transactionChargeAmount, movement, proofFileId: split.proofFileId || null });
+    logAudit(user, 'payment_split_updated', 'paymentSplit', split.id, {
+      orderId: split.orderId,
+      accountNumber: accountItem.accountNumber,
+      oldActual,
+      newActual,
+      oldCharge,
+      newCharge: split.transactionChargeAmount,
+      movement,
+      proofFileId: split.proofFileId || null
+    });
     saveDb();
-    broadcast({ type: 'payment.actual.updated', orderId: split.orderId, splitId: split.id, at: nowIso() });
+    broadcast({ type: 'payment.split.updated', orderId: split.orderId, splitId: split.id, actualAmount: split.actualAmount, at: nowIso() });
     return sendJson(res, 200, fullOrderView(order, user), {}, req);
   }
+
+  if (req.method === 'DELETE') {
+    const snapshot = {
+      id: split.id,
+      orderId: split.orderId,
+      agentId: split.agentId,
+      paymentAccountId: split.paymentAccountId,
+      direction: split.direction,
+      plannedAmount: split.plannedAmount,
+      actualAmount: split.actualAmount,
+      transactionChargeAmount: split.transactionChargeAmount,
+      proofFileId: split.proofFileId || null,
+      transactionReference: split.transactionReference ? 'present' : ''
+    };
+    let reversal = null;
+    try {
+      reversal = applySplitWalletMovement(split, accountItem, user, 0, { manualCharge: 0, note: 'payment split deleted and wallet movement reversed', chargeNote: 'payment split deleted adjustment reversed' });
+    } catch (err) {
+      return sendJson(res, err.statusCode || 422, { error: err.message || 'Payment split reversal failed.' }, {}, req);
+    }
+    db.paymentSplits = db.paymentSplits.filter(item => Number(item.id) !== id);
+    syncAssignmentStatus(snapshot.orderId, snapshot.agentId);
+    logAudit(user, 'payment_split_deleted', 'paymentSplit', id, { ...snapshot, reversal, statementHistoryPreserved: true });
+    saveDb();
+    broadcast({ type: 'payment.split.deleted', orderId: snapshot.orderId, splitId: id, agentId: snapshot.agentId, at: nowIso() });
+    return sendJson(res, 200, fullOrderView(order, user), {}, req);
+  }
+
   return sendJson(res, 405, { error: 'Method not allowed' }, {}, req);
 }
 
@@ -19546,9 +19719,6 @@ async function completeAction(req, res, user, order) {
   }
   if (order.orderSource !== 'offline' && additionalKycStateForOrder(order).pending) return sendJson(res, 422, { error: 'Additional Verification is pending. Verify the order first; Mark as Paid and Release remain hidden until Binance confirms verification.' }, {}, req);
   if (action === 'quick_release' && (!canQuickReleaseUser(user) || (order.orderSource !== 'offline' && !canUseOrderCredential(user, order, 'orders.quick_release')))) return sendJson(res, 403, { error: 'Permission denied: orders.quick_release for this Binance account' }, {}, req);
-  if (action === 'release' && order.orderSource !== 'offline' && !binanceOrderPaidMarked(order)) {
-    return sendJson(res, 422, { error: 'Release is locked until the customer marks the Binance order as paid. Use Quick Release only if you have orders.quick_release permission.' }, {}, req);
-  }
   if (user.role === 'agent' && !isLead) return sendJson(res, 403, { error: 'Only lead agent can complete final action. Manager/Admin can override.' }, {}, req);
   if (user.role === 'agent' && !db.settings.allowAgentFinalAction) return sendJson(res, 403, { error: 'Agent final action is disabled by settings.' }, {}, req);
   const relevantDirection = order.type === 'BUY' ? 'send' : 'receive';
@@ -22925,6 +23095,98 @@ function runPaymentNotificationScopeSelfTest() {
   }
 }
 
+function runPaymentSplitFinalActionSelfTest() {
+  const previousDb = db;
+  const closeEnough = (a, b, tolerance = 0.001) => Math.abs(Number(a) - Number(b)) <= tolerance;
+  const assert = (condition, message) => { if (!condition) throw new Error(message); };
+  const now = nowIso();
+  try {
+    db = {
+      meta: { nextId: 41000, schemaVersion: APP_SCHEMA_VERSION, dataCompatibilityEpoch: APP_DATA_COMPATIBILITY_EPOCH },
+      settings: {},
+      users: [{ id: 1, username:'admin', name:'Admin', role:'admin', enabled:true, permissions:PERMISSION_CATALOG.slice() }],
+      agents: [],
+      paymentMethods: [{ id:10, code:'BKASH', name:'bKash', enabled:true }],
+      paymentAccounts: [
+        {
+          id:100, ownerUserId:1, paymentMethodId:10, accountNumber:'SEND-100', accountName:'Send Wallet', label:'Main', serialNumber:'S-1', accountType:'personal', allowedAgentIds:[], status:'active',
+          dailyReceiveLimit:10000, dailySendLimit:10000, monthlyReceiveLimit:100000, monthlySendLimit:100000,
+          transactionRules:{ send_money:{ mode:'percentage', fixed:0, percent:1, tiers:[] }, cash_out:{ mode:'none', fixed:0, percent:0, tiers:[] } },
+          transactionChargeMode:'percentage', transactionChargePercent:1, transactionChargeFixed:0, transactionChargeTiers:[]
+        },
+        {
+          id:101, ownerUserId:1, paymentMethodId:10, accountNumber:'RECV-101', accountName:'Receive Wallet', label:'Main', serialNumber:'R-1', accountType:'personal', allowedAgentIds:[], status:'active',
+          dailyReceiveLimit:10000, dailySendLimit:10000, monthlyReceiveLimit:100000, monthlySendLimit:100000,
+          transactionRules:{ send_money:{ mode:'none', fixed:0, percent:0, tiers:[] }, cash_out:{ mode:'none', fixed:0, percent:0, tiers:[] } },
+          transactionChargeMode:'none', transactionChargePercent:0, transactionChargeFixed:0, transactionChargeTiers:[]
+        }
+      ],
+      ledgers: [
+        { id:1, paymentAccountId:100, direction:'receive', type:'opening', amount:5000, createdAt:now },
+        { id:2, paymentAccountId:101, direction:'receive', type:'opening', amount:0, createdAt:now }
+      ],
+      paymentSplits: [],
+      businessEntries: [],
+      orders: [],
+      orderAgentAssignments: [],
+      routing: [],
+      proofFiles: [],
+      auditLogs: [],
+      locks: [],
+      notifications: []
+    };
+    const admin = db.users[0];
+    const sendAccount = db.paymentAccounts[0];
+    const receiveAccount = db.paymentAccounts[1];
+
+    const sendSplit = { id:301, orderId:401, agentId:null, paymentAccountId:100, paymentMethodId:10, direction:'send', plannedAmount:1000, actualAmount:0, transactionChargeAmount:0, transactionAdjustmentKind:'charge', status:'completed' };
+    applySplitWalletMovement(sendSplit, sendAccount, admin, 1000, { note:'initial send split' });
+    assert(closeEnough(calcAccountBalance(100), 3990), `Initial send balance mismatch: ${calcAccountBalance(100)}`);
+    assert(closeEnough(accountUsage(100).todaySent, 1000), `Initial send limit usage mismatch: ${accountUsage(100).todaySent}`);
+    assert(closeEnough(sendSplit.transactionChargeAmount, 10), `Initial percentage charge mismatch: ${sendSplit.transactionChargeAmount}`);
+
+    sendSplit.plannedAmount = 500;
+    applySplitWalletMovement(sendSplit, sendAccount, admin, 500, { note:'send split reduced' });
+    assert(closeEnough(calcAccountBalance(100), 4495), `Reduced send balance mismatch: ${calcAccountBalance(100)}`);
+    assert(closeEnough(accountUsage(100).todaySent, 500), `Reducing 1000 to 500 did not restore 500 send limit: ${accountUsage(100).todaySent}`);
+    assert(closeEnough(sendSplit.transactionChargeAmount, 5), `Reduced percentage charge was not recalculated: ${sendSplit.transactionChargeAmount}`);
+
+    applySplitWalletMovement(sendSplit, sendAccount, admin, 0, { manualCharge:0, note:'send split deleted' });
+    assert(closeEnough(calcAccountBalance(100), 5000), `Deleted send split did not restore balance: ${calcAccountBalance(100)}`);
+    assert(closeEnough(accountUsage(100).todaySent, 0), `Deleted send split did not restore send limit: ${accountUsage(100).todaySent}`);
+
+    const receiveSplit = { id:302, orderId:402, agentId:null, paymentAccountId:101, paymentMethodId:10, direction:'receive', plannedAmount:1000, actualAmount:0, transactionChargeAmount:0, transactionAdjustmentKind:'charge', status:'completed' };
+    applySplitWalletMovement(receiveSplit, receiveAccount, admin, 1000, { note:'initial receive split' });
+    assert(closeEnough(calcAccountBalance(101), 1000), `Initial receive balance mismatch: ${calcAccountBalance(101)}`);
+    assert(closeEnough(accountUsage(101).todayReceived, 1000), `Initial receive limit usage mismatch: ${accountUsage(101).todayReceived}`);
+    receiveSplit.plannedAmount = 500;
+    applySplitWalletMovement(receiveSplit, receiveAccount, admin, 500, { note:'receive split reduced' });
+    assert(closeEnough(calcAccountBalance(101), 500), `Reduced receive balance mismatch: ${calcAccountBalance(101)}`);
+    assert(closeEnough(accountUsage(101).todayReceived, 500), `Reducing receive 1000 to 500 did not restore 500 receive limit: ${accountUsage(101).todayReceived}`);
+    applySplitWalletMovement(receiveSplit, receiveAccount, admin, 0, { manualCharge:0, note:'receive split deleted' });
+    assert(closeEnough(calcAccountBalance(101), 0), `Deleted receive split did not restore balance: ${calcAccountBalance(101)}`);
+    assert(closeEnough(accountUsage(101).todayReceived, 0), `Deleted receive split did not restore receive limit: ${accountUsage(101).todayReceived}`);
+
+    const selectedPay = extractPayIdFromOrder({ rawBinanceDetail:{ id:999999, orderStatus:1, tradeMethods:[{ id:222, payType:'BKASH', tradeMethodName:'bKash' }] } });
+    assert(selectedPay === 222, `Payment candidate payId was not selected safely: ${selectedPay}`);
+    const unrelatedId = extractPayIdFromOrder({ rawBinanceDetail:{ id:999999, orderStatus:1, userId:888888 } });
+    assert(unrelatedId === 0, `Generic order/user id was incorrectly treated as payId: ${unrelatedId}`);
+    assert(binanceOrderPaidMarked({ externalStatus:'BINANCE_UNPAID', status:'assigned' }) === false, 'BINANCE_UNPAID was incorrectly treated as paid.');
+    assert(binanceOrderPaidMarked({ externalStatus:'BINANCE_WAIT_FOR_RELEASE', status:'assigned' }) === true, 'WAIT_FOR_RELEASE was not treated as paid.');
+
+    console.log(JSON.stringify({
+      ok:true,
+      version:APP_VERSION,
+      schemaVersion:APP_SCHEMA_VERSION,
+      splitEdit:{ send1000To500RestoresLimit:true, receive1000To500RestoresLimit:true, configuredChargeRecalculated:true },
+      splitDelete:{ balanceRestored:true, sendLimitRestored:true, receiveLimitRestored:true },
+      finalAction:{ genericIdRejectedAsPayId:true, paymentCandidatePayIdSelected:true, unpaidStatusNotMisclassified:true }
+    }, null, 2));
+  } finally {
+    db = previousDb;
+  }
+}
+
 function runPaymentAccountBulkManualTransactionSelfTest() {
   const previousDb = db;
   const closeEnough = (a, b, tolerance = 0.001) => Math.abs(Number(a) - Number(b)) <= tolerance;
@@ -23152,6 +23414,9 @@ if (process.argv.includes('--accounting-self-test')) {
 } else if (process.argv.includes('--payment-notification-scope-self-test')) {
   try { runPaymentNotificationScopeSelfTest(); process.exit(0); }
   catch (err) { console.error(`Payment/notification scope self-test failed: ${err.message}`); process.exit(1); }
+} else if (process.argv.includes('--payment-split-final-action-self-test')) {
+  try { runPaymentSplitFinalActionSelfTest(); process.exit(0); }
+  catch (err) { console.error(`Payment-split/final-action self-test failed: ${err.message}`); process.exit(1); }
 } else if (process.argv.includes('--payment-account-bulk-manual-transaction-self-test')) {
   try { runPaymentAccountBulkManualTransactionSelfTest(); process.exit(0); }
   catch (err) { console.error(`Payment-account bulk/manual transaction self-test failed: ${err.message}`); process.exit(1); }

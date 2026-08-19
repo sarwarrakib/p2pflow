@@ -1,4 +1,4 @@
-// P2PFlow v1.5.25
+// P2PFlow v1.5.26
 // Page module: ledger. Edit this file for the ledger page UI.
 
 async function renderLedger() {
