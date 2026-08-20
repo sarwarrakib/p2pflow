@@ -7253,49 +7253,54 @@ function releaseVerificationBodyForCredential(credential, body = {}, localVerifi
   const policy = releaseVerificationPolicyForCredential(credential);
   const out = { ...body };
   for (const key of ['authType','code','googleVerifyCode','mobileVerifyCode','emailVerifyCode','yubikeyVerifyCode']) delete out[key];
-  const method = policy.binanceMethod;
-  if (method === 'AUTO') {
-    for (const key of ['authType','code','googleVerifyCode','mobileVerifyCode','emailVerifyCode','yubikeyVerifyCode']) {
-      if (body[key] !== undefined && String(body[key] || '').trim() !== '') out[key] = body[key];
+
+  // A concrete Binance challenge always wins over the saved preference. The preference
+  // decides the first screen/request only; it must never force Fund Password/Google/SMS
+  // after Binance explicitly asks for another field.
+  const explicitAuthType = cleanStr(body.authType || '', 30).toUpperCase();
+  const explicitGoogle = cleanStr(body.googleVerifyCode || '', 40);
+  const explicitMobile = cleanStr(body.mobileVerifyCode || '', 40);
+  const explicitEmail = cleanStr(body.emailVerifyCode || '', 40);
+  const explicitYubi = cleanStr(body.yubikeyVerifyCode || '', 160);
+  const explicitRawCode = body.code === undefined || body.code === null ? '' : String(body.code);
+  const explicitCode = explicitAuthType === 'FUND_PWD' ? explicitRawCode.slice(0, 180) : cleanStr(explicitRawCode, 120);
+  const hasExplicitChallengeValue = Boolean(explicitGoogle || explicitMobile || explicitEmail || explicitYubi || explicitCode);
+  if (hasExplicitChallengeValue) {
+    if (explicitGoogle) out.googleVerifyCode = explicitGoogle;
+    if (explicitMobile) out.mobileVerifyCode = explicitMobile;
+    if (explicitEmail) out.emailVerifyCode = explicitEmail;
+    if (explicitYubi) out.yubikeyVerifyCode = explicitYubi;
+    if (explicitCode) {
+      out.code = explicitCode;
+      // code is ambiguous, so retain authType only for code-based methods where Binance
+      // needs it to know what the code represents. Google/SMS use dedicated fields.
+      if (['FIDO2','FUND_PWD'].includes(explicitAuthType)) out.authType = explicitAuthType;
     }
     return out;
   }
+
+  const method = policy.binanceMethod;
+  if (method === 'AUTO') return out;
   if (method === 'FIDO2') {
-    const code = cleanStr(body.code || '', 120);
-    if (!code) throw Object.assign(new Error('FIDO2 / Fingerprint is selected for this Binance account. Enter the Binance FIDO2 token/code shown for this API release.'), { statusCode:422 });
-    out.authType = 'FIDO2'; out.code = code; return out;
+    throw Object.assign(new Error('FIDO2 / Fingerprint is selected for this Binance account, but Binance has not supplied a usable API verification token/code yet. Use Binance Auto or follow the concrete Binance challenge.'), { statusCode:422 });
   }
   if (method === 'FUND_PWD') {
     // Preserve the Fund Transfer Password exactly as entered/saved. Do not trim or normalize secrets.
-    let code = body.code === undefined || body.code === null ? '' : String(body.code).slice(0, 180);
+    let code = '';
     if (policy.autoFundPassword) {
       if (!policy.localVerificationEnabled || localVerification.verified !== true) throw Object.assign(new Error('Stored Fund Transfer Password can only be used after the configured P2PFlow verification succeeds.'), { statusCode:428, localVerificationRequired:true });
       code = String(credential.releaseFundPassword || '');
       if (!code) throw Object.assign(new Error('Fund Transfer Password auto-use is enabled but no password is saved for this Binance account.'), { statusCode:422 });
     }
-    if (!code) throw Object.assign(new Error('Fund Transfer Password is selected for this Binance account. Enter the password/code required by Binance.'), { statusCode:422 });
+    if (!code) throw Object.assign(new Error('Enter the Fund Transfer Password, or switch this API account to Binance Auto so P2PFlow can follow the verification challenge returned by Binance.'), { statusCode:422 });
     out.authType = 'FUND_PWD'; out.code = code; return out;
   }
-  if (method === 'GOOGLE') {
-    const code = cleanStr(body.googleVerifyCode || '', 40);
-    if (!code) throw Object.assign(new Error('Google Authenticator is selected for this Binance account. Enter the Google verification code.'), { statusCode:422 });
-    out.authType = 'GOOGLE'; out.googleVerifyCode = code; return out;
-  }
-  if (method === 'SMS') {
-    const code = cleanStr(body.mobileVerifyCode || '', 40);
-    if (!code) throw Object.assign(new Error('SMS / Mobile OTP is selected for this Binance account. Enter the mobile verification code.'), { statusCode:422 });
-    out.authType = 'SMS'; out.mobileVerifyCode = code; return out;
-  }
-  if (method === 'EMAIL') {
-    const code = cleanStr(body.emailVerifyCode || '', 40);
-    if (!code) throw Object.assign(new Error('Email OTP is selected for this Binance account. Enter the Binance email verification code.'), { statusCode:422 });
-    out.emailVerifyCode = code; return out;
-  }
-  if (method === 'YUBIKEY') {
-    const code = cleanStr(body.yubikeyVerifyCode || '', 160);
-    if (!code) throw Object.assign(new Error('YubiKey is selected for this Binance account. Enter the Binance YubiKey verification code.'), { statusCode:422 });
-    out.yubikeyVerifyCode = code; return out;
-  }
+  // For Google/SMS/Email/YubiKey, the browser must supply the actual challenge value.
+  // No empty authType is sent pre-emptively.
+  if (method === 'GOOGLE') throw Object.assign(new Error('Enter the current Google Authenticator code.'), { statusCode:422 });
+  if (method === 'SMS') throw Object.assign(new Error('Enter the current SMS / Mobile OTP.'), { statusCode:422 });
+  if (method === 'EMAIL') throw Object.assign(new Error('Enter the current Binance email verification code.'), { statusCode:422 });
+  if (method === 'YUBIKEY') throw Object.assign(new Error('Enter the current Binance YubiKey verification code.'), { statusCode:422 });
   return out;
 }
 
@@ -7560,8 +7565,10 @@ function inferReleaseRequirementsFromError(err) {
   };
 
   if (/email/.test(lower)) add('emailVerifyCode', 'Email verification code', 'Enter the email code required by Binance', 'text', { autocomplete: 'one-time-code' });
-  if (/mobile|phone|sms/.test(lower)) { hidden.authType = 'SMS'; add('mobileVerifyCode', 'SMS / mobile verification code', 'Enter the SMS code required by Binance', 'text', { autocomplete: 'one-time-code' }); }
-  if (/google|gauth|totp|authenticator/.test(lower)) { hidden.authType = 'GOOGLE'; add('googleVerifyCode', 'Google Authenticator code', 'Enter the Google Authenticator code required by Binance', 'text', { autocomplete: 'one-time-code' }); }
+  // Keep Google/SMS on their dedicated documented fields. Older working P2PFlow releases
+  // did not force authType for these challenges, and Binance can reject that extra selector.
+  if (/mobile|phone|sms/.test(lower)) add('mobileVerifyCode', 'SMS / mobile verification code', 'Enter the SMS code required by Binance', 'text', { autocomplete: 'one-time-code' });
+  if (/google|gauth|totp|authenticator/.test(lower)) add('googleVerifyCode', 'Google Authenticator code', 'Enter the Google Authenticator code required by Binance', 'text', { autocomplete: 'one-time-code' });
   if (/yubi|yubikey/.test(lower)) add('yubikeyVerifyCode', 'YubiKey verification code', 'Enter the YubiKey code required by Binance', 'text', { autocomplete: 'one-time-code' });
 
   if (/fund|fund_pwd|fund password|payment password|asset password/.test(lower)) {
@@ -7570,7 +7577,13 @@ function inferReleaseRequirementsFromError(err) {
   } else if (/fido|fingerprint|biometric/.test(lower)) {
     hidden.authType = 'FIDO2';
     add('code', 'FIDO2 verification token/code', 'Enter the FIDO2 token/code only if Binance provides one for API release', 'text', { autocomplete: 'one-time-code' });
-  } else if (/auth\s*type|authtype|verify|verification|code/.test(lower) && fields.length === 0) {
+  } else if (fields.length === 0 && (
+    /(?:verification|verify|authentication|auth)\s*code[^.]{0,80}(?:missing|required|needed)/.test(lower) ||
+    /(?:missing|required|needed)[^.]{0,80}(?:verification|verify|authentication|auth)\s*code/.test(lower)
+  )) {
+    // Only show a generic Binance-code field when Binance explicitly says a code is
+    // missing/required. Do NOT turn generic errors such as "Verification failed"
+    // into a made-up "Binance verification code" challenge.
     add('code', 'Binance verification code', 'Enter the verification code required by Binance', 'text', { autocomplete: 'one-time-code' });
   }
 
@@ -7585,6 +7598,14 @@ function inferReleaseRequirementsFromError(err) {
     hidden,
     hasSpecificRequirement: fields.length > 0 || Object.keys(hidden).length > 0
   };
+}
+
+function isGenericReleaseVerificationRejection(err) {
+  const raw = sanitizeErrorText(err);
+  const parsed = parseBinancePayloadFromErrorText(raw);
+  const code = parsed && parsed.code !== undefined ? String(parsed.code) : '';
+  const msg = String((parsed && (parsed.msg || parsed.message)) || raw || '').toLowerCase();
+  return code === '100001003' || /verification\s*failed|verify\s*failed|verification\s*code\s*(?:invalid|expired)|(?:invalid|expired|incorrect|wrong)\s*(?:verification|verify|authenticator|otp)?\s*code/.test(msg);
 }
 
 function buildReleasePayload(orderNumber, payId, body = {}) {
@@ -7606,14 +7627,8 @@ function buildReleasePayload(orderNumber, payId, body = {}) {
     payload.code = code;
     if (['FIDO2', 'FUND_PWD', 'GOOGLE', 'SMS'].includes(authType)) payload.authType = authType;
   }
-  if (googleVerifyCode) {
-    payload.googleVerifyCode = googleVerifyCode;
-    if (authType === 'GOOGLE') payload.authType = 'GOOGLE';
-  }
-  if (mobileVerifyCode) {
-    payload.mobileVerifyCode = mobileVerifyCode;
-    if (authType === 'SMS') payload.authType = 'SMS';
-  }
+  if (googleVerifyCode) payload.googleVerifyCode = googleVerifyCode;
+  if (mobileVerifyCode) payload.mobileVerifyCode = mobileVerifyCode;
   if (emailVerifyCode) payload.emailVerifyCode = emailVerifyCode;
   if (yubikeyVerifyCode) payload.yubikeyVerifyCode = yubikeyVerifyCode;
   return compactBinancePayload(payload);
@@ -20478,17 +20493,25 @@ async function completeAction(req, res, user, order) {
     binanceAction = await performLiveBinanceFinalAction(user, order, action, actionBody);
   } catch (err) {
     const safeFailureMessage = cleanStr(sanitizeErrorText(err), 1200);
-    const rawRequirements = err.releaseRequirements || null;
-    const isReleaseVerificationChallenge = ['release','quick_release'].includes(action) && rawRequirements?.hasSpecificRequirement === true;
-    const publicRequirements = rawRequirements ? {
+    const inferredRequirements = err.releaseRequirements || null;
+    const previousFailure = order.lastFinalActionFailure && order.lastFinalActionFailure.action === action ? order.lastFinalActionFailure : null;
+    const previousRequirements = previousFailure?.releaseRequirements?.hasSpecificRequirement === true ? previousFailure.releaseRequirements : null;
+    const genericVerificationRejected = ['release','quick_release'].includes(action) && isGenericReleaseVerificationRejection(err);
+    const rawRequirements = inferredRequirements?.hasSpecificRequirement === true ? inferredRequirements : null;
+    let publicRequirements = rawRequirements ? {
       fields:Array.isArray(rawRequirements.fields) ? rawRequirements.fields.map(field => ({ name:cleanStr(field.name || '', 80), label:cleanStr(field.label || field.name || '', 160), placeholder:cleanStr(field.placeholder || 'Required by Binance', 220), type:cleanStr(field.type || 'text', 30), autocomplete:cleanStr(field.autocomplete || 'one-time-code', 80) })) : [],
       hidden:rawRequirements.hidden && typeof rawRequirements.hidden === 'object' ? Object.fromEntries(Object.entries(rawRequirements.hidden).filter(([key]) => ['authType','confirmPaidType'].includes(key)).map(([key,value]) => [key, cleanStr(value || '', 40)])) : {},
-      hasSpecificRequirement:rawRequirements.hasSpecificRequirement === true
+      hasSpecificRequirement:true
     } : null;
+    if (!publicRequirements && genericVerificationRejected && previousRequirements) publicRequirements = previousRequirements;
+    const isReleaseVerificationChallenge = ['release','quick_release'].includes(action) && publicRequirements?.hasSpecificRequirement === true;
+    const challengeMessage = genericVerificationRejected && previousRequirements
+      ? 'Verification failed. Enter a fresh code for the same Binance verification method and try again.'
+      : 'Binance needs extra verification.';
     order.lastFinalActionFailure = {
       action,
       at: nowIso(),
-      message: isReleaseVerificationChallenge ? 'Binance needs extra verification.' : safeFailureMessage,
+      message: isReleaseVerificationChallenge ? challengeMessage : safeFailureMessage,
       releaseRequirements: publicRequirements
     };
     order.updatedAt = nowIso();
@@ -20496,8 +20519,9 @@ async function completeAction(req, res, user, order) {
     saveDb();
     if (isReleaseVerificationChallenge) {
       return sendJson(res, 428, {
-        error:'Binance needs extra verification.',
+        error:challengeMessage,
         verificationRequired:true,
+        verificationRejected:genericVerificationRejected === true,
         releaseRequirements:publicRequirements,
         releaseVerificationPolicy:releaseVerificationPolicyForCredential(binanceCredentialById(order.credentialId), user),
         order:fullOrderView(order, user)
@@ -24000,11 +24024,19 @@ function runPaymentSplitFinalActionSelfTest() {
     releaseCredential.releaseVerificationMethod = 'GOOGLE';
     const googleBody = releaseVerificationBodyForCredential(releaseCredential, { googleVerifyCode:'123456' }, { verified:true });
     const googlePayload = buildReleasePayload('ORDER-SELFTEST', 77, googleBody);
-    assert(googlePayload.authType === 'GOOGLE' && googlePayload.googleVerifyCode === '123456', 'Google Authenticator verification was not mapped to the documented payload fields.');
+    assert(!googlePayload.authType && googlePayload.googleVerifyCode === '123456', 'Google Authenticator regression: the dedicated googleVerifyCode field should be sent without forcing authType.');
     releaseCredential.releaseVerificationMethod = 'SMS';
     const smsBody = releaseVerificationBodyForCredential(releaseCredential, { mobileVerifyCode:'654321' }, { verified:true });
     const smsPayload = buildReleasePayload('ORDER-SELFTEST', 77, smsBody);
-    assert(smsPayload.authType === 'SMS' && smsPayload.mobileVerifyCode === '654321', 'SMS verification was not mapped to the documented payload fields.');
+    assert(!smsPayload.authType && smsPayload.mobileVerifyCode === '654321', 'SMS regression: the dedicated mobileVerifyCode field should be sent without forcing authType.');
+    releaseCredential.releaseVerificationMethod = 'FUND_PWD';
+    const challengeOverrideBody = releaseVerificationBodyForCredential(releaseCredential, { googleVerifyCode:'112233' }, { verified:true });
+    const challengeOverridePayload = buildReleasePayload('ORDER-SELFTEST', 77, challengeOverrideBody);
+    assert(challengeOverridePayload.googleVerifyCode === '112233' && !challengeOverridePayload.code && !challengeOverridePayload.authType, 'Concrete Binance Google challenge did not override the saved Fund Password preference.');
+    const genericFailureRequirements = inferReleaseRequirementsFromError(new Error('Binance SAPI error 400 on releaseCoin: {"code":100001003,"msg":"Verification failed"}'));
+    assert(genericFailureRequirements.hasSpecificRequirement === false && genericFailureRequirements.fields.length === 0, 'Generic Verification failed error invented a fake Binance verification-code field.');
+    const googleMissingRequirements = inferReleaseRequirementsFromError(new Error('Binance SAPI error 400 on releaseCoin: {"code":-9000,"msg":"Your google verification code is missing."}'));
+    assert(googleMissingRequirements.hasSpecificRequirement === true && googleMissingRequirements.fields.some(field => field.name === 'googleVerifyCode'), 'Google missing-code response was not detected as a concrete challenge.');
 
     console.log(JSON.stringify({
       ok:true,
@@ -24013,7 +24045,7 @@ function runPaymentSplitFinalActionSelfTest() {
       splitEdit:{ send1000To500RestoresLimit:true, receive1000To500RestoresLimit:true, configuredChargeRecalculated:true, receiveDoesNotApplySendMoneyCharge:true },
       splitDelete:{ balanceRestored:true, sendLimitRestored:true, receiveLimitRestored:true },
       finalAction:{ genericIdRejectedAsPayId:true, paymentCandidatePayIdSelected:true, unpaidStatusNotMisclassified:true, splitGateToggle:true, proofMandatoryOptional:true, savedSplitGateSatisfied:true, missingProofGateUnsatisfied:true },
-      releaseVerification:{ fundPasswordExactPreserved:true, fundPasswordNotExposed:true, googleAndSmsMapped:true, localGateRequiredForAutoFund:true, primarySecondaryConfigured:true }
+      releaseVerification:{ fundPasswordExactPreserved:true, fundPasswordNotExposed:true, googleAndSmsMapped:true, challengeOverridesPreference:true, genericFailureDoesNotInventCode:true, localGateRequiredForAutoFund:true, primarySecondaryConfigured:true }
     }, null, 2));
   } finally {
     db = previousDb;

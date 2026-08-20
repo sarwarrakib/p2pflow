@@ -51,7 +51,7 @@ assert(app.includes('releaseVerificationFieldsForScreen') && app.includes('Authe
 assert(!app.includes('releaseFundPassword') && !read('public/js/pages/credentials.js').includes('releaseFundPassword'), 'Stored Fund Transfer Password is exposed by a browser bundle identifier.');
 assert(app.includes('release-verification-modal') && app.includes('release-verify-paste') && css.includes('.release-verification-modal') && css.includes('height:100dvh'), 'Responsive standalone Release Verification screen is missing.');
 assert(app.includes("silent:true") && app.includes("err?.data?.verificationRequired === true"), 'Binance Auto verification challenge is still surfaced as a normal request error.');
-assert(server.includes("return sendJson(res, 428") && server.includes("error:'Binance needs extra verification.'"), 'Server does not convert Binance missing-code responses into a verification challenge.');
+assert(server.includes("return sendJson(res, 428") && server.includes('challengeMessage'), 'Server does not convert Binance missing-code responses into a verification challenge.');
 const runtime = spawnSync(process.execPath, ['app-server.js', '--payment-split-final-action-self-test'], { cwd:root, encoding:'utf8', env:{...process.env, NODE_ENV:'test'} });
 if (runtime.stdout) process.stdout.write(runtime.stdout);
 if (runtime.stderr) process.stderr.write(runtime.stderr);
@@ -67,7 +67,7 @@ assert(report?.finalAction?.genericIdRejectedAsPayId === true && report?.finalAc
 assert(report?.finalAction?.splitGateToggle === true && report?.finalAction?.proofMandatoryOptional === true, 'Payment Split gate/proof mode runtime assertions failed.');
 assert(report?.finalAction?.savedSplitGateSatisfied === true && report?.finalAction?.missingProofGateUnsatisfied === true, 'Saved Payment Split readiness runtime assertions failed.');
 assert(report?.releaseVerification?.fundPasswordExactPreserved === true && report?.releaseVerification?.fundPasswordNotExposed === true, 'Fund Transfer Password verification runtime assertions failed.');
-assert(report?.releaseVerification?.googleAndSmsMapped === true && report?.releaseVerification?.localGateRequiredForAutoFund === true, 'Configured Binance/local verification runtime assertions failed.');
+assert(report?.releaseVerification?.googleAndSmsMapped === true && report?.releaseVerification?.challengeOverridesPreference === true && report?.releaseVerification?.genericFailureDoesNotInventCode === true && report?.releaseVerification?.localGateRequiredForAutoFund === true, 'Configured Binance/local verification runtime assertions failed.');
 
 console.log(JSON.stringify({
   ok:true,

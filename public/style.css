@@ -5380,7 +5380,7 @@ tr:hover td{background:#fbfbfc}
   .final-action-local-actions button{width:100%}
 }
 
-/* v1.5.30 dedicated responsive Binance release verification screen */
+/* v1.5.31 dedicated responsive Binance release verification screen */
 .release-verification-backdrop{padding:20px;background:rgba(11,14,17,.64);place-items:center}
 .release-verification-modal{width:min(560px,100%);max-height:min(94dvh,860px);border-radius:24px;overflow:hidden;background:#fff}
 .release-verification-modal>.modal-head{display:none}
@@ -5416,7 +5416,7 @@ tr:hover td{background:#fbfbfc}
 .release-verification-modal .final-action-local-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
 .release-verification-modal .final-action-local-actions button{min-height:40px;padding:0 13px;border-radius:10px}
 
-/* v1.5.30 API credential compact account/actions */
+/* v1.5.31 API credential compact account/actions */
 .credentials-page{max-width:1280px;margin:0 auto}
 .credentials-card{overflow-x:auto}
 .credential-account-name{display:grid;gap:4px;min-width:160px}

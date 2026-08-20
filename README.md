@@ -27,7 +27,7 @@ Updater code এবং database আলাদা রাখে। Update install-�
 
 ## Version
 
-Internal SemVer: `1.5.30`
+Internal SemVer: `1.5.31`
 UI: `1.5`
 Database schema: `35`
 
@@ -38,7 +38,7 @@ Hotfix: `SET_HOTFIX_VERSION.bat` -> `1.5.31`
 
 P2PFlow keeps authoritative business/application data in MariaDB/MySQL/PostgreSQL. State payloads are compressed with Brotli before AES-256-GCM encryption, proofs/chat media are stored as encrypted database objects, and identical newly uploaded proof/media bytes use content-addressed object IDs to avoid duplicate blobs. The default is 3 retained recovery checkpoints with a 6-hour archive interval and 5 retained automatic database backups. Older uncompressed state/history/backup payloads are upgraded incrementally after startup. Health Check reports each P2PFlow database table's allocated size/row count, current encrypted state payload size, compression saving percentage, and proof/chat object usage so database-MB growth can be inspected without terminal access. `shared/`, `.p2pflow`, `.env`, `releases/` and temporary restart/update markers are operational bootstrap/update metadata only; they are not an application/business-data store. The application runtime itself does not write proof, chat, audit, order, ledger, notification or recovery-code data to local files.
 
-## v1.5.30 Dedicated Release Verification & Per-API Verification Settings
+## v1.5.31 Dedicated Release Verification & Per-API Verification Settings
 
 - Release/Quick Release এখন Payment Split gate satisfied হলে পুরোনো final-action modal বাদ দিয়ে আলাদা device-responsive **Release Verification** screen খোলে। Split requirement OFF থাকলে সরাসরি এই screen-এ যায়; saved valid split থাকলেও split page আর পুনরায় খোলে না।
 - Binance Auto mode-এ missing Google/SMS/etc. code response এখন structured verification challenge; raw `-9000` error user-facing panel-এ দেখানো হয় না। Auto challenge-এ **Binance needs extra verification.**, আর explicit configured method-এ **Release requires verification.** দেখানো হয়।
@@ -49,7 +49,7 @@ P2PFlow keeps authoritative business/application data in MariaDB/MySQL/PostgreSQ
 - Saved Fund Transfer Password browser/API policy response-এ ফেরত যায় না; local P2PFlow verification ছাড়া auto-use করা যায় না।
 - Database schema `35`; নতুন migration প্রয়োজন নেই।
 
-বিস্তারিত: `P2PFlow_v1.5.30_RELEASE_NOTES_BN.md`, `P2PFlow_v1.5.30_MANUAL_UPDATE_BN.md` এবং `P2PFlow_v1.5.30_LAUNCH_CHECKLIST_BN.md`।
+বিস্তারিত: `P2PFlow_v1.5.31_RELEASE_NOTES_BN.md`, `P2PFlow_v1.5.31_MANUAL_UPDATE_BN.md` এবং `P2PFlow_v1.5.31_LAUNCH_CHECKLIST_BN.md`।
 
 ## v1.5.28 Saved Split Direct Final Action & Verification Retry
 
