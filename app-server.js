@@ -7649,6 +7649,32 @@ async function performLiveBinanceFinalAction(user, order, action, body) {
     throw new Error('You do not have orders.quick_release permission for this Binance account.');
   }
   const clientType = cleanStr(body.clientType || credential.clientType || 'web', 40);
+
+  // Mark-as-paid is latency-sensitive and the open order is already kept fresh in the
+  // background. When the exact order number + selected payId are present, call Binance
+  // immediately instead of blocking on an extra detail + payment-method refresh first.
+  if (action === 'paid_mark') {
+    if (order.type !== 'BUY') throw new Error('Mark Order as Paid is only allowed for BUY orders.');
+    let orderNumber = binanceOrderNumberFor(order, body);
+    let payId = positiveNum(extractPayIdFromOrder(order) || body.payId || body.binancePayId || 0);
+    if (!orderNumber || !payId) {
+      let refreshed;
+      try {
+        refreshed = await refreshBinanceOrderForFinalAction(user, order, credential, body);
+        order = refreshed.order || order;
+        orderNumber = refreshed.orderNumber || binanceOrderNumberFor(order, body);
+        payId = positiveNum(refreshed.payId || extractPayIdFromOrder(order));
+      } catch (err) {
+        throw new Error('Could not resolve the exact Binance order/payment method before Mark as Paid: ' + sanitizeErrorText(err));
+      }
+    }
+    if (!orderNumber) throw new Error('Binance order number is required for Mark as Paid.');
+    if (!payId) throw new Error('Binance selectedPayId/payId could not be detected. Sync order detail from Binance and try again.');
+    const payload = { orderNumber, payId };
+    const result = await callSignedSapi({ apiKey: credential.apiKey, secretKey: credential.secretKey, endpointName: 'markOrderAsPaid', body: payload, clientType, dryRun: false });
+    return { mode: 'live', endpoint: 'markOrderAsPaid', orderNumber, payId, credentialId: credential.id, result: sanitizedBinanceResult(result) };
+  }
+
   let refreshed;
   try {
     refreshed = await refreshBinanceOrderForFinalAction(user, order, credential, body);
@@ -7658,14 +7684,6 @@ async function performLiveBinanceFinalAction(user, order, action, body) {
   }
   const orderNumber = refreshed.orderNumber || binanceOrderNumberFor(order, body);
   const payId = await resolveBinancePayIdForOrder(order, body, credential, user, refreshed);
-
-  if (action === 'paid_mark') {
-    if (order.type !== 'BUY') throw new Error('Mark Order as Paid is only allowed for BUY orders.');
-    if (!payId) throw new Error('Binance selectedPayId/payId could not be detected. Sync order detail from Binance and try again.');
-    const payload = { orderNumber, payId };
-    const result = await callSignedSapi({ apiKey: credential.apiKey, secretKey: credential.secretKey, endpointName: 'markOrderAsPaid', body: payload, clientType, dryRun: false });
-    return { mode: 'live', endpoint: 'markOrderAsPaid', orderNumber, payId, credentialId: credential.id, result: sanitizedBinanceResult(result) };
-  }
 
   if (action === 'release' || action === 'quick_release') {
     if (order.type !== 'SELL') throw new Error('Release Coin is only allowed for SELL orders.');
@@ -10246,6 +10264,144 @@ async function sendBinanceChatWs(wsUrl, payload, timeoutMs = 15000) {
   });
 }
 
+
+const binanceChatRealtimeConnections = new Map();
+let binanceChatRealtimeLoopStarted = false;
+
+function realtimeChatMessageCandidates(value, out = [], depth = 0) {
+  if (depth > 5 || out.length >= 20 || value === null || value === undefined) return out;
+  if (typeof value === 'string') {
+    const text = value.trim();
+    if (text.startsWith('{') || text.startsWith('[')) {
+      try { return realtimeChatMessageCandidates(JSON.parse(text), out, depth + 1); } catch {}
+    }
+    return out;
+  }
+  if (Array.isArray(value)) {
+    value.slice(0, 30).forEach(item => realtimeChatMessageCandidates(item, out, depth + 1));
+    return out;
+  }
+  if (typeof value !== 'object') return out;
+  const orderNo = cleanStr(value.orderNo || value.orderNumber || value.adOrderNo || '', 120);
+  const hasMessageContent = value.content !== undefined || value.message !== undefined || value.text !== undefined || value.imageUrl !== undefined || value.chatMessageType !== undefined || value.messageType !== undefined;
+  if (orderNo && hasMessageContent) out.push(value);
+  for (const key of ['data','payload','message','messages','result','body']) {
+    if (value[key] && value[key] !== value) realtimeChatMessageCandidates(value[key], out, depth + 1);
+  }
+  return out;
+}
+
+function orderForRealtimeChat(credentialId, row = {}) {
+  const orderNo = cleanStr(row.orderNo || row.orderNumber || row.adOrderNo || '', 120);
+  if (!orderNo) return null;
+  return (db.orders || []).find(order => Number(order.credentialId || 0) === Number(credentialId) && String(order.externalOrderNo || order.orderNo || '') === orderNo) || null;
+}
+
+function closeBinanceRealtimeChatConnection(credentialId, reason = 'reconcile') {
+  const key = Number(credentialId || 0);
+  const entry = binanceChatRealtimeConnections.get(key);
+  if (!entry) return;
+  if (entry.reconnectTimer) clearTimeout(entry.reconnectTimer);
+  entry.closedBySystem = true;
+  try { entry.ws?.close(1000, reason); } catch {}
+  binanceChatRealtimeConnections.delete(key);
+}
+
+function scheduleBinanceRealtimeChatReconnect(credential, failures = 1) {
+  const credentialId = Number(credential?.id || 0);
+  if (!credentialId) return;
+  const current = binanceChatRealtimeConnections.get(credentialId) || {};
+  if (current.reconnectTimer) clearTimeout(current.reconnectTimer);
+  const delay = Math.min(30000, Math.max(1500, 1500 * Math.pow(2, Math.min(4, Math.max(0, failures - 1)))));
+  const reconnectTimer = setTimeout(() => {
+    const fresh = binanceCredentialById(credentialId);
+    if (!fresh || fresh.disabled || !fresh.apiKey || !fresh.secretKey) return closeBinanceRealtimeChatConnection(credentialId, 'credential_disabled');
+    connectBinanceRealtimeChat(fresh, failures).catch(() => {});
+  }, delay);
+  if (typeof reconnectTimer.unref === 'function') reconnectTimer.unref();
+  binanceChatRealtimeConnections.set(credentialId, { ...current, reconnectTimer, failures });
+}
+
+async function connectBinanceRealtimeChat(credential, previousFailures = 0) {
+  const credentialId = Number(credential?.id || 0);
+  if (!credentialId || credential.disabled || !credential.apiKey || !credential.secretKey) return;
+  const existing = binanceChatRealtimeConnections.get(credentialId);
+  if (existing?.connecting || (existing?.ws && [0,1].includes(Number(existing.ws.readyState)))) return;
+  if (existing?.reconnectTimer) clearTimeout(existing.reconnectTimer);
+  binanceChatRealtimeConnections.set(credentialId, { ...(existing || {}), connecting:true, failures:previousFailures });
+  let chatCredential;
+  try {
+    chatCredential = await retrieveBinanceChatCredential(credential);
+  } catch (error) {
+    binanceChatRealtimeConnections.set(credentialId, { connecting:false, failures:previousFailures + 1, error:cleanStr(error.message || error, 220) });
+    return scheduleBinanceRealtimeChatReconnect(credential, previousFailures + 1);
+  }
+  const WebSocket = loadWsModule();
+  const ws = new WebSocket(chatCredential.wsUrl, { handshakeTimeout:12000 });
+  const entry = { ws, connecting:true, failures:previousFailures, connectedAt:null, lastMessageAt:null, closedBySystem:false, reconnectTimer:null };
+  binanceChatRealtimeConnections.set(credentialId, entry);
+  ws.on('open', () => {
+    entry.connecting = false;
+    entry.failures = 0;
+    entry.connectedAt = nowIso();
+  });
+  ws.on('message', data => {
+    entry.lastMessageAt = nowIso();
+    let parsed = null;
+    try { parsed = JSON.parse(String(data)); } catch { return; }
+    const rows = realtimeChatMessageCandidates(parsed);
+    let changed = false;
+    const broadcasts = [];
+    rows.forEach(row => {
+      const order = orderForRealtimeChat(credentialId, row);
+      if (!order) return;
+      const imported = importBinanceChatRows(order, [row]);
+      if (!imported.imported) return;
+      order.lastBinanceChatSyncedAt = nowIso();
+      order.lastBinanceChatError = '';
+      changed = true;
+      if (imported.incomingImported > 0) {
+        notifyIncomingBinanceChat(order, imported);
+        broadcasts.push({ type:'chat.message.received', orderId:order.id, orderNo:order.orderNo, externalOrderNo:order.externalOrderNo || order.orderNo, credentialId:order.credentialId || null, imported:imported.imported, incomingImported:imported.incomingImported, latestMessageId:imported.latestIncomingChatId, status:order.status, externalStatus:order.externalStatus, at:nowIso() });
+      }
+    });
+    if (changed) {
+      saveDb({ broadcast:false, reason:'binance_chat_realtime' }).then(() => broadcasts.forEach(broadcast)).catch(() => {});
+    }
+  });
+  ws.on('error', error => { entry.error = cleanStr(error.message || error, 220); });
+  ws.on('close', () => {
+    const latest = binanceChatRealtimeConnections.get(credentialId);
+    if (latest !== entry || entry.closedBySystem) return;
+    entry.connecting = false;
+    scheduleBinanceRealtimeChatReconnect(credential, Number(entry.failures || 0) + 1);
+  });
+}
+
+function reconcileBinanceRealtimeChatConnections() {
+  if (!db || db.settings.apiMode !== 'live') {
+    for (const credentialId of [...binanceChatRealtimeConnections.keys()]) {
+      closeBinanceRealtimeChatConnection(credentialId, 'api_mode_not_live');
+    }
+    return;
+  }
+  const credentials = (db.apiCredentials || []).filter(item => !item.disabled && item.apiKey && item.secretKey);
+  const enabledIds = new Set(credentials.map(item => Number(item.id)));
+  for (const credentialId of [...binanceChatRealtimeConnections.keys()]) {
+    if (!enabledIds.has(Number(credentialId))) closeBinanceRealtimeChatConnection(credentialId, 'credential_removed');
+  }
+  credentials.forEach(credential => connectBinanceRealtimeChat(credential).catch(() => {}));
+}
+
+function startBinanceRealtimeChatLoop() {
+  if (binanceChatRealtimeLoopStarted) return;
+  binanceChatRealtimeLoopStarted = true;
+  const first = setTimeout(() => reconcileBinanceRealtimeChatConnections(), 1200);
+  if (typeof first.unref === 'function') first.unref();
+  const interval = setInterval(() => reconcileBinanceRealtimeChatConnections(), 30000);
+  if (typeof interval.unref === 'function') interval.unref();
+}
+
 function buildBinanceChatPayload({ orderNo, content, type = 'text' }) {
   const now = Date.now();
   return {
@@ -10344,36 +10500,42 @@ async function handlePublicMedia(req, res, token) {
 }
 
 async function uploadBinanceChatImage(credential, imageName, buffer, mimeType = 'image/jpeg') {
-  const presign = await callSignedSapi({ apiKey: credential.apiKey, secretKey: credential.secretKey, endpointName: 'getChatImagePreSignedUrl', body: { imageName }, clientType: credential.clientType || 'web', dryRun: false });
-  const data = unwrapBinanceData(presign) || {};
-  const rawPreSignedUrl = data.preSignedUrl || data.presignedUrl || data.preSignedURL || data.uploadUrl || data.putUrl || data.url;
-  const rawImageUrl = data.imageUrl || data.fileUrl || data.downloadUrl || data.viewUrl;
-  if (!rawPreSignedUrl || !rawImageUrl) throw new Error('Binance image pre-signed response is missing preSignedUrl/uploadUrl or imageUrl.');
-  const preSignedUrl = await assertPublicOutboundUrl(rawPreSignedUrl, 'Binance image upload URL');
-  const imageUrl = parseOutboundHttpsUrl(rawImageUrl, 'Binance chat image URL').toString();
-  const attempts = [
-    { label: 'headerless', options: { method: 'PUT', body: buffer } },
-    { label: 'content-type', options: { method: 'PUT', body: buffer, headers: { 'Content-Type': mimeType } } }
-  ];
-  let last = null;
-  for (const attempt of attempts) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 30_000);
-    let res;
-    try {
-      res = await fetch(preSignedUrl, { ...attempt.options, redirect: 'error', signal: controller.signal });
-    } catch (error) {
-      if (error?.name === 'AbortError') throw new Error('Binance image upload timed out after 30 seconds.');
-      throw error;
-    } finally {
-      clearTimeout(timer);
+  let last = '';
+  for (let presignAttempt = 0; presignAttempt < 2; presignAttempt += 1) {
+    const presign = await callSignedSapi({ apiKey: credential.apiKey, secretKey: credential.secretKey, endpointName: 'getChatImagePreSignedUrl', body: { imageName }, clientType: credential.clientType || 'web', dryRun: false });
+    const data = unwrapBinanceData(presign) || {};
+    const rawPreSignedUrl = data.preSignedUrl || data.presignedUrl || data.preSignedURL || data.uploadUrl || data.putUrl || data.url;
+    const rawImageUrl = data.imageUrl || data.fileUrl || data.downloadUrl || data.viewUrl;
+    if (!rawPreSignedUrl || !rawImageUrl) throw new Error('Binance image pre-signed response is missing preSignedUrl/uploadUrl or imageUrl.');
+    const preSignedUrl = await assertPublicOutboundUrl(rawPreSignedUrl, 'Binance image upload URL');
+    const imageUrl = parseOutboundHttpsUrl(rawImageUrl, 'Binance chat image URL').toString();
+    const attempts = [
+      { label: 'headerless', options: { method: 'PUT', body: buffer } },
+      { label: 'content-type', options: { method: 'PUT', body: buffer, headers: { 'Content-Type': mimeType } } }
+    ];
+    let retryFreshPresign = false;
+    for (const attempt of attempts) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 12_000);
+      let res;
+      try {
+        res = await fetch(preSignedUrl, { ...attempt.options, redirect: 'error', signal: controller.signal });
+      } catch (error) {
+        last = error?.name === 'AbortError' ? 'upload timeout after 12 seconds' : cleanStr(error?.message || error, 220);
+        retryFreshPresign = true;
+        break;
+      } finally {
+        clearTimeout(timer);
+      }
+      if (res.ok) return { imageUrl, preSignedUrlReceived: true, statusCode: res.status, uploadMode: attempt.label, presignAttempt: presignAttempt + 1 };
+      const txt = await res.text().catch(() => '');
+      last = `${res.status} ${res.statusText || ''} ${txt.slice(0, 200)}`.trim();
+      if (![400, 403, 408, 415, 429].includes(res.status)) break;
+      if ([403, 408, 429].includes(res.status)) retryFreshPresign = true;
     }
-    if (res.ok) return { imageUrl, preSignedUrlReceived: true, statusCode: res.status, uploadMode: attempt.label };
-    const txt = await res.text().catch(() => '');
-    last = `${res.status} ${res.statusText || ''} ${txt.slice(0, 200)}`.trim();
-    if (![400, 403, 415].includes(res.status)) break;
+    if (presignAttempt === 0 && (retryFreshPresign || last)) await sleep(250);
   }
-  throw new Error(`Image upload to Binance pre-signed URL failed: ${last || 'unknown error'}`);
+  throw new Error(`Image upload to Binance failed after a fresh upload URL retry: ${last || 'unknown error'}`);
 }
 
 async function sendBinanceChatMessage(req, res, user, order) {
@@ -10594,7 +10756,7 @@ function secureHeaders(extra = {}, req = null) {
     'X-Permitted-Cross-Domain-Policies': 'none',
     'X-Robots-Tag': 'noindex, nofollow, noarchive',
     'Referrer-Policy': 'no-referrer',
-    'Permissions-Policy': 'camera=(), microphone=(), geolocation=(), payment=(), usb=(), serial=(), browsing-topics=()',
+    'Permissions-Policy': 'camera=(self), microphone=(), geolocation=(), payment=(), usb=(), serial=(), browsing-topics=()',
     'Cross-Origin-Opener-Policy': 'same-origin',
     'Origin-Agent-Cluster': '?1',
     'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; media-src 'self' data: blob: https:; connect-src 'self'; worker-src 'self' blob:; manifest-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'",
@@ -22720,9 +22882,51 @@ async function handleNotifications(req, res) {
 }
 
 
+let binanceFastOrderDiscoveryBusy = false;
+let binanceFastOrderDiscoveryLastAt = 0;
 let binanceAutoSyncBusy = false;
 let binanceAutoSyncLastAt = 0;
 let binanceAutoPaymentMethodSyncLastAt = 0;
+
+async function runBinanceFastOrderDiscovery(reason = 'fast_timer') {
+  if (maintenanceMode.enabled || binanceFastOrderDiscoveryBusy) return { skipped:true };
+  if (db.settings.apiMode !== 'live' || db.settings.binanceAutoOrderSync === false) return { skipped:true };
+  const credentials = (db.apiCredentials || []).filter(item => !item.disabled && item.apiKey && item.secretKey);
+  if (!credentials.length) return { skipped:true };
+  const intervalMs = Math.max(2000, Number(process.env.CRM_FAST_ORDER_DISCOVERY_MS || 3000));
+  if (Date.now() - binanceFastOrderDiscoveryLastAt < intervalMs) return { skipped:true };
+  binanceFastOrderDiscoveryBusy = true;
+  binanceFastOrderDiscoveryLastAt = Date.now();
+  try {
+    const results = await Promise.all(credentials.map(async credential => {
+      try {
+        return await syncBinanceOrdersWithCredential(systemBinanceSyncUser(), credential, {
+          reason,
+          rows: Math.min(30, positiveNum(db.settings.binanceAutoSyncRows || 30) || 30),
+          skipDetailSync: true,
+          reconcileOpenOrders: false
+        });
+      } catch (error) {
+        return { credentialId:Number(credential.id), created:0, updated:0, totalRows:0, changedOrders:[], error:cleanStr(error.message || error, 240) };
+      }
+    }));
+    const changedOrders = results.flatMap(result => result.changedOrders || []);
+    const created = results.reduce((sum, result) => sum + Number(result.created || 0), 0);
+    const updated = results.reduce((sum, result) => sum + Number(result.updated || 0), 0);
+    // The list endpoint often reports existing rows as "updated" even when no
+    // material order field changed. Persist/broadcast only real discoveries or
+    // status/payment-method changes so the 3s fast path does not create a DB
+    // write/SSE storm. The slower detailed sync remains responsible for routine
+    // reconciliation.
+    if (created || changedOrders.length) {
+      await saveDb({ broadcast:false, reason:'binance_fast_order_discovery' });
+      broadcast({ type:'binance.orders.fast_synced', created, updated, changedOrders, at:nowIso() });
+    }
+    return { created, updated, changedOrders };
+  } finally {
+    binanceFastOrderDiscoveryBusy = false;
+  }
+}
 
 async function runBinanceAutoOrderSync(reason = 'timer') {
   if (maintenanceMode.enabled) return { skipped: true, reason: 'maintenance' };
@@ -23035,6 +23239,15 @@ function startBinanceAdsAutoSyncLoop() {
 function startBinanceAutoSyncLoop() {
   if (binanceAutoSyncLoopStarted) return;
   binanceAutoSyncLoopStarted = true;
+  const fastFirst = setTimeout(() => {
+    runBinanceFastOrderDiscovery('startup_fast').catch(()=>{});
+    const fastInterval = setInterval(() => {
+      runBinanceFastOrderDiscovery('fast_timer').catch(err => console.warn('Binance fast order discovery failed:', err.message));
+    }, Math.max(2000, Number(process.env.CRM_FAST_ORDER_DISCOVERY_MS || 3000)));
+    if (typeof fastInterval.unref === 'function') fastInterval.unref();
+  }, Math.max(500, Number(process.env.CRM_FAST_ORDER_DISCOVERY_START_DELAY_MS || 900)));
+  if (typeof fastFirst.unref === 'function') fastFirst.unref();
+
   const firstDelayMs = Math.max(1000, Number(process.env.CRM_AUTO_SYNC_START_DELAY_MS || 5000));
   const timer = setTimeout(() => {
     runBinanceAutoOrderSync('startup_delayed').catch(()=>{});
@@ -23141,6 +23354,7 @@ async function startServer() {
     }
     startPresenceMonitorLoop();
     startP2pExtensionCacheCleanupLoop();
+    startBinanceRealtimeChatLoop();
     startBinanceAutoSyncLoop();
     startBinanceAdsAutoSyncLoop();
     startAdvertisementMerchantStatusLoop();

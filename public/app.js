@@ -1,4 +1,4 @@
-// v1.5.32: Release uses a minimal Binance probe first; only a concrete Binance challenge opens the dedicated verification screen.
+// v1.5.33: Release uses a minimal Binance probe first; only a concrete Binance challenge opens the dedicated verification screen.
 // v1.5.23: Payment Account serial scope treats each normalized Label, including no Label, as an independent namespace.
 // v1.5.22: Header-only Work Status, chat-only notification master, and coupled sound/push controls.
 // v1.5.20: account-scoped Binance RBAC, visible security recovery setup and individual-only profit accounting.
@@ -84,7 +84,10 @@ const state = {
   currentOrderChatLastId: 0,
   currentOrderChatRefreshBusy: false,
   currentOrderChatRefreshTimer: null,
-  currentOrderChatNewCount: 0
+  currentOrderChatNewCount: 0,
+  currentOrderSoftRefreshBusy: false,
+  currentOrderChatLastUserScrollAt: 0,
+  currentOrderChatPreserveScrollTop: null
 };
 
 const pages = [
@@ -946,6 +949,7 @@ function bindChatScrollState() {
   if (box && box.dataset.smoothScrollBound !== '1') {
     box.dataset.smoothScrollBound = '1';
     box.addEventListener('scroll', () => {
+      state.currentOrderChatLastUserScrollAt = Date.now();
       if (!chatBoxNearBottom(box)) return;
       state.currentOrderChatNewCount = 0;
       updateChatNewMessagesButton();
@@ -1066,7 +1070,7 @@ async function autoSyncBinanceChat(order, updateOnly=true) {
 }
 function scheduleNextChatSync(order) {
   if (state.currentOrderId !== order.id || !isRealBinanceOrder(order) || !hasPerm('binance.chat')) return;
-  const delay = state.chatSyncFailCount ? Math.min(60000, 15000 * Math.pow(2, Math.min(3, state.chatSyncFailCount - 1))) : 5000;
+  const delay = state.chatSyncFailCount ? Math.min(30000, 5000 * Math.pow(2, Math.min(3, state.chatSyncFailCount - 1))) : 1500;
   state.chatSyncTimer = setTimeout(async () => {
     await autoSyncBinanceChat(order, true);
     scheduleNextChatSync(order);
@@ -1077,7 +1081,13 @@ function startChatAutoSync(order) {
   if (!isRealBinanceOrder(order) || !hasPerm('binance.chat')) return;
   setTimeout(() => {
     const box = $('#chatBox');
-    if (box) box.scrollTop = box.scrollHeight;
+    if (!box) return;
+    if (Number.isFinite(Number(state.currentOrderChatPreserveScrollTop))) {
+      box.scrollTop = Math.max(0, Number(state.currentOrderChatPreserveScrollTop));
+      state.currentOrderChatPreserveScrollTop = null;
+    } else {
+      box.scrollTop = box.scrollHeight;
+    }
   }, 50);
   autoSyncBinanceChat(order, true).finally(() => scheduleNextChatSync(order));
 }
@@ -1103,15 +1113,15 @@ async function compressImageFileForChat(file) {
       image.onerror = () => reject(new Error('Could not load image for compression.'));
       image.src = originalUrl;
     });
-    const maxDim = 1600;
+    const maxDim = 1440;
     const ratio = Math.min(1, maxDim / Math.max(img.naturalWidth || img.width, img.naturalHeight || img.height));
     const canvas = document.createElement('canvas');
     canvas.width = Math.max(1, Math.round((img.naturalWidth || img.width) * ratio));
     canvas.height = Math.max(1, Math.round((img.naturalHeight || img.height) * ratio));
     const ctx = canvas.getContext('2d');
     ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-    const preferred = /png/i.test(file.type || '') && file.size < 750 * 1024 ? 'image/png' : 'image/jpeg';
-    let blob = await canvasToBlob(canvas, preferred, 0.84);
+    const preferred = /png/i.test(file.type || '') && file.size < 320 * 1024 ? 'image/png' : 'image/jpeg';
+    let blob = await canvasToBlob(canvas, preferred, 0.80);
     if (!blob) throw new Error('Image compression failed.');
     if (blob.size > 1500 * 1024 && preferred !== 'image/jpeg') blob = await canvasToBlob(canvas, 'image/jpeg', 0.82);
     if (blob && blob.size > 1500 * 1024) blob = await canvasToBlob(canvas, 'image/jpeg', 0.72);
@@ -1126,7 +1136,7 @@ async function readImageFileAsDataUrl(file) {
   if (!/^image\/(png|jpe?g|webp)$/i.test(file.type || '')) throw new Error('Only PNG, JPG or WebP image is allowed.');
   if (file.size > 10 * 1024 * 1024) throw new Error('Image size must be 10MB or less.');
   let finalFile = file;
-  if (file.size > 900 * 1024) {
+  if (file.size > 320 * 1024) {
     try {
       const compressed = await compressImageFileForChat(file);
       if (compressed && compressed.size && compressed.size < file.size) finalFile = new File([compressed], file.name.replace(/\.[^.]+$/, '') + '.jpg', { type: compressed.type || 'image/jpeg' });
@@ -1134,7 +1144,7 @@ async function readImageFileAsDataUrl(file) {
       finalFile = file;
     }
   }
-  if (finalFile.size > 4 * 1024 * 1024) throw new Error('Image is still too large after compression. Use a smaller image.');
+  if (finalFile.size > 2 * 1024 * 1024) throw new Error('Image is still too large after compression. Use a smaller image.');
   return fileToDataUrl(finalFile);
 }
 
@@ -1212,7 +1222,7 @@ async function backgroundAutoSyncOrder(order) {
     state.currentOrder = updated;
     if (afterStatus !== beforeStatus || afterMethod !== beforeMethod || isFulfilledOrder(updated) !== isFulfilledOrder(order) || afterStats !== beforeStats || afterPayment !== beforePayment || afterAdditionalKyc !== beforeAdditionalKyc) {
       if (afterStatus !== beforeStatus || afterMethod !== beforeMethod || isFulfilledOrder(updated) !== isFulfilledOrder(order)) notify(`Order ${updated.orderNo || order.orderNo} status updated: ${afterStatus}`, afterStatus === 'CANCELLED' ? 'danger' : 'ok');
-      await loadOrderDetail(order.id, false, true);
+      await refreshCurrentOrderStateNonDestructive();
     }
   } catch (err) {
     if (statusEl) statusEl.textContent = '';
@@ -4605,8 +4615,10 @@ function startEvents() {
     setConnectivityStatus(false);
     handleServerEvent(event);
     const type = String(event.type || '');
-    if (type === 'db_updated' && state.page !== 'ads' && !(state.page === 'orders' && state.currentOrderId)) {
-      scheduleSmoothRefresh(260);
+    if (type === 'db_updated' && !['ads','settings','p2p-market','chat'].includes(state.page) && !(state.page === 'orders' && state.currentOrderId)) {
+      const active = document.activeElement;
+      const editing = active && (['INPUT','TEXTAREA','SELECT'].includes(active.tagName) || active.isContentEditable);
+      if (!editing) scheduleSmoothRefresh(260);
     }
     if (!type.startsWith('activity.')) {
       scheduleHeaderNotificationRefresh();
@@ -4711,7 +4723,8 @@ function handleServerEvent(event = {}) {
   if (Array.isArray(event.changedOrders)) {
     event.changedOrders.forEach(o => notifyOrderChange(o, event.type));
     const current = event.changedOrders.find(o => Number(o.orderId || o.id) === Number(state.currentOrderId));
-    if (current && state.page === 'orders' && state.currentOrderId) scheduleCurrentOrderReload(450);
+    if (current && state.page === 'orders' && state.currentOrderId) scheduleCurrentOrderReload(120);
+    else if (event.changedOrders.length && state.page === 'orders' && !state.currentOrderId && !modalOpen()) scheduleSmoothRefresh(80);
   }
   if (event.type === 'order.created' && notificationCredentialMatches(event.credentialId, 'orders')) {
     const orderNo = event.orderNo || event.externalOrderNo || ('#' + event.orderId);
@@ -4762,11 +4775,30 @@ function handleServerEvent(event = {}) {
   if (event.type === 'chat.message.sent' && Number(event.orderId) === Number(state.currentOrderId)) scheduleCurrentOrderChatDelta(40, { outgoing:true, forceScroll:true });
 }
 
+async function refreshCurrentOrderStateNonDestructive() {
+  const orderId = Number(state.currentOrderId || 0);
+  if (!orderId || state.page !== 'orders' || state.currentOrderSoftRefreshBusy) return;
+  state.currentOrderSoftRefreshBusy = true;
+  try {
+    const updated = await api('/api/orders/' + orderId, { silent:true, noAutoReload:true });
+    if (Number(state.currentOrderId || 0) !== orderId) return;
+    const previous = state.currentOrder || {};
+    state.currentOrder = { ...previous, ...updated };
+    mergeCurrentOrderChatItems(updated.chats || [], { forceScroll:false });
+    updateSelectedPaymentAccountSlot(state.currentOrder);
+    setTitle(binanceDisplayStatus(state.currentOrder), orderCounterpartyNickname(state.currentOrder));
+  } catch (_) {
+    // A background state refresh must never disturb the operator's current viewport.
+  } finally {
+    state.currentOrderSoftRefreshBusy = false;
+  }
+}
+
 function scheduleCurrentOrderReload(delay=450) {
   if (!state.currentOrderId || state.page !== 'orders') return;
   clearTimeout(state.currentOrderReloadTimer);
   state.currentOrderReloadTimer = setTimeout(() => {
-    if (state.currentOrderId && !modalOpen()) loadOrderDetail(state.currentOrderId, false, true).catch(()=>{});
+    if (state.currentOrderId && !modalOpen()) refreshCurrentOrderStateNonDestructive().catch(()=>{});
   }, delay);
 }
 
@@ -4964,7 +4996,7 @@ function renderNav() {
   // legacy flat menu while this marker is absent, the browser/proxy is serving
   // stale frontend JavaScript rather than the active release.
   nav.dataset.navigationModel = 'grouped-control-center';
-  nav.dataset.uiRelease = '1.5.32';
+  nav.dataset.uiRelease = '1.5.33';
   nav.innerHTML = '';
   const visible = visiblePages();
   const visibleIds = new Set(visible.map(([id]) => id));
@@ -5670,6 +5702,10 @@ async function verifyOrderAdditionalKyc(order, button=null) {
 }
 
 async function loadOrderDetail(id, showLoading=true, fromRoute=false) {
+  const previousOrderId = Number(state.currentOrderId || 0);
+  const previousChatBox = $('#chatBox');
+  const preserveExistingChatScroll = previousOrderId === Number(id) && previousChatBox && !chatBoxNearBottom(previousChatBox);
+  state.currentOrderChatPreserveScrollTop = preserveExistingChatScroll ? Number(previousChatBox.scrollTop || 0) : null;
   state.currentOrderId = id;
   const restoreMobileChat = document.body.classList.contains('order-chat-open');
   const restoreInternalNotes = $('#orderInternalNotePanel')?.classList.contains('is-open') || false;
@@ -5831,6 +5867,10 @@ async function loadOrderDetail(id, showLoading=true, fromRoute=false) {
                 <div class="chat-quick-panel-body" id="chatQuickPanelBody"></div>
               </div>
               <div class="chat-attachment-tray" id="chatAttachmentTray" aria-hidden="true">
+                <button class="chat-album-picker" id="chatCameraPicker" type="button">
+                  <span class="chat-album-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M8 6.5 9.4 4h5.2L16 6.5h3A2 2 0 0 1 21 8.5v9A2 2 0 0 1 19 19H5a2 2 0 0 1-2-2v-8.5a2 2 0 0 1 2-2h3Z" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="12" cy="13" r="3.5" fill="none" stroke="currentColor" stroke-width="2"/></svg></span>
+                  <span><b>Camera</b><small>Take a photo now</small></span>
+                </button>
                 <button class="chat-album-picker" id="chatAlbumPicker" type="button">
                   <span class="chat-album-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="9" cy="9" r="2" fill="none" stroke="currentColor" stroke-width="2"/><path d="m5 17 4-4 3 3 2-2 5 5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
                   <span><b>Album</b><small>Photo or video · single or multiple</small></span>
@@ -5839,6 +5879,7 @@ async function loadOrderDetail(id, showLoading=true, fromRoute=false) {
               <div class="chat-media-preview" id="chatMediaPreview" aria-live="polite"></div>
               <form id="chatForm" class="chat-compose-pro">
                 <button class="chat-compose-plus" id="chatAttachmentMenuBtn" type="button" aria-controls="chatAttachmentTray" aria-expanded="false" aria-label="Add photo or video">＋</button>
+                <input id="chatCameraInput" type="file" name="camera" accept="image/*" capture="environment" hidden />
                 <input id="chatMediaInput" type="file" name="media" accept="image/png,image/jpeg,image/webp,video/mp4,video/webm,video/quicktime" multiple hidden />
                 <textarea name="message" rows="2" placeholder="Write a message"></textarea>
                 <button class="chat-send-icon chat-compose-action" id="chatComposeActionBtn" type="button" aria-label="Quick messages" title="Quick messages">
@@ -5959,9 +6000,11 @@ async function loadOrderDetail(id, showLoading=true, fromRoute=false) {
   const chatForm = $('#chatForm');
   if (chatForm) {
     const fileInput = $('#chatMediaInput');
+    const cameraInput = $('#chatCameraInput');
     const attachmentBtn = $('#chatAttachmentMenuBtn');
     const attachmentTray = $('#chatAttachmentTray');
     const albumPicker = $('#chatAlbumPicker');
+    const cameraPicker = $('#chatCameraPicker');
     const previewBox = $('#chatMediaPreview');
     const textarea = chatForm.querySelector('textarea[name="message"]');
     const actionBtn = $('#chatComposeActionBtn');
@@ -6146,16 +6189,25 @@ async function loadOrderDetail(id, showLoading=true, fromRoute=false) {
       setQuickPanel(false);
       setAttachmentTray(!attachmentTray?.classList.contains('is-open'));
     };
-    if (albumPicker && fileInput) albumPicker.onclick = () => fileInput.click();
-    if (fileInput) fileInput.onchange = () => {
-      const next = Array.from(fileInput.files || []);
+    const addSelectedMedia = (files, { replace=false }={}) => {
+      const next = Array.from(files || []);
       const allowed = next.filter(file => /^(image\/(png|jpe?g|webp)|video\/(mp4|webm|quicktime))$/i.test(file.type || ''));
       if (allowed.length !== next.length) notify('Unsupported files were skipped. Use image, MP4, WebM or MOV.', 'warn');
-      selectedMedia = allowed.slice(0, 8);
-      if (allowed.length > 8) notify('You can send up to 8 media files at a time.', 'warn');
-      fileInput.value = '';
+      const combined = replace ? allowed : [...selectedMedia, ...allowed];
+      selectedMedia = combined.slice(0, 8);
+      if (combined.length > 8) notify('You can send up to 8 media files at a time.', 'warn');
       setAttachmentTray(false);
       renderSelectedMedia();
+    };
+    if (albumPicker && fileInput) albumPicker.onclick = () => fileInput.click();
+    if (cameraPicker && cameraInput) cameraPicker.onclick = () => cameraInput.click();
+    if (fileInput) fileInput.onchange = () => {
+      addSelectedMedia(fileInput.files);
+      fileInput.value = '';
+    };
+    if (cameraInput) cameraInput.onchange = () => {
+      addSelectedMedia(cameraInput.files);
+      cameraInput.value = '';
     };
     chatForm.onsubmit = async e => {
       e.preventDefault();
@@ -6170,7 +6222,9 @@ async function loadOrderDetail(id, showLoading=true, fromRoute=false) {
           const sent = await api(`/api/orders/${o.id}/binance-chat-send`, { method:'POST', body: JSON.stringify({ message, binanceOrderNumber: o.externalOrderNo || o.orderNo }) });
           latestOrder = sent.order || latestOrder;
         }
-        for (const mediaFile of selectedMedia) {
+        for (let mediaIndex = 0; mediaIndex < selectedMedia.length; mediaIndex += 1) {
+          const mediaFile = selectedMedia[mediaIndex];
+          if (actionBtn) actionBtn.innerHTML = `${mediaIndex + 1}/${selectedMedia.length}`;
           const mediaDataUrl = await readChatMediaFileAsDataUrl(mediaFile);
           const sent = await api(`/api/orders/${o.id}/binance-chat-send`, { method:'POST', body: JSON.stringify({ mediaDataUrl, mediaName: mediaFile.name, mediaMime: mediaFile.type, binanceOrderNumber: o.externalOrderNo || o.orderNo }) });
           latestOrder = sent.order || latestOrder;

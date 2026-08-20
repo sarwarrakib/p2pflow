@@ -1481,7 +1481,7 @@ body.order-chat-open .modal-backdrop{z-index:1450}
 .order-mobile-unified-head{display:none}
 .chat-video{display:block;width:min(360px,72vw);max-width:100%;max-height:320px;border-radius:13px;background:#000}
 .chat-attachment-tray{display:none;padding:10px 0 2px}
-.chat-attachment-tray.is-open{display:block}
+.chat-attachment-tray.is-open{display:grid;gap:8px}
 .chat-album-picker{display:flex;align-items:center;gap:12px;width:100%;padding:11px 12px;border:1px solid #dbe2ea;border-radius:16px;background:#f8fafc;color:#111827;text-align:left;box-shadow:none}
 .chat-album-picker:hover{transform:none;background:#f1f5f9}
 .chat-album-icon{display:grid;place-items:center;flex:0 0 42px;width:42px;height:42px;border-radius:13px;background:#e0e7ff;color:#3730a3}
@@ -5380,7 +5380,7 @@ tr:hover td{background:#fbfbfc}
   .final-action-local-actions button{width:100%}
 }
 
-/* v1.5.32 dedicated responsive Binance release verification screen */
+/* v1.5.33 dedicated responsive Binance release verification screen */
 .release-verification-backdrop{padding:20px;background:rgba(11,14,17,.64);place-items:center}
 .release-verification-modal{width:min(560px,100%);max-height:min(94dvh,860px);border-radius:24px;overflow:hidden;background:#fff}
 .release-verification-modal>.modal-head{display:none}
@@ -5416,7 +5416,7 @@ tr:hover td{background:#fbfbfc}
 .release-verification-modal .final-action-local-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
 .release-verification-modal .final-action-local-actions button{min-height:40px;padding:0 13px;border-radius:10px}
 
-/* v1.5.32 API credential compact account/actions */
+/* v1.5.33 API credential compact account/actions */
 .credentials-page{max-width:1280px;margin:0 auto}
 .credentials-card{overflow-x:auto}
 .credential-account-name{display:grid;gap:4px;min-width:160px}

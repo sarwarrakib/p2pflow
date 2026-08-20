@@ -1,4 +1,4 @@
-// P2PFlow v1.5.32
+// P2PFlow v1.5.33
 // Live Binance-style P2P market advertisement browser.
 
 function p2pMarketFmt(value, decimals = 2) {
@@ -277,7 +277,8 @@ function p2pMarketAdCard(item = {}, index = 0) {
   const max = Number(item.maxAmount || 0) > 0 ? p2pMarketFmt(item.maxAmount, item.fiatScale ?? 2) : 'No maximum';
   const payTime = Number(item.payTimeLimit || 0) > 0 ? `${Number(item.payTimeLimit)} min` : 'Flexible';
   const actionText = action;
-  return `<article class="p2p-market-ad" data-market-index="${index}">
+  const stableKey = String(item.advNo || `${item.advertiserNo || item.nickname || ''}:${item.tradeType || ''}`);
+  return `<article class="p2p-market-ad" data-market-index="${index}" data-market-key="${escapeAttr(stableKey)}">
     <div class="p2p-market-ad-main">
       <div class="p2p-market-advertiser">
         <span class="p2p-market-avatar">${p2pMarketInitial(item.nickname)}<i></i></span>
@@ -678,6 +679,34 @@ function p2pMarketQueryString(refresh = false, page = 1) {
   return params.toString();
 }
 
+
+function captureP2pMarketViewport() {
+  const scrollY = Number(window.scrollY || 0);
+  const cards = Array.from(document.querySelectorAll('#p2pMarketResults .p2p-market-ad[data-market-key]'));
+  const visible = cards.find(card => card.getBoundingClientRect().bottom > 0) || null;
+  return {
+    scrollY,
+    key: visible?.dataset.marketKey || '',
+    top: visible ? visible.getBoundingClientRect().top : null
+  };
+}
+
+function restoreP2pMarketViewport(snapshot) {
+  if (!snapshot || state.page !== 'p2p-market') return;
+  requestAnimationFrame(() => {
+    if (snapshot.key) {
+      const escaped = typeof CSS !== 'undefined' && CSS.escape ? CSS.escape(snapshot.key) : snapshot.key.replace(/["\\]/g, '\\$&');
+      const card = document.querySelector(`#p2pMarketResults .p2p-market-ad[data-market-key="${escaped}"]`);
+      if (card && Number.isFinite(snapshot.top)) {
+        const delta = card.getBoundingClientRect().top - snapshot.top;
+        if (Math.abs(delta) > 0.5) window.scrollBy({ top:delta, left:0, behavior:'auto' });
+        return;
+      }
+    }
+    window.scrollTo({ top:snapshot.scrollY, left:0, behavior:'auto' });
+  });
+}
+
 async function loadP2pMarket(refresh = false, options = {}) {
   if (state.p2pMarketLoading) return;
   const result = $('#p2pMarketResults');
@@ -693,8 +722,9 @@ async function loadP2pMarket(refresh = false, options = {}) {
     : Math.max(1, Number(options.page || 1));
   const top = $('#p2pMarketResultsTop');
 
+  const viewportSnapshot = background ? captureP2pMarketViewport() : null;
   state.p2pMarketLoading = true;
-  result.classList.add('loading');
+  if (!background) result.classList.add('loading');
   if (!background && !append && !state.p2pMarketData) {
     result.innerHTML = '<div class="p2p-market-loading"><span></span><span></span><span></span></div>';
   } else if (append) {
@@ -719,11 +749,12 @@ async function loadP2pMarket(refresh = false, options = {}) {
     state.p2pMarketFilters.page = 1;
     state.p2pMarketFilters.rows = 20;
 
-    if (top) top.innerHTML = p2pMarketSourceHtml();
+    if (top && !background) top.innerHTML = p2pMarketSourceHtml();
     result.innerHTML = p2pMarketResultHtml(state.p2pMarketData);
     bindP2pMarketResultActions();
-    if (top) applyLanguage(top);
+    if (top && !background) applyLanguage(top);
     applyLanguage(result);
+    if (background) restoreP2pMarketViewport(viewportSnapshot);
   } catch (err) {
     if (!append) {
       if (top) top.innerHTML = p2pMarketSourceHtml();

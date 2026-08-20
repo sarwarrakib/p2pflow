@@ -1,4 +1,4 @@
-// P2PFlow v1.5.32
+// P2PFlow v1.5.33
 // API credentials: automatic connect validation, P2P username identity, compact actions and per-account Release Verification settings.
 
 const P2PFLOW_BINANCE_RELEASE_VERIFICATION_METHODS = [
