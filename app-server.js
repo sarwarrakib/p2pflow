@@ -4230,6 +4230,7 @@ function saveOwnerP2pProfileForCredential(credential, profile = {}) {
   credential.ownerP2pUserNo = cleanStr(cleanProfile.userNo || '', 120);
   credential.ownerP2pMerchantNo = cleanStr(cleanProfile.merchantNo || '', 120);
   credential.ownerP2pNickname = cleanStr(cleanProfile.nickname || '', 120);
+  if (credential.ownerP2pNickname) credential.name = credential.ownerP2pNickname;
   credential.ownerP2pProfileLastSyncAt = cleanProfile.syncedAt || null;
   const firstCredentialId = Number(sortedP2pProfileCredentials()[0]?.id || 0);
   if (firstCredentialId && Number(credential.id) === firstCredentialId) {
@@ -6971,6 +6972,39 @@ function releaseVerificationProfilesForSettings(viewer) {
     }));
 }
 
+function applyCredentialReleaseVerificationSettings(user, credential, raw = {}) {
+  if (!credential) throw Object.assign(new Error('Binance API account was not found.'), { statusCode:404 });
+  normalizeCredentialReleaseVerification(credential);
+  const method = normalizeBinanceReleaseVerificationMethod(raw.binanceMethod ?? raw.releaseVerificationMethod ?? credential.releaseVerificationMethod);
+  const localEnabled = raw.localVerificationEnabled === undefined ? credential.releaseLocalVerificationEnabled === true : raw.localVerificationEnabled === true;
+  const primary = normalizeLocalReleaseVerificationMethod(raw.localPrimary ?? credential.releaseLocalPrimary, 'USER_PASSWORD');
+  const secondary = normalizeLocalReleaseVerificationMethod(raw.localSecondary ?? credential.releaseLocalSecondary, 'NONE');
+  if (primary === 'NONE' && localEnabled) throw Object.assign(new Error(`${binanceCredentialLabel(credential)}: Primary P2PFlow verification cannot be None while local verification is enabled.`), { statusCode:422 });
+  if (secondary !== 'NONE' && secondary === primary) throw Object.assign(new Error(`${binanceCredentialLabel(credential)}: Primary and Secondary P2PFlow verification must be different.`), { statusCode:422 });
+  const autoFundPassword = raw.autoFundPassword === undefined ? credential.releaseAutoFundPassword === true : raw.autoFundPassword === true;
+  let nextFundPassword = String(credential.releaseFundPassword || '');
+  const wantsSecretChange = raw.clearFundPassword === true || (raw.fundPassword !== undefined && String(raw.fundPassword) !== '');
+  if (wantsSecretChange && !userHasPermission(user, 'credentials.manage')) throw Object.assign(new Error('Only a user with credentials.manage permission can save or clear a Binance Fund Transfer Password.'), { statusCode:403 });
+  if (raw.clearFundPassword === true) nextFundPassword = '';
+  else if (raw.fundPassword !== undefined && String(raw.fundPassword) !== '') {
+    const incoming = String(raw.fundPassword);
+    if (incoming.length < 1 || incoming.length > 180) throw Object.assign(new Error(`${binanceCredentialLabel(credential)}: Fund Transfer Password must be 1-180 characters.`), { statusCode:422 });
+    nextFundPassword = incoming;
+  }
+  if (autoFundPassword && method !== 'FUND_PWD') throw Object.assign(new Error(`${binanceCredentialLabel(credential)}: Auto-use Fund Transfer Password is only available when Fund Transfer Password is the selected Binance verification method.`), { statusCode:422 });
+  if (autoFundPassword && !localEnabled) throw Object.assign(new Error(`${binanceCredentialLabel(credential)}: Enable P2PFlow verification before enabling automatic Fund Transfer Password use.`), { statusCode:422 });
+  if (autoFundPassword && !nextFundPassword) throw Object.assign(new Error(`${binanceCredentialLabel(credential)}: Save the Fund Transfer Password before enabling automatic use.`), { statusCode:422 });
+  credential.releaseVerificationMethod = method;
+  credential.releaseLocalVerificationEnabled = localEnabled;
+  credential.releaseLocalPrimary = primary;
+  credential.releaseLocalSecondary = secondary;
+  credential.releaseAutoFundPassword = autoFundPassword;
+  credential.releaseFundPassword = nextFundPassword;
+  credential.releaseVerificationUpdatedAt = nowIso();
+  credential.updatedAt = nowIso();
+  return { credentialId:Number(credential.id), method, localEnabled, primary, secondary, autoFundPassword, fundPasswordConfigured:Boolean(nextFundPassword) };
+}
+
 function finalActionVerificationTokenHash(token) {
   return crypto.createHash('sha256').update(String(token || '')).digest('hex');
 }
@@ -7228,7 +7262,7 @@ function releaseVerificationBodyForCredential(credential, body = {}, localVerifi
   }
   if (method === 'FIDO2') {
     const code = cleanStr(body.code || '', 120);
-    if (!code) throw Object.assign(new Error('FIDO2 / Fingerprint is selected in Settings. Enter the Binance FIDO2 token/code shown for this API release.'), { statusCode:422 });
+    if (!code) throw Object.assign(new Error('FIDO2 / Fingerprint is selected for this Binance account. Enter the Binance FIDO2 token/code shown for this API release.'), { statusCode:422 });
     out.authType = 'FIDO2'; out.code = code; return out;
   }
   if (method === 'FUND_PWD') {
@@ -7239,27 +7273,27 @@ function releaseVerificationBodyForCredential(credential, body = {}, localVerifi
       code = String(credential.releaseFundPassword || '');
       if (!code) throw Object.assign(new Error('Fund Transfer Password auto-use is enabled but no password is saved for this Binance account.'), { statusCode:422 });
     }
-    if (!code) throw Object.assign(new Error('Fund Transfer Password is selected in Settings. Enter the password/code required by Binance.'), { statusCode:422 });
+    if (!code) throw Object.assign(new Error('Fund Transfer Password is selected for this Binance account. Enter the password/code required by Binance.'), { statusCode:422 });
     out.authType = 'FUND_PWD'; out.code = code; return out;
   }
   if (method === 'GOOGLE') {
     const code = cleanStr(body.googleVerifyCode || '', 40);
-    if (!code) throw Object.assign(new Error('Google Authenticator is selected in Settings. Enter the Google verification code.'), { statusCode:422 });
+    if (!code) throw Object.assign(new Error('Google Authenticator is selected for this Binance account. Enter the Google verification code.'), { statusCode:422 });
     out.authType = 'GOOGLE'; out.googleVerifyCode = code; return out;
   }
   if (method === 'SMS') {
     const code = cleanStr(body.mobileVerifyCode || '', 40);
-    if (!code) throw Object.assign(new Error('SMS / Mobile OTP is selected in Settings. Enter the mobile verification code.'), { statusCode:422 });
+    if (!code) throw Object.assign(new Error('SMS / Mobile OTP is selected for this Binance account. Enter the mobile verification code.'), { statusCode:422 });
     out.authType = 'SMS'; out.mobileVerifyCode = code; return out;
   }
   if (method === 'EMAIL') {
     const code = cleanStr(body.emailVerifyCode || '', 40);
-    if (!code) throw Object.assign(new Error('Email OTP is selected in Settings. Enter the Binance email verification code.'), { statusCode:422 });
+    if (!code) throw Object.assign(new Error('Email OTP is selected for this Binance account. Enter the Binance email verification code.'), { statusCode:422 });
     out.emailVerifyCode = code; return out;
   }
   if (method === 'YUBIKEY') {
     const code = cleanStr(body.yubikeyVerifyCode || '', 160);
-    if (!code) throw Object.assign(new Error('YubiKey is selected in Settings. Enter the Binance YubiKey verification code.'), { statusCode:422 });
+    if (!code) throw Object.assign(new Error('YubiKey is selected for this Binance account. Enter the Binance YubiKey verification code.'), { statusCode:422 });
     out.yubikeyVerifyCode = code; return out;
   }
   return out;
@@ -7526,8 +7560,8 @@ function inferReleaseRequirementsFromError(err) {
   };
 
   if (/email/.test(lower)) add('emailVerifyCode', 'Email verification code', 'Enter the email code required by Binance', 'text', { autocomplete: 'one-time-code' });
-  if (/mobile|phone|sms/.test(lower)) add('mobileVerifyCode', 'SMS / mobile verification code', 'Enter the SMS code required by Binance', 'text', { autocomplete: 'one-time-code' });
-  if (/google|gauth|totp|authenticator/.test(lower)) add('googleVerifyCode', 'Google Authenticator code', 'Enter the Google Authenticator code required by Binance', 'text', { autocomplete: 'one-time-code' });
+  if (/mobile|phone|sms/.test(lower)) { hidden.authType = 'SMS'; add('mobileVerifyCode', 'SMS / mobile verification code', 'Enter the SMS code required by Binance', 'text', { autocomplete: 'one-time-code' }); }
+  if (/google|gauth|totp|authenticator/.test(lower)) { hidden.authType = 'GOOGLE'; add('googleVerifyCode', 'Google Authenticator code', 'Enter the Google Authenticator code required by Binance', 'text', { autocomplete: 'one-time-code' }); }
   if (/yubi|yubikey/.test(lower)) add('yubikeyVerifyCode', 'YubiKey verification code', 'Enter the YubiKey code required by Binance', 'text', { autocomplete: 'one-time-code' });
 
   if (/fund|fund_pwd|fund password|payment password|asset password/.test(lower)) {
@@ -17537,19 +17571,91 @@ function friendlyBinanceError(message = '') {
 
 async function handleCredentials(req, res) {
   const user = requirePermission(req, res, 'credentials.manage'); if (!user) return;
-  if (req.method === 'GET') return sendJson(res, 200, { items: db.apiCredentials.map(c => ({ id: c.id, name: c.name, apiKeyMasked: mask(c.apiKey), secretHidden: true, clientType: c.clientType, status: c.disabled ? 'disabled' : c.status, disabled: !!c.disabled, lastTestedAt: c.lastTestedAt, lastLiveTestedAt: c.lastLiveTestedAt, lastTestMessage: c.lastTestMessage || '', liveTestMessage: c.liveTestMessage || '', ownerP2pUserNo: c.ownerP2pUserNo || '', ownerP2pMerchantNo: c.ownerP2pMerchantNo || '', ownerP2pNickname: c.ownerP2pNickname || '', ownerP2pProfileLastSyncAt: c.ownerP2pProfileLastSyncAt || null, createdAt: c.createdAt, updatedAt: c.updatedAt })) }, {}, req);
+  if (req.method === 'GET') return sendJson(res, 200, { items: db.apiCredentials.map(c => ({
+    id: c.id,
+    name: c.name,
+    displayName: binanceCredentialDisplayName(c) || c.ownerP2pNickname || c.name || `Binance Account ${c.id}`,
+    apiKeyMasked: mask(c.apiKey),
+    secretHidden: true,
+    clientType: c.clientType,
+    status: c.disabled ? 'disabled' : c.status,
+    disabled: !!c.disabled,
+    lastTestedAt: c.lastTestedAt,
+    lastLiveTestedAt: c.lastLiveTestedAt,
+    lastTestMessage: c.lastTestMessage || '',
+    liveTestMessage: c.liveTestMessage || '',
+    ownerP2pUserNo: c.ownerP2pUserNo || '',
+    ownerP2pMerchantNo: c.ownerP2pMerchantNo || '',
+    ownerP2pNickname: c.ownerP2pNickname || '',
+    ownerP2pProfileLastSyncAt: c.ownerP2pProfileLastSyncAt || null,
+    releaseVerificationPolicy: releaseVerificationPolicyForCredential(c, user),
+    createdAt: c.createdAt,
+    updatedAt: c.updatedAt
+  })) }, {}, req);
   if (req.method === 'POST') {
     const body = await readBody(req);
-    const name = cleanStr(body.name, 120);
     const apiKey = cleanStr(body.apiKey, 200);
     const secretKey = cleanStr(body.secretKey, 300);
-    if (!name || !apiKey || !secretKey) return sendJson(res, 422, { error: 'name, apiKey and secretKey are required' }, {}, req);
-    const item = { id: nextId(), name, apiKey, secretKey, clientType: cleanStr(body.clientType || 'web', 40), status: 'saved', disabled: false, lastTestedAt: null, ownerP2pUserNo: '', ownerP2pMerchantNo: '', ownerP2pNickname: '', ownerP2pProfileLastSyncAt: null, releaseVerificationMethod:'AUTO', releaseLocalVerificationEnabled:false, releaseLocalPrimary:'USER_PASSWORD', releaseLocalSecondary:'SECRET_CODE', releaseAutoFundPassword:false, releaseFundPassword:'', createdAt: nowIso(), updatedAt: nowIso() };
+    const clientType = cleanStr(body.clientType || 'web', 40) || 'web';
+    const requestedName = cleanStr(body.name || '', 120);
+    if (!apiKey || !secretKey) return sendJson(res, 422, { error: 'API Key and Secret Key are required.' }, {}, req);
+
+    let dryRun;
+    let liveResult;
+    try {
+      dryRun = await callSignedSapi({ apiKey, secretKey, endpointName:'listOrders', body:{ page:1, rows:1 }, clientType, dryRun:true });
+      liveResult = await callSignedSapi({ apiKey, secretKey, endpointName:'listOrders', body:{ page:1, rows:1 }, clientType, dryRun:false, timeoutMs:20000 });
+    } catch (err) {
+      const message = friendlyBinanceError(err.message || err);
+      logAudit(user, 'api_credential_connect_failed', 'apiCredential', 0, { apiKeyMasked:mask(apiKey), error:cleanStr(err.message || err, 500) });
+      return sendJson(res, 502, { error:message, saved:false }, {}, req);
+    }
+
+    const checkedAt = nowIso();
+    const item = {
+      id: nextId(),
+      name: requestedName || 'Binance Account',
+      apiKey, secretKey, clientType,
+      status:'live_success', disabled:false,
+      lastTestedAt:checkedAt, lastLiveTestedAt:checkedAt,
+      lastTestMessage:'Automatic format/signature validation passed during save.',
+      liveTestMessage:'Automatic Binance C2C live connection passed during save.',
+      ownerP2pUserNo:'', ownerP2pMerchantNo:'', ownerP2pNickname:'', ownerP2pProfileLastSyncAt:null,
+      releaseVerificationMethod:'AUTO', releaseLocalVerificationEnabled:false, releaseLocalPrimary:'USER_PASSWORD', releaseLocalSecondary:'SECRET_CODE', releaseAutoFundPassword:false, releaseFundPassword:'',
+      createdAt:checkedAt, updatedAt:checkedAt
+    };
     db.apiCredentials.push(item);
     advertisementMerchantSettingsRecord(item.id, true);
-    logAudit(user, 'api_credential_created', 'apiCredential', item.id, { name: item.name, apiKeyMasked: mask(item.apiKey) });
+
+    let paymentMethodSync = null;
+    let profileSync = null;
+    let profileSyncError = '';
+    try {
+      paymentMethodSync = await syncBinancePaymentMethodsWithCredential(user, item, 'api_save_auto_live_check');
+    } catch (err) {
+      paymentMethodSync = { error:cleanStr(err.message || err, 300) };
+    }
+    try {
+      const synced = await syncOwnerP2pProfileForCredential(user, item);
+      profileSync = { nickname:synced?.profile?.nickname || item.ownerP2pNickname || '', userNo:synced?.profile?.userNo || item.ownerP2pUserNo || '', warningCount:Array.isArray(synced?.warnings) ? synced.warnings.length : 0 };
+    } catch (err) {
+      profileSyncError = cleanStr(err.message || err, 500);
+    }
+    if (item.ownerP2pNickname) item.name = item.ownerP2pNickname;
+    else if (item.ownerP2pUserNo) item.name = `P2P ${item.ownerP2pUserNo}`;
+    item.updatedAt = nowIso();
+    item.liveTestMessage = profileSyncError
+      ? `Binance connected. P2P username sync needs retry: ${profileSyncError}`
+      : `Binance connected${item.ownerP2pNickname ? ` as ${item.ownerP2pNickname}` : ''}. Validation and live check completed automatically.`;
+    logAudit(user, 'api_credential_created', 'apiCredential', item.id, {
+      name:item.name, apiKeyMasked:mask(item.apiKey), status:item.status, automaticValidation:true, automaticLiveCheck:true,
+      dryRun:sanitizedBinanceResult(dryRun), liveResult:sanitizedBinanceResult(liveResult), paymentMethodSync, profileSync, profileSyncError
+    });
     saveDb();
-    return sendJson(res, 201, { id: item.id, apiKeyMasked: mask(item.apiKey), status: item.status }, {}, req);
+    return sendJson(res, 201, {
+      id:item.id, displayName:binanceCredentialDisplayName(item) || item.name, p2pUsername:item.ownerP2pNickname || '', apiKeyMasked:mask(item.apiKey), status:item.status, saved:true,
+      message:item.liveTestMessage, paymentMethodSync, profileSync, profileSyncError
+    }, {}, req);
   }
   return sendJson(res, 405, { error: 'Method not allowed' }, {}, req);
 }
@@ -17559,6 +17665,17 @@ async function handleCredentialById(req, res, parts) {
   const id = Number(parts[2]);
   const item = db.apiCredentials.find(c => c.id === id);
   if (!item) return sendJson(res, 404, { error: 'Credential not found' }, {}, req);
+  if (req.method === 'PATCH' && parts[3] === 'release-verification') {
+    const body = await readBody(req);
+    try {
+      const summary = applyCredentialReleaseVerificationSettings(user, item, body);
+      logAudit(user, 'binance_release_verification_settings_updated', 'apiCredential', item.id, { profile:summary });
+      saveDb();
+      return sendJson(res, 200, { ok:true, policy:releaseVerificationPolicyForCredential(item, user), message:'Release Verification settings saved for this Binance account.' }, {}, req);
+    } catch (err) {
+      return sendJson(res, err.statusCode || 422, { error:err.message || 'Release Verification settings could not be saved.' }, {}, req);
+    }
+  }
   if (req.method === 'POST' && parts[3] === 'disable') {
     item.disabled = true;
     item.status = 'disabled';
@@ -20361,16 +20478,32 @@ async function completeAction(req, res, user, order) {
     binanceAction = await performLiveBinanceFinalAction(user, order, action, actionBody);
   } catch (err) {
     const safeFailureMessage = cleanStr(sanitizeErrorText(err), 1200);
+    const rawRequirements = err.releaseRequirements || null;
+    const isReleaseVerificationChallenge = ['release','quick_release'].includes(action) && rawRequirements?.hasSpecificRequirement === true;
+    const publicRequirements = rawRequirements ? {
+      fields:Array.isArray(rawRequirements.fields) ? rawRequirements.fields.map(field => ({ name:cleanStr(field.name || '', 80), label:cleanStr(field.label || field.name || '', 160), placeholder:cleanStr(field.placeholder || 'Required by Binance', 220), type:cleanStr(field.type || 'text', 30), autocomplete:cleanStr(field.autocomplete || 'one-time-code', 80) })) : [],
+      hidden:rawRequirements.hidden && typeof rawRequirements.hidden === 'object' ? Object.fromEntries(Object.entries(rawRequirements.hidden).filter(([key]) => ['authType','confirmPaidType'].includes(key)).map(([key,value]) => [key, cleanStr(value || '', 40)])) : {},
+      hasSpecificRequirement:rawRequirements.hasSpecificRequirement === true
+    } : null;
     order.lastFinalActionFailure = {
       action,
       at: nowIso(),
-      message: safeFailureMessage,
-      releaseRequirements: err.releaseRequirements || null
+      message: isReleaseVerificationChallenge ? 'Binance needs extra verification.' : safeFailureMessage,
+      releaseRequirements: publicRequirements
     };
     order.updatedAt = nowIso();
-    logAudit(user, 'binance_live_action_failed', 'order', order.id, { action, beforeStatus, privilegedDirectDecision, approvalBypassed: privilegedDirectDecision && issues.length > 0, issues, error: safeFailureMessage, releaseRequirements: err.releaseRequirements || null, apiMode: db.settings.apiMode, binanceAction });
+    logAudit(user, 'binance_live_action_failed', 'order', order.id, { action, beforeStatus, privilegedDirectDecision, approvalBypassed: privilegedDirectDecision && issues.length > 0, issues, error: safeFailureMessage, releaseRequirements: rawRequirements || null, apiMode: db.settings.apiMode, binanceAction, verificationChallenge:isReleaseVerificationChallenge });
     saveDb();
-    return sendJson(res, 502, { error: 'Binance live action failed: ' + safeFailureMessage, releaseRequirements: err.releaseRequirements || null, order: fullOrderView(order, user) }, {}, req);
+    if (isReleaseVerificationChallenge) {
+      return sendJson(res, 428, {
+        error:'Binance needs extra verification.',
+        verificationRequired:true,
+        releaseRequirements:publicRequirements,
+        releaseVerificationPolicy:releaseVerificationPolicyForCredential(binanceCredentialById(order.credentialId), user),
+        order:fullOrderView(order, user)
+      }, {}, req);
+    }
+    return sendJson(res, 502, { error: 'Binance live action failed. Check the verification method or Binance account status and try again.', order: fullOrderView(order, user) }, {}, req);
   }
   delete order.lastFinalActionFailure;
   if (localVerification.tokenHash) finalActionVerificationTokens.delete(localVerification.tokenHash);
@@ -22324,41 +22457,18 @@ async function handleSettings(req, res) {
       if (!Array.isArray(body.binanceReleaseVerificationProfiles)) return sendJson(res, 422, { error: 'binanceReleaseVerificationProfiles must be an array.' }, {}, req);
       const seenCredentialIds = new Set();
       const summaries = [];
-      for (const raw of body.binanceReleaseVerificationProfiles.slice(0, 100)) {
-        if (!raw || typeof raw !== 'object') continue;
-        const credentialId = Number(raw.credentialId || 0);
-        if (!credentialId || seenCredentialIds.has(credentialId)) continue;
-        seenCredentialIds.add(credentialId);
-        const credential = binanceCredentialById(credentialId);
-        if (!credential) return sendJson(res, 422, { error: `Binance account ${credentialId} was not found.` }, {}, req);
-        normalizeCredentialReleaseVerification(credential);
-        const method = normalizeBinanceReleaseVerificationMethod(raw.binanceMethod ?? raw.releaseVerificationMethod ?? credential.releaseVerificationMethod);
-        const localEnabled = raw.localVerificationEnabled === undefined ? credential.releaseLocalVerificationEnabled === true : raw.localVerificationEnabled === true;
-        const primary = normalizeLocalReleaseVerificationMethod(raw.localPrimary ?? credential.releaseLocalPrimary, 'USER_PASSWORD');
-        const secondary = normalizeLocalReleaseVerificationMethod(raw.localSecondary ?? credential.releaseLocalSecondary, 'NONE');
-        if (primary === 'NONE' && localEnabled) return sendJson(res, 422, { error: `${binanceCredentialLabel(credential)}: Primary P2PFlow verification cannot be None while local verification is enabled.` }, {}, req);
-        if (secondary !== 'NONE' && secondary === primary) return sendJson(res, 422, { error: `${binanceCredentialLabel(credential)}: Primary and Secondary P2PFlow verification must be different.` }, {}, req);
-        const autoFundPassword = raw.autoFundPassword === undefined ? credential.releaseAutoFundPassword === true : raw.autoFundPassword === true;
-        let nextFundPassword = String(credential.releaseFundPassword || '');
-        const wantsSecretChange = raw.clearFundPassword === true || (raw.fundPassword !== undefined && String(raw.fundPassword) !== '');
-        if (wantsSecretChange && !userHasPermission(user, 'credentials.manage')) return sendJson(res, 403, { error: 'Only a user with credentials.manage permission can save or clear a Binance Fund Transfer Password.' }, {}, req);
-        if (raw.clearFundPassword === true) nextFundPassword = '';
-        else if (raw.fundPassword !== undefined && String(raw.fundPassword) !== '') {
-          const incoming = String(raw.fundPassword);
-          if (incoming.length < 1 || incoming.length > 180) return sendJson(res, 422, { error: `${binanceCredentialLabel(credential)}: Fund Transfer Password must be 1-180 characters.` }, {}, req);
-          nextFundPassword = incoming;
+      try {
+        for (const raw of body.binanceReleaseVerificationProfiles.slice(0, 100)) {
+          if (!raw || typeof raw !== 'object') continue;
+          const credentialId = Number(raw.credentialId || 0);
+          if (!credentialId || seenCredentialIds.has(credentialId)) continue;
+          seenCredentialIds.add(credentialId);
+          const credential = binanceCredentialById(credentialId);
+          if (!credential) throw Object.assign(new Error(`Binance account ${credentialId} was not found.`), { statusCode:422 });
+          summaries.push(applyCredentialReleaseVerificationSettings(user, credential, raw));
         }
-        if (autoFundPassword && method !== 'FUND_PWD') return sendJson(res, 422, { error: `${binanceCredentialLabel(credential)}: Auto-use Fund Transfer Password is only available when Fund Transfer Password is the selected Binance verification method.` }, {}, req);
-        if (autoFundPassword && !localEnabled) return sendJson(res, 422, { error: `${binanceCredentialLabel(credential)}: Enable P2PFlow verification before enabling automatic Fund Transfer Password use.` }, {}, req);
-        if (autoFundPassword && !nextFundPassword) return sendJson(res, 422, { error: `${binanceCredentialLabel(credential)}: Save the Fund Transfer Password before enabling automatic use.` }, {}, req);
-        credential.releaseVerificationMethod = method;
-        credential.releaseLocalVerificationEnabled = localEnabled;
-        credential.releaseLocalPrimary = primary;
-        credential.releaseLocalSecondary = secondary;
-        credential.releaseAutoFundPassword = autoFundPassword;
-        credential.releaseFundPassword = nextFundPassword;
-        credential.releaseVerificationUpdatedAt = nowIso();
-        summaries.push({ credentialId, method, localEnabled, primary, secondary, autoFundPassword, fundPasswordConfigured:Boolean(nextFundPassword) });
+      } catch (err) {
+        return sendJson(res, err.statusCode || 422, { error: err.message || 'Release verification settings could not be saved.' }, {}, req);
       }
       if (summaries.length) logAudit(user, 'binance_release_verification_settings_updated', 'settings', 1, { profiles:summaries });
     }

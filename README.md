@@ -27,27 +27,29 @@ Updater code এবং database আলাদা রাখে। Update install-�
 
 ## Version
 
-Internal SemVer: `1.5.29`
+Internal SemVer: `1.5.30`
 UI: `1.5`
 Database schema: `35`
 
 Normal next version: `SET_NEXT_VERSION.bat` -> `1.6.0`  
-Hotfix: `SET_HOTFIX_VERSION.bat` -> `1.5.30`
+Hotfix: `SET_HOTFIX_VERSION.bat` -> `1.5.31`
 
 ## Database history safety
 
 P2PFlow keeps authoritative business/application data in MariaDB/MySQL/PostgreSQL. State payloads are compressed with Brotli before AES-256-GCM encryption, proofs/chat media are stored as encrypted database objects, and identical newly uploaded proof/media bytes use content-addressed object IDs to avoid duplicate blobs. The default is 3 retained recovery checkpoints with a 6-hour archive interval and 5 retained automatic database backups. Older uncompressed state/history/backup payloads are upgraded incrementally after startup. Health Check reports each P2PFlow database table's allocated size/row count, current encrypted state payload size, compression saving percentage, and proof/chat object usage so database-MB growth can be inspected without terminal access. `shared/`, `.p2pflow`, `.env`, `releases/` and temporary restart/update markers are operational bootstrap/update metadata only; they are not an application/business-data store. The application runtime itself does not write proof, chat, audit, order, ledger, notification or recovery-code data to local files.
 
-## v1.5.29 Configurable Release Verification & P2PFlow Step-up
+## v1.5.30 Dedicated Release Verification & Per-API Verification Settings
 
-- Settings-এ প্রতি Binance API account-এর জন্য Release verification profile আছে: Binance Auto, FIDO2/Fingerprint, Fund Transfer Password, Google Authenticator, SMS/Mobile OTP, Email OTP এবং YubiKey। Selected method P2PFlow কোন documented field পাঠাবে তা নির্ধারণ করে; Binance server-side policy এখনও acceptance/alternate challenge নির্ধারণ করতে পারে।
-- Optional P2PFlow step-up gate-এ Primary এবং Secondary method রাখা যায়: User Password, 6-digit Secret Code অথবা Email OTP। Primary fail হলে Change Verification System দিয়ে configured Secondary method ব্যবহার করা যায়।
-- Fund Transfer Password server-side save করে automatic use করা যায়, তবে `credentials.manage` permission, local P2PFlow verification এবং explicit FUND_PWD method প্রয়োজন। Saved secret browser/API policy response-এ ফেরত যায় না এবং Audit Log-এ password value লেখা হয় না।
-- Local verification challenge/token exact user + session + order + credential + action-এর সঙ্গে bound এবং 5 মিনিট valid। Successful Release-এ token invalidate হয়।
-- Supplied C2C SAPI v7.4-এ Voice/phone-call selectable authType documented নয়; unlisted server-side challenge-এর জন্য Binance Auto ব্যবহার করতে হবে। FIDO2 auth type documented হলেও WebAuthn assertion exchange supplied document-এ নেই, তাই application fabricated fingerprint assertion তৈরি করে না।
+- Release/Quick Release এখন Payment Split gate satisfied হলে পুরোনো final-action modal বাদ দিয়ে আলাদা device-responsive **Release Verification** screen খোলে। Split requirement OFF থাকলে সরাসরি এই screen-এ যায়; saved valid split থাকলেও split page আর পুনরায় খোলে না।
+- Binance Auto mode-এ missing Google/SMS/etc. code response এখন structured verification challenge; raw `-9000` error user-facing panel-এ দেখানো হয় না। Auto challenge-এ **Binance needs extra verification.**, আর explicit configured method-এ **Release requires verification.** দেখানো হয়।
+- Google challenge-এর dedicated presentation **Authenticator App Verification**; SMS/Email/Fund Password/FIDO2/YubiKey method-ও নিজস্ব field/presentation ব্যবহার করে। Mobile-এ full-screen, desktop/tablet-এ centered responsive card।
+- Release Verification UI System Settings থেকে সরিয়ে **প্রতি API Credentials row-এর gear icon popup**-এ নেওয়া হয়েছে। Binance method, P2PFlow Primary/Secondary step-up এবং safe Fund Password auto-use credential অনুযায়ী আলাদা থাকে।
+- নতুন Binance API `Connect & Save` করলে save-এর আগেই automatic signature/format validation ও live Binance C2C check হয়; আলাদা Validate/Live Check row button নেই। Successful P2P profile sync-এর পরে P2P username credential identity হিসেবে ব্যবহৃত হয়।
+- API credential row actionগুলো compact icon-based: Release Verification settings, enable/disable এবং delete।
+- Saved Fund Transfer Password browser/API policy response-এ ফেরত যায় না; local P2PFlow verification ছাড়া auto-use করা যায় না।
 - Database schema `35`; নতুন migration প্রয়োজন নেই।
 
-বিস্তারিত: `P2PFlow_v1.5.29_RELEASE_NOTES_BN.md`, `P2PFlow_v1.5.29_MANUAL_UPDATE_BN.md` এবং `P2PFlow_v1.5.29_LAUNCH_CHECKLIST_BN.md`।
+বিস্তারিত: `P2PFlow_v1.5.30_RELEASE_NOTES_BN.md`, `P2PFlow_v1.5.30_MANUAL_UPDATE_BN.md` এবং `P2PFlow_v1.5.30_LAUNCH_CHECKLIST_BN.md`।
 
 ## v1.5.28 Saved Split Direct Final Action & Verification Retry
 

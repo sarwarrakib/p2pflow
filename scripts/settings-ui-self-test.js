@@ -11,8 +11,8 @@ const pkg = JSON.parse(read('package.json'));
 const fail = message => { throw new Error(`Settings UI self-test failed: ${message}`); };
 const assert = (value, message) => { if (!value) fail(message); };
 
-assert(pkg.version === '1.5.29', `expected v1.5.29, got ${pkg.version}`);
-for (const section of ['general','binance','release-verification','security','email','notifications','activity']) {
+assert(pkg.version === '1.5.30', `expected v1.5.30, got ${pkg.version}`);
+for (const section of ['general','binance','security','email','notifications','activity']) {
   assert(settings.includes(`data-settings-section=\"${section}\"`), `navigation section missing: ${section}`);
   assert(settings.includes(`p2pflowSettingsPanel('${section}'`), `panel missing: ${section}`);
 }
@@ -28,12 +28,6 @@ for (const marker of [
   'Automatic backups',
   'Low-level mail tests',
   'p2pflowActivateSettingsSection',
-  'P2PFLOW_BINANCE_RELEASE_VERIFICATION_METHODS',
-  'P2PFLOW_LOCAL_RELEASE_VERIFICATION_METHODS',
-  'Automatic Fund Transfer Password',
-  'Primary P2PFlow verification',
-  'Secondary P2PFlow verification',
-  'credentials.manage permission'
 ]) assert(settings.includes(marker), `settings marker missing: ${marker}`);
 
 assert((settings.match(/id=\"settingsMailTestRecipient\"/g) || []).length === 1, 'Mail Test Recipient must appear only once.');
@@ -57,8 +51,8 @@ console.log(JSON.stringify({
   ok: true,
   version: pkg.version,
   categorizedSettings: true,
-  sections: 7,
-  releaseVerificationSettings: true,
+  sections: 6,
+  releaseVerificationMovedToCredentials: true,
   compactFailoverCards: true,
   reusableBackupRouteComponent: true,
   responsive: true

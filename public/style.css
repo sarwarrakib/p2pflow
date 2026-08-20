@@ -5379,3 +5379,81 @@ tr:hover td{background:#fbfbfc}
   .final-action-local-actions{display:grid;grid-template-columns:1fr}
   .final-action-local-actions button{width:100%}
 }
+
+/* v1.5.30 dedicated responsive Binance release verification screen */
+.release-verification-backdrop{padding:20px;background:rgba(11,14,17,.64);place-items:center}
+.release-verification-modal{width:min(560px,100%);max-height:min(94dvh,860px);border-radius:24px;overflow:hidden;background:#fff}
+.release-verification-modal>.modal-head{display:none}
+.release-verification-modal>.modal-body{padding:0;overflow:auto;background:#fff}
+.release-verify-shell{min-height:min(760px,88dvh);display:flex;flex-direction:column;background:#fff;color:#111827}
+.release-verify-topbar{display:flex;align-items:center;justify-content:space-between;padding:20px 24px 4px}
+.release-verify-nav{width:44px;height:44px;display:grid;place-items:center;border:0;background:transparent;color:#111827;font-size:34px;line-height:1;padding:0;border-radius:50%}
+.release-verify-nav:hover{background:#f6f7f8}
+.release-verify-main{flex:1;padding:22px 34px 30px}
+.release-verify-status{display:inline-flex;align-items:center;min-height:28px;margin-bottom:10px;padding:5px 10px;border-radius:999px;background:#fff8db;color:#8a6200;font-size:12px;font-weight:850}
+.release-verify-main h2{margin:0;max-width:470px;font-size:40px;line-height:1.08;letter-spacing:-.035em;color:#0b0e11}
+.release-verify-subtitle{margin:24px 0 32px;max-width:470px;color:#70757d;font-size:18px;line-height:1.55}
+.release-verify-form{display:grid;gap:18px}
+.release-verify-field{display:grid;gap:10px}
+.release-verify-field>label{color:#6f737a;font-size:16px;font-weight:700}
+.release-verify-input-wrap{min-height:64px;display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;border:1px solid transparent;border-radius:14px;background:#f5f5f5;overflow:hidden;transition:border-color .15s,box-shadow .15s}
+.release-verify-input-wrap:focus-within{border-color:#f0b90b;box-shadow:0 0 0 3px rgba(240,185,11,.14)}
+.release-verify-input-wrap input{width:100%;height:64px;border:0!important;background:transparent!important;padding:0 16px!important;font-size:18px!important;letter-spacing:.04em;outline:0!important;box-shadow:none!important}
+.release-verify-paste{height:48px;margin-right:8px;padding:0 12px;border:0;background:transparent;color:#c99700;font-size:16px;font-weight:800}
+.release-verify-submit{width:100%;min-height:58px;margin-top:4px;border:0!important;border-radius:12px!important;background:#fcd535!important;color:#0b0e11!important;font-size:18px!important;font-weight:850!important;box-shadow:none!important}
+.release-verify-submit:hover{background:#f0c929!important}
+.release-verify-submit:disabled{opacity:.58}
+.release-verify-links{display:grid;gap:14px;margin-top:26px;color:#b48700;font-size:14px;font-weight:700}
+.release-verify-footer{display:flex;align-items:center;justify-content:center;gap:9px;padding:24px;color:#8b8f96;font-size:14px}
+.release-auto-check,.release-auto-secret,.release-local-verified{display:flex;gap:12px;align-items:flex-start;padding:15px 16px;border:1px solid #eceef0;border-radius:14px;background:#fafafa}
+.release-auto-check{display:grid}
+.release-auto-check b,.release-auto-secret b,.release-local-verified b{display:block;color:#111827;font-size:14px}
+.release-auto-check span,.release-auto-secret small,.release-local-verified small{display:block;margin-top:5px;color:#727780;font-size:12px;line-height:1.55}
+.release-auto-secret>span,.release-local-verified>span{width:28px;height:28px;display:grid;place-items:center;border-radius:50%;background:#e9f9ef;color:#0a8f47;font-weight:900;flex:0 0 auto}
+.release-verification-modal .final-action-local-verify{margin:0;padding:16px;border:1px solid #eceef0;border-radius:14px;background:#fff}
+.release-verification-modal .final-action-local-verify-head{align-items:flex-start}
+.release-verification-modal .final-action-local-input input{min-height:54px;border-radius:12px;background:#f5f5f5}
+.release-verification-modal .final-action-local-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+.release-verification-modal .final-action-local-actions button{min-height:40px;padding:0 13px;border-radius:10px}
+
+/* v1.5.30 API credential compact account/actions */
+.credentials-page{max-width:1280px;margin:0 auto}
+.credentials-card{overflow-x:auto}
+.credential-account-name{display:grid;gap:4px;min-width:160px}
+.credential-account-name b{font-size:14px;color:#111827}
+.credential-account-name small{color:#7b8290;font-size:10px;line-height:1.35}
+.credential-icon-actions{display:flex;align-items:center;gap:7px;white-space:nowrap}
+.credential-icon-btn{width:36px!important;height:36px!important;min-width:36px!important;min-height:36px!important;padding:0!important;display:inline-grid!important;place-items:center;border:1px solid #e4e7ec!important;border-radius:10px!important;background:#fff!important;color:#344054!important;box-shadow:none!important}
+.credential-icon-btn:hover{background:#f7f8fa!important;border-color:#d0d5dd!important}
+.credential-icon-btn.danger{color:#b42318!important;background:#fff!important;border-color:#fecdca!important}
+.credential-icon-btn svg{width:18px;height:18px;fill:currentColor}
+.credential-release-modal{width:min(780px,100%)}
+.credential-release-form{display:grid;gap:16px}
+.credential-release-savebar{position:sticky;bottom:-18px;margin:0 -18px -18px;padding:14px 18px;background:#fff;border-top:1px solid #eceef0}
+.credential-release-savebar button{width:100%}
+
+@media(max-width:720px){
+  .release-verification-backdrop{padding:0;place-items:stretch}
+  .release-verification-modal{width:100%;height:100dvh;max-height:100dvh;border-radius:0}
+  .release-verification-modal>.modal-body{height:100dvh}
+  .release-verify-shell{min-height:100dvh}
+  .release-verify-topbar{padding:18px 16px 0}
+  .release-verify-main{padding:24px 20px 22px}
+  .release-verify-main h2{font-size:36px}
+  .release-verify-subtitle{margin:22px 0 30px;font-size:17px}
+  .release-verify-input-wrap,.release-verify-input-wrap input{min-height:62px;height:62px}
+  .release-verify-submit{min-height:58px}
+  .release-verify-footer{padding:20px 16px calc(20px + env(safe-area-inset-bottom))}
+  .credential-icon-actions{gap:5px}
+  .credential-icon-btn{width:34px!important;height:34px!important;min-width:34px!important;min-height:34px!important}
+  .credential-release-modal{width:100%;height:100dvh;max-height:100dvh;border-radius:0}
+}
+
+@media(max-width:420px){
+  .release-verify-main{padding-left:16px;padding-right:16px}
+  .release-verify-main h2{font-size:32px}
+  .release-verify-subtitle{font-size:16px}
+  .release-verify-status{font-size:11px}
+  .release-verify-field>label{font-size:15px}
+  .release-verify-input-wrap input{font-size:17px!important}
+}
