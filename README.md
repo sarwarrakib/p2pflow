@@ -27,28 +27,30 @@ Updater code এবং database আলাদা রাখে। Update install-�
 
 ## Version
 
-Internal SemVer: `1.5.34`
+Internal SemVer: `1.5.35`
 UI: `1.5`
-Database schema: `35`
+Database schema: `36`
 
 Normal next version: `SET_NEXT_VERSION.bat` -> `1.6.0`  
-Hotfix: `SET_HOTFIX_VERSION.bat` -> `1.5.35`
+Hotfix: `SET_HOTFIX_VERSION.bat` -> `1.5.36`
 
 ## Database history safety
 
 P2PFlow keeps authoritative business/application data in MariaDB/MySQL/PostgreSQL. State payloads are compressed with Brotli before AES-256-GCM encryption, proofs/chat media are stored as encrypted database objects, and identical newly uploaded proof/media bytes use content-addressed object IDs to avoid duplicate blobs. The default is 3 retained recovery checkpoints with a 6-hour archive interval and 5 retained automatic database backups. Older uncompressed state/history/backup payloads are upgraded incrementally after startup. Health Check reports each P2PFlow database table's allocated size/row count, current encrypted state payload size, compression saving percentage, and proof/chat object usage so database-MB growth can be inspected without terminal access. `shared/`, `.p2pflow`, `.env`, `releases/` and temporary restart/update markers are operational bootstrap/update metadata only; they are not an application/business-data store. The application runtime itself does not write proof, chat, audit, order, ledger, notification or recovery-code data to local files.
 
-## v1.5.34 Agent Permissions, Live Orders & Order-only Assignment
+## v1.5.35 Permission-Authoritative Roles & Advertisement Rate Guard
 
-- Agent/User Role select করলে role template-এর Global Permissions এবং enabled Binance account-গুলোর applicable account-level permissions defaultভাবে auto-tick হয়; Save-এর আগে individual grant untick করা যায়।
-- `binance.sync` একই credential-এর live-order visibility দেয়, তাই Agent assigned এবং unassigned live order দেখতে পারে; অন্য credential isolation অক্ষত।
-- Live Order Agent-এর Work button hidden থাকায় পুরোনো hidden Work OFF state আর auto-assignment block করে না।
-- Settings-এ global **Payment Account capacity guard for Agent auto assignment** এবং User Edit-এ per-Agent **Use Payment Account calculation for auto assignment** option যোগ হয়েছে।
-- Order-only mode OFF/disabled করলে auto-assignment Payment Account existence, balance বা capacity-এর ওপর নির্ভর করবে না; routing, permissions, amount range ও max-active rules অবশ্যই থাকবে।
-- Accounting-enabled Agent-এর existing Capacity Guard, Payment Split, ledger, charge/commission এবং balance validation অক্ষত।
-- Database schema `35`; নতুন migration প্রয়োজন নেই।
+- Role name/template family is no longer runtime authority. Effective access comes only from the user/role's checked Global Permissions and exact Binance Account Permissions.
+- Selecting a User Role still copies that role template's permissions into the user form and auto-ticks matching permissions for enabled Binance accounts; every checkbox can then be reviewed before Save.
+- Page visibility, Live Orders, assignment, Payment Accounts, split actions, approvals, accounting scope and notification audiences no longer check Admin/Manager/Agent/Auditor names for authorization.
+- `binance.sync` still implies `orders.view` for the same exact Binance credential; it never grants another credential.
+- Schema 36 migration is permission-only too: legacy explicit account IDs are preserved, while broad legacy access is materialized across existing credentials only when the user actually has `credentials.manage` or `agents.manage`. Role names never create grants.
+- Advertisement Create/Edit now includes optional **Minimum Rate** and **Maximum Rate**. Blank/0 means no bound. P2PFlow rejects a manual ad price below Minimum Rate, above Maximum Rate, or an invalid min/max range.
+- Minimum/Maximum Rate are local P2PFlow safety bounds and are intentionally not sent as undocumented Binance payload fields. Binance synchronization preserves the locally configured bounds.
+- Existing Order-only assignment/payment-account capacity settings remain permission/routing driven and are not tied to an Agent role name.
+- Database schema `36`; additive migration runs automatically from schema 35.
 
-বিস্তারিত: `P2PFlow_v1.5.34_RELEASE_NOTES_BN.md`, `P2PFlow_v1.5.34_MANUAL_UPDATE_BN.md` এবং `P2PFlow_v1.5.34_LAUNCH_CHECKLIST_BN.md`.
+বিস্তারিত: `P2PFlow_v1.5.35_RELEASE_NOTES_BN.md`, `P2PFlow_v1.5.35_MANUAL_UPDATE_BN.md` এবং `P2PFlow_v1.5.35_LAUNCH_CHECKLIST_BN.md`.
 
 ## v1.5.33 Realtime UI Stability, Faster Orders & Chat Media
 
@@ -82,7 +84,7 @@ P2PFlow keeps authoritative business/application data in MariaDB/MySQL/PostgreSQ
 ## v1.5.27 Separate Wallet Rules, Fast Filters & Account-scoped Notifications
 
 - Personal/Merchant Payment Account-এ `Send Money Charge` এবং `Cash Out Charge` এখন সম্পূর্ণ আলাদা rule; দুইটির fixed/percentage/tier/manual rate ভিন্ন হতে পারে।
-- `Agent` হলো Payment Account-এর transaction behaviour; এটি আর login user-এর Agent role-এর সঙ্গে বাধ্যতামূলকভাবে বাঁধা নয়। Admin/Manager/অনুমোদিত Account User-এর অধীনেও Agent-type SIM রাখা যায়।
+- `Agent` হলো Payment Account-এর transaction behaviour; এটি আর login user-এর Agent role-এর সঙ্গে বাধ্যতামূলকভাবে বাঁধা নয়। প্রয়োজনীয় Payment Account permissions থাকা যেকোনো Account User-এর অধীনেও Agent-type SIM রাখা যায়।
 - Agent-type account-এ manual transaction শুধু `Received Money` এবং `Cash In`; UI-তেও শুধু Received Money Commission ও Cash In Commission rule দেখায়। Personal/Merchant-এর charge controls Agent form-এ দেখায় না।
 - Payment Account search এখন typing-এর সঙ্গে সঙ্গে instant filter করে; আলাদা Search button নেই। Account Type, Label ও Payment Method filter যোগ হয়েছে এবং row actions compact icon-based।
 - Orders/Ads-এ নির্দিষ্ট Binance account selected থাকলে current device-এ নতুন order/assignment/message-এর sound ও browser push শুধু সেই account-এর জন্য হয়। `All` selected থাকলে permitted সব account-এর notification আসে। Scope per-device push subscription-এ persist হয়।

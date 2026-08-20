@@ -44,7 +44,7 @@ loadEnv();
 applyP2PFlowEnvAliases(process.env);
 
 const APP_VERSION = String(packageInfo.version || '0.0.0');
-const APP_SCHEMA_VERSION = 35;
+const APP_SCHEMA_VERSION = 36;
 const APP_DATA_COMPATIBILITY_EPOCH = 1;
 const PORT = Number(process.env.PORT || 3000);
 const BIND_HOST = cleanEnv(process.env.P2PFLOW_BIND_HOST || process.env.CRM_BIND_HOST || '', '');
@@ -204,9 +204,9 @@ const BINANCE_ACCOUNT_PERMISSION_IMPLICATIONS = Object.freeze({
 });
 
 // Binance operations are scoped twice: a user needs the normal permission and
-// an explicit grant for the exact Binance API account. Admin remains the only
-// implicit all-account role. This prevents a user who was granted Account A
-// from seeing or mutating orders/ads that belong to Account B.
+// an explicit grant for the exact Binance API account. Role names never grant
+// implicit account access; only the stored global permissions + exact account
+// grants are authoritative. This prevents a role label from bypassing RBAC.
 const NOTIFICATION_CATEGORY_CATALOG = Object.freeze([
   { id: 'orders', label: 'Orders', description: 'Order creation, status, completion and risk alerts.' },
   { id: 'assignments', label: 'Assignments', description: 'Order assignment, reassignment and acceptance alerts.' },
@@ -368,8 +368,24 @@ function p2pProfilePermissionsForRole(role) {
   return [];
 }
 
+function userCanOverrideOrderAssignment(user) {
+  return !!user && (userHasPermission(user, 'orders.assign') || userHasPermission(user, 'approvals.manage'));
+}
+
+function userIsAssignmentScoped(user) {
+  return !!user && Number(user.agentId || 0) > 0 && userHasPermission(user, 'orders.view') && !userCanOverrideOrderAssignment(user);
+}
+
+function userIsAccountingScoped(user) {
+  return !!user && Number(user.agentId || 0) > 0 && userHasPermission(user, 'accounting.view') && !userHasPermission(user, 'accounting.manage') && !userHasPermission(user, 'accounting.close');
+}
+
+function userReceivesManagerAudience(user) {
+  return !!user && (userHasPermission(user, 'orders.assign') || userHasPermission(user, 'approvals.manage') || userHasPermission(user, 'agents.manage') || userHasPermission(user, 'settings.manage'));
+}
+
 function isPrivilegedOrderOperator(user) {
-  return !!user && ['admin', 'manager'].includes(user.role);
+  return userCanOverrideOrderAssignment(user);
 }
 
 function normalizePermissions(value, role) {
@@ -398,14 +414,12 @@ function permissionsFromRoleProfile(roleProfileId, fallbackRole, target = db) {
 
 function userHasPermission(user, permission) {
   if (!user) return false;
-  if (user.role === 'admin') return true;
-  const permissions = normalizePermissions(user.permissions, user.role);
+  const permissions = normalizePermissions(Array.isArray(user.permissions) ? user.permissions : [], user.role);
   if (permissions.includes(permission)) return true;
   return Object.entries(PERMISSION_IMPLICATIONS).some(([granted, implied]) => permissions.includes(granted) && implied.includes(permission));
 }
 
 function binanceAccountGlobalPermissionSet(user = {}) {
-  if (String(user.role || '').toLowerCase() === 'admin') return new Set(BINANCE_ACCOUNT_PERMISSION_CATALOG);
   return new Set(BINANCE_ACCOUNT_PERMISSION_CATALOG.filter(permission => userHasPermission(user, permission)));
 }
 
@@ -433,32 +447,13 @@ function normalizeBinanceCredentialPermissions(value = [], user = {}, target = d
     .sort((a, b) => a.credentialId - b.credentialId);
 }
 
-function legacyBinanceCredentialPermissions(user = {}, target = db) {
-  if (String(user.role || '').toLowerCase() === 'admin') return [];
-  const credentials = Array.isArray(target?.apiCredentials) ? target.apiCredentials : [];
-  const allIds = credentials.map(item => Number(item.id)).filter(Boolean);
-  let ids = Array.isArray(user.allowedP2pCredentialIds) ? user.allowedP2pCredentialIds.map(Number).filter(Boolean) : [];
-  // Before account-scoped RBAC, Manager implicitly operated the single active
-  // credential. Preserve that access on migration by granting every existing
-  // credential, while all new grants remain explicit.
-  if (!ids.length && String(user.role || '').toLowerCase() === 'manager') ids = allIds;
-  ids = Array.from(new Set(ids.filter(id => allIds.includes(id))));
-  const permissions = BINANCE_ACCOUNT_PERMISSION_CATALOG.filter(permission => binanceAccountGlobalPermissionSet(user).has(permission));
-  return ids.map(credentialId => ({ credentialId, permissions: permissions.slice() }));
-}
-
 function binanceCredentialPermissionRowsForUser(user = {}, target = db) {
-  const credentials = Array.isArray(target?.apiCredentials) ? target.apiCredentials : [];
-  if (String(user.role || '').toLowerCase() === 'admin') {
-    return credentials.map(item => ({ credentialId: Number(item.id), permissions: BINANCE_ACCOUNT_PERMISSION_CATALOG.slice() }));
-  }
   return normalizeBinanceCredentialPermissions(user.binanceCredentialPermissions || [], user, target);
 }
 
 function userHasBinanceCredentialPermission(user, credentialId, permission, target = db) {
   if (!user || !credentialId || !BINANCE_ACCOUNT_PERMISSION_CATALOG.includes(permission)) return false;
   if (!userHasPermission(user, permission)) return false;
-  if (String(user.role || '').toLowerCase() === 'admin') return true;
   const row = binanceCredentialPermissionRowsForUser(user, target).find(item => Number(item.credentialId) === Number(credentialId));
   if (!row) return false;
   if (row.permissions.includes(permission)) return true;
@@ -571,7 +566,6 @@ function validateGrantedBinanceCredentialPermissions(actor, targetUser, requeste
 
 function validateGrantedGlobalPermissions(actor, requestedPermissions, role) {
   const normalized = normalizePermissions(requestedPermissions, role);
-  if (String(actor?.role || '').toLowerCase() === 'admin') return normalized;
   const denied = normalized.filter(permission => !userHasPermission(actor, permission));
   if (denied.length) {
     const error = new Error(`You cannot grant permissions you do not have: ${denied.join(', ')}`);
@@ -1382,6 +1376,10 @@ function migrateDb(target) {
     if (!ad.createdAt) ad.createdAt = nowIso();
     if (ad.archived === undefined) ad.archived = false;
     if (ad.deletedAt === undefined) ad.deletedAt = null;
+    if (ad.minRate === undefined) ad.minRate = 0;
+    if (ad.maxRate === undefined) ad.maxRate = 0;
+    ad.minRate = positiveNum(ad.minRate || 0);
+    ad.maxRate = positiveNum(ad.maxRate || 0);
   });
   // v1.0.124 / schema 17: business accounting, manual income/expense/capital
   // entries, Binance Funding Wallet snapshots and immutable daily closes.
@@ -1755,8 +1753,28 @@ function migrateDb(target) {
     u.permissions = normalizePermissions(storedPermissions === null ? (profile ? profile.permissions : permissionsFromRoleProfile(u.roleProfileId, u.role, target)) : storedPermissions, u.role);
     if (!Array.isArray(u.allowedP2pCredentialIds)) u.allowedP2pCredentialIds = [];
     u.allowedP2pCredentialIds = Array.from(new Set(u.allowedP2pCredentialIds.map(Number).filter(id => target.apiCredentials.some(c => Number(c.id) === id))));
-    if (!Array.isArray(u.binanceCredentialPermissions)) {
-      u.binanceCredentialPermissions = legacyBinanceCredentialPermissions(u, target);
+
+    // Schema 36: authorization is permission-only, including migration.
+    // Preserve explicit legacy account IDs. For older broad operators that had
+    // no per-account rows, materialize all existing credentials only when the
+    // user actually holds an account-administration permission. Role labels are
+    // intentionally ignored even during this one-time compatibility step.
+    if (previousSchemaVersion < 36) {
+      const allCredentialIds = (target.apiCredentials || []).map(c => Number(c.id)).filter(Boolean);
+      const currentRows = Array.isArray(u.binanceCredentialPermissions) ? u.binanceCredentialPermissions : [];
+      const rowMap = new Map(currentRows.map(row => [Number(row?.credentialId || 0), new Set(Array.isArray(row?.permissions) ? row.permissions : [])]).filter(([id]) => id));
+      let legacyIds = u.allowedP2pCredentialIds.slice();
+      const hasBroadLegacyAccountAuthority = userHasPermission(u, 'credentials.manage') || userHasPermission(u, 'agents.manage');
+      if (!legacyIds.length && rowMap.size === 0 && hasBroadLegacyAccountAuthority) legacyIds = allCredentialIds.slice();
+      const globalAccountPermissions = [...binanceAccountGlobalPermissionSet(u)];
+      for (const credentialId of legacyIds) {
+        if (!allCredentialIds.includes(Number(credentialId))) continue;
+        if (!rowMap.has(Number(credentialId))) rowMap.set(Number(credentialId), new Set());
+        globalAccountPermissions.forEach(permission => rowMap.get(Number(credentialId)).add(permission));
+      }
+      u.binanceCredentialPermissions = [...rowMap.entries()].map(([credentialId, permissions]) => ({ credentialId, permissions:[...permissions] }));
+    } else if (!Array.isArray(u.binanceCredentialPermissions)) {
+      u.binanceCredentialPermissions = [];
     }
     u.binanceCredentialPermissions = normalizeBinanceCredentialPermissions(u.binanceCredentialPermissions, u, target);
     syncLegacyP2pCredentialIds(u, target);
@@ -1833,10 +1851,12 @@ function migrateDb(target) {
     a.includeProfitInCompanyTotals = a.includeProfitInCompanyTotals !== false;
     if (!a.status || ['online','offline','busy'].includes(String(a.status).toLowerCase())) a.status = 'dynamic';
     const linkedUser = target.users.find(u => Number(u.id) === Number(a.userId));
-    if (linkedUser && linkedUser.role === 'agent' && previousSchemaVersion < 33) linkedUser.workAvailable = a.allowNewOrders !== false;
-    if (linkedUser && linkedUser.role !== 'agent') {
-      a.allowNewOrders = false;
-      a.canRelease = false;
+    if (linkedUser && previousSchemaVersion < 33 && linkedUser.workAvailable === undefined) linkedUser.workAvailable = a.allowNewOrders !== false;
+    if (linkedUser) {
+      // Role labels never disable order work. Keep the legacy agent flags in
+      // sync with the linked user's actual permissions/work state only.
+      a.allowNewOrders = linkedUser.workAvailable !== false;
+      a.canRelease = userHasPermission(linkedUser, 'orders.final_action');
     }
   });
   target.routing.forEach(r => {
@@ -2134,15 +2154,11 @@ function paymentAccountOwnedByUser(accountItem, user) {
 }
 
 function canManageAllPaymentAccounts(user) {
-  if (!user) return false;
-  if (['admin', 'manager'].includes(String(user.role || '').toLowerCase())) return true;
-  if (String(user.role || '').toLowerCase() === 'agent') return false;
-  return userHasPermission(user, 'accounts.manage_all');
+  return !!user && userHasPermission(user, 'accounts.manage_all');
 }
 
 function canManagePaymentAccount(user, accountItem) {
   if (!user || !accountItem || paymentAccountDeleted(accountItem)) return false;
-  if (['admin', 'manager'].includes(String(user.role || '').toLowerCase())) return true;
   if (!userHasPermission(user, 'accounts.manage')) return false;
   if (canManageAllPaymentAccounts(user)) return true;
   return paymentAccountOwnedByUser(accountItem, user);
@@ -2164,7 +2180,7 @@ function isAssignablePaymentAgentId(agentId) {
   const agent = db.agents.find(item => Number(item.id) === Number(agentId));
   if (!agent) return false;
   const linkedUser = db.users.find(user => Number(user.id) === Number(agent.userId));
-  return !linkedUser || linkedUser.role === 'agent';
+  return !linkedUser || (linkedUser.enabled !== false && userHasPermission(linkedUser, 'accounts.use'));
 }
 
 function normalizeAllowedAgentIds(value) {
@@ -2176,7 +2192,6 @@ function normalizeAllowedAgentIds(value) {
 
 function canUsePaymentAccount(user, accountItem) {
   if (!user || !accountItem || paymentAccountDeleted(accountItem)) return false;
-  if (['admin', 'manager'].includes(String(user.role || '').toLowerCase())) return true;
   if (!userHasPermission(user, 'accounts.use')) return false;
   if (paymentAccountOwnedByUser(accountItem, user)) return true;
   return Number(user.agentId || 0) > 0 && accountAssignedToAgent(accountItem, user.agentId);
@@ -2893,7 +2908,7 @@ function viewerOrderSummary(order, user = null, context = {}) {
     assignmentRole: '',
     assignmentStatus: ''
   };
-  if (!user || user.role !== 'agent' || !user.agentId) return base;
+  if (!user || !userIsAssignmentScoped(user) || !user.agentId) return base;
   const assignment = assignments.find(a => Number(a.agentId) === Number(user.agentId) && a.status !== 'left');
   if (!assignment) return base;
   const assignedAmount = num(assignment.assignedAmount || 0);
@@ -3614,8 +3629,7 @@ function assignmentAccountingGuardEnabledForAgent(agent) {
 function agentAvailableForAssignment(agent) {
   if (!agent) return false;
   const linkedUser = db.users.find(u => Number(u.id) === Number(agent.userId) && u.enabled);
-  if (!linkedUser || linkedUser.role !== 'agent') return false;
-  if (!userHasPermission(linkedUser, 'orders.view')) return false;
+  if (!linkedUser || Number(linkedUser.agentId || 0) !== Number(agent.id) || !userHasPermission(linkedUser, 'orders.view')) return false;
   // Live-order Agents do not have a Work toggle. Once account-level live access
   // is granted, a stale hidden Work OFF value must not silently block assignment.
   if (userHasLiveOrderAccess(linkedUser)) return true;
@@ -5665,42 +5679,32 @@ function orderLockView(lock) {
   };
 }
 
-function can(user, roles) { return roles.includes(user.role); }
 function canAccessOrder(user, order) {
-  if (!order || !user) return false;
-  if (!userHasPermission(user, 'orders.view')) return false;
+  if (!order || !user || !userHasPermission(user, 'orders.view')) return false;
   if (order.orderSource !== 'offline') {
     const credentialId = Number(order.credentialId || 0);
     if (!credentialId || !userHasBinanceCredentialPermission(user, credentialId, 'orders.view')) return false;
   }
-  if (user.role === 'agent') {
-    const assigned = db.orderAgentAssignments.some(a => a.orderId === order.id && a.agentId === user.agentId && a.status !== 'left');
-    if (assigned) return true;
-    // Account-level Live Order permission is a real visibility grant: an Agent
-    // may inspect live orders for that Binance account before assignment.
-    if (order.orderSource !== 'offline' && Number(order.credentialId || 0)) {
-      return userHasBinanceCredentialPermission(user, order.credentialId, 'binance.sync');
-    }
-    return false;
-  }
-  if (['admin', 'manager', 'auditor'].includes(user.role)) return true;
-  return false;
+  if (!userIsAssignmentScoped(user)) return true;
+  const assigned = db.orderAgentAssignments.some(a => Number(a.orderId) === Number(order.id) && Number(a.agentId) === Number(user.agentId) && a.status !== 'left');
+  if (assigned) return true;
+  return order.orderSource !== 'offline' && Number(order.credentialId || 0) > 0 && userHasBinanceCredentialPermission(user, order.credentialId, 'binance.sync');
 }
 
 function ordersAccessibleToUser(user) {
   if (!user || !userHasPermission(user, 'orders.view')) return [];
-  const assignedOrderIds = user.role === 'agent'
+  const assignedOrderIds = userIsAssignmentScoped(user)
     ? new Set((db.orderAgentAssignments || []).filter(assignment => Number(assignment.agentId) === Number(user.agentId || 0) && assignment.status !== 'left').map(assignment => Number(assignment.orderId)))
     : null;
   return (db.orders || []).filter(order => {
     if (order.orderSource === 'offline') {
       if (assignedOrderIds && !assignedOrderIds.has(Number(order.id))) return false;
-      return ['admin', 'manager', 'auditor', 'agent'].includes(user.role);
+      return true;
     }
     const credentialId = Number(order.credentialId || 0);
     if (!credentialId || !userHasBinanceCredentialPermission(user, credentialId, 'orders.view')) return false;
     if (assignedOrderIds && !assignedOrderIds.has(Number(order.id)) && !userHasBinanceCredentialPermission(user, credentialId, 'binance.sync')) return false;
-    return ['admin', 'manager', 'auditor', 'agent'].includes(user.role);
+    return true;
   });
 }
 
@@ -5728,9 +5732,9 @@ function paymentSplitMutable(order = {}) {
 }
 
 function canWriteSplit(user, split) {
-  if (!user || !split) return false;
-  if (['admin', 'manager'].includes(user.role)) return true;
-  return user.role === 'agent' && userHasPermission(user, 'orders.split') && Number(split.agentId) === Number(user.agentId);
+  if (!user || !split || !userHasPermission(user, 'orders.split')) return false;
+  if (userCanOverrideOrderAssignment(user)) return true;
+  return Number(user.agentId || 0) > 0 && Number(split.agentId) === Number(user.agentId);
 }
 
 
@@ -5745,7 +5749,7 @@ function requirePermission(req, res, permission) {
 }
 
 function userCanManageApprovals(user) {
-  return !!user && userHasPermission(user, 'approvals.manage') && ['admin', 'manager'].includes(user.role);
+  return !!user && userHasPermission(user, 'approvals.manage');
 }
 
 function notificationEmailRecipients(item = {}) {
@@ -5765,14 +5769,14 @@ function notificationEmailRecipients(item = {}) {
 
   const audience = String(item.audience || '').toLowerCase();
   if (audience === 'manager') {
-    (db.users || []).filter(user => ['admin', 'manager'].includes(String(user.role || '').toLowerCase())).forEach(addUser);
+    (db.users || []).filter(userReceivesManagerAudience).forEach(addUser);
   } else if (audience === 'all') {
     (db.users || []).forEach(addUser);
   }
 
   if (audience === 'order' || (item.orderId && !item.userId && !item.agentId && audience !== 'manager')) {
     const order = orderById(item.orderId);
-    (db.users || []).filter(user => ['admin', 'manager'].includes(String(user.role || '').toLowerCase())).forEach(addUser);
+    (db.users || []).filter(userReceivesManagerAudience).forEach(addUser);
     if (order) {
       for (const assignment of db.orderAgentAssignments || []) {
         if (Number(assignment.orderId) !== Number(order.id) || assignment.status === 'left') continue;
@@ -5837,13 +5841,13 @@ function notificationPushRecipients(item = {}) {
   if (item.agentId) addUser(agentLoginUser(item.agentId));
   const audience = String(item.audience || '').toLowerCase();
   if (audience === 'manager') {
-    (db.users || []).filter(user => ['admin', 'manager'].includes(String(user.role || '').toLowerCase())).forEach(addUser);
+    (db.users || []).filter(userReceivesManagerAudience).forEach(addUser);
   } else if (audience === 'all') {
     (db.users || []).forEach(addUser);
   }
   if (audience === 'order' || (item.orderId && !item.userId && !item.agentId && audience !== 'manager')) {
     const order = orderById(item.orderId);
-    (db.users || []).filter(user => ['admin', 'manager'].includes(String(user.role || '').toLowerCase())).forEach(user => {
+    (db.users || []).filter(user => userHasPermission(user, 'orders.view')).forEach(user => {
       if (!order || canAccessOrder(user, order)) addUser(user);
     });
     if (order) {
@@ -6117,15 +6121,14 @@ function notificationsForUser(user) {
     .filter(n => Number(n.excludeUserId || 0) !== Number(user?.id || 0))
     .map(n => ({ ...n, category: notificationCategoryForType(n.type, n) }));
   if (!user) return [];
-  const accessible = ['admin', 'manager', 'auditor'].includes(user.role)
-    ? list.filter(n => !n.orderId || canAccessOrder(user, orderById(n.orderId)))
-    : list.filter(n => {
-      if (n.userId && Number(n.userId) === Number(user.id)) return true;
-      if (n.agentId && Number(n.agentId) === Number(user.agentId)) return true;
-      if (n.audience === 'all') return true;
-      if (n.orderId && canAccessOrder(user, orderById(n.orderId))) return true;
-      return false;
-    });
+  const accessible = list.filter(n => {
+    if (n.userId && Number(n.userId) === Number(user.id)) return true;
+    if (n.agentId && Number(n.agentId) === Number(user.agentId)) return true;
+    if (n.audience === 'all') return true;
+    if (n.audience === 'manager' && userReceivesManagerAudience(user)) return true;
+    if (n.orderId && canAccessOrder(user, orderById(n.orderId))) return true;
+    return false;
+  });
   return accessible.filter(n => notificationEnabledForUser(user, 'inApp', n.category));
 }
 
@@ -6848,7 +6851,7 @@ function orderAlertRecipients() {
   const seen = new Set();
   return db.users.filter(user => {
     const email = cleanStr(user.email || '', 180).toLowerCase();
-    if (!user.enabled || !['admin', 'manager'].includes(user.role) || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email) || seen.has(email)) return false;
+    if (!user.enabled || !userReceivesManagerAudience(user) || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email) || seen.has(email)) return false;
     seen.add(email);
     return true;
   });
@@ -7124,8 +7127,8 @@ function finalActionLocalVerificationAccessError(user, order, action) {
   if (order.orderSource === 'offline') return 'Offline orders do not use Binance release verification.';
   if (!canUseOrderCredential(user, order, 'orders.final_action')) return 'No orders.final_action access to this Binance account.';
   if (action === 'quick_release' && (!canQuickReleaseUser(user) || !canUseOrderCredential(user, order, 'orders.quick_release'))) return 'Permission denied: orders.quick_release for this Binance account';
-  if (user.role === 'agent' && Number(order.leadAgentId || order.currentAgentId || 0) !== Number(user.agentId || 0)) return 'Only the lead agent can verify this release. Manager/Admin can override.';
-  if (user.role === 'agent' && !db.settings.allowAgentFinalAction) return 'Agent final action is disabled by settings.';
+  if (userIsAssignmentScoped(user) && Number(order.leadAgentId || order.currentAgentId || 0) !== Number(user.agentId || 0)) return 'Only the assigned lead can verify this release unless the user has order-assignment/approval override permission.';
+  if (userIsAssignmentScoped(user) && !db.settings.allowAgentFinalAction) return 'Assigned-user final action is disabled by settings.';
   return '';
 }
 
@@ -10138,7 +10141,7 @@ async function buildCounterpartyStatsPayload(order, credential, orderNumber, sta
 
 
 async function updateManualCounterpartyFeedback(req, res, user, order) {
-  if (!['admin','manager'].includes(user.role) && !userHasPermission(user, 'binance.sync')) return sendJson(res, 403, { error: 'Permission denied: counterparty feedback update' }, {}, req);
+  if (!userHasPermission(user, 'binance.sync')) return sendJson(res, 403, { error: 'Permission denied: binance.sync' }, {}, req);
   if (order.orderSource !== 'offline' && !canUseOrderCredential(user, order, 'binance.sync')) return sendJson(res, 403, { error: 'No binance.sync access to this order account.' }, {}, req);
   const body = await readBody(req);
   const stats = { ...emptyCounterpartyStats(), ...(order.counterpartyStats || {}) };
@@ -12132,7 +12135,7 @@ function realtimeEventForUser(event, user) {
 
   const order = realtimeOrderFromReference(event);
   if (order) return canAccessOrder(user, order) ? { ...event, type } : null;
-  if (event.orderId || event.orderNo || event.externalOrderNo) return user.role === 'admin' ? { ...event, type } : null;
+  if (event.orderId || event.orderNo || event.externalOrderNo) return userHasPermission(user, 'orders.view') ? { ...event, type } : null;
 
   if (Array.isArray(event.changedOrders) || type.startsWith('binance.orders.')) {
     const changedOrders = (Array.isArray(event.changedOrders) ? event.changedOrders : []).filter(change => {
@@ -12159,7 +12162,7 @@ function realtimeEventForUser(event, user) {
   if (type.startsWith('payment.method') || type.startsWith('payment.account')) return userHasPermission(user, 'accounts.view') ? { ...event, type } : null;
   if (type.startsWith('approval.')) return userHasPermission(user, 'approvals.manage') ? { ...event, type } : null;
 
-  return user.role === 'admin' ? { ...event, type } : null;
+  return (userHasPermission(user, 'audit.view') || userHasPermission(user, 'settings.manage')) ? { ...event, type } : null;
 }
 
 function realtimeClientUser(client) {
@@ -12519,7 +12522,7 @@ async function fullHealth() {
 async function handleHealth(req, res, url) {
   const user = requireAuth(req, res);
   if (!user) return;
-  if (!['admin','manager'].includes(user.role) && !userHasPermission(user, 'settings.manage')) return sendJson(res, 403, { error: 'Permission denied: health check' }, {}, req);
+  if (!userHasPermission(user, 'settings.manage')) return sendJson(res, 403, { error: 'Permission denied: settings.manage' }, {}, req);
   if (req.method === 'GET' && url.pathname === '/api/health/binance') return sendJson(res, 200, await binanceNetworkHealth(), {}, req);
   if (req.method === 'GET' && url.pathname === '/api/health') return sendJson(res, 200, await fullHealth(), {}, req);
   if (req.method === 'POST' && url.pathname === '/api/health/mail-test') {
@@ -12582,7 +12585,7 @@ async function handleHealth(req, res, url) {
 
 
 function adsManagerPresence() {
-  const managers = (db.users || []).filter(user => user.enabled && user.role === 'manager').map(user => {
+  const managers = (db.users || []).filter(user => user.enabled && userHasPermission(user, 'ads.manage')).map(user => {
     const presence = userPresenceView(user.id);
     return { id: user.id, username: user.username, name: user.name, status: presence.status || 'offline', page: presence.page || '', lastSeenAt: presence.lastSeenAt || null };
   });
@@ -12686,8 +12689,8 @@ function advertisementPaymentMethodView(method, user = null, credentialId = 0) {
     payBank: scoped?.payBank || '',
     paySubBank: scoped?.paySubBank || ''
   };
-  if (user && ['admin', 'manager', 'auditor'].includes(user.role)) {
-    const account = (db.paymentAccounts || []).find(item => Number(item.paymentMethodId) === Number(method.id) && item.status === 'active');
+  if (user && userHasPermission(user, 'accounts.view')) {
+    const account = (db.paymentAccounts || []).find(item => Number(item.paymentMethodId) === Number(method.id) && item.status === 'active' && canAccessAccount(user, item));
     if (account) out.accountPreview = { accountNumber: account.accountNumber || '', accountName: account.accountName || '', accountType: account.accountType || 'personal' };
   }
   return out;
@@ -12761,7 +12764,7 @@ function advertisementFingerprint(item = {}) {
   return JSON.stringify({
     advNo: String(item.advNo || ''), status: advertisementStatusFromValue(item.status || item.advStatus), advStatus: Number(item.advStatus || 0),
     asset: String(item.asset || ''), fiatUnit: String(item.fiatUnit || ''), tradeType: normalizeAdvertisementTradeType(item.tradeType),
-    priceType: Number(item.priceType || 1), price: num(item.price || 0), priceFloatingRatio: num(item.priceFloatingRatio || 0), rateFloatingRatio: num(item.rateFloatingRatio || 0),
+    priceType: Number(item.priceType || 1), price: num(item.price || 0), minRate: num(item.minRate || 0), maxRate: num(item.maxRate || 0), priceFloatingRatio: num(item.priceFloatingRatio || 0), rateFloatingRatio: num(item.rateFloatingRatio || 0),
     initAmount: num(item.initAmount || 0), surplusAmount: num(item.surplusAmount || 0), minSingleTransAmount: num(item.minSingleTransAmount || 0), maxSingleTransAmount: num(item.maxSingleTransAmount || 0),
     payTimeLimit: Number(item.payTimeLimit || 0), remarks: String(item.remarks || ''), autoReplyMsg: String(item.autoReplyMsg || ''), classify: String(item.classify || ''),
     buyerBtcPositionLimit: num(item.buyerBtcPositionLimit || 0), buyerKycLimit: Number(item.buyerKycLimit || 0), buyerRegDaysLimit: Number(item.buyerRegDaysLimit || 0),
@@ -13065,6 +13068,8 @@ function normalizeAdvertisementInput(body = {}, existing = {}, options = {}) {
     tradeType: normalizeAdvertisementTradeType(body.tradeType ?? existing.tradeType),
     priceType: [1, 2].includes(Number(body.priceType ?? existing.priceType)) ? Number(body.priceType ?? existing.priceType) : 1,
     price: positiveNum(body.price ?? existing.price ?? 0),
+    minRate: positiveNum(body.minRate ?? existing.minRate ?? 0),
+    maxRate: positiveNum(body.maxRate ?? existing.maxRate ?? 0),
     priceFloatingRatio: num(body.priceFloatingRatio ?? existing.priceFloatingRatio ?? 0),
     rateFloatingRatio: num(body.rateFloatingRatio ?? existing.rateFloatingRatio ?? 0),
     initAmount: positiveNum(body.initAmount ?? existing.editableAmount ?? existing.surplusAmount ?? existing.initAmount ?? 0),
@@ -13089,6 +13094,9 @@ function normalizeAdvertisementInput(body = {}, existing = {}, options = {}) {
   };
   if (!item.asset || !item.fiatUnit) throw Object.assign(new Error('Crypto asset and fiat currency are required.'), { statusCode: 422 });
   if (item.price <= 0) throw Object.assign(new Error('Advertisement price must be greater than zero.'), { statusCode: 422 });
+  if (item.minRate > 0 && item.maxRate > 0 && item.maxRate < item.minRate) throw Object.assign(new Error('Maximum Rate must be greater than or equal to Minimum Rate.'), { statusCode: 422 });
+  if (item.minRate > 0 && item.price < item.minRate) throw Object.assign(new Error(`Advertisement price cannot be lower than Minimum Rate (${item.minRate}).`), { statusCode: 422 });
+  if (item.maxRate > 0 && item.price > item.maxRate) throw Object.assign(new Error(`Advertisement price cannot be higher than Maximum Rate (${item.maxRate}).`), { statusCode: 422 });
   if (item.initAmount <= 0) throw Object.assign(new Error('Total advertisement amount must be greater than zero.'), { statusCode: 422 });
   if (item.minSingleTransAmount <= 0 || item.maxSingleTransAmount <= 0 || item.maxSingleTransAmount < item.minSingleTransAmount) throw Object.assign(new Error('Order limits are invalid. Maximum limit must be greater than or equal to minimum limit.'), { statusCode: 422 });
   // Selection and Binance-account resolution are separate checks. A private
@@ -16975,7 +16983,7 @@ async function handleOwnerBootstrapClaim(req, res) {
   let claim;
   try { claim = beginBootstrapClaim(HOSTING_SETUP_PATHS, token); }
   catch (error) { return sendText(res, 403, error.message || 'This one-time Owner access link is invalid or expired.', 'text/plain; charset=utf-8', req); }
-  const owner = (db.users || []).find(user => user.role === 'admin' && user.enabled);
+  const owner = (db.users || []).find(user => user.isOwner === true && user.enabled);
   if (!owner) {
     restoreBootstrapClaim(HOSTING_SETUP_PATHS, claim.claimPath);
     return sendText(res, 409, 'No enabled Owner account was found.', 'text/plain; charset=utf-8', req);
@@ -17423,14 +17431,13 @@ function handleLogout(req, res) {
 }
 function userHasLiveOrderAccess(user) {
   if (!user || user.enabled === false) return false;
-  if (String(user.role || '').toLowerCase() === 'admin') return true;
   return binanceCredentialIdsForUserPermission(user, 'binance.sync', { includeDisabled: true }).length > 0;
 }
 
 function orderAcceptanceForUser(user) {
   const agent = user ? (db.agents || []).find(item => Number(item.userId || 0) === Number(user.id || 0) || (Number(user.agentId || 0) && Number(item.id) === Number(user.agentId))) : null;
   const liveOrderAccess = userHasLiveOrderAccess(user);
-  const assignable = Boolean(user && user.enabled !== false && user.role === 'agent' && agent && userHasPermission(user, 'orders.view'));
+  const assignable = Boolean(user && user.enabled !== false && agent && Number(user.agentId || 0) === Number(agent.id) && userHasPermission(user, 'orders.view'));
   const controlsAutoAssignment = Boolean(assignable && !liveOrderAccess);
   const accepting = Boolean(assignable && (liveOrderAccess || (user.workAvailable !== false && agent.allowNewOrders !== false)));
   return {
@@ -17484,7 +17491,7 @@ async function handleMyOrderAcceptance(req, res) {
   user.workAvailabilityUpdatedAt = nowIso();
   user.workAvailabilityUpdatedBy = user.id;
   const agent = current.agentId ? agentById(current.agentId) : null;
-  if (agent && user.role === 'agent') {
+  if (agent && Number(user.agentId || 0) === Number(agent.id)) {
     agent.allowNewOrders = body.accepting;
     agent.orderAcceptanceUpdatedAt = user.workAvailabilityUpdatedAt;
     agent.orderAcceptanceUpdatedBy = user.id;
@@ -18086,7 +18093,7 @@ async function handleAgents(req, res) {
   const user = requireAuth(req, res); if (!user) return;
   if (req.method === 'GET') {
     const grantOptions = userHasPermission(user, 'agents.manage')
-      ? binanceCredentialOptionsForUser(user, null, { includeDisabled: true }).filter(item => user.role === 'admin' || item.permissions.length)
+      ? binanceCredentialOptionsForUser(user, null, { includeDisabled: true }).filter(item => item.permissions.length)
       : [];
     return sendJson(res, 200, {
       items: db.agents.map(agent => agentView(agent, user)),
@@ -18133,7 +18140,7 @@ async function handleAgents(req, res) {
       syncLegacyP2pCredentialIds(u);
       db.users.push(u);
       agent.userId = u.id;
-      if (loginRole !== 'agent') { agent.allowNewOrders = false; agent.canRelease = false; }
+      // Role names are templates only; actual permissions decide whether this linked user can receive/manage orders.
     }
     db.agents.push(agent);
     logAudit(admin, 'agent_created', 'agent', agent.id, { ...agent, username: body.username ? cleanStr(body.username, 80) : null, permissions: body.permissions || null });
@@ -18262,12 +18269,7 @@ async function handleAgentById(req, res, parts) {
       if (body.securityQuestion !== undefined || body.securityAnswer !== undefined || body.clearSecurityFallback === true) {
         try { applySecurityQuestionFallback(linkedUserCandidate, body); } catch (error) { return sendJson(res, error.statusCode || 422, { error: error.message }, {}, req); }
       }
-      if (linkedUserCandidate.role !== 'agent') {
-        agentCandidate.allowNewOrders = false;
-        agentCandidate.orderAcceptanceUpdatedAt = nowIso();
-        agentCandidate.orderAcceptanceUpdatedBy = admin.id;
-        agentCandidate.canRelease = false;
-      }
+      // Role names do not disable assignment/final-action behavior. Permissions remain authoritative.
     }
 
     Object.assign(agent, agentCandidate);
@@ -18414,7 +18416,7 @@ function paymentAccountDraftFromBody(body = {}, paymentMethod = null, actor = nu
   let resolvedOwner = resolvePaymentAccountOwnerUser(ownerSource);
   const restrictedToOwnAccount = Boolean(actor && !canManageAllPaymentAccounts(actor));
   if (restrictedToOwnAccount) resolvedOwner = { user: actor, unknown: '' };
-  const accountType = normalizePaymentAccountType(body.accountType || (String(actor?.role || '').toLowerCase() === 'agent' ? 'agent' : 'personal'));
+  const accountType = normalizePaymentAccountType(body.accountType || 'personal');
   const ownerAgentId = paymentAccountOwnerAgentId(resolvedOwner.user);
   const allowedAgentIds = restrictedToOwnAccount
     ? (ownerAgentId ? [ownerAgentId] : [])
@@ -18450,7 +18452,7 @@ function paymentAccountDraftFromBody(body = {}, paymentMethod = null, actor = nu
 }
 
 function canCreatePaymentAccounts(user) {
-  return Boolean(user && (['admin', 'manager'].includes(String(user.role || '').toLowerCase()) || userHasPermission(user, 'accounts.manage')));
+  return Boolean(user && userHasPermission(user, 'accounts.manage'));
 }
 
 function canOpenPaymentAccounts(user) {
@@ -18597,7 +18599,7 @@ function paymentAccountBulkUpdateCandidate(user, accountItem, changes = {}, seri
   let nextOwnerUser = canEditAccess ? paymentAccountOwnerUser(candidate) : user;
   if (changes.ownerUserId !== undefined || changes.accountUserId !== undefined || changes.ownerUser !== undefined || changes.accountUser !== undefined) {
     if (!canEditAccess) {
-      const error = new Error('Only Admin/Manager or Manage All Payment Accounts can bulk-change Account User.');
+      const error = new Error('Permission denied: Manage All Payment Accounts is required to bulk-change Account User.');
       error.statusCode = 403;
       throw error;
     }
@@ -18618,7 +18620,7 @@ function paymentAccountBulkUpdateCandidate(user, accountItem, changes = {}, seri
   let nextAllowedAgentIds = accountAllowedAgentIds(candidate);
   if (changes.allowedAgentIds !== undefined || changes.agentIds !== undefined || changes.agents !== undefined) {
     if (!canEditAccess) {
-      const error = new Error('Only Admin/Manager or Manage All Payment Accounts can bulk-change Agent access.');
+      const error = new Error('Permission denied: Manage All Payment Accounts is required to bulk-change linked-user access.');
       error.statusCode = 403;
       throw error;
     }
@@ -19518,7 +19520,7 @@ async function handleRoutingById(req, res, parts) {
 
 async function handleApprovals(req, res, url) {
   const user = requirePermission(req, res, 'approvals.manage'); if (!user) return;
-  if (!['admin', 'manager'].includes(user.role)) return sendJson(res, 403, { error: 'Only manager/admin can view approval queue' }, {}, req);
+  if (!userHasPermission(user, 'approvals.manage')) return sendJson(res, 403, { error: 'Permission denied: approvals.manage' }, {}, req);
   if (req.method !== 'GET') return sendJson(res, 405, { error: 'Method not allowed' }, {}, req);
   let items = (db.approvalRequests || []).slice();
   const status = cleanStr(url.searchParams.get('status') || '', 30);
@@ -19531,7 +19533,7 @@ async function handleApprovals(req, res, url) {
 
 async function handleApprovalById(req, res, parts) {
   const user = requirePermission(req, res, 'approvals.manage'); if (!user) return;
-  if (!['admin', 'manager'].includes(user.role)) return sendJson(res, 403, { error: 'Only manager/admin can decide approval requests' }, {}, req);
+  if (!userHasPermission(user, 'approvals.manage')) return sendJson(res, 403, { error: 'Permission denied: approvals.manage' }, {}, req);
   const id = Number(parts[2]);
   const item = (db.approvalRequests || []).find(a => Number(a.id) === id);
   if (!item) return sendJson(res, 404, { error: 'Approval request not found' }, {}, req);
@@ -19694,7 +19696,7 @@ function handleNavigationCounts(req, res) {
   if (req.method !== 'GET') return sendJson(res, 405, { error: 'Method not allowed' }, {}, req);
   const orders = userHasPermission(user, 'orders.view') ? ordersAccessibleToUser(user) : [];
   const unread = orders.length ? chatUnreadSnapshotForOrders(user, orders) : { total: 0 };
-  const approvals = userHasPermission(user, 'approvals.manage') && ['admin', 'manager'].includes(user.role)
+  const approvals = userHasPermission(user, 'approvals.manage')
     ? (db.approvalRequests || []).filter(item => item.status === 'pending').length
     : 0;
   return sendJson(res, 200, {
@@ -19925,8 +19927,8 @@ async function autoSyncBinanceOrderBundle(req, res, user, order) {
 async function verifyBinanceAdditionalKyc(req, res, user, order) {
   const accountPermission = canUseOrderCredential(user, order, 'orders.final_action') ? 'orders.final_action' : (canUseOrderCredential(user, order, 'binance.sync') ? 'binance.sync' : '');
   if (!accountPermission) return sendJson(res, 403, { error: 'No Additional Verification permission for this Binance account.' }, {}, req);
-  if (user.role === 'agent' && Number(order.leadAgentId || order.currentAgentId || 0) !== Number(user.agentId || 0)) {
-    return sendJson(res, 403, { error: 'Only the lead agent can verify this order. Manager/Admin can override.' }, {}, req);
+  if (userIsAssignmentScoped(user) && Number(order.leadAgentId || order.currentAgentId || 0) !== Number(user.agentId || 0)) {
+    return sendJson(res, 403, { error: 'Only the assigned lead can verify this order unless the user has order-assignment/approval override permission.' }, {}, req);
   }
   if (order.orderSource === 'offline') return sendJson(res, 422, { error: 'Offline orders do not use Binance Additional Verification.' }, {}, req);
   const credential = requireOrderBinanceCredential(req, res, user, order, accountPermission); if (!credential) return;
@@ -20118,7 +20120,7 @@ function chatView(chat) {
 }
 
 function heartbeat(user, order, res, req) {
-  if (user.role !== 'agent') return sendJson(res, 200, { ok: true, skipped: true }, {}, req);
+  if (!userIsAssignmentScoped(user)) return sendJson(res, 200, { ok: true, skipped: true }, {}, req);
   const now = new Date();
   const expires = new Date(now.getTime() + positiveNum(db.settings.activeLockSeconds || 180) * 1000).toISOString();
   let lock = db.locks.find(l => l.orderId === order.id && l.agentId === user.agentId && l.status === 'active');
@@ -20131,7 +20133,7 @@ function heartbeat(user, order, res, req) {
 }
 
 async function leaveOrder(req, res, user, order) {
-  if (user.role !== 'agent') return sendJson(res, 403, { error: 'Only assigned agent can leave this way' }, {}, req);
+  if (!userIsAssignmentScoped(user)) return sendJson(res, 403, { error: 'Only an assignment-scoped user can leave this way' }, {}, req);
   const assignment = db.orderAgentAssignments.find(a => a.orderId === order.id && a.agentId === user.agentId && a.status !== 'left');
   if (!assignment) return sendJson(res, 403, { error: 'You are not assigned to this order' }, {}, req);
   const body = await readBody(req);
@@ -20155,7 +20157,7 @@ async function leaveOrder(req, res, user, order) {
 }
 
 async function managerAssign(req, res, user, order) {
-  if (!userHasPermission(user, 'orders.assign') || !['admin', 'manager'].includes(user.role)) return sendJson(res, 403, { error: 'Permission denied: orders.assign' }, {}, req);
+  if (!userHasPermission(user, 'orders.assign')) return sendJson(res, 403, { error: 'Permission denied: orders.assign' }, {}, req);
   if (order.orderSource !== 'offline' && !canUseOrderCredential(user, order, 'orders.assign')) return sendJson(res, 403, { error: 'No orders.assign access to this Binance account.' }, {}, req);
   const body = await readBody(req);
   const agentId = Number(body.agentId);
@@ -20238,12 +20240,12 @@ function createPaymentSplitForOrder(user, order, body = {}) {
 
   let splitAgentId = body.agentId ? Number(body.agentId) : (user.agentId || 0);
   let assignment = null;
-  if (user.role === 'agent') {
+  if (userIsAssignmentScoped(user)) {
     splitAgentId = Number(user.agentId || 0);
     assignment = activeAssignmentForAgent(order.id, splitAgentId);
     if (!assignment) throw splitOperationError('You are not actively assigned to this order.', 403);
-  } else if (!['admin','manager'].includes(user.role)) {
-    throw splitOperationError('Only an assigned agent or Admin/Manager can save a payment split.', 403);
+  } else if (!userCanOverrideOrderAssignment(user)) {
+    throw splitOperationError('Saving an unassigned payment split requires orders.assign or approvals.manage.', 403);
   }
 
   const amount = positiveNum(body.amount ?? body.actualAmount ?? body.plannedAmount ?? 0);
@@ -20253,11 +20255,11 @@ function createPaymentSplitForOrder(user, order, body = {}) {
   if (actual <= 0) throw splitOperationError('Payment Split amount must be greater than zero.', 422);
 
   let accountItem = body.paymentAccountId ? accountById(body.paymentAccountId) : null;
-  if (user.role === 'agent') {
+  if (userIsAssignmentScoped(user)) {
     if (!userHasPermission(user, 'accounts.use')) throw splitOperationError('Permission denied: accounts.use', 403);
     if (accountItem && (!accountAssignedToAgent(accountItem, splitAgentId) || Number(accountItem.paymentMethodId) !== Number(order.paymentMethodId))) accountItem = null;
     if (!accountItem) accountItem = chooseSplitAccountForAgent(order, splitAgentId, direction, Math.max(planned, actual));
-    if (!accountItem) throw splitOperationError('No active system payment account with enough capacity is assigned to you for this payment method. Ask Admin/Manager to assign or fund an account.', 422);
+    if (!accountItem) throw splitOperationError('No active system payment account with enough capacity is assigned to you for this payment method. Ask a user with Payment Account management permission to assign or fund an account.', 422);
   } else {
     if (!accountItem) throw splitOperationError('Payment account not found', 404);
     if (!canUsePaymentAccount(user, accountItem)) throw splitOperationError('No permission to use this payment account', 403);
@@ -20386,7 +20388,7 @@ async function handleSplitById(req, res, parts) {
     };
     const newActual = positiveNum(body.amount ?? body.actualAmount ?? oldActual);
     if (newActual <= 0) return sendJson(res, 422, { error: 'Amount must be greater than zero. Use Delete to remove the Payment Split completely.' }, {}, req);
-    if (user.role === 'agent') {
+    if (userIsAssignmentScoped(user)) {
       const assignment = db.orderAgentAssignments.find(a => a.orderId === split.orderId && a.agentId === split.agentId && a.status !== 'left');
       if (!assignment) return sendJson(res, 403, { error: 'You are not assigned to this order.' }, {}, req);
       const alreadyAllocated = plannedForAgent(split.orderId, split.agentId, split.direction, split.id);
@@ -20553,12 +20555,12 @@ async function completeAgentTask(req, res, user, order) {
   if (!userHasPermission(user, 'orders.split')) return sendJson(res, 403, { error: 'Permission denied: orders.split' }, {}, req);
   if (order.orderSource !== 'offline' && !canUseOrderCredential(user, order, 'orders.split')) return sendJson(res, 403, { error: 'No orders.split access to this Binance account.' }, {}, req);
   const body = await readBody(req);
-  const agentId = ['admin','manager'].includes(user.role) && body.agentId ? Number(body.agentId) : user.agentId;
+  const agentId = userCanOverrideOrderAssignment(user) && body.agentId ? Number(body.agentId) : user.agentId;
   if (!agentId) return sendJson(res, 422, { error: 'Agent id required' }, {}, req);
-  if (user.role === 'agent' && agentId !== user.agentId) return sendJson(res, 403, { error: 'Agent can only complete own task' }, {}, req);
+  if (!userCanOverrideOrderAssignment(user) && agentId !== user.agentId) return sendJson(res, 403, { error: 'This user can only complete their own assigned task.' }, {}, req);
   const assignment = db.orderAgentAssignments.find(a => a.orderId === order.id && a.agentId === agentId && !['left', 'completed', 'partial_completed'].includes(a.status));
   if (!assignment) return sendJson(res, 404, { error: 'Active assignment not found for this agent' }, {}, req);
-  if (user.role === 'agent' && assignment.role !== 'co_agent') return sendJson(res, 403, { error: 'Lead agent must use Mark as Paid / Release with Payment Split. Done is for co-agent work only.' }, {}, req);
+  if (!userCanOverrideOrderAssignment(user) && assignment.role !== 'co_agent') return sendJson(res, 403, { error: 'The assigned lead must use Mark as Paid / Release with Payment Split. Done is for co-agent work only.' }, {}, req);
 
   let splitResult;
   try {
@@ -20629,8 +20631,8 @@ async function completeAction(req, res, user, order) {
   }
   if (order.orderSource !== 'offline' && additionalKycStateForOrder(order).pending) return sendJson(res, 422, { error: 'Additional Verification is pending. Verify the order first; Mark as Paid and Release remain hidden until Binance confirms verification.' }, {}, req);
   if (action === 'quick_release' && (!canQuickReleaseUser(user) || (order.orderSource !== 'offline' && !canUseOrderCredential(user, order, 'orders.quick_release')))) return sendJson(res, 403, { error: 'Permission denied: orders.quick_release for this Binance account' }, {}, req);
-  if (user.role === 'agent' && !isLead) return sendJson(res, 403, { error: 'Only lead agent can complete final action. Manager/Admin can override.' }, {}, req);
-  if (user.role === 'agent' && !db.settings.allowAgentFinalAction) return sendJson(res, 403, { error: 'Agent final action is disabled by settings.' }, {}, req);
+  if (userIsAssignmentScoped(user) && !isLead) return sendJson(res, 403, { error: 'Only the assigned lead can complete final action unless the user has order-assignment/approval override permission.' }, {}, req);
+  if (userIsAssignmentScoped(user) && !db.settings.allowAgentFinalAction) return sendJson(res, 403, { error: 'Assigned-user final action is disabled by settings.' }, {}, req);
   const relevantDirection = order.type === 'BUY' ? 'send' : 'receive';
   const relevantSplits = db.paymentSplits.filter(s => s.orderId === order.id && s.direction === relevantDirection && num(s.actualAmount) > 0);
   const splitGateEnabled = order.orderSource === 'offline' || db.settings.requirePaymentSplitForFinalAction !== false;
@@ -21564,7 +21566,7 @@ function accountingEntryView(item = {}) {
 }
 
 function accountingViewerCanSeeEntry(item = {}, viewer = {}) {
-  if (viewer?.role !== 'agent') return true;
+  if (!userIsAccountingScoped(viewer)) return true;
   return Number(item.agentId || 0) === Number(viewer.agentId || 0);
 }
 
@@ -21597,7 +21599,7 @@ function accountingCostTransactionsForRange(range = null, viewer = {}, asOf = no
   (db.ledgers || [])
     .filter(item => inReportRange(item.createdAt, range))
     .filter(item => ['business_transfer_charge','business_transfer_charge_refund'].includes(String(item.type || '')))
-    .filter(item => viewer?.role !== 'agent' || Number(item.agentId || 0) === Number(viewer.agentId || 0))
+    .filter(item => !userIsAccountingScoped(viewer) || Number(item.agentId || 0) === Number(viewer.agentId || 0))
     .forEach(item => {
       const refund = String(item.type || '') === 'business_transfer_charge_refund';
       const signed = (refund ? -1 : 1) * positiveNum(item.amount || 0);
@@ -21624,7 +21626,7 @@ function accountingCostTransactionsForRange(range = null, viewer = {}, asOf = no
     const totalFee = positiveNum(row.feeQuantity || 0);
     if (!(totalFee > 0)) return;
     let weight = 1;
-    if (viewer?.role === 'agent') {
+    if (userIsAccountingScoped(viewer)) {
       weight = sum((row.allocation || []).filter(allocation => Number(allocation.agentId) === Number(viewer.agentId || 0)).map(allocation => positiveNum(allocation.weight || 0)));
       if (!(weight > 0)) return;
     }
@@ -21637,7 +21639,7 @@ function accountingCostTransactionsForRange(range = null, viewer = {}, asOf = no
       businessDate: row.businessDate || accountingLocalDate(row.completedAt), createdAt: row.completedAt,
       amountBdt: feeUsd * companyDollarRate, amountUsd: feeUsd, currency: cleanStr(db.settings.accountingCryptoAsset || 'USDT', 20).toUpperCase(), amount: feeUsd,
       note: 'Reported fee already reflected in actual crypto wallet movement.', orderId: row.orderId || null, orderNo: row.orderNo || '',
-      paymentAccount: null, agent: viewer?.role === 'agent' ? { id: viewer.agentId, name: viewer.name || viewer.username || 'Agent' } : null,
+      paymentAccount: null, agent: userIsAccountingScoped(viewer) ? { id: viewer.agentId, name: viewer.name || viewer.username || 'User' } : null,
       createdByUser: null, reversible: false
     });
   });
@@ -21873,7 +21875,7 @@ function accountingSummaryForRange(range, viewer, options = {}) {
     otherIncome: round2(item.income), expenses: round2(item.expenses),
     netContribution: round2((item.profitUsd * companyDollarRate) + item.income - item.expenses)
   })).filter(item => item.orders || item.otherIncome || item.expenses || Math.abs(item.profitUsd) > 0.000000001);
-  const scopeAgent = viewer?.role === 'agent' ? byAgent.find(item => Number(item.agentId) === Number(viewer.agentId)) || {
+  const scopeAgent = userIsAccountingScoped(viewer) ? byAgent.find(item => Number(item.agentId) === Number(viewer.agentId)) || {
     agentId: Number(viewer.agentId || 0), name: viewer.name || viewer.username || 'Agent', orders: 0,
     buyVolume: 0, buyCrypto: 0, sellVolume: 0, sellCrypto: 0, operationalProfitUsd: 0,
     carryoverAdjustmentUsd: 0, profitUsd: 0, operationalProfitBdt: 0, carryoverAdjustmentBdt: 0,
@@ -22808,7 +22810,7 @@ function unreadNotificationItem(n) {
 
 function markAccessibleChatNotificationsRead(user) {
   let orders = db.orders || [];
-  if (user?.role === 'agent') orders = orders.filter(order => canAccessOrder(user, order));
+  if (userIsAssignmentScoped(user)) orders = orders.filter(order => canAccessOrder(user, order));
   let markedOrders = 0;
   let markedMessages = 0;
   const readAt = nowIso();
@@ -23580,9 +23582,9 @@ function runAccountingSelfTest() {
     const accountingHistoryRange = accountingDateRange('2026-08-03');
     const completeEntries = accountingEntriesForRange(accountingHistoryRange);
     if (!completeEntries.some(item => item.id === 205)) throw new Error('USDT income without a payment account is missing from accounting history.');
-    const adminCosts = accountingCostTransactionsForRange(accountingHistoryRange, { role: 'admin' }, accountingHistoryRange.end);
-    const agentOneCosts = accountingCostTransactionsForRange(accountingHistoryRange, { role: 'agent', agentId: 1, name: 'Agent One' }, accountingHistoryRange.end);
-    const agentTwoCosts = accountingCostTransactionsForRange(accountingHistoryRange, { role: 'agent', agentId: 2, name: 'Agent Two' }, accountingHistoryRange.end);
+    const adminCosts = accountingCostTransactionsForRange(accountingHistoryRange, { role: 'admin', permissions: ['accounting.view','accounting.manage','accounting.close'] }, accountingHistoryRange.end);
+    const agentOneCosts = accountingCostTransactionsForRange(accountingHistoryRange, { role: 'agent', agentId: 1, name: 'Agent One', permissions: ['accounting.view'] }, accountingHistoryRange.end);
+    const agentTwoCosts = accountingCostTransactionsForRange(accountingHistoryRange, { role: 'agent', agentId: 2, name: 'Agent Two', permissions: ['accounting.view'] }, accountingHistoryRange.end);
     if (adminCosts.length !== 2 || !adminCosts.some(item => item.source === 'manual_expense') || !adminCosts.some(item => item.source === 'transfer_charge')) throw new Error('Separated expense transaction history is incomplete.');
     if (agentOneCosts.length !== 1 || agentOneCosts[0].source !== 'manual_expense') throw new Error('Agent expense history visibility is incorrect.');
     if (agentTwoCosts.length !== 1 || agentTwoCosts[0].source !== 'transfer_charge') throw new Error('Agent transfer-charge history visibility is incorrect.');
@@ -23615,7 +23617,7 @@ function runAccountingSelfTest() {
     const ownerDraft = paymentAccountDraftFromBody({ paymentMethodId: 301, accountNumber: '01700000001', accountType: 'agent', ownerUserId: 902, allowedAgentIds: [] }, db.paymentMethods[0]);
     if (validatePaymentAccountOwner(ownerDraft.accountType, ownerDraft.ownerUser)) throw new Error('Valid Agent account owner was rejected.');
     if (!ownerDraft.allowedAgentIds.includes(1)) throw new Error('Agent account owner was not granted account access automatically.');
-    const ownerAccountView = accountView(db.paymentAccounts[0], { role: 'admin' });
+    const ownerAccountView = accountView(db.paymentAccounts[0], { role: 'admin', id: 901, permissions: ['accounts.view','accounts.manage_all'] });
     if (ownerAccountView.ownerUser?.id !== 902 || ownerAccountView.accountType !== 'agent') throw new Error('Payment account owner/type view is incomplete.');
     const filteredReport = reportData({ period: 'lifetime', start: null, end: null, label: 'Lifetime / All records' });
     if (filteredReport.byMethod.length !== 1 || filteredReport.byMethod[0].paymentMethodId !== 301 || filteredReport.byMethod[0].accountCount !== 1) throw new Error('Report includes payment methods without saved payment accounts.');
@@ -23646,6 +23648,45 @@ function runAccountingSelfTest() {
     try { validateFreshOwnerCredentials({ username: 'owner', email: 'owner@example.com', password: 'StrongPassword123!', secretCode: '111111' }); } catch { weakSecretRejected = true; }
     if (!weakSecretRejected) throw new Error('Weak fresh-owner secret code was accepted.');
     validateFreshOwnerCredentials({ username: 'owner', email: 'owner@example.com', password: 'StrongPassword123!', secretCode: '739251' });
+
+    // Schema 36: preserve legacy implicit account access once, then make role
+    // labels non-authoritative. A user named Agent with Settings permission must
+    // have Settings access, and must not gain Orders just because of the label.
+    const permissionMigrationTarget = { meta: { nextId: 9500, schemaVersion: 35, dataCompatibilityEpoch: APP_DATA_COMPATIBILITY_EPOCH }, settings: {} };
+    migrationArrays.forEach(key => { permissionMigrationTarget[key] = []; });
+    permissionMigrationTarget.userRoles = defaultUserRoles();
+    permissionMigrationTarget.apiCredentials = [
+      { id: 71, name: 'Legacy A', apiKey: 'legacy-a', secretKey: 'secret-a', createdAt: '2026-01-01T00:00:00.000Z' },
+      { id: 72, name: 'Legacy B', apiKey: 'legacy-b', secretKey: 'secret-b', createdAt: '2026-01-02T00:00:00.000Z' }
+    ];
+    permissionMigrationTarget.users = [
+      // Deliberately mismatched role labels prove that migration authority comes
+      // from permissions, not from Admin/Manager/Agent/Auditor names.
+      { id: 11, username: 'legacy-owner', name: 'Legacy Owner', role: 'agent', isOwner: true, enabled: true, passwordHash: hashPassword('LegacyOwnerPassword!'), loginSecretHash: hashPassword('739251'), permissions: ['orders.view','binance.sync','ads.view','ads.manage','credentials.manage'], binanceCredentialPermissions: [], allowedP2pCredentialIds: [] },
+      { id: 12, username: 'legacy-operator', name: 'Legacy Operator', role: 'auditor', enabled: true, passwordHash: hashPassword('LegacyManagerPassword!'), loginSecretHash: hashPassword('482739'), permissions: ['orders.view','binance.sync','agents.manage'], binanceCredentialPermissions: [], allowedP2pCredentialIds: [] },
+      { id: 13, username: 'settings-worker', name: 'Settings Worker', role: 'admin', enabled: true, agentId: 31, passwordHash: hashPassword('SettingsWorkerPassword!'), loginSecretHash: hashPassword('593817'), permissions: ['settings.manage'], binanceCredentialPermissions: [], allowedP2pCredentialIds: [] }
+    ];
+    permissionMigrationTarget.agents = [{ id: 31, userId: 13, name: 'Settings Worker', allowNewOrders: true }];
+    migrateDb(permissionMigrationTarget);
+    const migratedOwner = permissionMigrationTarget.users.find(user => user.id === 11);
+    const migratedManager = permissionMigrationTarget.users.find(user => user.id === 12);
+    const settingsWorker = permissionMigrationTarget.users.find(user => user.id === 13);
+    if (permissionMigrationTarget.meta.schemaVersion !== 36) throw new Error(`Permission migration schema mismatch: ${permissionMigrationTarget.meta.schemaVersion}`);
+    if (binanceCredentialPermissionRowsForUser(migratedOwner, permissionMigrationTarget).length !== 2) throw new Error('Schema 36 did not materialize permission-based legacy owner account access.');
+    if (binanceCredentialPermissionRowsForUser(migratedManager, permissionMigrationTarget).length !== 2) throw new Error('Schema 36 did not materialize permission-based legacy operator account access.');
+    if (!userHasPermission(settingsWorker, 'settings.manage') || userHasPermission(settingsWorker, 'orders.view') || binanceCredentialPermissionRowsForUser(settingsWorker, permissionMigrationTarget).length) throw new Error('Role label still changes effective permissions or account grants after schema 36.');
+
+    const rateGuardBase = { asset:'USDT', fiatUnit:'BDT', tradeType:'BUY', priceType:1, price:120, minRate:115, maxRate:125, initAmount:100, minSingleTransAmount:1000, maxSingleTransAmount:10000, payTimeLimit:15, paymentMethodIds:[301], status:'offline' };
+    const guardedAd = normalizeAdvertisementInput(rateGuardBase, {}, {});
+    if (guardedAd.minRate !== 115 || guardedAd.maxRate !== 125) throw new Error('Advertisement Minimum/Maximum Rate was not normalized.');
+    let minRateRejected = false;
+    try { normalizeAdvertisementInput({ ...rateGuardBase, price:114 }, {}, {}); } catch (error) { minRateRejected = /Minimum Rate/.test(error.message); }
+    if (!minRateRejected) throw new Error('Advertisement price below Minimum Rate was accepted.');
+    let maxRateRejected = false;
+    try { normalizeAdvertisementInput({ ...rateGuardBase, price:126 }, {}, {}); } catch (error) { maxRateRejected = /Maximum Rate/.test(error.message); }
+    if (!maxRateRejected) throw new Error('Advertisement price above Maximum Rate was accepted.');
+    const guardedPayload = advertisementBinancePayload(guardedAd);
+    if (Object.prototype.hasOwnProperty.call(guardedPayload, 'minRate') || Object.prototype.hasOwnProperty.call(guardedPayload, 'maxRate')) throw new Error('Local rate guards leaked into Binance payload.');
 
     const updateCheck = advertisementUpdatePayload({
       asset: 'USDT', fiatUnit: 'BDT', tradeType: 'BUY', priceType: 1, price: 127.123456,
@@ -23710,10 +23751,10 @@ function runAccountingSelfTest() {
       ownerCashFlow: { adjustedCapitalBaseUsd: ownerSummary.summary.ownerAdjustedCapitalBaseUsd, ownerProfitUsd: ownerSummary.summary.ownerProfitUsd, ownerProfitBdt: ownerSummary.summary.ownerProfitBdt },
       separatedAccountingHistory: { completeEntries: completeEntries.length, adminCosts: adminCosts.length, agentOneCosts: agentOneCosts.length, agentTwoCosts: agentTwoCosts.length },
       paymentAccountOwnership: { ownerUserId: ownerAccountView.ownerUser?.id || null, accountType: ownerAccountView.accountType, reportMethods: filteredReport.byMethod.map(item => item.name) },
-      migrationSafety: { schemaPreserved: migrationTarget.meta.schemaVersion, accountTypes: migrationTarget.paymentAccounts.map(item => item.accountType), futureFieldsPreserved: true, weakOwnerSecretRejected: true, ownerAuthorityPreserved: migrationTarget.users[0].isOwner === true },
+      migrationSafety: { schemaPreserved: migrationTarget.meta.schemaVersion, accountTypes: migrationTarget.paymentAccounts.map(item => item.accountType), futureFieldsPreserved: true, weakOwnerSecretRejected: true, ownerAuthorityPreserved: migrationTarget.users[0].isOwner === true, permissionSchema: permissionMigrationTarget.meta.schemaVersion, roleNameNonAuthoritative: true, legacyAccountGrantsMaterialized: true },
       advertisementUpdate: updateCheck,
       merchantCreateFallback: merchantFallback,
-      advertisementCreate: { classify: createPayload.classify, defaultClassify: defaultCreatePayload.classify, genericTradePermissionBlocks: false },
+      advertisementCreate: { classify: createPayload.classify, defaultClassify: defaultCreatePayload.classify, genericTradePermissionBlocks: false, minimumMaximumRateGuard: true },
       exactCloseTarget: new Date(closeTarget).toISOString()
     }, null, 2));
   } finally {
@@ -23779,7 +23820,13 @@ async function runAdsMerchantAccountIsolationSelfTest() {
     if (!aggregate.business.mixed || !aggregate.online.mixed || !aggregate.break.mixed || aggregate.break.anyEnabled !== true) {
       throw new Error(`Aggregate merchant state is incorrect: ${JSON.stringify(aggregate)}`);
     }
-    const adminOptions = binanceCredentialOptionsForUser({ id: 1, role: 'admin', permissions: PERMISSION_CATALOG }, 'ads.view', { includeDisabled: true });
+    const adminOptions = binanceCredentialOptionsForUser({
+      id: 1, role: 'admin', permissions: PERMISSION_CATALOG,
+      binanceCredentialPermissions: [
+        { credentialId: 101, permissions: BINANCE_ACCOUNT_PERMISSION_CATALOG.slice() },
+        { credentialId: 202, permissions: BINANCE_ACCOUNT_PERMISSION_CATALOG.slice() }
+      ]
+    }, 'ads.view', { includeDisabled: true });
     if (adminOptions[0]?.displayName !== 'AlphaP2P' || adminOptions[1]?.displayName !== 'BetaP2P') {
       throw new Error(`P2P usernames were not exposed as account display names: ${JSON.stringify(adminOptions)}`);
     }

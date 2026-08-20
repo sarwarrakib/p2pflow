@@ -1,4 +1,4 @@
-// v1.5.34: Release uses a minimal Binance probe first; only a concrete Binance challenge opens the dedicated verification screen.
+// v1.5.35: Release uses a minimal Binance probe first; only a concrete Binance challenge opens the dedicated verification screen.
 // v1.5.23: Payment Account serial scope treats each normalized Label, including no Label, as an independent namespace.
 // v1.5.22: Header-only Work Status, chat-only notification master, and coupled sound/push controls.
 // v1.5.20: account-scoped Binance RBAC, visible security recovery setup and individual-only profit accounting.
@@ -91,34 +91,34 @@ const state = {
 };
 
 const pages = [
-  ['dashboard', 'Dashboard', ['admin','manager','auditor']],
-  ['p2p-market', 'P2P Market', ['admin','manager','agent','auditor']],
-  ['p2p-profile', 'P2P Profile', ['admin','manager','agent','auditor']],
-  ['orders', 'Orders', ['admin','manager','agent','auditor']],
-  ['chat', 'P2P Message', ['admin','manager','agent','auditor']],
-  ['ads', 'Advertisements', ['admin','manager','agent','auditor']],
-  ['approvals', 'Approvals', ['admin','manager']],
-  ['accounts', 'Payment Accounts', ['admin','manager','agent','auditor']],
-  ['offline-transactions', 'Offline Business', ['admin','manager','agent','auditor']],
-  ['ledger', 'Account Statement', ['admin','manager','agent','auditor']],
-  ['agents', 'Users', ['admin','manager','auditor']],
-  ['user-roles', 'User Roles', ['admin','manager']],
-  ['routing', 'Routing', ['admin','manager']],
-  ['reports', 'Reports', ['admin','manager','auditor']],
-  ['accounting', 'Accounting Overview', ['admin','manager','agent','auditor']],
-  ['accounting-expenses', 'Expense', ['admin','manager','agent','auditor']],
-  ['accounting-income', 'Business Income', ['admin','manager','agent','auditor']],
-  ['accounting-capital', 'Capital', ['admin','manager','agent','auditor']],
-  ['accounting-closing', 'Daily Closing', ['admin','manager','agent','auditor']],
-  ['activity', 'Activity Monitor', ['admin','manager','auditor']],
-  ['credentials', 'API Credentials', ['admin']],
-  ['health', 'Health Check', ['admin','manager']],
-  ['system-update', 'System Update', ['admin']],
-  ['settings', 'Settings', ['admin','manager']],
-  ['p2p-extension', 'Extension Bridge', ['admin','manager']],
-  ['security', 'Security', ['admin','manager','agent','auditor']],
-  ['notifications', 'Notifications', ['admin','manager','agent','auditor']],
-  ['audit', 'Audit Logs', ['admin','manager','auditor']]
+  ['dashboard', 'Dashboard'],
+  ['p2p-market', 'P2P Market'],
+  ['p2p-profile', 'P2P Profile'],
+  ['orders', 'Orders'],
+  ['chat', 'P2P Message'],
+  ['ads', 'Advertisements'],
+  ['approvals', 'Approvals'],
+  ['accounts', 'Payment Accounts'],
+  ['offline-transactions', 'Offline Business'],
+  ['ledger', 'Account Statement'],
+  ['agents', 'Users'],
+  ['user-roles', 'User Roles'],
+  ['routing', 'Routing'],
+  ['reports', 'Reports'],
+  ['accounting', 'Accounting Overview'],
+  ['accounting-expenses', 'Expense'],
+  ['accounting-income', 'Business Income'],
+  ['accounting-capital', 'Capital'],
+  ['accounting-closing', 'Daily Closing'],
+  ['activity', 'Activity Monitor'],
+  ['credentials', 'API Credentials'],
+  ['health', 'Health Check'],
+  ['system-update', 'System Update'],
+  ['settings', 'Settings'],
+  ['p2p-extension', 'Extension Bridge'],
+  ['security', 'Security'],
+  ['notifications', 'Notifications'],
+  ['audit', 'Audit Logs']
 ];
 
 
@@ -253,16 +253,22 @@ const FRONTEND_PERMISSION_IMPLICATIONS = Object.freeze({
   'accounts.manage': Object.freeze(['accounts.view']),
   'accounts.manage_all': Object.freeze(['accounts.view', 'accounts.manage']),
   'ledger.adjust': Object.freeze(['accounts.view']),
-  'offline.transactions.manage': Object.freeze(['accounts.view'])
+  'offline.transactions.manage': Object.freeze(['accounts.view']),
+  'binance.sync': Object.freeze(['orders.view'])
 });
 function hasPerm(permission) {
   if (!permission) return true;
   if (!state.user) return false;
-  if (state.user.role === 'admin') return true;
-  if (state.user.role === 'manager' && ['accounts.view','accounts.manage','accounts.manage_all'].includes(permission)) return true;
   const permissions = state.user.permissions || [];
   if (permissions.includes(permission)) return true;
   return Object.entries(FRONTEND_PERMISSION_IMPLICATIONS).some(([granted, implied]) => permissions.includes(granted) && implied.includes(permission));
+}
+
+function canOverrideOrderAssignmentClient() {
+  return hasPerm('orders.assign') || hasPerm('approvals.manage');
+}
+function isAssignmentScopedClient() {
+  return Number(state.user?.agentId || 0) > 0 && hasPerm('orders.view') && !canOverrideOrderAssignmentClient();
 }
 
 const $ = (sel, root=document) => root.querySelector(sel);
@@ -2186,7 +2192,7 @@ Object.assign(I18N_BN, {
   "No API credential is assigned.": "কোনো API ক্রেডেনশিয়াল অ্যাসাইন নেই।",
   "Select the API profiles this user can access.": "এই ইউজারের API প্রোফাইল নির্বাচন করুন।",
   "Create an Agent first.": "আগে একজন এজেন্ট তৈরি করুন।",
-  "Unchecked accounts remain Admin/Manager only.": "অনির্বাচিত অ্যাকাউন্ট শুধু Admin/Manager ব্যবহার করবে।",
+  "Unchecked accounts remain unavailable unless explicitly granted.": "স্পষ্টভাবে অনুমতি না দিলে অনির্বাচিত অ্যাকাউন্ট ব্যবহার করা যাবে না।",
   "Sync imports orders only; it never pays or releases.": "Sync শুধু অর্ডার আনে; পেইড বা রিলিজ করে না।",
   "No assigned payment account is available.": "কোনো অ্যাসাইন করা পেমেন্ট অ্যাকাউন্ট নেই।",
   "Proof is required before the final action.": "ফাইনাল অ্যাকশনের আগে প্রুফ প্রয়োজন।",
@@ -2837,8 +2843,8 @@ Object.assign(I18N_BN, {
   "Payment details have now been shared with the counterparty for the payment to be made.": "পেমেন্টের তথ্য কাউন্টারপার্টির সঙ্গে শেয়ার হয়েছে।",
   "No active payment account found. Add or activate an account from Payment Accounts first.": "সক্রিয় পেমেন্ট অ্যাকাউন্ট নেই। আগে অ্যাকাউন্ট যোগ বা চালু করুন।",
   "This payment account is not active. Hold or inactive accounts cannot be used in splits.": "এই পেমেন্ট অ্যাকাউন্ট সক্রিয় নয়।",
-  "Admin and Manager can use every account. An Agent can only see and use accounts granted below.": "Admin/Manager সব অ্যাকাউন্ট ব্যবহার করবে; Agent শুধু অনুমোদিতগুলো।",
-  "Admin and Manager always have access. Checked Agents can view and use this account.": "Admin/Manager সবসময় অ্যাক্সেস পাবে; নির্বাচিত Agent ব্যবহার করবে।",
+  "Payment-account access follows permissions and explicit account grants.": "পেমেন্ট অ্যাকাউন্ট অ্যাক্সেস শুধু পারমিশন ও স্পষ্ট অ্যাকাউন্ট গ্র্যান্ট অনুযায়ী হবে।",
+  "Checked linked users can use this account only when their permissions also allow it.": "নির্বাচিত লিংকড ইউজার পারমিশন অনুমতি দিলেই এই অ্যাকাউন্ট ব্যবহার করতে পারবে।",
   "Co-agent work completed. Remaining and lead payment details updated in realtime.": "Co-agent কাজ সম্পন্ন; বাকি তথ্য আপডেট হয়েছে।",
   "Custom sound is too large for browser storage. Please use a file under 2.5 MB.": "সাউন্ড ফাইল ২.৫ MB-এর কম দিন।",
   "Before final action, actual amount, proof and mismatch rules will be checked.": "ফাইনাল অ্যাকশনের আগে পরিমাণ, প্রুফ ও mismatch চেক হবে।",
@@ -2977,7 +2983,7 @@ const UI_SHORT_COPY = {
   "No API credential is assigned.": "No API credential is assigned.",
   "Select the API profiles this user can access.": "Select the API profiles this user can access.",
   "Create an Agent first.": "Create an Agent first.",
-  "Unchecked accounts remain Admin/Manager only.": "Unchecked accounts remain Admin/Manager only.",
+  "Unchecked accounts remain unavailable unless explicitly granted.": "Unchecked accounts remain unavailable unless explicitly granted.",
   "Sync imports orders only; it never pays or releases.": "Sync imports orders only; it never pays or releases.",
   "No assigned payment account is available.": "No assigned payment account is available.",
   "Proof is required before the final action.": "Proof is required before the final action.",
@@ -4832,7 +4838,7 @@ async function smoothRefreshCurrent() {
   }
 }
 
-function visiblePages() { return pages.filter(p => p[2].includes(state.user.role) && hasPerm(PAGE_PERMISSIONS[p[0]]) && (p[0] !== 'system-update' || state.user.isOwner === true)); }
+function visiblePages() { return pages.filter(p => hasPerm(PAGE_PERMISSIONS[p[0]]) && (p[0] !== 'system-update' || state.user.isOwner === true)); }
 function canPage(page) { return visiblePages().some(p => p[0] === page); }
 
 
@@ -4996,7 +5002,7 @@ function renderNav() {
   // legacy flat menu while this marker is absent, the browser/proxy is serving
   // stale frontend JavaScript rather than the active release.
   nav.dataset.navigationModel = 'grouped-control-center';
-  nav.dataset.uiRelease = '1.5.34';
+  nav.dataset.uiRelease = '1.5.35';
   nav.innerHTML = '';
   const visible = visiblePages();
   const visibleIds = new Set(visible.map(([id]) => id));
@@ -5423,7 +5429,7 @@ function accountMatchesOrderMethod(account={}, order={}) {
 function orderViewerSummary(o={}) {
   const summary = o.viewerSummary || o.summary || {};
   const fullAmount = Number(o.fiatAmount || o.amount || summary.orderAmount || 0);
-  const scoped = Boolean(summary.isScoped && state.user?.role === 'agent');
+  const scoped = Boolean(summary.isScoped && isAssignmentScopedClient());
   return {
     ...summary,
     isScoped: scoped,
@@ -5471,7 +5477,7 @@ function openOrderFinalActionFlow(order, finalAction) {
 }
 
 function currentUserOrderAssignment(o={}) {
-  if (state.user?.role !== 'agent' || !state.user?.agentId) return null;
+  if (!isAssignmentScopedClient() || !state.user?.agentId) return null;
   return (o.assignments || []).find(a => Number(a.agentId) === Number(state.user.agentId) && a.status !== 'left') || null;
 }
 
@@ -5536,7 +5542,7 @@ function canQuickRelease() { return hasPerm('orders.quick_release'); }
 function finalActionButtons(o, finalAction, idPrefix='') {
   if (isFulfilledOrder(o)) return '';
   const assignment = currentUserOrderAssignment(o);
-  if (state.user?.role === 'agent' && assignment?.role === 'co_agent') {
+  if (isAssignmentScopedClient() && assignment?.role === 'co_agent') {
     if (['completed','partial_completed','left'].includes(String(assignment.status || ''))) return '';
     return `<button class="success co-agent-done-btn" id="${idPrefix}CoAgentDoneBtn">Done</button>`;
   }
@@ -5742,8 +5748,8 @@ async function loadOrderDetail(id, showLoading=true, fromRoute=false) {
         <div class="order-floating-menu" id="orderFloatingMenu" role="menu" aria-hidden="true">
           <button class="ghost" id="floatingBackOrders" type="button" role="menuitem"><span aria-hidden="true">←</span> Back</button>
           <button class="secondary" id="floatingCoUserBtn" type="button" role="menuitem"><span aria-hidden="true">＋</span> Request Co-User</button>
-          ${state.user.role==='agent' ? '<button class="warn" id="floatingLeaveBtn" type="button" role="menuitem"><span aria-hidden="true">↗</span> Leave Order</button>' : ''}
-          ${['admin','manager'].includes(state.user.role) ? '<button class="secondary" id="floatingAssignBtn" type="button" role="menuitem"><span aria-hidden="true">＋</span> Assign / Add User</button>' : ''}
+          ${isAssignmentScopedClient() ? '<button class="warn" id="floatingLeaveBtn" type="button" role="menuitem"><span aria-hidden="true">↗</span> Leave Order</button>' : ''}
+          ${hasPerm('orders.assign') ? '<button class="secondary" id="floatingAssignBtn" type="button" role="menuitem"><span aria-hidden="true">＋</span> Assign / Add User</button>' : ''}
         </div>
       </div>
       <header class="order-mobile-unified-head">
@@ -5848,7 +5854,7 @@ async function loadOrderDetail(id, showLoading=true, fromRoute=false) {
             <div class="order-chat-primary-actionbar">${chatTopActions}</div>
 
             <div class="order-chat-panel-content">
-              ${hasPerm('accounts.view') && ['admin','manager'].includes(state.user.role) ? '<button class="order-chat-rail-btn left" id="chatPaymentSplitRailBtn" type="button" aria-label="Open payment split">≡</button>' : ''}
+              ${hasPerm('accounts.view') && hasPerm('orders.split') ? '<button class="order-chat-rail-btn left" id="chatPaymentSplitRailBtn" type="button" aria-label="Open payment split">≡</button>' : ''}
               ${isRealBinanceOrder(o) ? '<button class="order-chat-rail-btn right" id="chatInternalNoteRailBtn" type="button" aria-controls="orderInternalNotePanel" aria-expanded="false" aria-label="Open internal notes">›</button>' : ''}
 
               ${isRealBinanceOrder(o) && hasPerm('binance.chat') ? `<div class="card order-card chat-card order-live-chat-card">
@@ -5863,7 +5869,7 @@ async function loadOrderDetail(id, showLoading=true, fromRoute=false) {
 
             <footer class="order-chat-fixed-footer">
               ${isRealBinanceOrder(o) && hasPerm('binance.chat') ? `<div class="chat-quick-panel" id="chatQuickPanel" aria-hidden="true">
-                <div class="chat-quick-panel-head"><div><b id="chatQuickPanelTitle">Quick Message</b><span>${['admin','manager'].includes(state.user.role) ? 'Saved replies and payment numbers' : 'Saved replies'}</span></div><button id="closeChatQuickPanel" type="button" aria-label="Close quick messages">×</button></div>
+                <div class="chat-quick-panel-head"><div><b id="chatQuickPanelTitle">Quick Message</b><span>${hasPerm('accounts.view') && hasPerm('accounts.use') ? 'Saved replies and payment numbers' : 'Saved replies'}</span></div><button id="closeChatQuickPanel" type="button" aria-label="Close quick messages">×</button></div>
                 <div class="chat-quick-panel-body" id="chatQuickPanelBody"></div>
               </div>
               <div class="chat-attachment-tray" id="chatAttachmentTray" aria-hidden="true">
@@ -6055,7 +6061,7 @@ async function loadOrderDetail(id, showLoading=true, fromRoute=false) {
       if (quickPanelTitle) quickPanelTitle.textContent = 'Quick Message';
       const selectedAccounts = Array.isArray(o.selectedPaymentAccounts) && o.selectedPaymentAccounts.length ? o.selectedPaymentAccounts : (o.selectedPaymentAccount ? [o.selectedPaymentAccount] : []);
       const messages = orderQuickMessages(o);
-      const canUsePaymentAccounts = hasPerm('accounts.view') && hasPerm('accounts.use') && state.user.role !== 'auditor';
+      const canUsePaymentAccounts = hasPerm('accounts.view') && hasPerm('accounts.use');
       const selectedSummary = selectedAccounts.length > 1
         ? `Selected: ${selectedAccounts.length} numbers`
         : selectedAccounts.length === 1
@@ -6275,7 +6281,7 @@ async function loadOrderDetail(id, showLoading=true, fromRoute=false) {
   $$('[data-delete-split]').forEach(b => b.onclick = () => deletePaymentSplit(o, Number(b.dataset.deleteSplit)));
   $$('[data-complete-agent]').forEach(b => b.onclick = () => openCompleteUserModal(o, Number(b.dataset.completeAgent)));
   applyLanguage(document.querySelector('#content') || document);
-  if (state.user.role === 'agent') await api(`/api/orders/${o.id}/heartbeat`, { method:'POST', body:'{}' }).catch(()=>{});
+  if (isAssignmentScopedClient()) await api(`/api/orders/${o.id}/heartbeat`, { method:'POST', body:'{}' }).catch(()=>{});
 }
 
 
@@ -6364,7 +6370,7 @@ function roleProfileSelect(selectedId=null, preferredSystemRole='agent') {
     ? requestedId
     : defaultUserRoleProfileId(preferredSystemRole);
   if (!roles.length) return '<select name="userRoleId" id="userRoleSelect" disabled><option value="">No role available</option></select>';
-  return `<select name="userRoleId" id="userRoleSelect">${roles.map(r => `<option value="${r.id}" data-system-role="${escapeAttr(r.systemRole)}" ${Number(resolvedId)===Number(r.id)?'selected':''}>${escapeHtml(r.name)} (${escapeHtml(r.systemRole)})</option>`).join('')}</select>`;
+  return `<select name="userRoleId" id="userRoleSelect">${roles.map(r => `<option value="${r.id}" data-system-role="${escapeAttr(r.systemRole)}" ${Number(resolvedId)===Number(r.id)?'selected':''}>${escapeHtml(r.name)}</option>`).join('')}</select>`;
 }
 function rolePermissions(roleId) {
   const r = (state.bootstrap.userRoles || []).find(x => Number(x.id) === Number(roleId));
@@ -6389,9 +6395,9 @@ function openRoleModal(role=null) {
   modal(isEdit ? 'Edit User Role' : 'Create User Role', `
     <form id="roleForm" class="form-grid">
       <div><label>Role Name</label><input name="name" value="${escapeAttr(role?.name || '')}" required ${role?.locked ? 'readonly' : ''}/></div>
-      <div><label>System Role</label><select name="systemRole" id="roleSystemRoleSelect" ${role?.locked ? 'disabled' : ''}><option value="agent" ${role?.systemRole==='agent'?'selected':''}>Employee / Agent</option><option value="manager" ${role?.systemRole==='manager'?'selected':''}>Manager</option><option value="auditor" ${role?.systemRole==='auditor'?'selected':''}>Auditor</option></select></div>
+      <div><label>Permission Template Family</label><select name="systemRole" id="roleSystemRoleSelect" ${role?.locked ? 'disabled' : ''}><option value="agent" ${role?.systemRole==='agent'?'selected':''}>Employee / Agent</option><option value="manager" ${role?.systemRole==='manager'?'selected':''}>Manager</option><option value="auditor" ${role?.systemRole==='auditor'?'selected':''}>Auditor</option></select><small>Only chooses initial permission defaults. This label never grants access by itself.</small></div>
       <div class="full-row"><label>Description</label><input name="description" value="${escapeAttr(role?.description || '')}" /></div>
-      <div class="full-row"><label>Permissions</label>${permissionChecks(selectedPerms)}</div>
+      <div class="full-row"><label>Effective Role Permissions</label>${permissionChecks(selectedPerms)}<small>These checked permissions are authoritative. Role name/template family has no runtime authority.</small></div>
       <div class="full-row" id="roleFormMessage"></div>
       <div class="full-row"><button type="submit">${isEdit ? 'Save Role' : 'Create Role'}</button></div>
     </form>`);
@@ -6524,9 +6530,8 @@ function openUserModal(userItem=null) {
       <div><label>Max Active Orders</label><input name="maxActiveOrders" type="number" min="0" step="1" value="${Number.isFinite(Number(userItem?.maxActiveOrders)) ? Number(userItem.maxActiveOrders) : 5}" /></div>
       <div><label>Max Release Amount</label><input name="maxReleaseAmount" type="number" min="0" step="0.01" value="${Number.isFinite(Number(userItem?.maxReleaseAmount)) ? Number(userItem.maxReleaseAmount) : 0}" /></div>
       <div><label class="check"><input type="checkbox" name="allowNewOrders" ${userItem?.allowNewOrders === false ? '' : 'checked'} /> Work Status ON — accept new orders even while offline</label></div>
-      <div><label class="check"><input type="checkbox" name="assignmentAccountingEnabled" ${u.assignmentAccountingEnabled === false ? '' : 'checked'} /> Use Payment Account calculation for auto assignment</label><small>OFF = Order-only Agent. Routing/permissions still apply, but payment-account existence, balance and capacity do not block automatic assignment.</small></div>
+      <div><label class="check"><input type="checkbox" name="assignmentAccountingEnabled" ${u.assignmentAccountingEnabled === false ? '' : 'checked'} /> Use Payment Account calculation for auto assignment</label><small>OFF = Order-only assignment. Routing and permissions still apply, but payment-account existence, balance and capacity do not block automatic assignment.</small></div>
       <div><label class="check"><input type="checkbox" name="smsEnabled" ${userItem?.smsEnabled === false ? '' : 'checked'} /> Panel SMS on order assignment</label></div>
-      <div><label class="check"><input type="checkbox" name="canRelease" ${userItem?.canRelease ? 'checked' : ''} /> Can release/final action</label></div>
       <div class="full-row profit-accounting-setting"><label class="check"><input type="checkbox" name="includeProfitInCompanyTotals" ${userItem?.includeProfitInCompanyTotals === false ? '' : 'checked'} /> Include this user's profit in company income and capital totals</label><small>Turn this off to keep the user's income visible in their individual report while excluding it from company totals.</small></div>
       <div class="full-row"><label>Global Permissions</label>${permissionChecks(selectedPerms)}<small>A Binance account grant below never bypasses these global permissions.</small></div>
       <div class="full-row"><label>Binance Account Permissions</label>${binanceCredentialPermissionMatrix(selectedCredentialPerms)}<small>Grant permissions separately for each Binance account. The user can only see or manage orders, ads, chat and profile data for the selected account.</small></div>
@@ -6546,8 +6551,8 @@ function openUserModal(userItem=null) {
     userForm.querySelectorAll('input[name="permissions"]').forEach(ch => { ch.checked = perms.includes(ch.value); });
     syncBinancePermissionMatrixWithGlobalPermissions(userForm);
     // Role selection applies its account-scoped permissions to every enabled
-    // Binance account by default. Admin can immediately untick any account or
-    // permission before saving the user.
+    // Binance account by default. The editor can immediately untick any account
+    // or permission before saving the user; the role label itself grants nothing.
     userForm.querySelectorAll('input[name="binanceCredentialPermission"]').forEach(input => {
       input.checked = !input.disabled && perms.includes(input.value);
     });
@@ -6565,7 +6570,6 @@ function openUserModal(userItem=null) {
     obj.allowNewOrders = e.target.allowNewOrders.checked;
     obj.assignmentAccountingEnabled = e.target.assignmentAccountingEnabled.checked;
     obj.smsEnabled = e.target.smsEnabled.checked;
-    obj.canRelease = e.target.canRelease.checked;
     obj.includeProfitInCompanyTotals = e.target.includeProfitInCompanyTotals.checked;
     obj.permissions = selectedPermissions(e.target);
     obj.binanceCredentialPermissions = selectedBinanceCredentialPermissions(e.target);
@@ -6609,7 +6613,7 @@ function openRouteModal(route=null) {
 }
 
 function assignablePaymentAgents() {
-  return (state.bootstrap?.agents || []).filter(agent => !agent.user || agent.user.role === 'agent');
+  return (state.bootstrap?.agents || []);
 }
 
 function paymentAccountAgentAccessHtml(selectedIds=[]) {
@@ -6651,7 +6655,7 @@ function paymentAccountOwnerField(selectedId=null, editable=paymentAccountScopeM
 }
 
 function paymentAccountAgentAccessField(selectedIds=[], editable=paymentAccountScopeManageAll()) {
-  if (!editable) return '<div class="notice small">This account remains under the selected Account User. Only Admin/Manager or Manage All Payment Accounts can change other Agent access.</div>';
+  if (!editable) return '<div class="notice small">This account remains under the selected Account User. The Manage All Payment Accounts permission is required to change other linked-user access.</div>';
   return paymentAccountAgentAccessHtml(selectedIds);
 }
 
@@ -6756,7 +6760,7 @@ function paymentAccountChargeFieldsHtml(account={}) {
 
 function openAccountModal() {
   const manageAll = paymentAccountScopeManageAll();
-  const defaultType = state.user?.role === 'agent' ? 'agent' : 'personal';
+  const defaultType = 'personal';
   modal('Add Payment Account', `
     <form id="accountForm" class="form-grid">
       <div><label>Payment Method</label>${methodSelect()}</div>
@@ -7086,7 +7090,7 @@ function renderBulkAccountPreview({ applyDefaults=false } = {}) {
 
 function openBulkAccountModal() {
   const manageAll = paymentAccountScopeManageAll();
-  const defaultType = state.user?.role === 'agent' ? 'agent' : 'personal';
+  const defaultType = 'personal';
   modal('Bulk Add Payment Accounts', `
     <form id="bulkAccountForm" class="form-grid bulk-account-box-form">
       <div><label>Payment Method</label>${methodSelect()}</div>
@@ -7591,7 +7595,7 @@ async function openPaymentSplitActionModal(order, finalAction) {
   let currentRemaining = Math.max(0, Number(viewerSummary.viewerRemaining || 0));
   const proofRequired = order.settings?.paymentSplitProofRequired !== false;
   let accounts = [];
-  const canUseAccounts = hasPerm('accounts.view') && hasPerm('accounts.use') && state.user?.role !== 'auditor';
+  const canUseAccounts = hasPerm('accounts.view') && hasPerm('accounts.use');
   if (canUseAccounts) {
     try {
       const response = await api('/api/payment-accounts?paymentMethodId=' + encodeURIComponent(order.paymentMethodId || ''));
@@ -7977,14 +7981,14 @@ function openFinalActionModal(order, finalAction) {
   const liveFields = liveMode ? `
     <input type="hidden" name="binanceOrderNumber" value="${escapeAttr(order.externalOrderNo || order.orderNo || '')}" />
     <input type="hidden" name="payId" value="${Number(order.binancePayId || 0) || ''}" />` : '';
-  const privilegedDirectDecision = ['admin','manager'].includes(state.user.role);
+  const privilegedDirectDecision = canOverrideOrderAssignmentClient();
   const splitGate = finalActionSplitGateStateForOrder(order, finalAction);
   const directNotice = !splitGate.enabled && finalAction !== 'complete'
     ? 'Payment Split requirement is disabled in Settings. This final action will run directly without opening or requiring a split.'
     : splitGate.satisfied && finalAction !== 'complete'
       ? 'Payment Split is already saved. This page only handles the final Binance action and any verification Binance requires.'
       : privilegedDirectDecision
-        ? 'Admin/Manager direct decision: this action will take effect immediately without assignment or a separate approval. Actor, time, action, issues and result will remain in Audit Log.'
+        ? 'Your effective permissions allow a direct decision. This action will take effect immediately without assignment or a separate approval. Actor, time, action, issues and result will remain in Audit Log.'
         : 'Before final action, the configured split, proof and approval rules will be checked.';
   modal(label, `
     <div class="notice">${directNotice}</div>
@@ -8092,8 +8096,8 @@ function splitValidationMessage({order, account, direction, amount, excludeSplit
       ? `Amount is higher than the wallet available balance ${money(capacity)}.`
       : `Amount is higher than the receive limit left ${money(capacity)}.`;
   }
-  if (!['admin','manager'].includes(state.user.role)) {
-    const assignmentAgentId = state.user.role === 'agent' ? state.user.agentId : (account.agent?.id || account.agentId);
+  if (!canOverrideOrderAssignmentClient()) {
+    const assignmentAgentId = Number(state.user?.agentId || 0);
     const assignment = activeAssignmentForUser(order, assignmentAgentId);
     if (assignment) {
       const alreadyPlanned = plannedForUser(order, assignment.agentId, direction, excludeSplitId);
@@ -8317,7 +8321,7 @@ function openCoAgentDoneModal(order, assignment = null) {
     if (proofRequired && !proof) return setFormMessage('#coAgentDoneMessage', 'Attach a proof screenshot.', 'danger');
     try {
       if (proof) obj.screenshotDataUrl = await toDataUrl(proof);
-      if (['admin','manager'].includes(state.user.role)) obj.agentId = a.agentId;
+      if (canOverrideOrderAssignmentClient()) obj.agentId = a.agentId;
       const updated = await api(`/api/orders/${order.id}/complete-agent-task`, { method:'POST', body: JSON.stringify(obj) });
       notify('Co-agent work completed. Remaining and lead payment details updated in realtime.', 'ok');
       closeModal();
@@ -8811,7 +8815,7 @@ function permissionChecks(selected=[]) { const list = state.bootstrap.permission
 function selectedPermissions(form) { return Array.from(form.querySelectorAll('input[name="permissions"]:checked')).map(x => x.value); }
 function defaultSplitAmount(order) {
   const fallback = Number(order.summary?.remaining || order.amount || 0);
-  if (state.user?.role === 'agent') {
+  if (isAssignmentScopedClient()) {
     const mine = (order.assignments || []).find(a => Number(a.agentId) === Number(state.user.agentId) && !['left','completed','partial_completed'].includes(a.status));
     if (mine) {
       const left = Math.max(0, Number(mine.assignedAmount || 0) - Number(mine.actualAmount || 0));
@@ -8826,7 +8830,7 @@ function defaultSplitAmount(order) {
   return fallback;
 }
 
-function canCompleteUserTask(a) { return ['admin','manager'].includes(state.user.role) || (state.user.role === 'agent' && Number(state.user.agentId) === Number(a.agentId) && !['completed','partial_completed','left'].includes(a.status)); }
+function canCompleteUserTask(a) { return canOverrideOrderAssignmentClient() || (isAssignmentScopedClient() && Number(state.user.agentId) === Number(a.agentId) && !['completed','partial_completed','left'].includes(a.status)); }
 function agentTaskAction(a, order) {
   if (a.status === 'completed') return '<span class="badge ok">Done</span>';
   if (a.status === 'partial_completed') return '<span class="badge warn">Partial Done</span>';

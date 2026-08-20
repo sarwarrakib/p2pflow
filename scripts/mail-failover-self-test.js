@@ -12,7 +12,7 @@ const pkg = JSON.parse(read('package.json'));
 const fail = message => { throw new Error(`Mail failover self-test failed: ${message}`); };
 const assert = (ok, message) => { if (!ok) fail(message); };
 
-assert(pkg.version === '1.5.34', `expected v1.5.34, got ${pkg.version}`);
+assert(pkg.version === '1.5.35', `expected v1.5.35, got ${pkg.version}`);
 
 for (const marker of [
   'mailFallbackRoutes: []',

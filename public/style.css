@@ -5457,3 +5457,6 @@ tr:hover td{background:#fbfbfc}
   .release-verify-field>label{font-size:15px}
   .release-verify-input-wrap input{font-size:17px!important}
 }
+
+/* v1.5.35: permission-only roles + advertisement rate guard */
+.crm-ad-rate-guard{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:-12px 0 18px;padding:9px 11px;border:1px solid #edf0f3;border-radius:10px;background:#fafafa}.crm-ad-rate-guard small{color:#8b9098;font-size:11px}.crm-ad-rate-guard b{font-size:12px;font-weight:700;text-align:right}.ads-rate-guard-row{margin-top:12px}.ads-rate-guard-row label{display:block;color:#7b7f86;font-size:11px;margin-bottom:6px}.ads-rate-guard-row .ads-amount-input{height:42px;display:flex;align-items:center;background:#f6f6f7;border-radius:8px;overflow:hidden}.ads-rate-guard-row .ads-amount-input input{height:100%;flex:1;min-width:0;border:0!important;background:transparent!important;padding:0 10px!important}.ads-rate-guard-row .ads-amount-input span{padding:0 10px 0 4px;font-size:12px;font-weight:600;white-space:nowrap}@media(max-width:520px){.ads-rate-guard-row{grid-template-columns:1fr}.ads-rate-guard-row>em{display:none}.crm-ad-rate-guard{align-items:flex-start;flex-direction:column}}

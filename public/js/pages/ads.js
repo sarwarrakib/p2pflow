@@ -1,4 +1,4 @@
-// P2PFlow v1.5.34
+// P2PFlow v1.5.35
 // Restored FULL advertisement update payload with no-updateMode compatibility retry.
 
 const ADS_COUNTRY_CODES = ["BD","US","GB","IN","PK","AE","SA","TR","NG","KE","GH","ZA","MY","SG","ID","PH","TH","VN","AU","CA","DE","FR","IT","ES","NL","BE","PT","JP","KR","CN","HK","TW","BR","MX","AR","CO","PE","CL","EG","MA","DZ","TN","QA","KW","BH","OM","LK","NP","AW","AF","AO","AI","AX","AL","AD","AM","AS","AQ","TF","AG","AT","AZ","BI","BJ","BQ","BF","BG","BS","BA","BL","BY","BZ","BM","BO","BB","BN","BT","BV","BW","CF","CC","CH","CI","CM","CD","CG","CK","KM","CV","CR","CU","CW","CX","KY","CY","CZ","DJ","DM","DK","DO","EC","ER","EH","EE","ET","FI","FJ","FK","FO","FM","GA","GE","GG","GI","GN","GP","GM","GW","GQ","GR","GD","GL","GT","GF","GU","GY","HM","HN","HR","HT","HU","IM","IO","IE","IR","IQ","IS","IL","JM","JE","JO","KZ","KG","KH","KI","KN","LA","LB","LR","LY","LC","LI","LS","LT","LU","LV","MO","MF","MC","MD","MG","MV","MH","MK","ML","MT","MM","ME","MN","MP","MZ","MR","MS","MQ","MU","MW","YT","NA","NC","NE","NF","NI","NU","NO","NR","NZ","PA","PN","PW","PG","PL","PR","KP","PY","PS","PF","RE","RO","RU","RW","SD","SN","GS","SH","SJ","SB","SL","SV","SM","SO","PM","RS","SS","ST","SR","SK","SI","SE","SZ","SX","SC","SY","TC","TD","TG","TJ","TK","TM","TL","TO","TT","TV","TZ","UG","UA","UM","UY","UZ","VA","VC","VE","VG","VI","VU","WF","WS","YE","ZM","ZW"];
@@ -149,6 +149,7 @@ function adCardHtml(ad = {}, capability = {}) {
       </div>
     </div>
     <div class="crm-ad-price"><span>${pricePrefix}</span><b>${adNumber(ad.price, 2)}</b></div>
+    ${(Number(ad.minRate || 0) > 0 || Number(ad.maxRate || 0) > 0) ? `<div class="crm-ad-rate-guard"><small>Rate Guard</small><b>${Number(ad.minRate || 0) > 0 ? `${pricePrefix}${adNumber(ad.minRate, 2)}` : 'No min'} – ${Number(ad.maxRate || 0) > 0 ? `${pricePrefix}${adNumber(ad.maxRate, 2)}` : 'No max'}</b></div>` : ''}
     <div class="crm-ad-summary">
       <div><span>Total amount</span><b>${adNumber(totalAmount, 2)} ${escapeHtml(ad.asset || 'USDT')}</b></div>
       <div><span>Limit</span><b>${Number(ad.minSingleTransAmount || 0).toLocaleString('en-US')} - ${Number(ad.maxSingleTransAmount || 0).toLocaleString('en-US')} ${escapeHtml(ad.fiatUnit || 'BDT')}</b></div>
@@ -811,6 +812,12 @@ function openAdvertisementEditor(ad = null, data = {}) {
       <div class="ads-price-box"><button type="button" tabindex="-1">−</button><input name="price" type="number" min="0" step="0.00000001" value="${escapeAttr(ad?.price || '')}" required><button type="button" tabindex="-1">＋</button></div>
       <input type="hidden" name="priceType" value="${Number(ad?.priceType || 1)}">
       ${ad?.price ? `<div class="ads-reference-lines"><span>Your Price <b>${escapeHtml(ad?.fiatUnit === 'BDT' ? 'Tk.' : ad?.fiatUnit || '')}${adNumber(ad.price, 2)}</b></span></div>` : ''}
+      <div class="ads-order-limit-row ads-rate-guard-row">
+        <div><label>Minimum Rate (Optional)</label><div class="ads-amount-input"><input name="minRate" type="number" min="0" step="0.00000001" value="${escapeAttr(ad?.minRate || '')}" placeholder="No minimum"><span data-fiat-unit>${escapeHtml(ad?.fiatUnit || 'BDT')}</span></div></div>
+        <em>~</em>
+        <div><label>Maximum Rate (Optional)</label><div class="ads-amount-input"><input name="maxRate" type="number" min="0" step="0.00000001" value="${escapeAttr(ad?.maxRate || '')}" placeholder="No maximum"><span data-fiat-unit>${escapeHtml(ad?.fiatUnit || 'BDT')}</span></div></div>
+      </div>
+      <small>Local P2PFlow safety bounds for manual ad rate updates. These values are not sent as undocumented Binance API fields.</small>
     </section>
 
     <section class="ads-field-section ads-total-amount-section">
@@ -1115,10 +1122,13 @@ function openAdvertisementEditor(ad = null, data = {}) {
     obj.termsTags = selectedTags;
     obj.additionalKyc = selectedTags.some(tag => /additional[ _-]*kyc/i.test(tag));
     obj.regions = selectedRegions;
-    for (const key of ['price', 'initAmount', 'minSingleTransAmount', 'maxSingleTransAmount', 'payTimeLimit', 'priceType', 'buyerRegDaysLimit', 'buyerBtcPositionLimit']) obj[key] = Number(obj[key] || 0);
+    for (const key of ['price', 'minRate', 'maxRate', 'initAmount', 'minSingleTransAmount', 'maxSingleTransAmount', 'payTimeLimit', 'priceType', 'buyerRegDaysLimit', 'buyerBtcPositionLimit']) obj[key] = Number(obj[key] || 0);
     obj.registeredRequired = fd.has('registeredRequired');
     obj.holdingRequired = fd.has('holdingRequired');
     obj.nonMerchant = fd.has('nonMerchant');
+    if (obj.minRate > 0 && obj.maxRate > 0 && obj.maxRate < obj.minRate) return setFormMessage('#advertisementFormMessage', 'Maximum Rate must be greater than or equal to Minimum Rate.', 'danger');
+    if (obj.minRate > 0 && obj.price < obj.minRate) return setFormMessage('#advertisementFormMessage', `Price cannot be lower than Minimum Rate (${obj.minRate}).`, 'danger');
+    if (obj.maxRate > 0 && obj.price > obj.maxRate) return setFormMessage('#advertisementFormMessage', `Price cannot be higher than Maximum Rate (${obj.maxRate}).`, 'danger');
     const submit = form.querySelector('button[type="submit"]');
     submit.disabled = true;
     submit.textContent = isEdit ? 'Saving...' : 'Creating...';

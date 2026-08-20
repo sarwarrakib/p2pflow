@@ -27,15 +27,14 @@ const section = (source, start, end) => {
   return source.slice(a, b);
 };
 
-assert(pkg.version === '1.5.34', `expected v1.5.34, got ${pkg.version}`);
-assert(server.includes('const APP_SCHEMA_VERSION = 35;'), 'schema 35 is missing.');
+assert(pkg.version === '1.5.35', `expected v1.5.35, got ${pkg.version}`);
+assert(server.includes('const APP_SCHEMA_VERSION = 36;'), 'schema 35 is missing.');
 
-// Payment-account authorization: Admin/Manager all, Agent own only, optional all-account permission for non-Agent roles.
+// Payment-account authorization is permission-only: accounts.manage_all gives all-account scope; otherwise ownership/access rules apply.
 assert(server.includes("'accounts.manage_all': Object.freeze(['accounts.view', 'accounts.manage'])"), 'accounts.manage_all implications are missing.');
 assert(server.includes("'offline.transactions.manage': Object.freeze(['accounts.view'])"), 'offline transaction page implication is missing.');
 const manageAll = section(server, 'function canManageAllPaymentAccounts', 'function canManagePaymentAccount');
-assert(manageAll.includes("['admin', 'manager'].includes"), 'Admin/Manager all-account access is missing.');
-assert(manageAll.includes("role || '').toLowerCase() === 'agent') return false"), 'Agent is not hard-limited away from all-account scope.');
+assert(!/role|admin|manager|agent|auditor/i.test(manageAll), 'All-account management still depends on a role label.');
 assert(manageAll.includes("userHasPermission(user, 'accounts.manage_all')"), 'Manage All Payment Accounts permission is not implemented.');
 const manageOwn = section(server, 'function canManagePaymentAccount', 'function canManagePaymentAccountAccess');
 assert(manageOwn.includes("userHasPermission(user, 'accounts.manage')"), 'accounts.manage is not required.');
@@ -63,12 +62,12 @@ assert(accounts.includes('paymentAccountIdentityHtml'), 'Label/Serial identity d
 assert(app.includes('paymentAccountOwnerField(state.user?.id'), 'Add/Bulk Account User does not default to the logged-in user.');
 assert(app.includes('name="label"') && app.includes('name="serialNumber"'), 'Add/Edit Label and Serial fields are missing.');
 assert(app.includes('Starting Serial') && app.includes('bulkSerialValue'), 'Sequential bulk serial workflow is missing.');
-assert(app.includes("['accounts', 'Payment Accounts', ['admin','manager','agent','auditor']]"), 'Payment Accounts page is not available to permitted users.');
+assert(app.includes("function visiblePages() { return pages.filter(p => hasPerm(PAGE_PERMISSIONS[p[0]])"), 'Page visibility still uses role-name allowlists.');
 
 // Assignment eligibility remains controlled by the persistent switch, not presence.
 const availability = section(server, 'function agentAvailableForAssignment', 'function rangeBounds');
 assert(availability.includes('agent.allowNewOrders === false'), 'Order Acceptance OFF is not an assignment blocker.');
-assert(availability.includes("linkedUser.role !== 'agent'"), 'Non-Agent users can become auto-assignment candidates.');
+assert(!availability.includes('linkedUser.role'), 'Auto-assignment eligibility still depends on a role label.');
 assert(availability.includes("userHasPermission(linkedUser, 'orders.view')"), 'Orders View is not required for assignment eligibility.');
 assert(!availability.includes('userPresenceView') && !availability.includes('agentDynamicStatus'), 'Presence still controls assignment eligibility.');
 const manualAssign = section(server, 'async function managerAssign', 'async function requestCoAgent');
@@ -110,7 +109,7 @@ console.log(JSON.stringify({
   version: pkg.version,
   schemaVersion: 35,
   agentOwnAccountManage: true,
-  managerAllAccountManage: true,
+  permissionBasedAllAccountManage: true,
   permissionDescriptions: permissions.length,
   permissionEyeButton: true,
   assignmentPresenceIndependent: true,

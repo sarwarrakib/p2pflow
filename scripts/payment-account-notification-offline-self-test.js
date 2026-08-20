@@ -27,13 +27,13 @@ function section(source, start, end) {
   return source.slice(a, b);
 }
 
-assert(pkg.version === '1.5.34', `expected 1.5.34, got ${pkg.version}`);
-assert(server.includes('const APP_SCHEMA_VERSION = 35;'), 'schema 34 missing.');
+assert(pkg.version === '1.5.35', `expected 1.5.35, got ${pkg.version}`);
+assert(server.includes('const APP_SCHEMA_VERSION = 36;'), 'schema 34 missing.');
 
 // Payment-account identity and scope.
 assert(server.includes("'accounts.manage_all'"), 'Manage All Payment Accounts permission missing.');
-assert(server.includes('function canManageAllPaymentAccounts') && server.includes("['admin', 'manager'].includes"), 'Admin/Manager all-account scope missing.');
-assert(server.includes("toLowerCase() === 'agent') return false"), 'Agent all-account guard missing.');
+assert(server.includes('function canManageAllPaymentAccounts') && server.includes("userHasPermission(user, 'accounts.manage_all')"), 'Permission-based all-account scope missing.');
+assert(!server.includes("toLowerCase() === 'agent') return false"), 'Payment-account scope still depends on Agent role name.');
 assert(server.includes('label: cleanStr(body.label') && server.includes('serialNumber: cleanStr(body.serialNumber'), 'Label/Serial persistence missing.');
 assert(server.includes('function paymentAccountMatchesSearch') && server.includes('accountItem.label') && server.includes('accountItem.serialNumber'), 'Label/Serial server search missing.');
 assert(accounts.includes('Search number, label, serial or user') && accounts.includes('applyPaymentAccountFilters') && accounts.includes('paymentAccountTypeFilter') && accounts.includes('paymentAccountLabelFilter') && accounts.includes('paymentAccountMethodFilter'), 'Instant permission-scoped payment account search/filter UI missing.');
@@ -78,7 +78,7 @@ assert(section(server, 'function offlineTransactionCandidates', 'function create
 assert(server.includes("type: 'offline_receive'") && server.includes('allocation.receivedAmount = round2'), 'Received balance/partial tracking missing.');
 assert(server.includes('body.allowPartial !== true') && server.includes("status = isPartial ? 'finalized_partial' : 'finalized'"), 'Partial offline order finalization guard missing.');
 assert(server.includes('createOfflineCompletedOrder') && server.includes("orderSource: 'offline'"), 'Offline order creation missing.');
-assert(index.includes('/js/pages/offline-transactions.js?v=1.5.34'), 'Offline page script not loaded.');
+assert(index.includes('/js/pages/offline-transactions.js?v=1.5.35'), 'Offline page script not loaded.');
 assert(app.includes("['offline-transactions', 'Offline Business'") && app.includes("'offline-transactions': 'offline.transactions.manage'"), 'Offline page navigation/permission missing.');
 assert(offline.includes('/api/offline-transactions/candidates') && offline.includes('data-mark-offline-received'), 'Offline candidate/received UI missing.');
 assert(offline.includes('Create Partial Order') && offline.includes('allowPartial'), 'Offline partial finalize UI missing.');

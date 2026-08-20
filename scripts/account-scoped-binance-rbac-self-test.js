@@ -18,8 +18,8 @@ const css = read('public/style.css');
 const fail = message => { throw new Error(`Account-scoped Binance RBAC self-test failed: ${message}`); };
 const assert = (condition, message) => { if (!condition) fail(message); };
 
-assert(pkg.version === '1.5.34', `expected v1.5.34, got ${pkg.version}`);
-assert(server.includes('const APP_SCHEMA_VERSION = 35;'), 'schema migration version 33 is missing');
+assert(pkg.version === '1.5.35', `expected v1.5.35, got ${pkg.version}`);
+assert(server.includes('const APP_SCHEMA_VERSION = 36;'), 'schema migration version 33 is missing');
 
 for (const marker of [
   'BINANCE_ACCOUNT_PERMISSION_CATALOG',
@@ -31,10 +31,10 @@ for (const marker of [
   'validateGrantedBinanceCredentialPermissions'
 ]) assert(server.includes(marker), `server marker missing: ${marker}`);
 
-assert(server.includes("if (String(user.role || '').toLowerCase() === 'admin') return true;"), 'Admin all-account override is missing');
+assert(!server.includes("if (String(user.role || '').toLowerCase() === 'admin') return true;"), 'Role-name Admin all-account override still exists.');
 assert(!server.includes("user.role === 'manager' && PRIVILEGED_ORDER_PERMISSIONS"), 'Manager still has an implicit global permission bypass');
 assert(server.includes("if (!userHasPermission(user, permission)) return false;"), 'global permission gate is missing');
-assert(server.includes('You cannot grant permissions you do not have'), 'non-admin permission delegation guard is missing');
+assert(server.includes('You cannot grant permissions you do not have'), 'permission delegation guard is missing');
 assert(server.includes("Number(item.credentialId) === Number(credentialId)"), 'exact credential match is missing');
 assert(server.includes("userHasBinanceCredentialPermission(user, credentialId, 'orders.view')"), 'order visibility is not account-scoped');
 assert(server.includes("requireLiveBinanceCredentialForUser(req, res, manager, body.credentialId, 'orders.create'"), 'Binance order creation is not account-scoped');

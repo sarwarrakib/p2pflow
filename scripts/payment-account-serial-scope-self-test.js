@@ -22,8 +22,8 @@ const section = (source, start, end) => {
   return source.slice(a, b);
 };
 
-assert(pkg.version === '1.5.34', `expected v1.5.34, got ${pkg.version}`);
-assert(server.includes('const APP_SCHEMA_VERSION = 35;'), 'schema 35 is required for transaction-specific payment rules.');
+assert(pkg.version === '1.5.35', `expected v1.5.35, got ${pkg.version}`);
+assert(server.includes('const APP_SCHEMA_VERSION = 36;'), 'schema 35 is required for transaction-specific payment rules.');
 
 const helpers = section(server, 'function normalizePaymentAccountSerialScopeValue', 'function paymentAccountMatchesSearch');
 assert(helpers.includes("normalize('NFKC')") && helpers.includes("replace(/\\s+/g, ' ')") && helpers.includes('.toLowerCase()'), 'case/space/Unicode normalization is missing.');
