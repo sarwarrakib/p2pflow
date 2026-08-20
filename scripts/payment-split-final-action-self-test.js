@@ -36,10 +36,10 @@ assert(server.includes("action === 'splits-batch'") && server.includes('addSplit
 assert(app.includes('paymentAccountIds') && app.includes('Send Selected') && app.includes('window.confirm'), 'Confirmed multi-select payment-number send UI is missing.');
 assert(app.includes('splitBatchRowsHtml') && app.includes('collectSplitBatchItems'), 'Multi-number split amount rows are missing.');
 assert(app.includes('finalActionSplitGateStateForOrder') && app.includes('openOrderFinalActionFlow'), 'Final action split-gate routing helper is missing.');
-assert(app.includes('if (gate.enabled && !gate.satisfied) return openPaymentSplitActionModal(order, finalAction);') && app.includes("if (finalAction === 'release' || finalAction === 'quick_release') return openReleaseVerificationPage(order, finalAction);"), 'Saved/ready Payment Split does not bypass the split popup into the dedicated Release Verification screen.');
-assert(app.includes('Continue to ${escapeHtml(label)}') && app.includes('setTimeout(() => openFinalActionModal(workingOrder, finalAction), 60);') && app.includes('openReleaseVerificationPage'), 'Split step does not transition to the dedicated final-action verification page.');
+assert(app.includes('if (gate.enabled && !gate.satisfied) return openPaymentSplitActionModal(order, finalAction);') && app.includes("if (finalAction === 'release' || finalAction === 'quick_release') return startReleaseFinalActionFlow(order, finalAction);"), 'Saved/ready Payment Split does not bypass the split popup into the direct Binance release flow.');
+assert(app.includes('Continue to ${escapeHtml(label)}') && app.includes('setTimeout(() => openOrderFinalActionFlow(workingOrder, finalAction), 60);') && app.includes('startReleaseFinalActionFlow'), 'Split step does not transition to the direct final-action flow.');
 assert(server.includes('finalActionSplitGate: finalActionSplitGateState(order)'), 'Server does not expose authoritative Payment Split readiness.');
-assert(server.includes('lastFinalActionFailure') && app.includes('savedFailure?.releaseRequirements') && server.includes('verificationRequired:true'), 'Binance verification challenge is not preserved for direct retry.');
+assert(server.includes('releaseRequirementsAreConcrete') && !app.includes('savedFailure?.releaseRequirements') && server.includes('verificationRequired:true'), 'Stale/generic Binance verification challenge can still be reused by the browser.');
 assert(orders.includes('Serial:') && orders.includes('Label:'), 'Split rows do not show payment-account Label and Serial.');
 
 assert(server.includes('BINANCE_RELEASE_VERIFICATION_METHODS') && server.includes('LOCAL_RELEASE_VERIFICATION_METHODS'), 'Release verification method catalogs are missing.');
@@ -47,11 +47,13 @@ assert(server.includes("action === 'final-action-verification-start'") && server
 assert(server.includes('releaseVerificationBodyForCredential') && server.includes('releaseVerificationPolicyForCredential'), 'Per-Binance-account release verification policy is missing.');
 assert(server.includes("credentials.manage") && server.includes('releaseFundPassword'), 'Fund Transfer Password permission/storage guard is missing.');
 assert(app.includes('Change Verification System') && app.includes('localVerificationToken'), 'Primary/Secondary release verification UI is missing.');
-assert(app.includes('releaseVerificationFieldsForScreen') && app.includes('Authenticator App Verification') && app.includes('FUND_PWD') && app.includes('YUBIKEY'), 'Dedicated configured Binance verification screen is incomplete.');
+assert(app.includes('releaseVerificationFieldsForScreen') && app.includes('Authenticator App Verification') && app.includes('FUND_PWD') && app.includes('YUBIKEY'), 'Dedicated challenge-driven Binance verification screen is incomplete.');
 assert(!app.includes('releaseFundPassword') && !read('public/js/pages/credentials.js').includes('releaseFundPassword'), 'Stored Fund Transfer Password is exposed by a browser bundle identifier.');
 assert(app.includes('release-verification-modal') && app.includes('release-verify-paste') && css.includes('.release-verification-modal') && css.includes('height:100dvh'), 'Responsive standalone Release Verification screen is missing.');
-assert(app.includes("silent:true") && app.includes("err?.data?.verificationRequired === true"), 'Binance Auto verification challenge is still surfaced as a normal request error.');
+assert(app.includes('attemptReleaseDirect') && app.includes('freshVerificationProbe') && app.includes("silent:true") && app.includes("err?.data?.verificationRequired === true"), 'Initial Release no longer performs a silent minimal Binance probe before showing verification.');
 assert(server.includes("return sendJson(res, 428") && server.includes('challengeMessage'), 'Server does not convert Binance missing-code responses into a verification challenge.');
+assert(!server.includes("add('code', 'Binance verification code'") && !app.includes("label:'Binance verification code'"), 'Ambiguous generic Binance verification-code field still exists.');
+assert(app.includes('const requirements = options.requirements || null;'), 'Release screen still restores stale saved verification requirements.');
 const runtime = spawnSync(process.execPath, ['app-server.js', '--payment-split-final-action-self-test'], { cwd:root, encoding:'utf8', env:{...process.env, NODE_ENV:'test'} });
 if (runtime.stdout) process.stdout.write(runtime.stdout);
 if (runtime.stderr) process.stderr.write(runtime.stderr);
@@ -66,8 +68,8 @@ assert(report?.splitDelete?.balanceRestored === true && report?.splitDelete?.sen
 assert(report?.finalAction?.genericIdRejectedAsPayId === true && report?.finalAction?.unpaidStatusNotMisclassified === true, 'final-action payId/status assertions failed.');
 assert(report?.finalAction?.splitGateToggle === true && report?.finalAction?.proofMandatoryOptional === true, 'Payment Split gate/proof mode runtime assertions failed.');
 assert(report?.finalAction?.savedSplitGateSatisfied === true && report?.finalAction?.missingProofGateUnsatisfied === true, 'Saved Payment Split readiness runtime assertions failed.');
-assert(report?.releaseVerification?.fundPasswordExactPreserved === true && report?.releaseVerification?.fundPasswordNotExposed === true, 'Fund Transfer Password verification runtime assertions failed.');
-assert(report?.releaseVerification?.googleAndSmsMapped === true && report?.releaseVerification?.challengeOverridesPreference === true && report?.releaseVerification?.genericFailureDoesNotInventCode === true && report?.releaseVerification?.localGateRequiredForAutoFund === true, 'Configured Binance/local verification runtime assertions failed.');
+assert(report?.releaseVerification?.fundPasswordExactPreserved === true && report?.releaseVerification?.fundPasswordNotExposed === true && report?.releaseVerification?.initialPreferencePayloadMinimal === true, 'Fund Transfer Password verification runtime assertions failed.');
+assert(report?.releaseVerification?.googleAndSmsMapped === true && report?.releaseVerification?.challengeOverridesPreference === true && report?.releaseVerification?.genericFailureDoesNotInventCode === true && report?.releaseVerification?.ambiguousCodeDoesNotInventField === true && report?.releaseVerification?.staleGenericChallengeIgnored === true && report?.releaseVerification?.localGateRequiredForAutoFund === true, 'Configured Binance/local verification runtime assertions failed.');
 
 console.log(JSON.stringify({
   ok:true,
@@ -79,6 +81,8 @@ console.log(JSON.stringify({
   splitGateToggle:true,
   proofMandatoryOptional:true,
   savedSplitDirectRetry:true,
+  directMinimalReleaseProbe:true,
+  staleGenericChallengeIgnored:true,
   finalVerificationPage:true,
   multiNumberSelection:true,
   safePayIdResolution:true,

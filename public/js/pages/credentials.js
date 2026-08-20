@@ -1,4 +1,4 @@
-// P2PFlow v1.5.31
+// P2PFlow v1.5.32
 // API credentials: automatic connect validation, P2P username identity, compact actions and per-account Release Verification settings.
 
 const P2PFLOW_BINANCE_RELEASE_VERIFICATION_METHODS = [
@@ -37,7 +37,7 @@ function p2pflowReleaseVerificationProfileHtml(profile = {}, canManageFundPasswo
       <div><b>${escapeHtml(name)}</b><small>Release Verification · API #${credentialId}${profile.disabled ? ' · Disabled' : ''}</small></div>
       <div>${badge(method === 'AUTO' ? 'Auto' : method, method === 'AUTO' ? 'muted' : 'ok')} ${fundConfigured ? badge('Fund password saved','ok') : ''}</div>
     </div>
-    <div class="settings-callout warn"><b>Binance remains the final authority.</b><span>This preference controls the verification field P2PFlow presents and submits. Binance may still require a different method for a specific release.</span></div>
+    <div class="settings-callout warn"><b>Binance remains the final authority.</b><span>The first Release request is always sent without a guessed verification code. This setting is only a preference; when Binance names a concrete method, that challenge is followed.</span></div>
     <div class="settings-field-grid settings-release-grid">
       <div><label>Binance verification</label><select data-release-field="binanceMethod">${p2pflowReleaseMethodOptions(method)}</select></div>
       <div class="settings-inline-check settings-release-local-toggle"><label class="check"><input type="checkbox" data-release-field="localVerificationEnabled" ${localEnabled?'checked':''}/> Require P2PFlow verification before Release</label></div>
@@ -45,7 +45,7 @@ function p2pflowReleaseVerificationProfileHtml(profile = {}, canManageFundPasswo
       <div><label>Secondary P2PFlow verification</label><select data-release-field="localSecondary">${p2pflowLocalReleaseMethodOptions(profile.localSecondary || 'NONE', { allowNone:true })}</select></div>
     </div>
     <div class="settings-release-fund-box" data-release-fund-box>
-      <div class="settings-option-row compact"><span><b>Automatic Fund Transfer Password</b><small>After the configured P2PFlow verification succeeds, the saved password is applied server-side and is never returned to the browser.</small></span><input type="checkbox" data-release-field="autoFundPassword" ${autoFund?'checked':''}/></div>
+      <div class="settings-option-row compact"><span><b>Automatic Fund Transfer Password</b><small>If Binance specifically requests FUND_PWD, the saved password is applied server-side after the configured P2PFlow verification succeeds and is never returned to the browser.</small></span><input type="checkbox" data-release-field="autoFundPassword" ${autoFund?'checked':''}/></div>
       <div class="settings-field-grid">
         <div><label>Fund Transfer Password</label><input data-release-field="fundPassword" type="password" value="" placeholder="${fundConfigured ? 'Saved — leave blank to keep' : 'Enter fund transfer password'}" autocomplete="new-password" ${canManageFundPassword?'':'disabled'} /></div>
         <div class="settings-inline-check"><label class="check"><input type="checkbox" data-release-field="clearFundPassword" ${canManageFundPassword?'':'disabled'} /> Clear saved password</label></div>

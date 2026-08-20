@@ -1,0 +1,28 @@
+# P2PFlow v1.5.32 — Launch Checklist
+
+- [ ] Production database backup নেওয়া হয়েছে
+- [ ] `.env`, `.p2pflow/`, `shared/` backup নেওয়া হয়েছে
+- [ ] Application version `1.5.32`
+- [ ] Database schema `35`
+- [ ] `npm run build` pass
+- [ ] `npm test` pass
+- [ ] Browser hard refresh করা হয়েছে
+- [ ] CDN/reverse-proxy cache purge করা হয়েছে
+- [ ] Generic **Binance verification code** field আর pre-emptively দেখা যায় না
+- [ ] Release click-এ first request minimal Binance probe চালায়
+- [ ] Binance Auto-তে Google challenge এলে Authenticator App Verification আসে
+- [ ] Google code `googleVerifyCode` dedicated field দিয়ে যায়
+- [ ] SMS challenge-এ Mobile OTP field আসে
+- [ ] `Verification failed` generic response নতুন fake code field তৈরি করে না
+- [ ] পুরোনো generic `lastFinalActionFailure` নতুন Release attempt-এ reuse হয় না
+- [ ] Configured Google/SMS/Fund method first request-এ force হয় না
+- [ ] Binance concrete challenge configured preference-এর ওপর priority পায়
+- [ ] Fund Password auto-use শুধু concrete FUND_PWD challenge + local verification-এর পরে হয়
+- [ ] Stored Fund Password browser response/UI-তে expose হয় না
+- [ ] Payment Split OFF হলে split ছাড়াই direct probe হয়
+- [ ] valid saved split থাকলে split popup পুনরায় আসে না
+- [ ] Payment Split ON + missing split/proof সঠিকভাবে block করে
+- [ ] final successful Release-এর পরে order status/accounting update হয়
+- [ ] target Binance account/P2P username ঠিক credential হিসেবে দেখায়
+- [ ] API Connect & Save automatic validation/live check ঠিক আছে
+- [ ] API action icons এবং per-account gear settings ঠিক আছে

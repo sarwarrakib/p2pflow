@@ -1,4 +1,4 @@
-// v1.5.31: saved Payment Split bypasses repeat split prompts and retries open the dedicated Binance final-action verification step.
+// v1.5.32: Release uses a minimal Binance probe first; only a concrete Binance challenge opens the dedicated verification screen.
 // v1.5.23: Payment Account serial scope treats each normalized Label, including no Label, as an independent namespace.
 // v1.5.22: Header-only Work Status, chat-only notification master, and coupled sound/push controls.
 // v1.5.20: account-scoped Binance RBAC, visible security recovery setup and individual-only profit accounting.
@@ -4964,7 +4964,7 @@ function renderNav() {
   // legacy flat menu while this marker is absent, the browser/proxy is serving
   // stale frontend JavaScript rather than the active release.
   nav.dataset.navigationModel = 'grouped-control-center';
-  nav.dataset.uiRelease = '1.5.31';
+  nav.dataset.uiRelease = '1.5.32';
   nav.innerHTML = '';
   const visible = visiblePages();
   const visibleIds = new Set(visible.map(([id]) => id));
@@ -5434,7 +5434,7 @@ function finalActionSplitGateStateForOrder(order={}, finalAction='') {
 function openOrderFinalActionFlow(order, finalAction) {
   const gate = finalActionSplitGateStateForOrder(order, finalAction);
   if (gate.enabled && !gate.satisfied) return openPaymentSplitActionModal(order, finalAction);
-  if (finalAction === 'release' || finalAction === 'quick_release') return openReleaseVerificationPage(order, finalAction);
+  if (finalAction === 'release' || finalAction === 'quick_release') return startReleaseFinalActionFlow(order, finalAction);
   return openFinalActionModal(order, finalAction);
 }
 
@@ -7647,7 +7647,7 @@ async function openPaymentSplitActionModal(order, finalAction) {
       };
       state.currentOrder = workingOrder;
       closeModal();
-      setTimeout(() => openFinalActionModal(workingOrder, finalAction), 60);
+      setTimeout(() => openOrderFinalActionFlow(workingOrder, finalAction), 60);
     } catch (err) {
       setFormMessage('#paymentSplitActionMessage', err.message || `Payment Split is not ready for ${label}.`, 'danger');
     } finally {
@@ -7694,20 +7694,17 @@ function releaseVerificationFieldsForScreen(policy = {}, requirements = null) {
   const add = (name, label, placeholder, type='text', inputmode='') => fields.push({ name, label, placeholder, type, inputmode });
   if (requirements?.hasSpecificRequirement) {
     Object.assign(hidden, requirements.hidden || {});
-    for (const field of (requirements.fields || [])) add(field.name, field.label || field.name, field.placeholder || 'Required by Binance', field.type || 'text', /google|mobile|email/i.test(field.name || '') ? 'numeric' : '');
-    return { method, fields, hidden, autoFund:false, challengeOverridesPreference:configured !== 'AUTO' && method !== configured };
+    const autoFund = method === 'FUND_PWD' && policy.autoFundPassword && policy.fundPasswordConfigured;
+    for (const field of (requirements.fields || [])) {
+      if (autoFund && String(field.name || '') === 'code') continue;
+      add(field.name, field.label || field.name, field.placeholder || 'Required by Binance', field.type || 'text', /google|mobile|email/i.test(field.name || '') ? 'numeric' : '');
+    }
+    return { method, fields, hidden, autoFund, challengeOverridesPreference:configured !== 'AUTO' && method !== configured };
   }
-  if (configured === 'AUTO') return { method:'AUTO', fields, hidden, autoFund:false };
-  if (method === 'FIDO2') { hidden.authType = 'FIDO2'; add('code','FIDO2 verification token/code','Binance FIDO2 token/code','text',''); }
-  else if (method === 'FUND_PWD') {
-    hidden.authType = 'FUND_PWD';
-    if (!(policy.autoFundPassword && policy.fundPasswordConfigured)) add('code','Fund Transfer Password','Fund Transfer Password','password','');
-  }
-  else if (method === 'GOOGLE') add('googleVerifyCode','Authenticator App','6-digit code','text','numeric');
-  else if (method === 'SMS') add('mobileVerifyCode','SMS / Mobile OTP','Verification code','text','numeric');
-  else if (method === 'EMAIL') add('emailVerifyCode','Email OTP','Verification code','text','numeric');
-  else if (method === 'YUBIKEY') add('yubikeyVerifyCode','YubiKey verification code','YubiKey code','text','');
-  return { method, fields, hidden, autoFund:method === 'FUND_PWD' && policy.autoFundPassword && policy.fundPasswordConfigured };
+  // No concrete Binance challenge means there is intentionally no Binance input field.
+  // The first release attempt must be sent with only orderNumber/payId, matching the
+  // working pre-v1.5.20 flow. Saved settings are preferences, not forced auth payloads.
+  return { method:'AUTO', fields, hidden, autoFund:false, challengeOverridesPreference:false };
 }
 
 function releaseVerificationInputHtml(field = {}) {
@@ -7738,21 +7735,62 @@ function bindReleaseVerificationPasteButtons(form) {
   });
 }
 
+async function attemptReleaseDirect(order, finalAction='release', options={}) {
+  const payload = {
+    action: finalAction,
+    binanceOrderNumber: order.externalOrderNo || order.orderNo || '',
+    payId: Number(order.binancePayId || 0) || '',
+    freshVerificationProbe: options.freshVerificationProbe !== false
+  };
+  if (options.localToken) payload.localVerificationToken = options.localToken;
+  try {
+    const updated = await api(`/api/orders/${order.id}/complete-action`, { method:'POST', body:JSON.stringify(payload), silent:true });
+    if (updated.approvalRequired) {
+      notify('Manager approval is required before Release.', 'warn');
+      return;
+    }
+    notify('Coin released successfully.', 'ok');
+    await loadOrderDetail(updated.id || order.id, false, true);
+  } catch (err) {
+    if (err?.data?.order && typeof err.data.order === 'object') {
+      Object.assign(order, err.data.order);
+      state.currentOrder = order;
+    }
+    if (err?.data?.localVerificationRequired) {
+      openReleaseVerificationPage(order, finalAction, { localOnly:true });
+      return;
+    }
+    if (err?.data?.verificationRequired === true && err?.data?.releaseRequirements?.hasSpecificRequirement === true) {
+      openReleaseVerificationPage(order, finalAction, { requirements:err.data.releaseRequirements, localToken:options.localToken || '', retryMessage:err?.data?.verificationRejected ? (err.message || 'Verification failed. Enter a fresh code and try again.') : '' });
+      return;
+    }
+    notify(err.message || 'Binance Release failed.', 'danger', 9000);
+  }
+}
+
+function startReleaseFinalActionFlow(order, finalAction='release') {
+  const policy = orderReleaseVerificationPolicy(order);
+  if (policy.localVerificationEnabled) return openReleaseVerificationPage(order, finalAction, { localOnly:true });
+  return attemptReleaseDirect(order, finalAction, { freshVerificationProbe:true });
+}
+
 function openReleaseVerificationPage(order, finalAction='release', options={}) {
   const policy = orderReleaseVerificationPolicy(order);
-  const savedFailure = order.lastFinalActionFailure && order.lastFinalActionFailure.action === finalAction ? order.lastFinalActionFailure : null;
-  const requirements = options.requirements || savedFailure?.releaseRequirements || null;
-  const presentation = releaseVerificationPresentation(policy, requirements);
-  const fieldState = releaseVerificationFieldsForScreen(policy, requirements);
+  const requirements = options.requirements || null;
+  const localOnly = options.localOnly === true;
+  const presentation = localOnly
+    ? { method:'LOCAL', autoChallenge:false, title:'P2PFlow Verification', subtitle:'Complete the configured P2PFlow verification before the Binance release check.', fieldLabel:'P2PFlow verification' }
+    : releaseVerificationPresentation(policy, requirements);
+  const fieldState = localOnly ? { method:'LOCAL', fields:[], hidden:{}, autoFund:false, challengeOverridesPreference:false } : releaseVerificationFieldsForScreen(policy, requirements);
   const localGateState = { token:String(options.localToken || ''), challengeId:'', method:policy.localPrimary || 'USER_PASSWORD' };
   const localAlreadyVerified = Boolean(localGateState.token);
   const hiddenHtml = Object.entries(fieldState.hidden || {}).map(([key,value]) => `<input type="hidden" name="${escapeAttr(key)}" value="${escapeAttr(value)}" />`).join('');
   const fieldsHtml = fieldState.fields.map(releaseVerificationInputHtml).join('');
-  const statusText = presentation.autoChallenge
-    ? 'Binance needs extra verification.'
-    : String(policy.binanceMethod || 'AUTO').toUpperCase() === 'AUTO'
-      ? 'Binance verification check'
-      : 'Release requires verification.';
+  const statusText = localOnly
+    ? 'P2PFlow security check'
+    : presentation.autoChallenge
+      ? 'Binance needs extra verification.'
+      : 'Binance verification check';
   const localHtml = policy.localVerificationEnabled
     ? (localAlreadyVerified
         ? `<div class="release-local-verified"><span>✓</span><div><b>P2PFlow verification completed</b><small>The verified step-up token will be used for this release attempt.</small></div></div>`
@@ -7760,10 +7798,10 @@ function openReleaseVerificationPage(order, finalAction='release', options={}) {
     : '';
   const autoFundHtml = fieldState.autoFund ? `<div class="release-auto-secret"><span>✓</span><div><b>Saved Fund Transfer Password ready</b><small>After P2PFlow verification, the password is applied server-side and is never exposed in this browser.</small></div></div>` : '';
   const challengeOverrideHtml = fieldState.challengeOverridesPreference ? `<div class="release-auto-secret"><span>!</span><div><b>Binance requested ${escapeHtml(presentation.title.replace(' Verification',''))}</b><small>Your saved preference is ${escapeHtml(policy.binanceMethodLabel || 'Binance Auto')}, but this release attempt will follow Binance's concrete challenge.</small></div></div>` : '';
-  const noFieldHtml = !fieldsHtml && !fieldState.autoFund
-    ? `<div class="release-auto-check"><b>Binance Auto</b><span>P2PFlow will check the release requirement. If Binance asks for an additional verification method, this screen will immediately reopen with only that required field.</span></div>`
+  const noFieldHtml = !localOnly && !fieldsHtml && !fieldState.autoFund
+    ? `<div class="release-auto-check"><b>Binance verification check</b><span>No verification code is requested until Binance identifies the exact method required for this order.</span></div>`
     : '';
-  const submitText = fieldsHtml || fieldState.autoFund ? 'Submit' : 'Continue';
+  const submitText = localOnly ? 'Continue' : (fieldsHtml || fieldState.autoFund ? 'Submit' : 'Continue');
 
   modal('Release Verification', `<div class="release-verify-shell">
     <div class="release-verify-topbar">
@@ -7811,6 +7849,12 @@ function openReleaseVerificationPage(order, finalAction='release', options={}) {
       $('#localFinalActionVerificationPanel')?.scrollIntoView({ behavior:'smooth', block:'center' });
       return;
     }
+    if (localOnly) {
+      const token = localGateState.token;
+      closeModal(backdrop);
+      setTimeout(() => attemptReleaseDirect(order, finalAction, { localToken:token, freshVerificationProbe:true }), 40);
+      return;
+    }
     const payload = formObj(form);
     if (localGateState.token) payload.localVerificationToken = localGateState.token;
     const submit = form.querySelector('.release-verify-submit');
@@ -7854,7 +7898,7 @@ function openReleaseVerificationPage(order, finalAction='release', options={}) {
 }
 
 function openFinalActionModal(order, finalAction) {
-  if (finalAction === 'release' || finalAction === 'quick_release') return openReleaseVerificationPage(order, finalAction);
+  if (finalAction === 'release' || finalAction === 'quick_release') return startReleaseFinalActionFlow(order, finalAction);
   const label = finalAction === 'complete' ? 'Complete Offline Order' : 'Mark as Paid';
   const liveMode = order.settings?.apiMode === 'live' && order.orderSource !== 'offline' && finalAction !== 'complete';
   const isReleaseAction = false;
