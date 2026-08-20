@@ -1,4 +1,4 @@
-// P2PFlow v1.5.33
+// P2PFlow v1.5.34
 // Settings workspace: categorized navigation, compact email delivery and ordered failover routes.
 
 const P2PFLOW_EMAIL_SYSTEMS = [
@@ -137,6 +137,7 @@ async function renderSettings() {
     </div>
     <div class="settings-option-list">
       <label class="settings-option-row"><span><b>Require Payment Split before Mark Paid / Release</b><small>ON: the split workflow opens first and a completed split is required. OFF: Mark Paid / Release runs directly, whether a split exists or not.</small></span><input type="checkbox" name="requirePaymentSplitForFinalAction" ${s.requirePaymentSplitForFinalAction!==false?'checked':''}/></label>
+      <label class="settings-option-row"><span><b>Payment Account capacity guard for Agent auto assignment</b><small>ON: accounting-enabled Agents can be blocked when no assigned wallet/balance/capacity exists. OFF: all Agents are Order-only for assignment and routing/permissions decide without Payment Account or balance requirements. An individual Agent can also turn this calculation off in User settings.</small></span><input type="checkbox" name="requirePaymentAccountCapacityForAutoAssignment" ${s.requirePaymentAccountCapacityForAutoAssignment!==false?'checked':''}/></label>
       <div class="settings-option-row"><span><b>Payment Split Proof</b><small>Choose whether a proof screenshot is mandatory before completing a split-gated final action.</small></span><select name="paymentSplitProofRequired" aria-label="Payment Split Proof requirement"><option value="mandatory" ${s.paymentSplitProofRequired!==false?'selected':''}>Mandatory</option><option value="optional" ${s.paymentSplitProofRequired===false?'selected':''}>Optional</option></select></div>
       <label class="settings-option-row"><span><b>Allow lead user final action</b><small>Lead users can complete the permitted final action.</small></span><input type="checkbox" name="allowAgentFinalAction" ${s.allowAgentFinalAction?'checked':''}/></label>
     </div>`);
@@ -292,6 +293,7 @@ async function renderSettings() {
     e.preventDefault();
     const obj = formObj(e.target);
     obj.requirePaymentSplitForFinalAction = e.target.requirePaymentSplitForFinalAction.checked;
+    obj.requirePaymentAccountCapacityForAutoAssignment = e.target.requirePaymentAccountCapacityForAutoAssignment.checked;
     obj.paymentSplitProofRequired = e.target.paymentSplitProofRequired.value === 'mandatory';
     obj.requireProofForFinalAction = obj.paymentSplitProofRequired;
     obj.binanceAutoOrderSync = e.target.binanceAutoOrderSync.checked;

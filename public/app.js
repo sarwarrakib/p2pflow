@@ -1,4 +1,4 @@
-// v1.5.33: Release uses a minimal Binance probe first; only a concrete Binance challenge opens the dedicated verification screen.
+// v1.5.34: Release uses a minimal Binance probe first; only a concrete Binance challenge opens the dedicated verification screen.
 // v1.5.23: Payment Account serial scope treats each normalized Label, including no Label, as an independent namespace.
 // v1.5.22: Header-only Work Status, chat-only notification master, and coupled sound/push controls.
 // v1.5.20: account-scoped Binance RBAC, visible security recovery setup and individual-only profit accounting.
@@ -3929,7 +3929,7 @@ const PERMISSION_DESCRIPTIONS = Object.freeze({
   'orders.final_action': { en: 'Perform paid-mark and release/final workflow where policy allows. Binance orders require this permission on the exact account and all proof/approval rules still apply.', bn: 'নীতি অনুযায়ী paid mark ও release/final workflow করা যাবে। Binance অর্ডারে নির্দিষ্ট অ্যাকাউন্টের permission এবং proof/approval-এর সব নিয়ম প্রযোজ্য থাকবে।' },
   'orders.quick_release': { en: 'Use the exceptional quick-release workflow before the normal paid-mark stage. Exact Binance-account permission, safety checks and approval limits still apply.', bn: 'স্বাভাবিক paid-mark ধাপের আগে exceptional quick release করা যাবে। নির্দিষ্ট Binance account permission, safety check ও approval limit প্রযোজ্য থাকবে।' },
   'approvals.manage': { en: 'Open the approval queue and approve or reject protected operational requests. It does not independently grant the underlying order or accounting action.', bn: 'Approval queue দেখা এবং protected request approve/reject করা যাবে। মূল order বা accounting action-এর permission এতে আলাদাভাবে পাওয়া যাবে না।' },
-  'binance.sync': { en: 'Run live Binance order/detail synchronization only for Binance accounts with the same account-level grant. It does not grant chat, Ads or final actions.', bn: 'একই account-level grant থাকা Binance অ্যাকাউন্টে live order/detail sync চালানো যাবে। Chat, Ads বা final action permission এতে পাওয়া যাবে না।' },
+  'binance.sync': { en: 'View and synchronize live Binance orders for Binance accounts with the same account-level grant, including unassigned live orders. It does not grant chat, Ads or final actions.', bn: 'একই account-level grant থাকা Binance অ্যাকাউন্টের assigned ও unassigned live order দেখা এবং sync করা যাবে। Chat, Ads বা final action permission এতে পাওয়া যাবে না।' },
   'binance.chat': { en: 'Read, sync and send Binance P2P chat messages on accessible orders for exact accounts with Chat permission. It does not grant order final actions.', bn: 'অ্যাক্সেসযোগ্য অর্ডারে নির্দিষ্ট account Chat permission থাকলে Binance P2P message পড়া, sync ও পাঠানো যাবে। Final action permission এতে পাওয়া যাবে না।' },
   'p2p.profile.view': { en: 'View P2P profile, statistics and feedback for exact Binance accounts granted to the user. It does not perform a live sync.', bn: 'যে নির্দিষ্ট Binance account grant করা আছে তার P2P profile, statistics ও feedback দেখা যাবে। এতে live sync হবে না।' },
   'p2p.profile.sync': { en: 'Fetch and update P2P profile and feedback for exact Binance accounts with the same grant. View permission is implied for opening the result.', bn: 'একই grant থাকা নির্দিষ্ট Binance account-এর P2P profile ও feedback fetch/update করা যাবে। ফলাফল খোলার জন্য view access ব্যবহৃত হবে।' },
@@ -4996,7 +4996,7 @@ function renderNav() {
   // legacy flat menu while this marker is absent, the browser/proxy is serving
   // stale frontend JavaScript rather than the active release.
   nav.dataset.navigationModel = 'grouped-control-center';
-  nav.dataset.uiRelease = '1.5.33';
+  nav.dataset.uiRelease = '1.5.34';
   nav.innerHTML = '';
   const visible = visiblePages();
   const visibleIds = new Set(visible.map(([id]) => id));
@@ -6445,6 +6445,15 @@ function binanceCredentialPermissionMatrix(selectedRows = []) {
   }).join('')}</div>`;
 }
 
+function roleDefaultBinanceCredentialPermissions(roleId) {
+  const rolePerms = new Set(rolePermissions(roleId));
+  const options = Array.isArray(state.binanceCredentialOptions) ? state.binanceCredentialOptions : (Array.isArray(state.p2pCredentialOptions) ? state.p2pCredentialOptions : []);
+  return options.filter(item => !item.disabled).map(item => ({
+    credentialId: Number(item.id),
+    permissions: (Array.isArray(item.permissions) ? item.permissions : []).filter(permission => rolePerms.has(permission))
+  })).filter(row => row.credentialId && row.permissions.length);
+}
+
 function selectedBinanceCredentialPermissions(form) {
   const rows = new Map();
   form.querySelectorAll('input[name="binanceCredentialPermission"]:checked').forEach(input => {
@@ -6489,6 +6498,7 @@ function openUserModal(userItem=null) {
     ? requestedRoleProfileId
     : defaultUserRoleProfileId(preferredSystemRole);
   const selectedPerms = isEdit ? (u.permissions || []) : rolePermissions(roleProfileId);
+  const selectedCredentialPerms = isEdit ? (u.binanceCredentialPermissions || []) : roleDefaultBinanceCredentialPermissions(roleProfileId);
   const initialSystemRole = isEdit ? preferredSystemRole : roleSystemRole(roleProfileId);
   modal(isEdit ? 'Edit User / Permissions' : 'Add User + Login', `
     <form id="userForm" class="form-grid">
@@ -6514,11 +6524,12 @@ function openUserModal(userItem=null) {
       <div><label>Max Active Orders</label><input name="maxActiveOrders" type="number" min="0" step="1" value="${Number.isFinite(Number(userItem?.maxActiveOrders)) ? Number(userItem.maxActiveOrders) : 5}" /></div>
       <div><label>Max Release Amount</label><input name="maxReleaseAmount" type="number" min="0" step="0.01" value="${Number.isFinite(Number(userItem?.maxReleaseAmount)) ? Number(userItem.maxReleaseAmount) : 0}" /></div>
       <div><label class="check"><input type="checkbox" name="allowNewOrders" ${userItem?.allowNewOrders === false ? '' : 'checked'} /> Work Status ON — accept new orders even while offline</label></div>
+      <div><label class="check"><input type="checkbox" name="assignmentAccountingEnabled" ${u.assignmentAccountingEnabled === false ? '' : 'checked'} /> Use Payment Account calculation for auto assignment</label><small>OFF = Order-only Agent. Routing/permissions still apply, but payment-account existence, balance and capacity do not block automatic assignment.</small></div>
       <div><label class="check"><input type="checkbox" name="smsEnabled" ${userItem?.smsEnabled === false ? '' : 'checked'} /> Panel SMS on order assignment</label></div>
       <div><label class="check"><input type="checkbox" name="canRelease" ${userItem?.canRelease ? 'checked' : ''} /> Can release/final action</label></div>
       <div class="full-row profit-accounting-setting"><label class="check"><input type="checkbox" name="includeProfitInCompanyTotals" ${userItem?.includeProfitInCompanyTotals === false ? '' : 'checked'} /> Include this user's profit in company income and capital totals</label><small>Turn this off to keep the user's income visible in their individual report while excluding it from company totals.</small></div>
       <div class="full-row"><label>Global Permissions</label>${permissionChecks(selectedPerms)}<small>A Binance account grant below never bypasses these global permissions.</small></div>
-      <div class="full-row"><label>Binance Account Permissions</label>${binanceCredentialPermissionMatrix(u.binanceCredentialPermissions || [])}<small>Grant permissions separately for each Binance account. The user can only see or manage orders, ads, chat and profile data for the selected account.</small></div>
+      <div class="full-row"><label>Binance Account Permissions</label>${binanceCredentialPermissionMatrix(selectedCredentialPerms)}<small>Grant permissions separately for each Binance account. The user can only see or manage orders, ads, chat and profile data for the selected account.</small></div>
       <div class="full-row" id="userFormMessage"></div>
       <div class="full-row"><button type="submit">${isEdit ? 'Save User' : 'Create User'}</button></div>
     </form>`);
@@ -6534,6 +6545,12 @@ function openUserModal(userItem=null) {
     if (loginRoleInput) loginRoleInput.value = roleSystemRole(roleSelect.value);
     userForm.querySelectorAll('input[name="permissions"]').forEach(ch => { ch.checked = perms.includes(ch.value); });
     syncBinancePermissionMatrixWithGlobalPermissions(userForm);
+    // Role selection applies its account-scoped permissions to every enabled
+    // Binance account by default. Admin can immediately untick any account or
+    // permission before saving the user.
+    userForm.querySelectorAll('input[name="binanceCredentialPermission"]').forEach(input => {
+      input.checked = !input.disabled && perms.includes(input.value);
+    });
   };
   bindBinancePermissionMatrix(userForm);
   userForm.onsubmit = async e => {
@@ -6546,6 +6563,7 @@ function openUserModal(userItem=null) {
       if (String(obj.securityQuestion || '').trim().length < 8 || String(obj.securityAnswer || '').trim().length < 8) { setFormMessage('#userFormMessage', 'Security Question and Security Answer must both be at least 8 characters.', 'danger'); return; }
     }
     obj.allowNewOrders = e.target.allowNewOrders.checked;
+    obj.assignmentAccountingEnabled = e.target.assignmentAccountingEnabled.checked;
     obj.smsEnabled = e.target.smsEnabled.checked;
     obj.canRelease = e.target.canRelease.checked;
     obj.includeProfitInCompanyTotals = e.target.includeProfitInCompanyTotals.checked;

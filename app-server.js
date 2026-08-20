@@ -194,7 +194,13 @@ const PERMISSION_IMPLICATIONS = Object.freeze({
   'accounts.manage': Object.freeze(['accounts.view']),
   'accounts.manage_all': Object.freeze(['accounts.view', 'accounts.manage']),
   'ledger.adjust': Object.freeze(['accounts.view']),
-  'offline.transactions.manage': Object.freeze(['accounts.view'])
+  'offline.transactions.manage': Object.freeze(['accounts.view']),
+  // Live Order access must include the ability to see those live orders.
+  'binance.sync': Object.freeze(['orders.view'])
+});
+
+const BINANCE_ACCOUNT_PERMISSION_IMPLICATIONS = Object.freeze({
+  'binance.sync': Object.freeze(['orders.view'])
 });
 
 // Binance operations are scoped twice: a user needs the normal permission and
@@ -400,8 +406,7 @@ function userHasPermission(user, permission) {
 
 function binanceAccountGlobalPermissionSet(user = {}) {
   if (String(user.role || '').toLowerCase() === 'admin') return new Set(BINANCE_ACCOUNT_PERMISSION_CATALOG);
-  const permissions = new Set(normalizePermissions(user.permissions, user.role));
-  return new Set(BINANCE_ACCOUNT_PERMISSION_CATALOG.filter(permission => permissions.has(permission)));
+  return new Set(BINANCE_ACCOUNT_PERMISSION_CATALOG.filter(permission => userHasPermission(user, permission)));
 }
 
 function normalizeBinanceCredentialPermissions(value = [], user = {}, target = db) {
@@ -455,7 +460,9 @@ function userHasBinanceCredentialPermission(user, credentialId, permission, targ
   if (!userHasPermission(user, permission)) return false;
   if (String(user.role || '').toLowerCase() === 'admin') return true;
   const row = binanceCredentialPermissionRowsForUser(user, target).find(item => Number(item.credentialId) === Number(credentialId));
-  return Boolean(row && row.permissions.includes(permission));
+  if (!row) return false;
+  if (row.permissions.includes(permission)) return true;
+  return Object.entries(BINANCE_ACCOUNT_PERMISSION_IMPLICATIONS).some(([granted, implied]) => row.permissions.includes(granted) && implied.includes(permission));
 }
 
 function binanceCredentialIdsForUserPermission(user = {}, permission, options = {}) {
@@ -812,6 +819,7 @@ function defaultSettings() {
     requireProofForFinalAction: true, // legacy mirror of paymentSplitProofRequired
     requirePaymentSplitForFinalAction: true,
     paymentSplitProofRequired: true,
+    requirePaymentAccountCapacityForAutoAssignment: true,
     mismatchTolerance: 0,
     highAmountApprovalThreshold: 100000,
     activeLockSeconds: 180,
@@ -1315,6 +1323,7 @@ function migrateDb(target) {
   if (!hadPaymentSplitProofRequired) target.settings.paymentSplitProofRequired = legacyProofRequirement;
   target.settings.requireProofForFinalAction = target.settings.paymentSplitProofRequired !== false;
   target.settings.requirePaymentSplitForFinalAction = target.settings.requirePaymentSplitForFinalAction !== false;
+  target.settings.requirePaymentAccountCapacityForAutoAssignment = target.settings.requirePaymentAccountCapacityForAutoAssignment !== false;
   ensureWebPushVapidSettings(target.settings);
   // v1.0.157: v1.0.156 unintentionally replaced the established product branding.
   // Revert only that exact automatic value during the schema upgrade; preserve any other owner customization.
@@ -1774,6 +1783,8 @@ function migrateDb(target) {
     u.backgroundNotificationsEnabled = u.backgroundNotificationsEnabled === true;
     u.pushSubscriptions = normalizePushSubscriptions(u.pushSubscriptions);
     if (u.workAvailable === undefined) u.workAvailable = true;
+    if (u.assignmentAccountingEnabled === undefined) u.assignmentAccountingEnabled = true;
+    u.assignmentAccountingEnabled = u.assignmentAccountingEnabled !== false;
     if (!u.email && u.role === 'admin' && OWNER_EMAIL) u.email = OWNER_EMAIL;
     if (!u.loginSecretHash && u.role === 'admin') {
       const replacementSecret = ownerAdminCredentials().secretCode;
@@ -1961,6 +1972,7 @@ function makeUser(id, username, password, name, role, agentId, opts = {}) {
     backgroundNotificationsEnabled: opts.backgroundNotificationsEnabled === true,
     pushSubscriptions: normalizePushSubscriptions(opts.pushSubscriptions),
     workAvailable: opts.workAvailable !== false,
+    assignmentAccountingEnabled: opts.assignmentAccountingEnabled !== false,
     createdAt: nowIso()
   };
 }
@@ -2191,7 +2203,8 @@ function userSafe(u) {
     notificationPreferences: normalizeNotificationPreferences(u.notificationPreferences),
     backgroundNotificationsEnabled: u.backgroundNotificationsEnabled === true,
     pushSubscriptionCount: normalizePushSubscriptions(u.pushSubscriptions).filter(item => !item.disabledAt).length,
-    workAvailable: u.workAvailable !== false
+    workAvailable: u.workAvailable !== false,
+    assignmentAccountingEnabled: u.assignmentAccountingEnabled !== false
   };
 }
 
@@ -3236,6 +3249,7 @@ function publicSettings() {
   settings.mailFailoverEnabledCount = runtimeMailFallbackConfigs().length;
   settings.p2pExtensionConfigured = Boolean(db.settings.p2pExtensionToken);
   settings.requirePaymentSplitForFinalAction = db.settings.requirePaymentSplitForFinalAction !== false;
+  settings.requirePaymentAccountCapacityForAutoAssignment = db.settings.requirePaymentAccountCapacityForAutoAssignment !== false;
   settings.paymentSplitProofRequired = db.settings.paymentSplitProofRequired !== false;
   settings.requireProofForFinalAction = settings.paymentSplitProofRequired;
   settings.applicationVersion = APP_VERSION;
@@ -3586,11 +3600,27 @@ function agentDynamicStatus(agent) {
   return userPresenceView(user.id).status;
 }
 
+function assignmentAccountingGuardEnabledForUser(user) {
+  if (db.settings.requirePaymentAccountCapacityForAutoAssignment === false) return false;
+  return !user || user.assignmentAccountingEnabled !== false;
+}
+
+function assignmentAccountingGuardEnabledForAgent(agent) {
+  if (!agent) return db.settings.requirePaymentAccountCapacityForAutoAssignment !== false;
+  const linkedUser = db.users.find(u => Number(u.id) === Number(agent.userId) && u.enabled) || null;
+  return assignmentAccountingGuardEnabledForUser(linkedUser);
+}
+
 function agentAvailableForAssignment(agent) {
-  if (!agent || agent.allowNewOrders === false) return false;
+  if (!agent) return false;
   const linkedUser = db.users.find(u => Number(u.id) === Number(agent.userId) && u.enabled);
-  if (!linkedUser || linkedUser.role !== 'agent' || linkedUser.workAvailable === false) return false;
-  return userHasPermission(linkedUser, 'orders.view');
+  if (!linkedUser || linkedUser.role !== 'agent') return false;
+  if (!userHasPermission(linkedUser, 'orders.view')) return false;
+  // Live-order Agents do not have a Work toggle. Once account-level live access
+  // is granted, a stale hidden Work OFF value must not silently block assignment.
+  if (userHasLiveOrderAccess(linkedUser)) return true;
+  if (agent.allowNewOrders === false || linkedUser.workAvailable === false) return false;
+  return true;
 }
 
 function rangeBounds(range = null) {
@@ -5582,6 +5612,9 @@ function canQuickReleaseUser(user) {
 
 function routeCapacityOk(route, agent, order) {
   if (!route.capacityGuard || !order) return true;
+  // Order-only Agents can participate in routing without a wallet/payment
+  // account. Accounting-aware Agents keep the existing capacity protection.
+  if (!assignmentAccountingGuardEnabledForAgent(agent)) return true;
   const accounts = db.paymentAccounts.filter(a => accountAssignedToAgent(a, agent.id) && a.paymentMethodId === order.paymentMethodId && a.status === 'active').map(accountView);
   const cap = order.type === 'BUY' ? sum(accounts.map(a => a.sendAvailable)) : sum(accounts.map(a => a.receiveAvailable));
   return cap > 0;
@@ -5641,7 +5674,14 @@ function canAccessOrder(user, order) {
     if (!credentialId || !userHasBinanceCredentialPermission(user, credentialId, 'orders.view')) return false;
   }
   if (user.role === 'agent') {
-    return db.orderAgentAssignments.some(a => a.orderId === order.id && a.agentId === user.agentId && a.status !== 'left');
+    const assigned = db.orderAgentAssignments.some(a => a.orderId === order.id && a.agentId === user.agentId && a.status !== 'left');
+    if (assigned) return true;
+    // Account-level Live Order permission is a real visibility grant: an Agent
+    // may inspect live orders for that Binance account before assignment.
+    if (order.orderSource !== 'offline' && Number(order.credentialId || 0)) {
+      return userHasBinanceCredentialPermission(user, order.credentialId, 'binance.sync');
+    }
+    return false;
   }
   if (['admin', 'manager', 'auditor'].includes(user.role)) return true;
   return false;
@@ -5653,10 +5693,13 @@ function ordersAccessibleToUser(user) {
     ? new Set((db.orderAgentAssignments || []).filter(assignment => Number(assignment.agentId) === Number(user.agentId || 0) && assignment.status !== 'left').map(assignment => Number(assignment.orderId)))
     : null;
   return (db.orders || []).filter(order => {
-    if (assignedOrderIds && !assignedOrderIds.has(Number(order.id))) return false;
-    if (order.orderSource === 'offline') return ['admin', 'manager', 'auditor', 'agent'].includes(user.role);
+    if (order.orderSource === 'offline') {
+      if (assignedOrderIds && !assignedOrderIds.has(Number(order.id))) return false;
+      return ['admin', 'manager', 'auditor', 'agent'].includes(user.role);
+    }
     const credentialId = Number(order.credentialId || 0);
     if (!credentialId || !userHasBinanceCredentialPermission(user, credentialId, 'orders.view')) return false;
+    if (assignedOrderIds && !assignedOrderIds.has(Number(order.id)) && !userHasBinanceCredentialPermission(user, credentialId, 'binance.sync')) return false;
     return ['admin', 'manager', 'auditor', 'agent'].includes(user.role);
   });
 }
@@ -17389,7 +17432,7 @@ function orderAcceptanceForUser(user) {
   const liveOrderAccess = userHasLiveOrderAccess(user);
   const assignable = Boolean(user && user.enabled !== false && user.role === 'agent' && agent && userHasPermission(user, 'orders.view'));
   const controlsAutoAssignment = Boolean(assignable && !liveOrderAccess);
-  const accepting = Boolean(assignable && user.workAvailable !== false && agent.allowNewOrders !== false);
+  const accepting = Boolean(assignable && (liveOrderAccess || (user.workAvailable !== false && agent.allowNewOrders !== false)));
   return {
     available: controlsAutoAssignment,
     controlsAutoAssignment,
@@ -18068,7 +18111,7 @@ async function handleAgents(req, res) {
       if (!/^\d{6}$/.test(String(body.secretCode || ''))) return sendJson(res, 422, { error: '6 digit secret code is required for new login users' }, {}, req);
       const email = cleanStr(body.email || '', 160);
       if (email && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return sendJson(res, 422, { error: 'Valid email address required' }, {}, req);
-      const u = makeUser(nextId(), username, String(body.password || ''), agent.name, loginRole, agent.id, { email, secretCode: String(body.secretCode), workAvailable: body.allowNewOrders !== false });
+      const u = makeUser(nextId(), username, String(body.password || ''), agent.name, loginRole, agent.id, { email, secretCode: String(body.secretCode), workAvailable: body.allowNewOrders !== false, assignmentAccountingEnabled: body.assignmentAccountingEnabled !== false });
       try { applySecurityQuestionFallback(u, body); } catch (error) { return sendJson(res, error.statusCode || 422, { error: error.message }, {}, req); }
       u.roleProfileId = roleProfile ? roleProfile.id : defaultRoleProfileIdFor(loginRole);
       const requestedGlobalPermissions = body.permissions !== undefined
@@ -18145,7 +18188,7 @@ async function handleAgentById(req, res, parts) {
       const requestedRole = ['agent','manager','auditor'].includes(body.loginRole) ? body.loginRole : 'agent';
       const roleProfile = roleProfileById(body.userRoleId) || roleProfileById(defaultRoleProfileIdFor(requestedRole));
       const loginRole = roleProfile ? roleProfile.systemRole : requestedRole;
-      linkedUserCandidate = makeUser(0, username, String(body.password), agentCandidate.name, loginRole, agent.id, { email, secretCode: String(body.secretCode), workAvailable: body.allowNewOrders !== false });
+      linkedUserCandidate = makeUser(0, username, String(body.password), agentCandidate.name, loginRole, agent.id, { email, secretCode: String(body.secretCode), workAvailable: body.allowNewOrders !== false, assignmentAccountingEnabled: body.assignmentAccountingEnabled !== false });
       linkedUserCandidate.roleProfileId = roleProfile ? roleProfile.id : defaultRoleProfileIdFor(loginRole);
       createLinkedUser = true;
     }
@@ -18172,6 +18215,7 @@ async function handleAgentById(req, res, parts) {
       }
       linkedUserCandidate.name = agentCandidate.name;
       linkedUserCandidate.enabled = body.enabled === undefined ? linkedUserCandidate.enabled : !!body.enabled;
+      if (body.assignmentAccountingEnabled !== undefined) linkedUserCandidate.assignmentAccountingEnabled = !!body.assignmentAccountingEnabled;
       if (body.allowNewOrders !== undefined) {
         linkedUserCandidate.workAvailable = !!body.allowNewOrders;
         linkedUserCandidate.workAvailabilityUpdatedAt = agentCandidate.orderAcceptanceUpdatedAt || nowIso();
@@ -20160,6 +20204,7 @@ async function requestCoAgent(req, res, user, order) {
   db.coAgentRequests.push(request);
   let agents = eligibleAgents(order.paymentMethodId, user.agentId || null, order);
   agents = agents.filter(agent => {
+    if (!assignmentAccountingGuardEnabledForAgent(agent)) return true;
     const accounts = db.paymentAccounts.filter(a => accountAssignedToAgent(a, agent.id) && a.paymentMethodId === order.paymentMethodId && a.status === 'active').map(accountView);
     const cap = order.type === 'BUY' ? sum(accounts.map(a => a.sendAvailable)) : sum(accounts.map(a => a.receiveAvailable));
     return cap > 0;
@@ -22615,7 +22660,7 @@ async function handleSettings(req, res) {
     const beforeMailFingerprint = mailConfigFingerprint(beforeMailConfig);
     const beforeSmtpFingerprint = smtpConfigFingerprint(beforeMailConfig);
     const beforeFallbackFingerprint = fallbackFingerprint();
-    const allowed = ['requireProofForFinalAction','requirePaymentSplitForFinalAction','paymentSplitProofRequired','mismatchTolerance','highAmountApprovalThreshold','activeLockSeconds','apiMode','allowAgentFinalAction','maxProofSizeBytes','requireEmailOtp','requireLoginSecretCode','loginSecurityQuestionFallbackEnabled','sendLoginFailureEmail','sendSecurityChangeEmail','sendOrderEmail','sendNotificationEmail','binanceUsdtAvailable','defaultUsdtRate','binanceAutoOrderSync','binanceAutoSyncSeconds','binanceAutoSyncRows','binanceOpenOrderDetailRows','activityHeartbeatSeconds','activityIdleAfterSeconds','activityOfflineAfterSeconds','activityRetentionDays','p2pExtensionEnabled','p2pExtensionPollSeconds','p2pExtensionTaskTtlMinutes','p2pExtensionCachePurgeHour','p2pExtensionCachePurgeMinute','p2pAdvertiserDetailUrlTemplate'];
+    const allowed = ['requireProofForFinalAction','requirePaymentSplitForFinalAction','paymentSplitProofRequired','requirePaymentAccountCapacityForAutoAssignment','mismatchTolerance','highAmountApprovalThreshold','activeLockSeconds','apiMode','allowAgentFinalAction','maxProofSizeBytes','requireEmailOtp','requireLoginSecretCode','loginSecurityQuestionFallbackEnabled','sendLoginFailureEmail','sendSecurityChangeEmail','sendOrderEmail','sendNotificationEmail','binanceUsdtAvailable','defaultUsdtRate','binanceAutoOrderSync','binanceAutoSyncSeconds','binanceAutoSyncRows','binanceOpenOrderDetailRows','activityHeartbeatSeconds','activityIdleAfterSeconds','activityOfflineAfterSeconds','activityRetentionDays','p2pExtensionEnabled','p2pExtensionPollSeconds','p2pExtensionTaskTtlMinutes','p2pExtensionCachePurgeHour','p2pExtensionCachePurgeMinute','p2pAdvertiserDetailUrlTemplate'];
     for (const k of allowed) {
       if (body[k] === undefined) continue;
       if (typeof db.settings[k] === 'boolean') db.settings[k] = !!body[k];

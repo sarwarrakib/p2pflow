@@ -1,0 +1,23 @@
+# P2PFlow v1.5.34 — Launch Checklist
+
+- [ ] Production database backup নেওয়া হয়েছে
+- [ ] `.env`, `.p2pflow/`, `shared/` backup নেওয়া হয়েছে
+- [ ] Application version 1.5.34 দেখা যাচ্ছে
+- [ ] Database schema 35 দেখা যাচ্ছে
+- [ ] `npm run build` pass
+- [ ] `npm test` pass
+- [ ] Browser/PWA hard refresh করা হয়েছে
+- [ ] CDN/reverse-proxy cache purge করা হয়েছে
+- [ ] Agent Role নির্বাচন করলে Global Permissions auto-tick হয়
+- [ ] Role-এর applicable Binance account permissions auto-tick হয়
+- [ ] `binance.sync` Agent assigned + unassigned live orders দেখতে পারে
+- [ ] Ungranted Binance account-এর order Agent দেখতে পারে না
+- [ ] Live Order Agent hidden Work OFF state-এও assignment eligible থাকে
+- [ ] Global Payment Account capacity guard ON অবস্থায় capacity protection কাজ করে
+- [ ] Global guard OFF অবস্থায় wallet/balance ছাড়া Agent auto-assign হয়
+- [ ] Per-Agent accounting calculation OFF অবস্থায় শুধু ওই Agent Order-only assignment পায়
+- [ ] Routing min/max/priority/max-active rules এখনও কাজ করে
+- [ ] Co-agent Order-only mode wallet capacity ছাড়াই candidate হতে পারে
+- [ ] Payment Split/ledger accounting actual transaction-এ এখনও validation enforce হয়
+- [ ] Realtime Chat/Market/Settings v1.5.33 stability regression ঠিক আছে
+- [ ] Mark Paid/Release v1.5.32 challenge-driven behavior ঠিক আছে

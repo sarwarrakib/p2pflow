@@ -27,16 +27,28 @@ Updater code এবং database আলাদা রাখে। Update install-�
 
 ## Version
 
-Internal SemVer: `1.5.33`
+Internal SemVer: `1.5.34`
 UI: `1.5`
 Database schema: `35`
 
 Normal next version: `SET_NEXT_VERSION.bat` -> `1.6.0`  
-Hotfix: `SET_HOTFIX_VERSION.bat` -> `1.5.34`
+Hotfix: `SET_HOTFIX_VERSION.bat` -> `1.5.35`
 
 ## Database history safety
 
 P2PFlow keeps authoritative business/application data in MariaDB/MySQL/PostgreSQL. State payloads are compressed with Brotli before AES-256-GCM encryption, proofs/chat media are stored as encrypted database objects, and identical newly uploaded proof/media bytes use content-addressed object IDs to avoid duplicate blobs. The default is 3 retained recovery checkpoints with a 6-hour archive interval and 5 retained automatic database backups. Older uncompressed state/history/backup payloads are upgraded incrementally after startup. Health Check reports each P2PFlow database table's allocated size/row count, current encrypted state payload size, compression saving percentage, and proof/chat object usage so database-MB growth can be inspected without terminal access. `shared/`, `.p2pflow`, `.env`, `releases/` and temporary restart/update markers are operational bootstrap/update metadata only; they are not an application/business-data store. The application runtime itself does not write proof, chat, audit, order, ledger, notification or recovery-code data to local files.
+
+## v1.5.34 Agent Permissions, Live Orders & Order-only Assignment
+
+- Agent/User Role select করলে role template-এর Global Permissions এবং enabled Binance account-গুলোর applicable account-level permissions defaultভাবে auto-tick হয়; Save-এর আগে individual grant untick করা যায়।
+- `binance.sync` একই credential-এর live-order visibility দেয়, তাই Agent assigned এবং unassigned live order দেখতে পারে; অন্য credential isolation অক্ষত।
+- Live Order Agent-এর Work button hidden থাকায় পুরোনো hidden Work OFF state আর auto-assignment block করে না।
+- Settings-এ global **Payment Account capacity guard for Agent auto assignment** এবং User Edit-এ per-Agent **Use Payment Account calculation for auto assignment** option যোগ হয়েছে।
+- Order-only mode OFF/disabled করলে auto-assignment Payment Account existence, balance বা capacity-এর ওপর নির্ভর করবে না; routing, permissions, amount range ও max-active rules অবশ্যই থাকবে।
+- Accounting-enabled Agent-এর existing Capacity Guard, Payment Split, ledger, charge/commission এবং balance validation অক্ষত।
+- Database schema `35`; নতুন migration প্রয়োজন নেই।
+
+বিস্তারিত: `P2PFlow_v1.5.34_RELEASE_NOTES_BN.md`, `P2PFlow_v1.5.34_MANUAL_UPDATE_BN.md` এবং `P2PFlow_v1.5.34_LAUNCH_CHECKLIST_BN.md`.
 
 ## v1.5.33 Realtime UI Stability, Faster Orders & Chat Media
 
@@ -49,8 +61,6 @@ P2PFlow keeps authoritative business/application data in MariaDB/MySQL/PostgreSQ
 - Order chat attachment tray-এ **Camera** এবং **Album** দুটো option আছে। Mobile camera `capture=environment` ব্যবহার করতে পারে; image compression আরও compact এবং Binance image upload timeout/failure-এ fresh presigned URL দিয়ে bounded retry হয়।
 - Release Verification v1.5.32-এর challenge-driven/minimal-probe behavior অক্ষত আছে।
 - Database schema `35`; নতুন migration প্রয়োজন নেই।
-
-বিস্তারিত: `P2PFlow_v1.5.33_RELEASE_NOTES_BN.md`, `P2PFlow_v1.5.33_MANUAL_UPDATE_BN.md` এবং `P2PFlow_v1.5.33_LAUNCH_CHECKLIST_BN.md`.
 
 ## v1.5.32 Challenge-Driven Release Verification
 

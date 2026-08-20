@@ -1,4 +1,4 @@
-// P2PFlow v1.5.28
+// P2PFlow v1.5.34
 // Page module: users. Edit this file for the users page UI.
 
 async function renderUsers() {
@@ -37,6 +37,7 @@ async function renderUsers() {
         const grantedActions = accountGrants.reduce((total, row) => total + (row.permissions || []).length, 0);
         const p = a.presence || {};
         const today = a.activityToday || {};
+        const orderOnlyAssignment = state.bootstrap?.settings?.requirePaymentAccountCapacityForAutoAssignment === false || a.user?.assignmentAccountingEnabled === false;
         return `<div class="user-card">
           <div class="user-card-head"><div><b>${escapeHtml(a.name)}</b><span>${a.user ? escapeHtml(a.user.username) : 'No login yet'} · ${escapeHtml(p.page || 'no active page')}</span></div>${badge(a.status, statusClass(a.status))}</div>
           <div class="user-stats">
@@ -44,6 +45,7 @@ async function renderUsers() {
             <div><span>Binance Accounts</span><b>${accountGrants.length} <small>(${grantedActions} grants)</small></b></div>
             <div><span>Security Question</span><b>${a.user?.securityFallbackConfigured ? '<span class="text-ok">Set</span>' : '<span class="text-warn">Not set</span>'}</b></div>
             <div><span>Work Status</span><b>${a.orderAcceptance?.accepting ? '<span class="text-ok">ON</span>' : '<span class="text-warn">OFF</span>'}</b></div>
+            <div><span>Assignment Mode</span><b>${orderOnlyAssignment ? '<span class="text-warn">Order-only</span>' : '<span class="text-ok">Accounting-aware</span>'}</b></div>
             <div><span>Profit Accounting</span><b>${a.includeProfitInCompanyTotals === false ? '<span class="text-warn">Individual only</span>' : '<span class="text-ok">Company total</span>'}</b></div>
             <div><span>Payment Accounts</span><b>${aa.length}</b></div>
             <div><span>Today App Open</span><b>${activityDuration(today.openSeconds)}</b></div>
