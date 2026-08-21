@@ -18,7 +18,7 @@ const css = read('public/style.css');
 const fail = message => { throw new Error(`Account-scoped Binance RBAC self-test failed: ${message}`); };
 const assert = (condition, message) => { if (!condition) fail(message); };
 
-assert(pkg.version === '1.5.35', `expected v1.5.35, got ${pkg.version}`);
+assert(pkg.version === '1.5.36', `expected v1.5.36, got ${pkg.version}`);
 assert(server.includes('const APP_SCHEMA_VERSION = 36;'), 'schema migration version 33 is missing');
 
 for (const marker of [

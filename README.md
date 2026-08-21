@@ -27,16 +27,28 @@ Updater code এবং database আলাদা রাখে। Update install-�
 
 ## Version
 
-Internal SemVer: `1.5.35`
+Internal SemVer: `1.5.36`
 UI: `1.5`
 Database schema: `36`
 
 Normal next version: `SET_NEXT_VERSION.bat` -> `1.6.0`  
-Hotfix: `SET_HOTFIX_VERSION.bat` -> `1.5.36`
+Hotfix: `SET_HOTFIX_VERSION.bat` -> `1.5.37`
 
 ## Database history safety
 
 P2PFlow keeps authoritative business/application data in MariaDB/MySQL/PostgreSQL. State payloads are compressed with Brotli before AES-256-GCM encryption, proofs/chat media are stored as encrypted database objects, and identical newly uploaded proof/media bytes use content-addressed object IDs to avoid duplicate blobs. The default is 3 retained recovery checkpoints with a 6-hour archive interval and 5 retained automatic database backups. Older uncompressed state/history/backup payloads are upgraded incrementally after startup. Health Check reports each P2PFlow database table's allocated size/row count, current encrypted state payload size, compression saving percentage, and proof/chat object usage so database-MB growth can be inspected without terminal access. `shared/`, `.p2pflow`, `.env`, `releases/` and temporary restart/update markers are operational bootstrap/update metadata only; they are not an application/business-data store. The application runtime itself does not write proof, chat, audit, order, ledger, notification or recovery-code data to local files.
+
+## v1.5.36 Fund Password RSA Release
+
+- Binance API account Release Verification-এ `Fund Transfer Password` নির্বাচন করলে P2PFlow এখন Binance CS-confirmed deterministic flow ব্যবহার করে: C2C RSA public key fetch -> RSA/OAEP-SHA256 encryption -> `releaseCoin` with `authType=FUND_PWD`, encrypted `code`, and `confirmPaidType=normal`.
+- Fund Transfer Password saved থাকলে Release-এর সময় password field দেখানো হয় না; server-side memory-তে password নিয়ে fresh Binance RSA key দিয়ে encrypt করে release করা হয়।
+- P2PFlow Primary/Secondary verification enabled থাকলে saved Fund Password ব্যবহারের আগে সেই CRM verification pass করা বাধ্যতামূলক। Disabled থাকলে saved password দিয়ে সরাসরি encrypted release হয়।
+- Password saved না থাকলে Release-এর সময় Fund Transfer Password field দেখায়; browser থেকে পাওয়া plaintext শুধু current request-এর জন্য server memory-তে থাকে, RSA encryption-এর পরে Binance-এ ciphertext পাঠানো হয়।
+- FUND_PWD deterministic flow-এ `checkIfCanReleaseCoin` ঢোকানো হয় না; Binance CS-এর দেওয়া 3-step sequence অনুযায়ী সরাসরি `releaseCoin` হয়।
+- Google/SMS/Binance Auto/FIDO2/Email/YubiKey-এর v1.5.35 challenge-driven behavior অপরিবর্তিত।
+- Stored Fund Password API response/browser bundle-এ expose হয় না। Database schema `36`; নতুন migration প্রয়োজন নেই।
+
+বিস্তারিত: `P2PFlow_v1.5.36_RELEASE_NOTES_BN.md`, `P2PFlow_v1.5.36_MANUAL_UPDATE_BN.md` এবং `P2PFlow_v1.5.36_LAUNCH_CHECKLIST_BN.md`.
 
 ## v1.5.35 Permission-Authoritative Roles & Advertisement Rate Guard
 

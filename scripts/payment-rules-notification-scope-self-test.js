@@ -16,7 +16,7 @@ const css = read('public/style.css');
 const fail = message => { throw new Error(`Payment rules / notification scope self-test failed: ${message}`); };
 const assert = (condition, message) => { if (!condition) fail(message); };
 
-assert(pkg.version === '1.5.35', `expected v1.5.35, got ${pkg.version}`);
+assert(pkg.version === '1.5.36', `expected v1.5.36, got ${pkg.version}`);
 assert(server.includes('const APP_SCHEMA_VERSION = 36;'), 'schema 35 is missing.');
 assert(server.includes("send_money: { prefix: 'sendMoneyCharge'") && server.includes("cash_out: { prefix: 'cashOutCharge'"), 'separate Personal/Merchant fee rules are missing.');
 assert(server.includes("receive_money: { prefix: 'receiveMoneyCommission'") && server.includes("cash_in: { prefix: 'cashInCommission'"), 'separate Agent commission rules are missing.');

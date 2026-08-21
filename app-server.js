@@ -802,8 +802,11 @@ function normalizeCredentialReleaseVerification(credential = {}) {
   credential.releaseLocalPrimary = normalizeLocalReleaseVerificationMethod(credential.releaseLocalPrimary || 'USER_PASSWORD', 'USER_PASSWORD');
   credential.releaseLocalSecondary = normalizeLocalReleaseVerificationMethod(credential.releaseLocalSecondary || 'SECRET_CODE', 'SECRET_CODE');
   if (credential.releaseLocalSecondary === credential.releaseLocalPrimary) credential.releaseLocalSecondary = 'NONE';
-  credential.releaseAutoFundPassword = credential.releaseAutoFundPassword === true;
   if (credential.releaseFundPassword === undefined || credential.releaseFundPassword === null) credential.releaseFundPassword = '';
+  // v1.5.36: a saved Fund Transfer Password is automatically used whenever FUND_PWD
+  // is the selected Binance release verification method. P2PFlow local verification,
+  // when enabled, remains the gate before that stored secret can be used.
+  credential.releaseAutoFundPassword = credential.releaseVerificationMethod === 'FUND_PWD' && Boolean(String(credential.releaseFundPassword || ''));
   return credential;
 }
 
@@ -6992,7 +6995,7 @@ function releaseVerificationPolicyForCredential(credentialOrId, viewer = null) {
     binanceMethod: credential.releaseVerificationMethod,
     binanceMethodLabel: releaseVerificationMethodLabel(credential.releaseVerificationMethod),
     fundPasswordConfigured: Boolean(String(credential.releaseFundPassword || '')),
-    autoFundPassword: credential.releaseAutoFundPassword === true,
+    autoFundPassword: credential.releaseVerificationMethod === 'FUND_PWD' && Boolean(String(credential.releaseFundPassword || '')),
     localVerificationEnabled: credential.releaseLocalVerificationEnabled === true,
     localPrimary: credential.releaseLocalPrimary,
     localPrimaryLabel: localReleaseVerificationMethodLabel(credential.releaseLocalPrimary),
@@ -7027,7 +7030,6 @@ function applyCredentialReleaseVerificationSettings(user, credential, raw = {}) 
   const secondary = normalizeLocalReleaseVerificationMethod(raw.localSecondary ?? credential.releaseLocalSecondary, 'NONE');
   if (primary === 'NONE' && localEnabled) throw Object.assign(new Error(`${binanceCredentialLabel(credential)}: Primary P2PFlow verification cannot be None while local verification is enabled.`), { statusCode:422 });
   if (secondary !== 'NONE' && secondary === primary) throw Object.assign(new Error(`${binanceCredentialLabel(credential)}: Primary and Secondary P2PFlow verification must be different.`), { statusCode:422 });
-  const autoFundPassword = raw.autoFundPassword === undefined ? credential.releaseAutoFundPassword === true : raw.autoFundPassword === true;
   let nextFundPassword = String(credential.releaseFundPassword || '');
   const wantsSecretChange = raw.clearFundPassword === true || (raw.fundPassword !== undefined && String(raw.fundPassword) !== '');
   if (wantsSecretChange && !userHasPermission(user, 'credentials.manage')) throw Object.assign(new Error('Only a user with credentials.manage permission can save or clear a Binance Fund Transfer Password.'), { statusCode:403 });
@@ -7037,9 +7039,7 @@ function applyCredentialReleaseVerificationSettings(user, credential, raw = {}) 
     if (incoming.length < 1 || incoming.length > 180) throw Object.assign(new Error(`${binanceCredentialLabel(credential)}: Fund Transfer Password must be 1-180 characters.`), { statusCode:422 });
     nextFundPassword = incoming;
   }
-  if (autoFundPassword && method !== 'FUND_PWD') throw Object.assign(new Error(`${binanceCredentialLabel(credential)}: Auto-use Fund Transfer Password is only available when Fund Transfer Password is the selected Binance verification method.`), { statusCode:422 });
-  if (autoFundPassword && !localEnabled) throw Object.assign(new Error(`${binanceCredentialLabel(credential)}: Enable P2PFlow verification before enabling automatic Fund Transfer Password use.`), { statusCode:422 });
-  if (autoFundPassword && !nextFundPassword) throw Object.assign(new Error(`${binanceCredentialLabel(credential)}: Save the Fund Transfer Password before enabling automatic use.`), { statusCode:422 });
+  const autoFundPassword = method === 'FUND_PWD' && Boolean(nextFundPassword);
   credential.releaseVerificationMethod = method;
   credential.releaseLocalVerificationEnabled = localEnabled;
   credential.releaseLocalPrimary = primary;
@@ -7298,41 +7298,51 @@ function validateFinalActionVerificationToken(req, user, order, action, token) {
 function releaseVerificationBodyForCredential(credential, body = {}, localVerification = {}) {
   const policy = releaseVerificationPolicyForCredential(credential);
   const out = { ...body };
-  for (const key of ['authType','code','googleVerifyCode','mobileVerifyCode','emailVerifyCode','yubikeyVerifyCode']) delete out[key];
+  for (const key of ['authType','code','fundPassword','_fundPasswordPlaintext','googleVerifyCode','mobileVerifyCode','emailVerifyCode','yubikeyVerifyCode']) delete out[key];
 
-  // Release verification is challenge-driven. A saved method is only a preference and
-  // must never manufacture a verification field before Binance asks for one. This
-  // restores the pre-v1.5.20 working sequence: minimal release request first, then
-  // submit only the concrete Google/SMS/Fund/FIDO2 field returned by Binance.
+  const configuredMethod = cleanStr(policy.binanceMethod || 'AUTO', 30).toUpperCase();
   const explicitAuthType = cleanStr(body.authType || '', 30).toUpperCase();
   const explicitGoogle = cleanStr(body.googleVerifyCode || '', 40);
   const explicitMobile = cleanStr(body.mobileVerifyCode || '', 40);
   const explicitEmail = cleanStr(body.emailVerifyCode || '', 40);
   const explicitYubi = cleanStr(body.yubikeyVerifyCode || '', 160);
-  const explicitRawCode = body.code === undefined || body.code === null ? '' : String(body.code);
-  const explicitCode = explicitAuthType === 'FUND_PWD' ? explicitRawCode.slice(0, 180) : cleanStr(explicitRawCode, 120);
+  const rawManualFund = body.fundPassword !== undefined && body.fundPassword !== null
+    ? String(body.fundPassword)
+    : (explicitAuthType === 'FUND_PWD' && body.code !== undefined && body.code !== null ? String(body.code) : '');
+  const explicitCode = explicitAuthType === 'FUND_PWD'
+    ? ''
+    : cleanStr(body.code === undefined || body.code === null ? '' : String(body.code), 120);
 
-  // If Binance explicitly challenged for FUND_PWD and auto-use is enabled, inject the
-  // stored secret server-side only after the configured P2PFlow step-up verification.
-  if (explicitAuthType === 'FUND_PWD' && !explicitCode && policy.autoFundPassword) {
-    if (!policy.localVerificationEnabled || localVerification.verified !== true) {
-      throw Object.assign(new Error('Stored Fund Transfer Password can only be used after the configured P2PFlow verification succeeds.'), { statusCode:428, localVerificationRequired:true });
+  // Binance CS-confirmed FUND_PWD flow is deterministic: choose FUND_PWD, obtain the
+  // C2C RSA public key, encrypt the fund password locally, then call releaseCoin with
+  // authType=FUND_PWD and code=<encrypted password>. Unlike Auto/Google/SMS, a selected
+  // FUND_PWD method is therefore not a minimal/challenge-first probe.
+  const fundPwdRequested = configuredMethod === 'FUND_PWD' || explicitAuthType === 'FUND_PWD';
+  if (fundPwdRequested) {
+    if (policy.localVerificationEnabled && localVerification.verified !== true) {
+      throw Object.assign(new Error('Complete the configured P2PFlow verification before the Fund Transfer Password can be used.'), { statusCode:428, localVerificationRequired:true });
     }
-    const storedCode = String(credential?.releaseFundPassword || '');
-    if (!storedCode) throw Object.assign(new Error('Fund Transfer Password auto-use is enabled but no password is saved for this Binance account.'), { statusCode:422 });
+    const storedFundPassword = configuredMethod === 'FUND_PWD' ? String(credential?.releaseFundPassword || '') : '';
+    const fundPassword = rawManualFund || storedFundPassword;
+    if (!fundPassword) {
+      throw Object.assign(new Error('Enter the Binance Fund Transfer Password for this release, or save it in this Binance API account settings.'), { statusCode:428, fundPasswordRequired:true });
+    }
+    if (fundPassword.length > 180) throw Object.assign(new Error('Fund Transfer Password must be 1-180 characters.'), { statusCode:422 });
     out.authType = 'FUND_PWD';
-    out.code = storedCode;
+    out._fundPasswordPlaintext = fundPassword;
+    out.confirmPaidType = 'normal';
     return out;
   }
 
+  // All other release verification methods keep the v1.5.35 challenge-driven behavior:
+  // no verification field is manufactured before Binance asks for one.
   if (explicitGoogle) out.googleVerifyCode = explicitGoogle;
   if (explicitMobile) out.mobileVerifyCode = explicitMobile;
   if (explicitEmail) out.emailVerifyCode = explicitEmail;
   if (explicitYubi) out.yubikeyVerifyCode = explicitYubi;
   if (explicitCode) {
     out.code = explicitCode;
-    // Only code-based methods need authType. Google/SMS have dedicated documented fields.
-    if (['FIDO2','FUND_PWD'].includes(explicitAuthType)) out.authType = explicitAuthType;
+    if (explicitAuthType === 'FIDO2') out.authType = 'FIDO2';
   }
   return out;
 }
@@ -7652,7 +7662,7 @@ function buildReleasePayload(orderNumber, payId, body = {}) {
   const authType = cleanStr(body.authType || '', 30).toUpperCase();
   // Fund Transfer Password is a secret, so preserve its exact bytes/spacing instead of passing it through cleanStr().
   const code = authType === 'FUND_PWD'
-    ? (body.code === undefined || body.code === null ? '' : String(body.code).slice(0, 180))
+    ? (body.code === undefined || body.code === null ? '' : String(body.code).slice(0, 2048))
     : cleanStr(body.code || '', 120);
   const googleVerifyCode = cleanStr(body.googleVerifyCode || '', 30);
   const mobileVerifyCode = cleanStr(body.mobileVerifyCode || '', 30);
@@ -7667,6 +7677,88 @@ function buildReleasePayload(orderNumber, payId, body = {}) {
   if (emailVerifyCode) payload.emailVerifyCode = emailVerifyCode;
   if (yubikeyVerifyCode) payload.yubikeyVerifyCode = yubikeyVerifyCode;
   return compactBinancePayload(payload);
+}
+
+function normalizeBinanceRsaPublicKey(value) {
+  const raw = String(value || '').trim().replace(/\\n/g, '\n');
+  if (!raw) return '';
+  const candidates = [];
+  if (/-----BEGIN (?:RSA )?PUBLIC KEY-----/.test(raw)) candidates.push(raw);
+  const compact = raw.replace(/\s+/g, '');
+  if (/^[A-Za-z0-9+/=]+$/.test(compact) && compact.length >= 128) {
+    try {
+      const der = Buffer.from(compact, 'base64');
+      for (const type of ['spki','pkcs1']) {
+        try {
+          const key = crypto.createPublicKey({ key:der, format:'der', type });
+          candidates.push(key.export({ format:'pem', type:'spki' }).toString());
+          break;
+        } catch {}
+      }
+    } catch {}
+  }
+  for (const candidate of candidates) {
+    try {
+      const key = crypto.createPublicKey(candidate);
+      if (key.asymmetricKeyType === 'rsa' || key.asymmetricKeyType === 'rsa-pss') {
+        return key.export({ format:'pem', type:'spki' }).toString();
+      }
+    } catch {}
+  }
+  return '';
+}
+
+function extractBinanceRsaPublicKey(response) {
+  const seen = new Set();
+  const visit = (value, depth = 0) => {
+    if (depth > 5 || value === null || value === undefined) return '';
+    if (typeof value === 'string') return normalizeBinanceRsaPublicKey(value);
+    if (typeof value !== 'object' || seen.has(value)) return '';
+    seen.add(value);
+    const preferredKeys = ['publicKey','rsaPublicKey','rsa_public_key','key','data','result'];
+    for (const key of preferredKeys) {
+      if (!Object.prototype.hasOwnProperty.call(value, key)) continue;
+      const found = visit(value[key], depth + 1);
+      if (found) return found;
+    }
+    return '';
+  };
+  return visit(response, 0);
+}
+
+function encryptFundPasswordWithRsaPublicKey(publicKey, fundPassword) {
+  const pem = normalizeBinanceRsaPublicKey(publicKey);
+  if (!pem) throw new Error('Binance returned an invalid RSA public key for Fund Transfer Password verification.');
+  const secret = String(fundPassword === undefined || fundPassword === null ? '' : fundPassword);
+  if (!secret) throw new Error('Fund Transfer Password is required.');
+  try {
+    return crypto.publicEncrypt({
+      key:pem,
+      padding:crypto.constants.RSA_PKCS1_OAEP_PADDING,
+      oaepHash:'sha256'
+    }, Buffer.from(secret, 'utf8')).toString('base64');
+  } catch (err) {
+    throw new Error('Could not encrypt the Fund Transfer Password with Binance RSA/OAEP-SHA256 public key: ' + cleanStr(err?.message || err, 240));
+  }
+}
+
+async function encryptFundPasswordForBinance(credential, fundPassword, clientType = 'web') {
+  let response;
+  try {
+    response = await callSignedSapi({
+      apiKey:credential.apiKey,
+      secretKey:credential.secretKey,
+      endpointName:'getC2cRsaPublicKey',
+      clientType:clientType || credential.clientType || 'web',
+      dryRun:false,
+      timeoutMs:12000
+    });
+  } catch (err) {
+    throw new Error('Could not obtain the Binance C2C RSA public key for Fund Transfer Password verification: ' + sanitizeErrorText(err));
+  }
+  const publicKey = extractBinanceRsaPublicKey(response);
+  if (!publicKey) throw new Error('Binance C2C RSA public-key response did not contain a usable RSA public key.');
+  return encryptFundPasswordWithRsaPublicKey(publicKey, fundPassword);
 }
 
 function sanitizeErrorText(err) {
@@ -7734,7 +7826,32 @@ async function performLiveBinanceFinalAction(user, order, action, body) {
   if (action === 'release' || action === 'quick_release') {
     if (order.type !== 'SELL') throw new Error('Release Coin is only allowed for SELL orders.');
     if (!payId) throw new Error('Binance selectedPayId/payId could not be detected from order detail. Re-open the order after live detail sync and try again.');
-    const payload = buildReleasePayload(orderNumber, payId, body);
+    let releaseBody = { ...body };
+    const fundPasswordPlaintext = releaseBody._fundPasswordPlaintext === undefined || releaseBody._fundPasswordPlaintext === null ? '' : String(releaseBody._fundPasswordPlaintext);
+    delete releaseBody._fundPasswordPlaintext;
+    const fundPasswordFlow = cleanStr(releaseBody.authType || '', 30).toUpperCase() === 'FUND_PWD';
+    if (fundPasswordFlow) {
+      if (!fundPasswordPlaintext) throw new Error('Fund Transfer Password is required before Binance release can run.');
+      releaseBody.code = await encryptFundPasswordForBinance(credential, fundPasswordPlaintext, clientType);
+      releaseBody.confirmPaidType = 'normal';
+    }
+    const payload = buildReleasePayload(orderNumber, payId, releaseBody);
+
+    // Binance CS-confirmed FUND_PWD flow is exactly: fetch RSA key -> RSA/OAEP-SHA256
+    // encrypt locally -> releaseCoin(authType=FUND_PWD, code=<ciphertext>, confirmPaidType=normal).
+    // Do not insert checkIfCanReleaseCoin into that deterministic flow.
+    if (fundPasswordFlow) {
+      try {
+        const result = await callSignedSapi({ apiKey: credential.apiKey, secretKey: credential.secretKey, endpointName: 'releaseCoin', body: payload, clientType, dryRun: false });
+        return { mode:'live', endpoint:'releaseCoin', verificationMethod:'FUND_PWD', rsaEncrypted:true, check:null, orderNumber, payId, credentialId:credential.id, result:sanitizedBinanceResult(result), sentPayload:sanitizedBinanceResult(compactBinancePayload({ ...payload, code:'***' })) };
+      } catch (err) {
+        const msg = sanitizeErrorText(err);
+        const e = new Error(`Binance FUND_PWD release failed after RSA encryption. Raw: ${msg}`);
+        e.binanceRawError = msg;
+        throw e;
+      }
+    }
+
     const checkPayload = compactBinancePayload(payload);
     let check;
     try {
@@ -20683,6 +20800,7 @@ async function completeAction(req, res, user, order) {
       return sendJson(res, verificationError.statusCode || 422, {
         error: verificationError.message,
         localVerificationRequired: verificationError.localVerificationRequired === true,
+        fundPasswordRequired: verificationError.fundPasswordRequired === true,
         releaseVerificationPolicy: releaseVerificationPolicyForCredential(credentialForVerification, user),
         order: fullOrderView(order, user)
       }, {}, req);
@@ -24307,34 +24425,54 @@ function runPaymentSplitFinalActionSelfTest() {
     const releaseCredential = db.apiCredentials[0];
     const safeReleasePolicy = releaseVerificationPolicyForCredential(releaseCredential, admin);
     assert(safeReleasePolicy.binanceMethod === 'FUND_PWD' && safeReleasePolicy.localPrimary === 'USER_PASSWORD' && safeReleasePolicy.localSecondary === 'SECRET_CODE', 'Release verification policy normalization failed.');
-    assert(safeReleasePolicy.fundPasswordConfigured === true && !Object.prototype.hasOwnProperty.call(safeReleasePolicy, 'releaseFundPassword') && !JSON.stringify(safeReleasePolicy).includes('Fund-Pass 77'), 'Fund Transfer Password leaked through the public release policy.');
-    const initialPreferenceProbe = releaseVerificationBodyForCredential(releaseCredential, {}, { required:true, verified:false });
-    assert(!initialPreferenceProbe.authType && !initialPreferenceProbe.code, 'Saved Fund Password preference was pre-sent before Binance requested it.');
-    let localGateRequiredForAutoFund = false;
-    try { releaseVerificationBodyForCredential(releaseCredential, { authType:'FUND_PWD' }, { required:true, verified:false }); }
-    catch (error) { localGateRequiredForAutoFund = error?.statusCode === 428 && error?.localVerificationRequired === true; }
-    assert(localGateRequiredForAutoFund, 'Concrete FUND_PWD challenge did not require P2PFlow step-up verification before stored secret use.');
-    const fundPayload = releaseVerificationBodyForCredential(releaseCredential, { authType:'FUND_PWD' }, { required:true, verified:true });
-    assert(fundPayload.authType === 'FUND_PWD' && fundPayload.code === '  Fund-Pass 77  ', 'Stored Fund Transfer Password was not preserved exactly for a concrete FUND_PWD challenge.');
-    const builtFundPayload = buildReleasePayload('ORDER-SELFTEST', 77, fundPayload);
-    assert(builtFundPayload.authType === 'FUND_PWD' && builtFundPayload.code === '  Fund-Pass 77  ', 'Fund Transfer Password was normalized/trimmed before Binance payload construction.');
+    assert(safeReleasePolicy.fundPasswordConfigured === true && safeReleasePolicy.autoFundPassword === true && !Object.prototype.hasOwnProperty.call(safeReleasePolicy, 'releaseFundPassword') && !JSON.stringify(safeReleasePolicy).includes('Fund-Pass 77'), 'Fund Transfer Password leaked through the public release policy.');
+    let localGateRequiredForSavedFund = false;
+    try { releaseVerificationBodyForCredential(releaseCredential, {}, { required:true, verified:false }); }
+    catch (error) { localGateRequiredForSavedFund = error?.statusCode === 428 && error?.localVerificationRequired === true; }
+    assert(localGateRequiredForSavedFund, 'Saved FUND_PWD did not require configured P2PFlow verification before secret use.');
+    const fundBody = releaseVerificationBodyForCredential(releaseCredential, {}, { required:true, verified:true });
+    assert(fundBody.authType === 'FUND_PWD' && fundBody._fundPasswordPlaintext === '  Fund-Pass 77  ' && fundBody.confirmPaidType === 'normal' && !fundBody.code, 'Saved Fund Transfer Password was not prepared exactly for RSA encryption.');
+
+    const rsaPair = crypto.generateKeyPairSync('rsa', { modulusLength:2048, publicKeyEncoding:{ type:'spki', format:'pem' }, privateKeyEncoding:{ type:'pkcs8', format:'pem' } });
+    const extractedRsaKey = extractBinanceRsaPublicKey({ code:'000000', data:{ publicKey:rsaPair.publicKey } });
+    assert(Boolean(extractedRsaKey), 'Binance RSA public-key response extractor failed.');
+    const encryptedFund = encryptFundPasswordWithRsaPublicKey(extractedRsaKey, fundBody._fundPasswordPlaintext);
+    const decryptedFund = crypto.privateDecrypt({ key:rsaPair.privateKey, padding:crypto.constants.RSA_PKCS1_OAEP_PADDING, oaepHash:'sha256' }, Buffer.from(encryptedFund, 'base64')).toString('utf8');
+    assert(decryptedFund === '  Fund-Pass 77  ', 'RSA/OAEP-SHA256 Fund Transfer Password round-trip failed.');
+    const builtFundPayload = buildReleasePayload('ORDER-SELFTEST', 77, { authType:'FUND_PWD', code:encryptedFund, confirmPaidType:'normal' });
+    assert(builtFundPayload.authType === 'FUND_PWD' && builtFundPayload.code === encryptedFund && builtFundPayload.code.length > 180 && builtFundPayload.confirmPaidType === 'normal', 'Encrypted FUND_PWD release payload was truncated or malformed.');
     const profilesJson = JSON.stringify(releaseVerificationProfilesForSettings(admin));
     assert(!profilesJson.includes('Fund-Pass 77') && profilesJson.includes('fundPasswordConfigured'), 'Settings profile exposed the stored Fund Transfer Password.');
-    releaseCredential.releaseAutoFundPassword = false;
+
+    releaseCredential.releaseLocalVerificationEnabled = false;
+    const directSavedFundBody = releaseVerificationBodyForCredential(releaseCredential, {}, { required:false, verified:true });
+    assert(directSavedFundBody.authType === 'FUND_PWD' && directSavedFundBody._fundPasswordPlaintext === '  Fund-Pass 77  ', 'Saved Fund Transfer Password did not auto-prepare when CRM verification was disabled.');
+    releaseCredential.releaseFundPassword = '';
+    normalizeCredentialReleaseVerification(releaseCredential);
+    const manualFundBody = releaseVerificationBodyForCredential(releaseCredential, { authType:'FUND_PWD', fundPassword:'Manual-Fund-88' }, { required:false, verified:true });
+    assert(manualFundBody.authType === 'FUND_PWD' && manualFundBody._fundPasswordPlaintext === 'Manual-Fund-88', 'Manual Fund Transfer Password was not accepted for Release-time entry.');
+    let manualFundRequired = false;
+    try { releaseVerificationBodyForCredential(releaseCredential, { authType:'FUND_PWD' }, { required:false, verified:true }); }
+    catch (error) { manualFundRequired = error?.statusCode === 428 && error?.fundPasswordRequired === true; }
+    assert(manualFundRequired, 'Missing unsaved Fund Transfer Password did not request Release-time entry.');
+
+    releaseCredential.releaseFundPassword = '  Fund-Pass 77  ';
+    releaseCredential.releaseLocalVerificationEnabled = true;
     releaseCredential.releaseVerificationMethod = 'GOOGLE';
+    normalizeCredentialReleaseVerification(releaseCredential);
     const googlePreferenceProbe = releaseVerificationBodyForCredential(releaseCredential, {}, { verified:true });
     assert(!googlePreferenceProbe.googleVerifyCode && !googlePreferenceProbe.authType && !googlePreferenceProbe.code, 'Google preference pre-sent verification data before a Binance challenge.');
     const googleBody = releaseVerificationBodyForCredential(releaseCredential, { googleVerifyCode:'123456' }, { verified:true });
     const googlePayload = buildReleasePayload('ORDER-SELFTEST', 77, googleBody);
     assert(!googlePayload.authType && googlePayload.googleVerifyCode === '123456', 'Google Authenticator regression: the dedicated googleVerifyCode field should be sent without forcing authType.');
     releaseCredential.releaseVerificationMethod = 'SMS';
+    normalizeCredentialReleaseVerification(releaseCredential);
     const smsBody = releaseVerificationBodyForCredential(releaseCredential, { mobileVerifyCode:'654321' }, { verified:true });
     const smsPayload = buildReleasePayload('ORDER-SELFTEST', 77, smsBody);
     assert(!smsPayload.authType && smsPayload.mobileVerifyCode === '654321', 'SMS regression: the dedicated mobileVerifyCode field should be sent without forcing authType.');
-    releaseCredential.releaseVerificationMethod = 'FUND_PWD';
     const challengeOverrideBody = releaseVerificationBodyForCredential(releaseCredential, { googleVerifyCode:'112233' }, { verified:true });
     const challengeOverridePayload = buildReleasePayload('ORDER-SELFTEST', 77, challengeOverrideBody);
-    assert(challengeOverridePayload.googleVerifyCode === '112233' && !challengeOverridePayload.code && !challengeOverridePayload.authType, 'Concrete Binance Google challenge did not override the saved Fund Password preference.');
+    assert(challengeOverridePayload.googleVerifyCode === '112233' && !challengeOverridePayload.code && !challengeOverridePayload.authType, 'Concrete Binance Google challenge did not override a non-FUND_PWD saved preference.');
     const genericFailureRequirements = inferReleaseRequirementsFromError(new Error('Binance SAPI error 400 on releaseCoin: {"code":100001003,"msg":"Verification failed"}'));
     assert(genericFailureRequirements.hasSpecificRequirement === false && genericFailureRequirements.fields.length === 0, 'Generic Verification failed error invented a fake Binance verification-code field.');
     const ambiguousMissingRequirements = inferReleaseRequirementsFromError(new Error('Binance SAPI error 400 on releaseCoin: {"code":-9000,"msg":"Your verification code is missing."}'));
@@ -24350,7 +24488,7 @@ function runPaymentSplitFinalActionSelfTest() {
       splitEdit:{ send1000To500RestoresLimit:true, receive1000To500RestoresLimit:true, configuredChargeRecalculated:true, receiveDoesNotApplySendMoneyCharge:true },
       splitDelete:{ balanceRestored:true, sendLimitRestored:true, receiveLimitRestored:true },
       finalAction:{ genericIdRejectedAsPayId:true, paymentCandidatePayIdSelected:true, unpaidStatusNotMisclassified:true, splitGateToggle:true, proofMandatoryOptional:true, savedSplitGateSatisfied:true, missingProofGateUnsatisfied:true },
-      releaseVerification:{ fundPasswordExactPreserved:true, fundPasswordNotExposed:true, initialPreferencePayloadMinimal:true, googleAndSmsMapped:true, challengeOverridesPreference:true, genericFailureDoesNotInventCode:true, ambiguousCodeDoesNotInventField:true, staleGenericChallengeIgnored:true, localGateRequiredForAutoFund:true, primarySecondaryConfigured:true }
+      releaseVerification:{ fundPasswordExactPreserved:true, fundPasswordNotExposed:true, fundPasswordRsaOaepSha256:true, encryptedFundPayloadNotTruncated:true, savedFundAutoReleaseReady:true, manualFundPasswordSupported:true, localGateRequiredForSavedFund:true, googleAndSmsMapped:true, challengeOverridesPreference:true, genericFailureDoesNotInventCode:true, ambiguousCodeDoesNotInventField:true, staleGenericChallengeIgnored:true, primarySecondaryConfigured:true }
     }, null, 2));
   } finally {
     db = previousDb;

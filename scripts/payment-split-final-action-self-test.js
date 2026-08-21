@@ -46,6 +46,10 @@ assert(server.includes('BINANCE_RELEASE_VERIFICATION_METHODS') && server.include
 assert(server.includes("action === 'final-action-verification-start'") && server.includes("action === 'final-action-verification-verify'"), 'P2PFlow release step-up verification endpoints are missing.');
 assert(server.includes('releaseVerificationBodyForCredential') && server.includes('releaseVerificationPolicyForCredential'), 'Per-Binance-account release verification policy is missing.');
 assert(server.includes("credentials.manage") && server.includes('releaseFundPassword'), 'Fund Transfer Password permission/storage guard is missing.');
+assert(server.includes("getC2cRsaPublicKey") && read('lib/binanceAdapter.js').includes('/sapi/v1/c2c/cryptography/rsa-public-key'), 'Binance C2C RSA public-key endpoint is missing.');
+assert(server.includes('RSA_PKCS1_OAEP_PADDING') && server.includes("oaepHash:'sha256'") && server.includes("toString('base64')"), 'FUND_PWD RSA/OAEP-SHA256 encryption is missing.');
+assert(server.includes("verificationMethod:'FUND_PWD'") && server.includes('Do not insert checkIfCanReleaseCoin'), 'FUND_PWD release does not use the Binance CS-confirmed direct releaseCoin flow.');
+assert(app.includes("fundPasswordRequired") && app.includes("String(policy.binanceMethod || 'AUTO').toUpperCase() === 'FUND_PWD'"), 'Release-time Fund Transfer Password UI flow is missing.');
 assert(app.includes('Change Verification System') && app.includes('localVerificationToken'), 'Primary/Secondary release verification UI is missing.');
 assert(app.includes('releaseVerificationFieldsForScreen') && app.includes('Authenticator App Verification') && app.includes('FUND_PWD') && app.includes('YUBIKEY'), 'Dedicated challenge-driven Binance verification screen is incomplete.');
 assert(!app.includes('releaseFundPassword') && !read('public/js/pages/credentials.js').includes('releaseFundPassword'), 'Stored Fund Transfer Password is exposed by a browser bundle identifier.');
@@ -68,8 +72,8 @@ assert(report?.splitDelete?.balanceRestored === true && report?.splitDelete?.sen
 assert(report?.finalAction?.genericIdRejectedAsPayId === true && report?.finalAction?.unpaidStatusNotMisclassified === true, 'final-action payId/status assertions failed.');
 assert(report?.finalAction?.splitGateToggle === true && report?.finalAction?.proofMandatoryOptional === true, 'Payment Split gate/proof mode runtime assertions failed.');
 assert(report?.finalAction?.savedSplitGateSatisfied === true && report?.finalAction?.missingProofGateUnsatisfied === true, 'Saved Payment Split readiness runtime assertions failed.');
-assert(report?.releaseVerification?.fundPasswordExactPreserved === true && report?.releaseVerification?.fundPasswordNotExposed === true && report?.releaseVerification?.initialPreferencePayloadMinimal === true, 'Fund Transfer Password verification runtime assertions failed.');
-assert(report?.releaseVerification?.googleAndSmsMapped === true && report?.releaseVerification?.challengeOverridesPreference === true && report?.releaseVerification?.genericFailureDoesNotInventCode === true && report?.releaseVerification?.ambiguousCodeDoesNotInventField === true && report?.releaseVerification?.staleGenericChallengeIgnored === true && report?.releaseVerification?.localGateRequiredForAutoFund === true, 'Configured Binance/local verification runtime assertions failed.');
+assert(report?.releaseVerification?.fundPasswordExactPreserved === true && report?.releaseVerification?.fundPasswordNotExposed === true && report?.releaseVerification?.fundPasswordRsaOaepSha256 === true && report?.releaseVerification?.encryptedFundPayloadNotTruncated === true && report?.releaseVerification?.savedFundAutoReleaseReady === true && report?.releaseVerification?.manualFundPasswordSupported === true, 'Fund Transfer Password RSA verification runtime assertions failed.');
+assert(report?.releaseVerification?.googleAndSmsMapped === true && report?.releaseVerification?.challengeOverridesPreference === true && report?.releaseVerification?.genericFailureDoesNotInventCode === true && report?.releaseVerification?.ambiguousCodeDoesNotInventField === true && report?.releaseVerification?.staleGenericChallengeIgnored === true && report?.releaseVerification?.localGateRequiredForSavedFund === true, 'Configured Binance/local verification runtime assertions failed.');
 
 console.log(JSON.stringify({
   ok:true,
@@ -81,7 +85,8 @@ console.log(JSON.stringify({
   splitGateToggle:true,
   proofMandatoryOptional:true,
   savedSplitDirectRetry:true,
-  directMinimalReleaseProbe:true,
+  directMinimalReleaseProbeForNonFundMethods:true,
+  fundPasswordRsaRelease:true,
   staleGenericChallengeIgnored:true,
   finalVerificationPage:true,
   multiNumberSelection:true,

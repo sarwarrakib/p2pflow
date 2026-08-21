@@ -22,7 +22,7 @@ const section = (source, start, end) => {
   return source.slice(a, b);
 };
 
-assert(pkg.version === '1.5.35', `expected v1.5.35, got ${pkg.version}`);
+assert(pkg.version === '1.5.36', `expected v1.5.36, got ${pkg.version}`);
 assert(server.includes('const APP_SCHEMA_VERSION = 36;'), 'schema 35 is required for transaction-specific payment rules.');
 
 const helpers = section(server, 'function normalizePaymentAccountSerialScopeValue', 'function paymentAccountMatchesSearch');

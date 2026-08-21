@@ -1,4 +1,4 @@
-// P2PFlow v1.5.34
+// P2PFlow v1.5.36
 // API credentials: automatic connect validation, P2P username identity, compact actions and per-account Release Verification settings.
 
 const P2PFLOW_BINANCE_RELEASE_VERIFICATION_METHODS = [
@@ -29,7 +29,6 @@ function p2pflowReleaseVerificationProfileHtml(profile = {}, canManageFundPasswo
   const credentialId = Number(profile.credentialId || 0);
   const method = String(profile.binanceMethod || 'AUTO');
   const localEnabled = profile.localVerificationEnabled === true;
-  const autoFund = profile.autoFundPassword === true;
   const fundConfigured = profile.fundPasswordConfigured === true;
   const name = profile.p2pUsername || profile.credentialName || `Binance Account ${credentialId}`;
   return `<article class="credential-release-profile settings-release-profile" data-release-profile="${credentialId}">
@@ -37,7 +36,7 @@ function p2pflowReleaseVerificationProfileHtml(profile = {}, canManageFundPasswo
       <div><b>${escapeHtml(name)}</b><small>Release Verification · API #${credentialId}${profile.disabled ? ' · Disabled' : ''}</small></div>
       <div>${badge(method === 'AUTO' ? 'Auto' : method, method === 'AUTO' ? 'muted' : 'ok')} ${fundConfigured ? badge('Fund password saved','ok') : ''}</div>
     </div>
-    <div class="settings-callout warn"><b>Binance remains the final authority.</b><span>The first Release request is always sent without a guessed verification code. This setting is only a preference; when Binance names a concrete method, that challenge is followed.</span></div>
+    <div class="settings-callout warn"><b>Binance remains the final authority.</b><span>Binance Auto/Google/SMS/FIDO2 keep the existing challenge-driven flow. Fund Transfer Password uses Binance's RSA-encrypted FUND_PWD release flow when selected.</span></div>
     <div class="settings-field-grid settings-release-grid">
       <div><label>Binance verification</label><select data-release-field="binanceMethod">${p2pflowReleaseMethodOptions(method)}</select></div>
       <div class="settings-inline-check settings-release-local-toggle"><label class="check"><input type="checkbox" data-release-field="localVerificationEnabled" ${localEnabled?'checked':''}/> Require P2PFlow verification before Release</label></div>
@@ -45,7 +44,7 @@ function p2pflowReleaseVerificationProfileHtml(profile = {}, canManageFundPasswo
       <div><label>Secondary P2PFlow verification</label><select data-release-field="localSecondary">${p2pflowLocalReleaseMethodOptions(profile.localSecondary || 'NONE', { allowNone:true })}</select></div>
     </div>
     <div class="settings-release-fund-box" data-release-fund-box>
-      <div class="settings-option-row compact"><span><b>Automatic Fund Transfer Password</b><small>If Binance specifically requests FUND_PWD, the saved password is applied server-side after the configured P2PFlow verification succeeds and is never returned to the browser.</small></span><input type="checkbox" data-release-field="autoFundPassword" ${autoFund?'checked':''}/></div>
+      <div class="settings-option-row compact"><span><b>Saved Fund Transfer Password</b><small>If a password is saved, FUND_PWD Release uses it automatically after RSA/OAEP-SHA256 encryption. If P2PFlow verification is enabled, Primary/Secondary verification must pass first. If no password is saved, Release asks for it at that time.</small></span></div>
       <div class="settings-field-grid">
         <div><label>Fund Transfer Password</label><input data-release-field="fundPassword" type="password" value="" placeholder="${fundConfigured ? 'Saved — leave blank to keep' : 'Enter fund transfer password'}" autocomplete="new-password" ${canManageFundPassword?'':'disabled'} /></div>
         <div class="settings-inline-check"><label class="check"><input type="checkbox" data-release-field="clearFundPassword" ${canManageFundPassword?'':'disabled'} /> Clear saved password</label></div>
@@ -107,15 +106,12 @@ function openCredentialReleaseVerificationModal(credential = {}) {
       localVerificationEnabled:get('localVerificationEnabled')?.checked === true,
       localPrimary:get('localPrimary')?.value || 'USER_PASSWORD',
       localSecondary:get('localSecondary')?.value || 'NONE',
-      autoFundPassword:get('autoFundPassword')?.checked === true,
       fundPassword:get('fundPassword')?.value || '',
       clearFundPassword:get('clearFundPassword')?.checked === true
     };
     if (payload.localVerificationEnabled && payload.localSecondary !== 'NONE' && payload.localPrimary === payload.localSecondary) {
       return setFormMessage('#credentialReleaseVerificationMessage', 'Primary and Secondary verification must be different.', 'danger');
     }
-    if (payload.autoFundPassword && payload.binanceMethod !== 'FUND_PWD') return setFormMessage('#credentialReleaseVerificationMessage', 'Select Fund Transfer Password before enabling automatic password use.', 'danger');
-    if (payload.autoFundPassword && !payload.localVerificationEnabled) return setFormMessage('#credentialReleaseVerificationMessage', 'Enable P2PFlow verification before automatic Fund Transfer Password use.', 'danger');
     const submit = event.submitter;
     if (submit) submit.disabled = true;
     try {

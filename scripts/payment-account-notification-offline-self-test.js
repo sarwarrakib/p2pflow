@@ -27,7 +27,7 @@ function section(source, start, end) {
   return source.slice(a, b);
 }
 
-assert(pkg.version === '1.5.35', `expected 1.5.35, got ${pkg.version}`);
+assert(pkg.version === '1.5.36', `expected 1.5.36, got ${pkg.version}`);
 assert(server.includes('const APP_SCHEMA_VERSION = 36;'), 'schema 34 missing.');
 
 // Payment-account identity and scope.
@@ -78,7 +78,7 @@ assert(section(server, 'function offlineTransactionCandidates', 'function create
 assert(server.includes("type: 'offline_receive'") && server.includes('allocation.receivedAmount = round2'), 'Received balance/partial tracking missing.');
 assert(server.includes('body.allowPartial !== true') && server.includes("status = isPartial ? 'finalized_partial' : 'finalized'"), 'Partial offline order finalization guard missing.');
 assert(server.includes('createOfflineCompletedOrder') && server.includes("orderSource: 'offline'"), 'Offline order creation missing.');
-assert(index.includes('/js/pages/offline-transactions.js?v=1.5.35'), 'Offline page script not loaded.');
+assert(index.includes('/js/pages/offline-transactions.js?v=1.5.36'), 'Offline page script not loaded.');
 assert(app.includes("['offline-transactions', 'Offline Business'") && app.includes("'offline-transactions': 'offline.transactions.manage'"), 'Offline page navigation/permission missing.');
 assert(offline.includes('/api/offline-transactions/candidates') && offline.includes('data-mark-offline-received'), 'Offline candidate/received UI missing.');
 assert(offline.includes('Create Partial Order') && offline.includes('allowPartial'), 'Offline partial finalize UI missing.');
