@@ -23,11 +23,12 @@ assert(!/linkedUser\.role\s*!==\s*['"]agent['"]/.test(server), 'Agent linkage st
 assert(/previousSchemaVersion < 36/.test(server) && /Role labels are\n    \/\/ intentionally ignored even during this one-time compatibility step/.test(server), 'Schema-36 permission-only legacy Binance grant migration is missing.');
 assert(/previousSchemaVersion < 37/.test(server) && /releaseFundPasswordVault/.test(server) && /storeCredentialFundPassword/.test(server), 'Schema-37 Fund Password field-vault migration is missing.');
 assert(/'binance\.sync': Object\.freeze\(\['orders\.view'\]\)/.test(app), 'Client binance.sync implication to orders.view is missing.');
-assert(/name="minRate"/.test(ads) && /name="maxRate"/.test(ads), 'Ads Minimum/Maximum Rate fields are missing.');
-assert(/Maximum Rate must be greater than or equal to Minimum Rate/.test(server), 'Server ad-rate bound validation is missing.');
-assert(/Advertisement price cannot be lower than Minimum Rate/.test(server) && /Advertisement price cannot be higher than Maximum Rate/.test(server), 'Server price guard validation is incomplete.');
+assert(!/name="minRate"/.test(ads) && !/name="maxRate"/.test(ads), 'Legacy editable Minimum/Maximum Rate fields are still present.');
+assert(/\/api\/ads\/reference-price/.test(ads) && /Price range/.test(ads), 'Live Binance reference-price guide is missing from the Ads editor.');
+const normalized = block(server, 'function normalizeAdvertisementInput(', 'function advertisementCreateClassifyForCredential(');
+assert(/minRate:\s*0/.test(normalized) && /maxRate:\s*0/.test(normalized), 'Legacy Minimum/Maximum Rate values are not neutralized.');
 const payload = block(server, 'function advertisementBinancePayload(', 'const ADVERTISEMENT_UPDATE_ALLOWED_KEYS');
-assert(!/\bminRate\b|\bmaxRate\b/.test(payload), 'Local Minimum/Maximum Rate leaked into Binance payload.');
+assert(!/\bminRate\b|\bmaxRate\b/.test(payload), 'Legacy Minimum/Maximum Rate leaked into Binance payload.');
 const allowlist = block(server, 'const ADVERTISEMENT_UPDATE_ALLOWED_KEYS', 'function advertisementUpdatePayload');
-assert(!/'minRate'|'maxRate'/.test(allowlist), 'Local Minimum/Maximum Rate leaked into Binance update allowlist.');
-console.log(JSON.stringify({ ok:true, permissionAuthority:'explicit-permissions-only', schema:37, adRateGuard:true, binancePayloadLeak:false }));
+assert(!/'minRate'|'maxRate'/.test(allowlist), 'Legacy Minimum/Maximum Rate leaked into Binance update allowlist.');
+console.log(JSON.stringify({ ok:true, permissionAuthority:'explicit-permissions-only', schema:37, adPriceGuide:'live-binance-reference-display', editableRateGuard:false, binancePayloadLeak:false }));

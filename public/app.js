@@ -1,4 +1,4 @@
-// v1.5.37: single-click P2PFlow+Binance release verification with inline retry errors and field-vaulted Fund Password storage.
+// v1.5.38: single-click P2PFlow+Binance release verification with inline retry errors and field-vaulted Fund Password storage.
 // v1.5.23: Payment Account serial scope treats each normalized Label, including no Label, as an independent namespace.
 // v1.5.22: Header-only Work Status, chat-only notification master, and coupled sound/push controls.
 // v1.5.20: account-scoped Binance RBAC, visible security recovery setup and individual-only profit accounting.
@@ -5002,7 +5002,7 @@ function renderNav() {
   // legacy flat menu while this marker is absent, the browser/proxy is serving
   // stale frontend JavaScript rather than the active release.
   nav.dataset.navigationModel = 'grouped-control-center';
-  nav.dataset.uiRelease = '1.5.37';
+  nav.dataset.uiRelease = '1.5.38';
   nav.innerHTML = '';
   const visible = visiblePages();
   const visibleIds = new Set(visible.map(([id]) => id));
@@ -7422,14 +7422,13 @@ function localFinalActionVerificationPanelHtml(policy = {}) {
   const primary = policy.localPrimary || 'USER_PASSWORD';
   const hasSecondary = policy.localSecondary && policy.localSecondary !== 'NONE' && policy.localSecondary !== primary;
   return `<div id="localFinalActionVerificationPanel" class="full-row final-action-local-verify" data-primary="${escapeAttr(primary)}" data-secondary="${escapeAttr(policy.localSecondary || 'NONE')}">
-    <div class="final-action-local-verify-head"><div><b>P2PFlow Verification</b><small>Enter the required P2PFlow verification below, then press the single Release Coin button.</small></div><span id="localFinalActionVerificationStatus" class="badge warn">Required</span></div>
     <div id="localFinalActionVerificationMethod"></div>
     <div class="final-action-local-actions">
-      <button type="button" class="secondary small hidden" id="sendFinalActionEmailOtpBtn">Resend Email OTP</button>
-      ${hasSecondary ? '<button type="button" class="ghost small hidden" id="changeFinalActionLocalVerificationBtn">Change Verification System</button>' : ''}
+      <button type="button" class="release-inline-link hidden" id="sendFinalActionEmailOtpBtn">Resend OTP</button>
+      ${hasSecondary ? '<button type="button" class="release-inline-link hidden" id="changeFinalActionLocalVerificationBtn">Change verification method</button>' : ''}
     </div>
     <input type="hidden" name="localVerificationToken" id="localFinalActionVerificationToken" value="" />
-    <div id="localFinalActionVerificationMessage"></div>
+    <div id="localFinalActionVerificationMessage" class="release-inline-message"></div>
   </div>`;
 }
 
@@ -7463,7 +7462,7 @@ function bindLocalFinalActionVerification(order, finalAction, policy, gateState)
     const task = (async () => {
       const out = await api(`/api/orders/${order.id}/final-action-verification-start`, { method:'POST', body:JSON.stringify({ action:finalAction, method:gateState.method }), silent:true });
       gateState.challengeId = out.challengeId || '';
-      if (gateState.method === 'EMAIL_OTP') setFormMessage(messageBox, `${resend ? 'New OTP sent' : 'OTP sent'} to ${out.emailMasked || 'your registered email'}. Enter it above and press Release Coin.`, 'ok');
+      if (gateState.method === 'EMAIL_OTP') setFormMessage(messageBox, `${resend ? 'New OTP sent' : 'OTP sent'} to ${out.emailMasked || 'your email'}.`, 'ok');
       return out;
     })();
     gateState.challengePromise = task;
@@ -7487,7 +7486,7 @@ function bindLocalFinalActionVerification(order, finalAction, policy, gateState)
       changeBtn.disabled = false;
     }
     if (status) { status.textContent = 'Required'; status.className = 'badge warn'; }
-    setFormMessage(messageBox, `${gateState.method === primary ? 'Primary' : 'Secondary'} verification: ${methodLabel(gateState.method)}. Enter it and press Release Coin.`, '');
+    setFormMessage(messageBox, '', '');
     if (gateState.method === 'EMAIL_OTP' && autoSendOtp) {
       setTimeout(async () => {
         try { await startChallenge(); }
@@ -7521,7 +7520,7 @@ function bindLocalFinalActionVerification(order, finalAction, policy, gateState)
       gateState.token = out.token || '';
       if (tokenInput) tokenInput.value = gateState.token;
       if (status) { status.textContent = 'Verified'; status.className = 'badge ok'; }
-      setFormMessage(messageBox, `${out.methodLabel || 'P2PFlow verification'} verified. Releasing now...`, 'ok');
+      setFormMessage(messageBox, 'Verified. Releasing...', 'ok');
       if (input) { input.value = ''; input.disabled = true; }
       if (sendOtpBtn) sendOtpBtn.disabled = true;
       if (changeBtn) changeBtn.disabled = true;
@@ -7904,51 +7903,35 @@ function openReleaseVerificationPage(order, finalAction='release', options={}) {
   const localAlreadyVerified = Boolean(localGateState.token);
   const hiddenHtml = Object.entries(fieldState.hidden || {}).map(([key,value]) => `<input type="hidden" name="${escapeAttr(key)}" value="${escapeAttr(value)}" />`).join('');
   const fieldsHtml = fieldState.fields.map(releaseVerificationInputHtml).join('');
-  const statusText = localOnly
-    ? 'P2PFlow security check'
-    : presentation.autoChallenge
-      ? 'Binance needs extra verification.'
-      : 'Binance verification check';
   const localHtml = policy.localVerificationEnabled
-    ? (localAlreadyVerified
-        ? `<div class="release-local-verified"><span>✓</span><div><b>P2PFlow verification completed</b><small>The verified step-up token will be used for this release attempt.</small></div></div>`
-        : localFinalActionVerificationPanelHtml(policy))
-    : '';
-  const autoFundHtml = fieldState.autoFund ? `<div class="release-auto-secret"><span>✓</span><div><b>Saved Fund Transfer Password ready</b><small>P2PFlow will fetch Binance's C2C RSA public key, encrypt the saved password with RSA/OAEP-SHA256, and submit it server-side. The password is never exposed back to this browser.</small></div></div>` : '';
-  const challengeOverrideHtml = fieldState.challengeOverridesPreference ? `<div class="release-auto-secret"><span>!</span><div><b>Binance requested ${escapeHtml(presentation.title.replace(' Verification',''))}</b><small>Your saved preference is ${escapeHtml(policy.binanceMethodLabel || 'Binance Auto')}, but this release attempt will follow Binance's concrete challenge.</small></div></div>` : '';
-  const noFieldHtml = !localOnly && !fieldsHtml && !fieldState.autoFund
-    ? `<div class="release-auto-check"><b>Binance verification check</b><span>No verification code is requested until Binance identifies the exact method required for this order.</span></div>`
+    ? (localAlreadyVerified ? '' : localFinalActionVerificationPanelHtml(policy))
     : '';
   const submitText = finalAction === 'quick_release' ? 'Quick Release' : 'Release Coin';
+  const hasLocalInput = policy.localVerificationEnabled && !localAlreadyVerified;
+  const screenTitle = hasLocalInput
+    ? (requirements?.hasSpecificRequirement || fieldsHtml ? 'Release Verification' : (policy.localPrimaryLabel || 'P2PFlow Verification'))
+    : presentation.title;
+  const screenSubtitle = hasLocalInput ? '' : presentation.subtitle;
 
-  modal('Release Verification', `<div class="release-verify-shell">
+  modal('Release Verification', `<div class="release-verify-shell release-verify-minimal">
     <div class="release-verify-topbar">
       <button type="button" class="release-verify-nav" data-release-verify-back aria-label="Back">←</button>
       <button type="button" class="release-verify-nav" data-release-verify-close aria-label="Close">×</button>
     </div>
     <div class="release-verify-main">
-      <div class="release-verify-status">${escapeHtml(statusText)}</div>
-      <h2>${escapeHtml(presentation.title)}</h2>
-      <p class="release-verify-subtitle">${escapeHtml(presentation.subtitle)}</p>
+      <h2>${escapeHtml(screenTitle)}</h2>
+      ${screenSubtitle ? `<p class="release-verify-subtitle">${escapeHtml(screenSubtitle)}</p>` : ''}
       <form id="releaseVerificationForm" class="release-verify-form">
         <input type="hidden" name="action" value="${escapeAttr(finalAction)}" />
         <input type="hidden" name="binanceOrderNumber" value="${escapeAttr(order.externalOrderNo || order.orderNo || '')}" />
         <input type="hidden" name="payId" value="${Number(order.binancePayId || 0) || ''}" />
         ${hiddenHtml}
         ${localHtml}
-        ${autoFundHtml}
-        ${challengeOverrideHtml}
-        ${noFieldHtml}
         ${fieldsHtml}
-        <div id="releaseVerificationMessage">${options.retryMessage ? `<div class="warn">${escapeHtml(options.retryMessage)}</div>` : ''}</div>
+        <div id="releaseVerificationMessage" class="release-inline-message">${options.retryMessage ? `<div class="warn">${escapeHtml(options.retryMessage)}</div>` : ''}</div>
         <button type="submit" class="release-verify-submit">${submitText}</button>
       </form>
-      <div class="release-verify-links">
-        ${policy.localVerificationEnabled && policy.localSecondary && policy.localSecondary !== 'NONE' ? '<span>Primary/Secondary P2PFlow verification is available when configured.</span>' : ''}
-        <span>Verification method: ${escapeHtml(policy.binanceMethodLabel || 'Binance Auto')}</span>
-      </div>
     </div>
-    <div class="release-verify-footer"><span>▣</span> Protected Release · P2PFlow / Binance Risk</div>
   </div>`);
   const backdrop = document.querySelector('.modal-backdrop:last-of-type');
   const dialog = backdrop?.querySelector('.modal');

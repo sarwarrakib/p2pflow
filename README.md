@@ -27,41 +27,38 @@ Updater code এবং database আলাদা রাখে। Update install-�
 
 ## Version
 
-Internal SemVer: `1.5.37`
+Internal SemVer: `1.5.38`
 UI: `1.5`
 Database schema: `37`
 
 Normal next version: `SET_NEXT_VERSION.bat` -> `1.6.0`  
-Hotfix: `SET_HOTFIX_VERSION.bat` -> `1.5.38`
+Hotfix: `SET_HOTFIX_VERSION.bat` -> `1.5.39`
 
 ## Database history safety
 
 P2PFlow keeps authoritative business/application data in MariaDB/MySQL/PostgreSQL. State payloads are compressed with Brotli before AES-256-GCM encryption, proofs/chat media are stored as encrypted database objects, and identical newly uploaded proof/media bytes use content-addressed object IDs to avoid duplicate blobs. The default is 3 retained recovery checkpoints with a 6-hour archive interval and 5 retained automatic database backups. Older uncompressed state/history/backup payloads are upgraded incrementally after startup. Health Check reports each P2PFlow database table's allocated size/row count, current encrypted state payload size, compression saving percentage, and proof/chat object usage so database-MB growth can be inspected without terminal access. `shared/`, `.p2pflow`, `.env`, `releases/` and temporary restart/update markers are operational bootstrap/update metadata only; they are not an application/business-data store. The application runtime itself does not write proof, chat, audit, order, ledger, notification or recovery-code data to local files.
 
-## v1.5.37 One-click Release Verification & Fund Password Secret Vault
+## v1.5.38 Reference UI, Minimal Verification & Binance Ad Flow
 
-- P2PFlow local Release verification আর `Verify -> Release` দুইটি confirm button ব্যবহার করে না। User Password / 6-digit Secret Code / Email OTP input পূরণ করে একই **Release Coin** button চাপলে local verification pass হওয়ার সঙ্গে সঙ্গে একই click-chain-এ Binance release চলে।
-- Email OTP primary/secondary method হলে verification screen OTP automatic request করে; আলাদা confirm button নেই, শুধু প্রয়োজন হলে **Resend Email OTP** action থাকে।
-- ভুল P2PFlow password/Secret Code/Email OTP হলে modal/page remount হয় না; input-এর নিচেই error এবং remaining/fallback state থাকে। Primary fail হলে configured Secondary method-এর **Change Verification System** action available হয়।
-- ভুল Google Authenticator/SMS/YubiKey/Binance concrete code হলে একই verification screen স্থির থাকে, code field clear/focus হয় এবং inline warning দেখায়; একই method-এর জন্য modal close/reopen করা হয় না।
-- Binance API account Release Verification-এ `Fund Transfer Password` নির্বাচন করলে Binance CS-confirmed deterministic flow থাকে: C2C RSA public key fetch -> RSA/OAEP-SHA256 encryption -> `releaseCoin` with `authType=FUND_PWD`, encrypted `code`, `confirmPaidType=normal`.
-- Saved Fund Transfer Password schema 37-এ নতুন field-level secret vault-এ migrate হয়: **AES-256-GCM + HKDF-SHA256 + credential/purpose-bound AAD**। Legacy plaintext field clear করা হয়। পুরো database state আগের মতো আলাদাভাবে AES-256-GCM encrypted থাকে।
-- নতুন hosting setup আলাদা permanent `P2PFLOW_SECRET_VAULT_KEY` generate করে। Existing install-এ key না থাকলে backward-compatibleভাবে `P2PFLOW_APP_KEY` থেকে vault key derive হয়; strongest key separation চাইলে v1.5.37 first startup-এর আগে আলাদা 32+ character vault key সেট করুন, অথবা পরে key সেট করে Fund Password আবার Save করুন।
-- User login password, 6-digit login Secret Code এবং Security Question answer reversible encryption নয়; salted `scrypt` one-way hash হিসেবে থাকে।
-- Saved Fund Password public API/browser-এ ফেরত যায় না এবং release-এর সময় server memory-তে decrypt হওয়ার পর Binance RSA encryption দিয়ে ciphertext পাঠানো হয়।
-- Database schema `37`; schema 36 -> 37 additive migration saved Fund Password-কে vault-এ seal করে।
+- Release Verification screen এখন ultra-minimal: শুধু current verification title, প্রয়োজনীয় input, inline error/fallback action এবং একটিমাত্র **Release Coin** button। Saved Fund Password/RSA/CRM security explanation আর user-facing screen ভরিয়ে রাখে না।
+- Google/SMS/P2PFlow local verification ভুল হলে একই screen-এ inline warning থাকে; modal remount/reload হয় না। Existing one-click Release এবং Fund Password Secret Vault flow অপরিবর্তিত।
+- Supplied Binance mobile screenshots অনুসারে P2P Orders, P2P Market, My Ads, Ads filters এবং Post Ad editor responsive compact styling পেয়েছে; existing CRM fields/actions/permissions বাদ দেওয়া হয়নি।
+- Post Ad এখন screenshot-style 3-step wizard: **Set Type & Price -> Set Amount & Method -> Set Conditions**, সাথে Preview, Fixed/Floating Price Type এবং Verification Request।
+- Editable local **Minimum Rate / Maximum Rate** fields সরানো হয়েছে। Ads editor Binance C2C `getReferencePrice` থেকে live response নেয়। Binance response-এ explicit usable min/max bound থাকলে সেটাই **Price range** হিসেবে দেখায়; না থাকলে supplied mobile UI pattern অনুযায়ী live reference-based display guide দেখায়। Editor প্রায় 5-second refresh করে; submitted price-এর final acceptance Binance-এর authoritative validation।
+- SELL advertisement-এ selected Binance API account-এর saved P2P payment account details দেখায়; BUY advertisement-এ saved account number নয়, Binance-supported generic payment-method types দেখায়। দুই ক্ষেত্রেই সর্বোচ্চ 5টি selection।
+- BUY/SELL payment selection server-side আলাদা: SELL exact account-scoped `payId`, BUY generic trade method with `payId=0`; অন্য API account-এর payment ID reuse করা হয় না।
+- Database schema `37`; নতুন migration প্রয়োজন নেই।
 
-বিস্তারিত: `P2PFlow_v1.5.37_RELEASE_NOTES_BN.md`, `P2PFlow_v1.5.37_MANUAL_UPDATE_BN.md` এবং `P2PFlow_v1.5.37_LAUNCH_CHECKLIST_BN.md`.
+বিস্তারিত: `P2PFlow_v1.5.38_RELEASE_NOTES_BN.md`, `P2PFlow_v1.5.38_MANUAL_UPDATE_BN.md` এবং `P2PFlow_v1.5.38_LAUNCH_CHECKLIST_BN.md`.
 
-## v1.5.35 Permission-Authoritative Roles & Advertisement Rate Guard
+## v1.5.35 Permission-Authoritative Roles & Advertisement Rate Guard (historical; rate inputs superseded in v1.5.38)
 
 - Role name/template family is no longer runtime authority. Effective access comes only from the user/role's checked Global Permissions and exact Binance Account Permissions.
 - Selecting a User Role still copies that role template's permissions into the user form and auto-ticks matching permissions for enabled Binance accounts; every checkbox can then be reviewed before Save.
 - Page visibility, Live Orders, assignment, Payment Accounts, split actions, approvals, accounting scope and notification audiences no longer check Admin/Manager/Agent/Auditor names for authorization.
 - `binance.sync` still implies `orders.view` for the same exact Binance credential; it never grants another credential.
 - Schema 36 migration is permission-only too: legacy explicit account IDs are preserved, while broad legacy access is materialized across existing credentials only when the user actually has `credentials.manage` or `agents.manage`. Role names never create grants.
-- Advertisement Create/Edit now includes optional **Minimum Rate** and **Maximum Rate**. Blank/0 means no bound. P2PFlow rejects a manual ad price below Minimum Rate, above Maximum Rate, or an invalid min/max range.
-- Minimum/Maximum Rate are local P2PFlow safety bounds and are intentionally not sent as undocumented Binance payload fields. Binance synchronization preserves the locally configured bounds.
+- v1.5.35-এ local Minimum/Maximum Rate guard ছিল; **v1.5.38 থেকে এই editable fields আর current UI-তে নেই**। বর্তমান Ads editor Binance live reference-price guide দেখায় এবং Binance submit-time validation authoritative।
 - Existing Order-only assignment/payment-account capacity settings remain permission/routing driven and are not tied to an Agent role name.
 - Database schema `36`; additive migration runs automatically from schema 35.
 

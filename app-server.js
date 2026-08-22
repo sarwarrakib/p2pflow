@@ -13250,25 +13250,42 @@ function advertisementTradeMethodResolution(item = {}, credentialId = 0, preferr
 
 function normalizeAdvertisementInput(body = {}, existing = {}, options = {}) {
   const status = advertisementStatusFromValue(body.status ?? existing.status ?? 'offline');
-  const paymentMethodIds = Array.isArray(body.paymentMethodIds) ? body.paymentMethodIds.map(Number).filter(Number.isFinite).slice(0, 5) : (existing.paymentMethodIds || []);
   const credentialId = Number(options.credentialId || existing.credentialId || body.credentialId || 0);
+  const tradeType = normalizeAdvertisementTradeType(body.tradeType ?? existing.tradeType);
+  const asset = cleanStr(body.asset ?? existing.asset ?? 'USDT', 30).toUpperCase();
+  const fiatUnit = cleanStr(body.fiatUnit ?? existing.fiatUnit ?? 'BDT', 30).toUpperCase();
+  const paymentMethodIds = Array.isArray(body.paymentMethodIds)
+    ? body.paymentMethodIds.map(Number).filter(Number.isFinite).slice(0, 5)
+    : (Array.isArray(existing.paymentMethodIds) ? existing.paymentMethodIds.map(Number).filter(Number.isFinite).slice(0, 5) : []);
+  const requestedGenericKeys = Array.isArray(body.paymentMethodKeys)
+    ? body.paymentMethodKeys.map(advertisementGenericPaymentKey).filter(Boolean).slice(0, 5)
+    : (Array.isArray(existing.paymentMethodKeys) && existing.paymentMethodKeys.length
+      ? existing.paymentMethodKeys.map(advertisementGenericPaymentKey).filter(Boolean).slice(0, 5)
+      : advertisementGenericKeysFromTradeMethods(existing.tradeMethods || []));
   const preferredTradeMethods = [
     ...normalizeAdvertisementTradeMethods(options.preferredTradeMethods || []),
     ...normalizeAdvertisementTradeMethods(existing.tradeMethods || [])
   ];
-  const tradeMethods = advertisementMethodsFromIds(paymentMethodIds, credentialId, preferredTradeMethods);
+  const genericTradeMethods = tradeType === 'BUY'
+    ? advertisementGenericTradeMethodsFromKeys(requestedGenericKeys, credentialId, fiatUnit, preferredTradeMethods)
+    : [];
+  const tradeMethods = tradeType === 'BUY' && requestedGenericKeys.length
+    ? genericTradeMethods
+    : advertisementMethodsFromIds(paymentMethodIds, credentialId, preferredTradeMethods);
   const rawRegions = Array.isArray(body.regions) ? body.regions : (body.region !== undefined ? body.region : (existing.regions || existing.region || 'ALL'));
   const regions = normalizeAdvertisementRegions(rawRegions);
   const termsTags = Array.isArray(body.termsTags) ? body.termsTags.map(value => cleanStr(value, 60)).filter(Boolean).slice(0, 3) : (existing.termsTags || []);
   const tagRequiresAdditionalKyc = termsTags.some(value => /additional[ _-]*kyc/i.test(value));
   const item = {
-    asset: cleanStr(body.asset ?? existing.asset ?? 'USDT', 30).toUpperCase(),
-    fiatUnit: cleanStr(body.fiatUnit ?? existing.fiatUnit ?? 'BDT', 30).toUpperCase(),
-    tradeType: normalizeAdvertisementTradeType(body.tradeType ?? existing.tradeType),
+    asset,
+    fiatUnit,
+    tradeType,
     priceType: [1, 2].includes(Number(body.priceType ?? existing.priceType)) ? Number(body.priceType ?? existing.priceType) : 1,
     price: positiveNum(body.price ?? existing.price ?? 0),
-    minRate: positiveNum(body.minRate ?? existing.minRate ?? 0),
-    maxRate: positiveNum(body.maxRate ?? existing.maxRate ?? 0),
+    // v1.5.38: legacy local min/max rate guards are no longer editable or authoritative.
+    // Binance's live reference quote is displayed in the editor instead.
+    minRate: 0,
+    maxRate: 0,
     priceFloatingRatio: num(body.priceFloatingRatio ?? existing.priceFloatingRatio ?? 0),
     rateFloatingRatio: num(body.rateFloatingRatio ?? existing.rateFloatingRatio ?? 0),
     initAmount: positiveNum(body.initAmount ?? existing.editableAmount ?? existing.surplusAmount ?? existing.initAmount ?? 0),
@@ -13288,21 +13305,20 @@ function normalizeAdvertisementInput(body = {}, existing = {}, options = {}) {
     region: regions.includes('ALL') ? 'ALL' : regions.join(','),
     status,
     advStatus: advertisementStatusCode(status),
-    paymentMethodIds,
+    paymentMethodIds: tradeType === 'SELL' ? paymentMethodIds : [],
+    paymentMethodKeys: tradeType === 'BUY' ? requestedGenericKeys : [],
     tradeMethods
   };
   if (!item.asset || !item.fiatUnit) throw Object.assign(new Error('Crypto asset and fiat currency are required.'), { statusCode: 422 });
   if (item.price <= 0) throw Object.assign(new Error('Advertisement price must be greater than zero.'), { statusCode: 422 });
-  if (item.minRate > 0 && item.maxRate > 0 && item.maxRate < item.minRate) throw Object.assign(new Error('Maximum Rate must be greater than or equal to Minimum Rate.'), { statusCode: 422 });
-  if (item.minRate > 0 && item.price < item.minRate) throw Object.assign(new Error(`Advertisement price cannot be lower than Minimum Rate (${item.minRate}).`), { statusCode: 422 });
-  if (item.maxRate > 0 && item.price > item.maxRate) throw Object.assign(new Error(`Advertisement price cannot be higher than Maximum Rate (${item.maxRate}).`), { statusCode: 422 });
   if (item.initAmount <= 0) throw Object.assign(new Error('Total advertisement amount must be greater than zero.'), { statusCode: 422 });
   if (item.minSingleTransAmount <= 0 || item.maxSingleTransAmount <= 0 || item.maxSingleTransAmount < item.minSingleTransAmount) throw Object.assign(new Error('Order limits are invalid. Maximum limit must be greater than or equal to minimum limit.'), { statusCode: 422 });
-  // Selection and Binance-account resolution are separate checks. A private
-  // draft may retain the selected local method IDs before that account's P2P
-  // Profile is synced; live create/update calls resolve and validate the exact
-  // account payIds in prepareAdvertisementTradeMethodsForCredential().
-  if (!paymentMethodIds.length) throw Object.assign(new Error('Select at least one payment method.'), { statusCode: 422 });
+  if (tradeType === 'SELL') {
+    if (!item.paymentMethodIds.length) throw Object.assign(new Error('Select at least one saved Binance payment account.'), { statusCode: 422 });
+  } else {
+    if (!item.paymentMethodKeys.length || !item.tradeMethods.length) throw Object.assign(new Error('Select at least one Binance payment method.'), { statusCode: 422 });
+    if (item.tradeMethods.length !== item.paymentMethodKeys.length) throw Object.assign(new Error('One or more selected Binance payment methods are not available for this account/fiat pair. Refresh the P2P Profile and try again.'), { statusCode: 422 });
+  }
   return item;
 }
 
@@ -13496,6 +13512,35 @@ function advertisementPaymentMethodScopeError(credentialId = 0, missingPaymentMe
 async function prepareAdvertisementTradeMethodsForCredential(item = {}, credential = null, options = {}) {
   const credentialId = Number(credential?.id || item.credentialId || 0);
   if (!credentialId) throw advertisementPaymentMethodScopeError(0, item.paymentMethodIds || []);
+
+  // BUY advertisements select generic Binance trade methods (no saved account/payId).
+  // This mirrors Binance's own Post Ad UI: the advertiser chooses the payment-method
+  // type only. SELL advertisements continue to require this credential's saved payId.
+  if (normalizeAdvertisementTradeType(item.tradeType) === 'BUY') {
+    let generic = normalizeAdvertisementTradeMethods(item.tradeMethods || [])
+      .filter(method => method.identifier || method.payType || method.tradeMethodName)
+      .map(method => ({ ...method, payId:0, payAccount:'', payBank:'', paySubBank:'' }))
+      .slice(0, 5);
+    if ((!generic.length || (item.paymentMethodKeys || []).length > generic.length) && options.refresh !== false) {
+      try {
+        const warnings = [];
+        const valid = await callOwnerProfileSapi(credential, 'valid P2P payment methods for advertisement', [
+          { endpointName:'listAllPaymentMethods', body:{}, timeoutMs:15000 },
+          { endpointName:'agentListAllPaymentMethods', body:{}, timeoutMs:15000 }
+        ], warnings);
+        const profile = ownerP2pProfileBase(credentialId);
+        const catalog = normalizeOwnerPaymentCatalog([], valid, profile.paymentMethods || []);
+        if (catalog.methods.length) {
+          profile.paymentCatalog = { ...(profile.paymentCatalog || {}), methods:catalog.methods, currencies:(profile.paymentCatalog?.currencies || []), syncedAt:nowIso() };
+          saveOwnerP2pProfileForCredential(credential, profile);
+          generic = advertisementGenericTradeMethodsFromKeys(item.paymentMethodKeys || advertisementGenericKeysFromTradeMethods(generic), credentialId, item.fiatUnit, generic);
+        }
+      } catch (_) {}
+    }
+    if (!generic.length) throw Object.assign(new Error('No Binance payment method was selected for this BUY advertisement.'), { statusCode:422 });
+    return { ...item, credentialId, paymentMethodIds:[], paymentMethodKeys:(item.paymentMethodKeys || advertisementGenericKeysFromTradeMethods(generic)).slice(0,5), tradeMethods:generic };
+  }
+
   const liveMethods = normalizeAdvertisementTradeMethods(
     options.liveDetail?.tradeMethods || options.liveDetail?.payMethodDtos || options.liveDetail?.tradeMethodList || []
   );
@@ -13524,6 +13569,7 @@ async function prepareAdvertisementTradeMethodsForCredential(item = {}, credenti
     ...item,
     credentialId,
     paymentMethodIds: resolution.paymentMethodIds,
+    paymentMethodKeys: [],
     tradeMethods: resolution.tradeMethods
   };
 }
@@ -13537,13 +13583,16 @@ function advertisementUpdatePayload(normalized = {}, liveDetail = {}, advNo = ''
   const liveTradeMethods = normalizeAdvertisementTradeMethods(
     liveDetail?.tradeMethods || liveDetail?.payMethodDtos || liveDetail?.tradeMethodList || []
   );
-  const methodResolution = advertisementTradeMethodResolution(
-    normalized,
-    credentialId,
-    [...liveTradeMethods, ...normalizeAdvertisementTradeMethods(normalized.tradeMethods || [])],
-    { allowGlobalFallback: !credentialId }
-  );
-  if (credentialId && methodResolution.missingPaymentMethodIds.length) {
+  const isBuyAdvertisement = normalizeAdvertisementTradeType(normalized.tradeType) === 'BUY';
+  const methodResolution = isBuyAdvertisement
+    ? { paymentMethodIds:[], missingPaymentMethodIds:[], tradeMethods:normalizeAdvertisementTradeMethods(normalized.tradeMethods || []).map(method => ({ ...method, payId:0, payAccount:'', payBank:'', paySubBank:'' })).slice(0,5) }
+    : advertisementTradeMethodResolution(
+        normalized,
+        credentialId,
+        [...liveTradeMethods, ...normalizeAdvertisementTradeMethods(normalized.tradeMethods || [])],
+        { allowGlobalFallback: !credentialId }
+      );
+  if (!isBuyAdvertisement && credentialId && methodResolution.missingPaymentMethodIds.length) {
     throw advertisementPaymentMethodScopeError(credentialId, methodResolution.missingPaymentMethodIds);
   }
   const payloadItem = {
@@ -15387,6 +15436,143 @@ function advertisementOptionLists() {
   };
 }
 
+const advertisementReferencePriceCache = new Map();
+
+function advertisementGenericPaymentCatalogForCredential(credentialId = 0, fiat = '') {
+  const id = Number(credentialId || 0);
+  if (!id) return [];
+  const profile = ownerP2pProfileRecord(id) || ownerP2pProfileBase(id);
+  const wantedFiat = cleanStr(fiat || '', 20).toUpperCase();
+  return (Array.isArray(profile?.paymentCatalog?.methods) ? profile.paymentCatalog.methods : [])
+    .filter(method => method && (method.identifier || method.payType || method.tradeMethodName))
+    .filter(method => {
+      const currencies = Array.isArray(method.currencies) ? method.currencies.map(value => cleanStr(value, 20).toUpperCase()).filter(Boolean) : [];
+      return !wantedFiat || !currencies.length || currencies.includes(wantedFiat);
+    })
+    .map((method, index) => {
+      const identifier = cleanStr(method.identifier || method.payType || method.tradeMethodName || '', 120);
+      const payType = cleanStr(method.payType || identifier, 120);
+      const name = cleanStr(method.tradeMethodName || method.tradeMethodShortName || identifier || payType, 160);
+      const key = cleanStr(`${identifier || payType || name}`.toLowerCase(), 160);
+      return {
+        key,
+        identifier,
+        payType,
+        tradeMethodName: name,
+        tradeMethodShortName: cleanStr(method.tradeMethodShortName || '', 120),
+        isRecommended: method.isRecommended === true,
+        iconUrlColor: cleanStr(method.iconUrlColor || '', 500),
+        bgColor: cleanStr(method.bgColor || '', 40),
+        sequence: Number(method.sequence ?? index) || index,
+        currencies: Array.isArray(method.currencies) ? method.currencies.slice(0, 100) : []
+      };
+    })
+    .filter(method => method.key)
+    .sort((a, b) => Number(b.isRecommended) - Number(a.isRecommended) || Number(a.sequence || 0) - Number(b.sequence || 0) || a.tradeMethodName.localeCompare(b.tradeMethodName))
+    .slice(0, 1000);
+}
+
+function advertisementGenericPaymentKey(value = '') {
+  return cleanStr(value || '', 160).trim().toLowerCase();
+}
+
+function advertisementGenericKeysFromTradeMethods(methods = []) {
+  return Array.from(new Set(normalizeAdvertisementTradeMethods(methods)
+    .map(method => advertisementGenericPaymentKey(method.identifier || method.payType || method.tradeMethodName))
+    .filter(Boolean))).slice(0, 5);
+}
+
+function advertisementGenericTradeMethodsFromKeys(keys = [], credentialId = 0, fiat = '', fallbackMethods = []) {
+  const wanted = Array.from(new Set((Array.isArray(keys) ? keys : []).map(advertisementGenericPaymentKey).filter(Boolean))).slice(0, 5);
+  const catalog = advertisementGenericPaymentCatalogForCredential(credentialId, fiat);
+  const fallback = normalizeAdvertisementTradeMethods(fallbackMethods || []);
+  const out = [];
+  for (const key of wanted) {
+    const match = catalog.find(method => [method.key, method.identifier, method.payType, method.tradeMethodName]
+      .map(advertisementGenericPaymentKey).includes(key))
+      || fallback.find(method => [method.identifier, method.payType, method.tradeMethodName]
+        .map(advertisementGenericPaymentKey).includes(key));
+    if (!match) continue;
+    out.push({
+      identifier: cleanStr(match.identifier || match.payType || key, 80),
+      payId: 0,
+      payType: cleanStr(match.payType || match.identifier || key, 80),
+      tradeMethodName: cleanStr(match.tradeMethodName || match.tradeMethodShortName || match.identifier || match.payType || key, 120),
+      payAccount: '', payBank: '', paySubBank: ''
+    });
+  }
+  return out.slice(0, 5);
+}
+
+function normalizeAdvertisementReferencePriceResponse(response = {}, requested = {}) {
+  const data = unwrapBinanceData(response);
+  const rows = Array.isArray(data) ? data : (data && typeof data === 'object' ? [data] : []);
+  const asset = cleanStr(requested.asset || 'USDT', 20).toUpperCase();
+  const fiat = cleanStr(requested.fiat || 'BDT', 20).toUpperCase();
+  const row = rows.find(item => String(item?.asset || '').toUpperCase() === asset && (!item?.currency || String(item.currency).toUpperCase() === fiat)) || rows[0] || {};
+  const referencePrice = positiveNum(row.referencePrice || 0);
+  if (!referencePrice) throw Object.assign(new Error('Binance did not return a live advertisement reference price for this pair.'), { statusCode: 502 });
+  const priceScale = Math.max(0, Math.min(8, Number(row.priceScale ?? 2) || 2));
+  const tradeType = normalizeAdvertisementTradeType(requested.tradeType || 'BUY');
+  // Prefer explicit live bounds whenever Binance returns them. The supplied C2C
+  // SAPI v7.4 schema documents referencePrice but does not promise bound fields,
+  // so keep a transparent screenshot-compatible reference guide as a fallback.
+  const explicitMin = positiveNum(row.minPrice || row.minimumPrice || row.priceMin || row.minAdPrice || row.lowerPrice || row.floorPrice || row.minReferencePrice || 0);
+  const explicitMax = positiveNum(row.maxPrice || row.maximumPrice || row.priceMax || row.maxAdPrice || row.upperPrice || row.ceilingPrice || row.maxReferencePrice || 0);
+  const hasExplicitBounds = explicitMin > 0 && explicitMax >= explicitMin;
+  const upperMultiplier = tradeType === 'SELL' ? 1.08 : 1.10;
+  const minPrice = hasExplicitBounds ? explicitMin : referencePrice;
+  const maxPrice = hasExplicitBounds ? explicitMax : referencePrice * upperMultiplier;
+  return {
+    asset: cleanStr(row.asset || asset, 20).toUpperCase(),
+    fiat: cleanStr(row.currency || fiat, 20).toUpperCase(),
+    currencySymbol: cleanStr(row.currencySymbol || '', 20),
+    priceScale,
+    referencePrice: decimalScale(referencePrice, priceScale),
+    minPrice: decimalScale(minPrice, priceScale),
+    maxPrice: decimalScale(maxPrice, priceScale),
+    rangePercent: hasExplicitBounds ? null : Math.round((upperMultiplier - 1) * 100),
+    rangeMode: hasExplicitBounds ? 'binance_explicit_live_bounds' : 'reference_ui_derived',
+    explicitBounds: hasExplicitBounds,
+    source: 'binance_c2c_reference_price',
+    fetchedAt: nowIso()
+  };
+}
+
+async function advertisementReferencePriceGuide(credential, requested = {}, force = false) {
+  if (!credential || !credential.apiKey || !credential.secretKey || credential.disabled) throw Object.assign(new Error('Active Binance API credential is required.'), { statusCode: 422 });
+  const asset = cleanStr(requested.asset || 'USDT', 20).toUpperCase();
+  const fiat = cleanStr(requested.fiat || 'BDT', 20).toUpperCase();
+  const tradeType = normalizeAdvertisementTradeType(requested.tradeType || 'BUY');
+  const payType = cleanStr(requested.payType || '', 80);
+  const cacheKey = `${advertisementCredentialKey(credential)}:${asset}:${fiat}:${tradeType}:${payType}`;
+  const cached = advertisementReferencePriceCache.get(cacheKey);
+  if (!force && cached && Date.now() - cached.ts < 4000) return { ...cached.data, cached:true };
+  const body = { assets:[asset], fiatCurrency:fiat, fromUserRole:'ADVERTISER', tradeType };
+  if (payType) body.payType = payType;
+  const response = await callSignedSapi({
+    apiKey: credential.apiKey,
+    secretKey: credential.secretKey,
+    endpointName: 'getAdReferencePrice',
+    body,
+    clientType: credential.clientType || 'web',
+    dryRun: false,
+    timeoutMs: 10000
+  });
+  assertSuccessfulSapiResponse(response, 'getAdReferencePrice');
+  const guide = normalizeAdvertisementReferencePriceResponse(response, { asset, fiat, tradeType });
+  try {
+    const publicResponse = await callBinancePublicAdvSearch({ page:1, rows:20, payTypes:payType ? [payType] : [], asset, tradeType, fiat }, 5000);
+    const prices = publicAdvRows(publicResponse).map(row => positiveNum(row?.adv?.price ?? row?.price ?? 0)).filter(value => value > 0);
+    if (prices.length) {
+      guide.marketPrice = decimalScale(tradeType === 'BUY' ? Math.max(...prices) : Math.min(...prices), guide.priceScale);
+      guide.marketPriceLabel = tradeType === 'BUY' ? 'Highest Order Price' : 'Lowest Ad Price';
+    }
+  } catch (_) {}
+  advertisementReferencePriceCache.set(cacheKey, { ts:Date.now(), data:guide });
+  return guide;
+}
+
 async function syncBinanceAdvertisementsWithCredential(user, credential, opts = {}) {
   const credentialId = Number(credential?.id || 0);
   if (credentialId && advertisementMerchantCredentialId() !== credentialId) {
@@ -15436,6 +15622,26 @@ async function syncBinanceAdvertisementsWithCredential(user, credential, opts = 
     credentialName: binanceCredentialLabel(credential),
     items: db.advertisements.filter(item => Number(item.credentialId || 0) === Number(credential.id)).map(advertisementView), request: payload
   };
+}
+
+async function handleAdvertisementReferencePrice(req, res, url) {
+  const user = requirePermission(req, res, 'ads.view');
+  if (!user) return;
+  if (req.method !== 'GET') return sendJson(res, 405, { error:'Method not allowed' }, {}, req);
+  const credentialId = Number(url.searchParams.get('credentialId') || 0);
+  const credential = requireLiveBinanceCredentialForUser(req, res, user, credentialId, 'ads.view', { requireExplicitWhenMultiple:true });
+  if (!credential) return;
+  try {
+    const data = await advertisementReferencePriceGuide(credential, {
+      asset:url.searchParams.get('asset') || 'USDT',
+      fiat:url.searchParams.get('fiat') || 'BDT',
+      tradeType:url.searchParams.get('tradeType') || 'BUY',
+      payType:url.searchParams.get('payType') || ''
+    }, url.searchParams.get('force') === '1');
+    return sendJson(res, 200, data, {}, req);
+  } catch (error) {
+    return sendJson(res, Number(error.statusCode || 502), { error:cleanStr(error.message || error, 500) }, {}, req);
+  }
 }
 
 async function handleAdvertisements(req, res, url) {
@@ -15530,6 +15736,10 @@ async function handleAdvertisements(req, res, url) {
       String(Number(option.id)),
       enabledPaymentMethods.map(method => advertisementPaymentMethodView(method, user, option.id))
     ]));
+    const genericPaymentMethodsByCredential = Object.fromEntries(credentialOptions.map(option => [
+      String(Number(option.id)),
+      advertisementGenericPaymentCatalogForCredential(option.id, url.searchParams.get('fiat') || '')
+    ]));
     return sendJson(res, 200, {
       items,
       capability,
@@ -15538,6 +15748,7 @@ async function handleAdvertisements(req, res, url) {
       selectedCredentialId: selectedCredential ? Number(selectedCredential.id) : null,
       paymentMethods: enabledPaymentMethods.map(method => advertisementPaymentMethodView(method, user, selectedCredential?.id || 0)),
       paymentMethodsByCredential,
+      genericPaymentMethodsByCredential,
       ...advertisementOptionLists(),
       liveMode: db.settings.apiMode === 'live',
       credentialConfigured: selectedCredential ? configuredCredential(selectedCredential) : viewCredentials.length > 0,
@@ -17115,6 +17326,7 @@ async function handleApi(req, res) {
     if (url.pathname === '/api/ads/merchant-status') return await handleAdvertisementMerchantStatus(req, res, url);
     if (url.pathname === '/api/ads/merchant-control') return await handleAdvertisementMerchantControl(req, res);
     if (url.pathname === '/api/ads/merchant-online') return await handleAdvertisementMerchantOnline(req, res);
+    if (url.pathname === '/api/ads/reference-price') return await handleAdvertisementReferencePrice(req, res, url);
     if (url.pathname === '/api/ads') return await handleAdvertisements(req, res, url);
     if (url.pathname.startsWith('/api/ads/')) return await handleAdvertisementById(req, res, parts);
     if (url.pathname === '/api/orders') return handleOrders(req, res, url);
@@ -23878,17 +24090,14 @@ function runAccountingSelfTest() {
     if (binanceCredentialPermissionRowsForUser(migratedManager, permissionMigrationTarget).length !== 2) throw new Error('Schema 36 did not materialize permission-based legacy operator account access.');
     if (!userHasPermission(settingsWorker, 'settings.manage') || userHasPermission(settingsWorker, 'orders.view') || binanceCredentialPermissionRowsForUser(settingsWorker, permissionMigrationTarget).length) throw new Error('Role label still changes effective permissions or account grants after schema 36.');
 
-    const rateGuardBase = { asset:'USDT', fiatUnit:'BDT', tradeType:'BUY', priceType:1, price:120, minRate:115, maxRate:125, initAmount:100, minSingleTransAmount:1000, maxSingleTransAmount:10000, payTimeLimit:15, paymentMethodIds:[301], status:'offline' };
-    const guardedAd = normalizeAdvertisementInput(rateGuardBase, {}, {});
-    if (guardedAd.minRate !== 115 || guardedAd.maxRate !== 125) throw new Error('Advertisement Minimum/Maximum Rate was not normalized.');
-    let minRateRejected = false;
-    try { normalizeAdvertisementInput({ ...rateGuardBase, price:114 }, {}, {}); } catch (error) { minRateRejected = /Minimum Rate/.test(error.message); }
-    if (!minRateRejected) throw new Error('Advertisement price below Minimum Rate was accepted.');
-    let maxRateRejected = false;
-    try { normalizeAdvertisementInput({ ...rateGuardBase, price:126 }, {}, {}); } catch (error) { maxRateRejected = /Maximum Rate/.test(error.message); }
-    if (!maxRateRejected) throw new Error('Advertisement price above Maximum Rate was accepted.');
+    const legacyRateInput = { asset:'USDT', fiatUnit:'BDT', tradeType:'BUY', priceType:1, price:120, minRate:115, maxRate:125, initAmount:100, minSingleTransAmount:1000, maxSingleTransAmount:10000, payTimeLimit:15, paymentMethodKeys:['bkash'], status:'offline' };
+    const savedProfileBeforeRateGuide = db.ownerP2pProfiles;
+    db.ownerP2pProfiles = [{ credentialId:71, paymentCatalog:{ methods:[{ identifier:'BKASH', payType:'BKASH', tradeMethodName:'bKash', currencies:['BDT'] }] }, paymentMethods:[] }];
+    const guardedAd = normalizeAdvertisementInput(legacyRateInput, {}, { credentialId:71 });
+    db.ownerP2pProfiles = savedProfileBeforeRateGuide;
+    if (guardedAd.minRate !== 0 || guardedAd.maxRate !== 0) throw new Error('Legacy editable Minimum/Maximum Rate values are still authoritative.');
     const guardedPayload = advertisementBinancePayload(guardedAd);
-    if (Object.prototype.hasOwnProperty.call(guardedPayload, 'minRate') || Object.prototype.hasOwnProperty.call(guardedPayload, 'maxRate')) throw new Error('Local rate guards leaked into Binance payload.');
+    if (Object.prototype.hasOwnProperty.call(guardedPayload, 'minRate') || Object.prototype.hasOwnProperty.call(guardedPayload, 'maxRate')) throw new Error('Legacy local rate guards leaked into Binance payload.');
 
     const updateCheck = advertisementUpdatePayload({
       asset: 'USDT', fiatUnit: 'BDT', tradeType: 'BUY', priceType: 1, price: 127.123456,
@@ -23956,7 +24165,7 @@ function runAccountingSelfTest() {
       migrationSafety: { schemaPreserved: migrationTarget.meta.schemaVersion, accountTypes: migrationTarget.paymentAccounts.map(item => item.accountType), futureFieldsPreserved: true, weakOwnerSecretRejected: true, ownerAuthorityPreserved: migrationTarget.users[0].isOwner === true, permissionSchema: permissionMigrationTarget.meta.schemaVersion, roleNameNonAuthoritative: true, legacyAccountGrantsMaterialized: true, fundPasswordVaultMigrated:true },
       advertisementUpdate: updateCheck,
       merchantCreateFallback: merchantFallback,
-      advertisementCreate: { classify: createPayload.classify, defaultClassify: defaultCreatePayload.classify, genericTradePermissionBlocks: false, minimumMaximumRateGuard: true },
+      advertisementCreate: { classify: createPayload.classify, defaultClassify: defaultCreatePayload.classify, genericTradePermissionBlocks: false, editableMinimumMaximumRate: false, liveReferencePriceGuide: true },
       exactCloseTarget: new Date(closeTarget).toISOString()
     }, null, 2));
   } finally {
@@ -24167,6 +24376,7 @@ async function runAdsMultiAccountPayloadSelfTest() {
           credentialId: 101,
           credentialName: 'Primary Binance',
           paymentMethods: [{ id: 111, identifier: 'BANK', payType: 'BANK', tradeMethodName: 'bKash' }],
+          paymentCatalog: { methods:[{ identifier:'BANK', payType:'BANK', tradeMethodName:'bKash', currencies:['BDT'] }], currencies:['BDT'], syncedAt:'2026-02-01T00:00:00.000Z' },
           stats: emptyCounterpartyStats(),
           feedbackRows: { positive: [], negative: [] },
           warnings: []
@@ -24175,6 +24385,7 @@ async function runAdsMultiAccountPayloadSelfTest() {
           credentialId: 202,
           credentialName: 'Secondary Binance',
           paymentMethods: [{ id: 222, identifier: 'BANK', payType: 'BANK', tradeMethodName: 'bKash' }],
+          paymentCatalog: { methods:[{ identifier:'BANK', payType:'BANK', tradeMethodName:'bKash', currencies:['BDT'] }], currencies:['BDT'], syncedAt:'2026-02-02T00:00:00.000Z' },
           stats: emptyCounterpartyStats(),
           feedbackRows: { positive: [], negative: [] },
           warnings: []
@@ -24198,7 +24409,7 @@ async function runAdsMultiAccountPayloadSelfTest() {
     const base = {
       asset: 'USDT',
       fiatUnit: 'BDT',
-      tradeType: 'BUY',
+      tradeType: 'SELL',
       priceType: 1,
       price: 120,
       initAmount: 100,
@@ -24261,6 +24472,20 @@ async function runAdsMultiAccountPayloadSelfTest() {
     });
     if (Number(preparedPrimary.tradeMethods[0]?.payId || 0) !== 111) {
       throw new Error(`Primary account payment ID changed unexpectedly: ${JSON.stringify(preparedPrimary.tradeMethods)}`);
+    }
+
+    const genericBuy = normalizeAdvertisementInput({
+      ...base,
+      tradeType:'BUY',
+      paymentMethodIds:[],
+      paymentMethodKeys:['bank']
+    }, {}, { credentialId:secondaryCredential.id });
+    const preparedGenericBuy = await prepareAdvertisementTradeMethodsForCredential(genericBuy, secondaryCredential, { refresh:false });
+    if (!preparedGenericBuy.tradeMethods.length || Number(preparedGenericBuy.tradeMethods[0]?.payId || 0) !== 0) {
+      throw new Error(`BUY advertisement did not use a generic payment method without payId: ${JSON.stringify(preparedGenericBuy.tradeMethods)}`);
+    }
+    if (preparedGenericBuy.paymentMethodIds.length || String(preparedGenericBuy.paymentMethodKeys[0] || '') !== 'bank') {
+      throw new Error('BUY advertisement payment-method selection was not kept separate from saved SELL account IDs.');
     }
 
     if (advertisementCreateClassifyForCredential(101) !== 'profession') throw new Error('Primary account create classify was not preserved.');
