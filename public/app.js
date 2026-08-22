@@ -1,4 +1,4 @@
-// v1.5.36: FUND_PWD uses Binance RSA encryption; saved passwords auto-release after optional P2PFlow step-up verification.
+// v1.5.37: single-click P2PFlow+Binance release verification with inline retry errors and field-vaulted Fund Password storage.
 // v1.5.23: Payment Account serial scope treats each normalized Label, including no Label, as an independent namespace.
 // v1.5.22: Header-only Work Status, chat-only notification master, and coupled sound/push controls.
 // v1.5.20: account-scoped Binance RBAC, visible security recovery setup and individual-only profit accounting.
@@ -5002,7 +5002,7 @@ function renderNav() {
   // legacy flat menu while this marker is absent, the browser/proxy is serving
   // stale frontend JavaScript rather than the active release.
   nav.dataset.navigationModel = 'grouped-control-center';
-  nav.dataset.uiRelease = '1.5.36';
+  nav.dataset.uiRelease = '1.5.37';
   nav.innerHTML = '';
   const visible = visiblePages();
   const visibleIds = new Set(visible.map(([id]) => id));
@@ -7422,11 +7422,10 @@ function localFinalActionVerificationPanelHtml(policy = {}) {
   const primary = policy.localPrimary || 'USER_PASSWORD';
   const hasSecondary = policy.localSecondary && policy.localSecondary !== 'NONE' && policy.localSecondary !== primary;
   return `<div id="localFinalActionVerificationPanel" class="full-row final-action-local-verify" data-primary="${escapeAttr(primary)}" data-secondary="${escapeAttr(policy.localSecondary || 'NONE')}">
-    <div class="final-action-local-verify-head"><div><b>P2PFlow Verification</b><small>Complete this step before Binance Release can use the selected verification method.</small></div><span id="localFinalActionVerificationStatus" class="badge warn">Required</span></div>
+    <div class="final-action-local-verify-head"><div><b>P2PFlow Verification</b><small>Enter the required P2PFlow verification below, then press the single Release Coin button.</small></div><span id="localFinalActionVerificationStatus" class="badge warn">Required</span></div>
     <div id="localFinalActionVerificationMethod"></div>
     <div class="final-action-local-actions">
-      <button type="button" class="secondary small hidden" id="sendFinalActionEmailOtpBtn">Send Email OTP</button>
-      <button type="button" class="secondary small" id="verifyFinalActionLocalBtn">Verify</button>
+      <button type="button" class="secondary small hidden" id="sendFinalActionEmailOtpBtn">Resend Email OTP</button>
       ${hasSecondary ? '<button type="button" class="ghost small hidden" id="changeFinalActionLocalVerificationBtn">Change Verification System</button>' : ''}
     </div>
     <input type="hidden" name="localVerificationToken" id="localFinalActionVerificationToken" value="" />
@@ -7439,7 +7438,7 @@ function localFinalActionMethodInputHtml(method, policy = {}) {
   const label = labelMap[method] || method;
   if (method === 'USER_PASSWORD') return `<div class="final-action-local-input"><label>${label}</label><input id="localFinalActionVerificationValue" type="password" autocomplete="current-password" placeholder="Enter your P2PFlow password" /></div>`;
   if (method === 'SECRET_CODE') return `<div class="final-action-local-input"><label>${label}</label><input id="localFinalActionVerificationValue" type="password" inputmode="numeric" maxlength="6" autocomplete="one-time-code" placeholder="6-digit Secret Code" /></div>`;
-  if (method === 'EMAIL_OTP') return `<div class="final-action-local-input"><label>${label}</label><input id="localFinalActionVerificationValue" inputmode="numeric" maxlength="6" autocomplete="one-time-code" placeholder="Send OTP, then enter 6 digits" /></div>`;
+  if (method === 'EMAIL_OTP') return `<div class="final-action-local-input"><label>${label}</label><input id="localFinalActionVerificationValue" inputmode="numeric" maxlength="6" autocomplete="one-time-code" placeholder="Enter the 6-digit OTP sent to your email" /></div>`;
   return `<div class="notice danger-note">This P2PFlow verification method is not available.</div>`;
 }
 
@@ -7449,15 +7448,30 @@ function bindLocalFinalActionVerification(order, finalAction, policy, gateState)
   const primary = policy.localPrimary || 'USER_PASSWORD';
   const secondary = policy.localSecondary || 'NONE';
   gateState.method = primary;
+  gateState.challengePromise = null;
   const methodBox = $('#localFinalActionVerificationMethod');
   const messageBox = '#localFinalActionVerificationMessage';
-  const verifyBtn = $('#verifyFinalActionLocalBtn');
   const sendOtpBtn = $('#sendFinalActionEmailOtpBtn');
   const changeBtn = $('#changeFinalActionLocalVerificationBtn');
   const status = $('#localFinalActionVerificationStatus');
   const tokenInput = $('#localFinalActionVerificationToken');
 
-  const renderMethod = ({ showFallback = false } = {}) => {
+  const methodLabel = method => ({USER_PASSWORD:'User Password',SECRET_CODE:'6-digit Secret Code',EMAIL_OTP:'Email OTP'}[method] || method);
+
+  const startChallenge = async ({ resend = false } = {}) => {
+    if (gateState.challengePromise) return gateState.challengePromise;
+    const task = (async () => {
+      const out = await api(`/api/orders/${order.id}/final-action-verification-start`, { method:'POST', body:JSON.stringify({ action:finalAction, method:gateState.method }), silent:true });
+      gateState.challengeId = out.challengeId || '';
+      if (gateState.method === 'EMAIL_OTP') setFormMessage(messageBox, `${resend ? 'New OTP sent' : 'OTP sent'} to ${out.emailMasked || 'your registered email'}. Enter it above and press Release Coin.`, 'ok');
+      return out;
+    })();
+    gateState.challengePromise = task;
+    try { return await task; }
+    finally { gateState.challengePromise = null; }
+  };
+
+  const renderMethod = ({ showFallback = false, autoSendOtp = true } = {}) => {
     gateState.challengeId = '';
     gateState.token = '';
     if (tokenInput) tokenInput.value = '';
@@ -7465,63 +7479,72 @@ function bindLocalFinalActionVerification(order, finalAction, policy, gateState)
     if (sendOtpBtn) {
       sendOtpBtn.classList.toggle('hidden', gateState.method !== 'EMAIL_OTP');
       sendOtpBtn.disabled = false;
+      sendOtpBtn.textContent = 'Resend Email OTP';
     }
-    if (verifyBtn) verifyBtn.disabled = false;
     if (changeBtn) {
       const hasFallback = Boolean(secondary && secondary !== 'NONE' && secondary !== primary);
       changeBtn.classList.toggle('hidden', !hasFallback || !showFallback);
       changeBtn.disabled = false;
     }
     if (status) { status.textContent = 'Required'; status.className = 'badge warn'; }
-    setFormMessage(messageBox, `${gateState.method === primary ? 'Primary' : 'Secondary'} verification: ${{USER_PASSWORD:'User Password',SECRET_CODE:'6-digit Secret Code',EMAIL_OTP:'Email OTP'}[gateState.method] || gateState.method}`, '');
+    setFormMessage(messageBox, `${gateState.method === primary ? 'Primary' : 'Secondary'} verification: ${methodLabel(gateState.method)}. Enter it and press Release Coin.`, '');
+    if (gateState.method === 'EMAIL_OTP' && autoSendOtp) {
+      setTimeout(async () => {
+        try { await startChallenge(); }
+        catch (err) {
+          if (changeBtn && err?.data?.canUseSecondary === true) changeBtn.classList.remove('hidden');
+          setFormMessage(messageBox, err.message || 'Could not send Email OTP.', 'danger');
+        }
+      }, 30);
+    }
   };
+
   gateState.reset = () => {
     gateState.method = primary;
     renderMethod();
   };
 
-  const startChallenge = async () => {
-    const out = await api(`/api/orders/${order.id}/final-action-verification-start`, { method:'POST', body:JSON.stringify({ action:finalAction, method:gateState.method }) });
-    gateState.challengeId = out.challengeId || '';
-    if (gateState.method === 'EMAIL_OTP') setFormMessage(messageBox, `OTP sent to ${out.emailMasked || 'your registered email'}.`, 'ok');
-    return out;
+  gateState.verifyNow = async () => {
+    if (gateState.token) return gateState.token;
+    if (gateState.challengePromise) await gateState.challengePromise;
+    if (!gateState.challengeId) await startChallenge();
+    const input = $('#localFinalActionVerificationValue');
+    const value = String(input?.value || '');
+    if (!value.trim()) {
+      const err = new Error(`Enter ${methodLabel(gateState.method)} first.`);
+      setFormMessage(messageBox, err.message, 'danger');
+      input?.focus();
+      throw err;
+    }
+    try {
+      const out = await api(`/api/orders/${order.id}/final-action-verification-verify`, { method:'POST', body:JSON.stringify({ action:finalAction, challengeId:gateState.challengeId, value }), silent:true });
+      gateState.token = out.token || '';
+      if (tokenInput) tokenInput.value = gateState.token;
+      if (status) { status.textContent = 'Verified'; status.className = 'badge ok'; }
+      setFormMessage(messageBox, `${out.methodLabel || 'P2PFlow verification'} verified. Releasing now...`, 'ok');
+      if (input) { input.value = ''; input.disabled = true; }
+      if (sendOtpBtn) sendOtpBtn.disabled = true;
+      if (changeBtn) changeBtn.disabled = true;
+      return gateState.token;
+    } catch (err) {
+      const text = String(err?.message || 'P2PFlow verification failed.');
+      if (/expired|does not belong|methods changed|start verification again/i.test(text)) gateState.challengeId = '';
+      if (changeBtn && err?.data?.canUseSecondary === true) changeBtn.classList.remove('hidden');
+      setFormMessage(messageBox, text, 'danger');
+      input?.focus();
+      throw err;
+    }
   };
 
   if (sendOtpBtn) sendOtpBtn.onclick = async () => {
     sendOtpBtn.disabled = true;
-    try { await startChallenge(); }
-    catch (err) {
+    try {
+      gateState.challengeId = '';
+      await startChallenge({ resend:true });
+    } catch (err) {
       if (changeBtn && err?.data?.canUseSecondary === true) changeBtn.classList.remove('hidden');
       setFormMessage(messageBox, err.message || 'Could not send Email OTP.', 'danger');
-    }
-    finally { sendOtpBtn.disabled = false; }
-  };
-
-  if (verifyBtn) verifyBtn.onclick = async () => {
-    verifyBtn.disabled = true;
-    try {
-      if (!gateState.challengeId) {
-        if (gateState.method === 'EMAIL_OTP') throw new Error('Send the Email OTP first.');
-        await startChallenge();
-      }
-      const value = String($('#localFinalActionVerificationValue')?.value || '');
-      if (!value.trim()) throw new Error('Enter the verification value first.');
-      const out = await api(`/api/orders/${order.id}/final-action-verification-verify`, { method:'POST', body:JSON.stringify({ action:finalAction, challengeId:gateState.challengeId, value }) });
-      gateState.token = out.token || '';
-      if (tokenInput) tokenInput.value = gateState.token;
-      if (status) { status.textContent = 'Verified'; status.className = 'badge ok'; }
-      setFormMessage(messageBox, `${out.methodLabel || 'P2PFlow verification'} verified. You can continue to Binance Release.`, 'ok');
-      const input = $('#localFinalActionVerificationValue'); if (input) { input.value = ''; input.disabled = true; }
-      verifyBtn.disabled = true;
-      if (sendOtpBtn) sendOtpBtn.disabled = true;
-      if (changeBtn) changeBtn.disabled = true;
-    } catch (err) {
-      gateState.challengeId = '';
-      if (changeBtn && err?.data?.canUseSecondary === true) changeBtn.classList.remove('hidden');
-      setFormMessage(messageBox, err.message || 'P2PFlow verification failed.', 'danger');
-    } finally {
-      if (!gateState.token) verifyBtn.disabled = false;
-    }
+    } finally { sendOtpBtn.disabled = false; }
   };
 
   if (changeBtn) changeBtn.onclick = () => {
@@ -7860,7 +7883,9 @@ async function attemptReleaseDirect(order, finalAction='release', options={}) {
 
 function startReleaseFinalActionFlow(order, finalAction='release') {
   const policy = orderReleaseVerificationPolicy(order);
-  if (policy.localVerificationEnabled) return openReleaseVerificationPage(order, finalAction, { localOnly:true });
+  // One-screen release: P2PFlow step-up (when configured), saved/manual FUND_PWD,
+  // and the final Binance release are chained behind the same Release Coin button.
+  if (policy.localVerificationEnabled) return openReleaseVerificationPage(order, finalAction);
   if (String(policy.binanceMethod || 'AUTO').toUpperCase() === 'FUND_PWD' && !policy.fundPasswordConfigured) {
     return openReleaseVerificationPage(order, finalAction);
   }
@@ -7894,7 +7919,7 @@ function openReleaseVerificationPage(order, finalAction='release', options={}) {
   const noFieldHtml = !localOnly && !fieldsHtml && !fieldState.autoFund
     ? `<div class="release-auto-check"><b>Binance verification check</b><span>No verification code is requested until Binance identifies the exact method required for this order.</span></div>`
     : '';
-  const submitText = localOnly ? 'Continue' : (fieldsHtml || fieldState.autoFund ? 'Submit' : 'Continue');
+  const submitText = finalAction === 'quick_release' ? 'Quick Release' : 'Release Coin';
 
   modal('Release Verification', `<div class="release-verify-shell">
     <div class="release-verify-topbar">
@@ -7937,24 +7962,24 @@ function openReleaseVerificationPage(order, finalAction='release', options={}) {
 
   form.onsubmit = async event => {
     event.preventDefault();
-    if (policy.localVerificationEnabled && !localGateState.token) {
-      setFormMessage('#releaseVerificationMessage', `Complete ${policy.localPrimaryLabel || 'the configured P2PFlow verification'} first. If Primary fails, use Change Verification System for the configured Secondary method.`, 'warn');
-      $('#localFinalActionVerificationPanel')?.scrollIntoView({ behavior:'smooth', block:'center' });
-      return;
-    }
-    if (localOnly) {
-      const token = localGateState.token;
-      closeModal(backdrop);
-      setTimeout(() => attemptReleaseDirect(order, finalAction, { localToken:token, freshVerificationProbe:true }), 40);
-      return;
-    }
-    const payload = formObj(form);
-    if (localGateState.token) payload.localVerificationToken = localGateState.token;
     const submit = form.querySelector('.release-verify-submit');
     submit.disabled = true;
-    submit.textContent = 'Verifying...';
+    submit.textContent = 'Releasing...';
     setFormMessage('#releaseVerificationMessage', '', '');
     try {
+      if (policy.localVerificationEnabled && !localGateState.token) {
+        try { await localGateState.verifyNow(); }
+        catch { return; }
+      }
+      if (localOnly) {
+        const token = localGateState.token;
+        closeModal(backdrop);
+        setTimeout(() => attemptReleaseDirect(order, finalAction, { localToken:token, freshVerificationProbe:true }), 40);
+        return;
+      }
+      const payload = formObj(form);
+      if (localGateState.token) payload.localVerificationToken = localGateState.token;
+      if (!requirements) payload.freshVerificationProbe = true;
       const updated = await api(`/api/orders/${order.id}/complete-action`, { method:'POST', body:JSON.stringify(payload), silent:true });
       if (updated.approvalRequired) {
         setFormMessage('#releaseVerificationMessage', 'Manager approval is required before Release.', 'warn');
@@ -7971,6 +7996,19 @@ function openReleaseVerificationPage(order, finalAction='release', options={}) {
       if (err?.data?.verificationRequired === true && err?.data?.releaseRequirements?.hasSpecificRequirement === true) {
         const nextRequirements = err.data.releaseRequirements;
         const token = localGateState.token;
+        const nextMethod = releaseVerificationRequirementMethod(policy, nextRequirements);
+        const sameVerificationScreen = !localOnly && nextMethod === fieldState.method && nextMethod !== 'AUTO';
+        if (sameVerificationScreen) {
+          const retryMessage = err?.data?.verificationRejected
+            ? (err.message || `${releaseVerificationPresentation(policy, nextRequirements).fieldLabel || 'Verification'} was not accepted. Enter a fresh value and try again.`)
+            : (err.message || 'Binance requires verification. Enter the required value and try again.');
+          setFormMessage('#releaseVerificationMessage', retryMessage, 'danger');
+          const firstField = Array.isArray(nextRequirements.fields) ? nextRequirements.fields[0] : null;
+          const input = firstField?.name ? form.elements[firstField.name] : null;
+          if (input && ['googleVerifyCode','mobileVerifyCode','emailVerifyCode','code','yubikeyVerifyCode'].includes(firstField.name)) input.value = '';
+          input?.focus();
+          return;
+        }
         const retryMessage = err?.data?.verificationRejected ? (err.message || 'Verification failed. Enter a fresh code and try again.') : '';
         closeModal(backdrop);
         setTimeout(() => openReleaseVerificationPage(order, finalAction, { requirements:nextRequirements, localToken:token, retryMessage }), 50);

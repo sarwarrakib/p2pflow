@@ -1,0 +1,30 @@
+# P2PFlow v1.5.37 — Launch Checklist
+
+- [ ] Production database backup নেওয়া হয়েছে
+- [ ] `.env`, `.p2pflow/`, `shared/` backup নেওয়া হয়েছে
+- [ ] `P2PFLOW_APP_KEY` permanent backup আছে
+- [ ] Production key separation চাইলে permanent 32+ char `P2PFLOW_SECRET_VAULT_KEY` configured/backup আছে
+- [ ] Application version `1.5.37`
+- [ ] Database schema `37`
+- [ ] Schema 36 -> 37 migration successful
+- [ ] `npm run build` pass
+- [ ] `npm test` pass
+- [ ] Browser/PWA hard refresh করা হয়েছে
+- [ ] CDN/reverse-proxy cache purge করা হয়েছে
+- [ ] Release Verification-এ আলাদা local Verify button নেই
+- [ ] Secret Code -> একবার Release Coin -> success path test করা হয়েছে
+- [ ] Wrong Secret Code -> same screen inline warning test করা হয়েছে
+- [ ] User Password -> একবার Release Coin test করা হয়েছে
+- [ ] Email OTP automatic send + Release Coin test করা হয়েছে
+- [ ] Resend Email OTP secondary action কাজ করছে
+- [ ] Primary failure -> configured Secondary switch test করা হয়েছে
+- [ ] Saved FUND_PWD + local verification -> single-click continuation test করা হয়েছে
+- [ ] Saved FUND_PWD + local verification OFF direct release attempt test করা হয়েছে
+- [ ] Manual Fund Password release test করা হয়েছে
+- [ ] Wrong Google Authenticator code -> same-screen inline warning test করা হয়েছে
+- [ ] Wrong SMS code -> same-screen inline warning test করা হয়েছে
+- [ ] Saved Fund Password browser/API response-এ expose হয় না
+- [ ] Migrated Fund Password legacy plaintext field clear হয়েছে
+- [ ] Field vault ciphertext plaintext password contain করে না
+- [ ] Successful Release-এর পরে order/accounting status ঠিক আছে
+- [ ] Payment Split ON/OFF behavior ঠিক আছে

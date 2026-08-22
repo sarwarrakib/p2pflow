@@ -11,7 +11,7 @@ const pkg = JSON.parse(read('package.json'));
 const fail = message => { throw new Error(`Settings UI self-test failed: ${message}`); };
 const assert = (value, message) => { if (!value) fail(message); };
 
-assert(pkg.version === '1.5.36', `expected v1.5.36, got ${pkg.version}`);
+assert(pkg.version === '1.5.37', `expected v1.5.37, got ${pkg.version}`);
 for (const section of ['general','binance','security','email','notifications','activity']) {
   assert(settings.includes(`data-settings-section=\"${section}\"`), `navigation section missing: ${section}`);
   assert(settings.includes(`p2pflowSettingsPanel('${section}'`), `panel missing: ${section}`);

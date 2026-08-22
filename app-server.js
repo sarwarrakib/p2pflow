@@ -44,7 +44,7 @@ loadEnv();
 applyP2PFlowEnvAliases(process.env);
 
 const APP_VERSION = String(packageInfo.version || '0.0.0');
-const APP_SCHEMA_VERSION = 36;
+const APP_SCHEMA_VERSION = 37;
 const APP_DATA_COMPATIBILITY_EPOCH = 1;
 const PORT = Number(process.env.PORT || 3000);
 const BIND_HOST = cleanEnv(process.env.P2PFLOW_BIND_HOST || process.env.CRM_BIND_HOST || '', '');
@@ -52,6 +52,11 @@ const DATABASE_URL = cleanEnv(process.env.P2PFLOW_DATABASE_URL || process.env.CR
 const DATABASE_PROVIDER = normalizeDatabaseProvider(process.env.P2PFLOW_DATABASE_PROVIDER || process.env.CRM_DATABASE_PROVIDER || '', DATABASE_URL);
 const DATABASE_TABLE = cleanEnv(process.env.P2PFLOW_DATABASE_TABLE || process.env.P2PFLOW_MYSQL_TABLE || process.env.P2PFLOW_POSTGRES_TABLE || process.env.CRM_DATABASE_TABLE || process.env.CRM_MYSQL_TABLE || process.env.CRM_POSTGRES_TABLE || 'p2pflow_state', 'p2pflow_state').replace(/[^a-zA-Z0-9_]/g, '_') || 'p2pflow_state';
 const APP_KEY = String(process.env.P2PFLOW_APP_KEY || process.env.CRM_APP_KEY || '');
+const EXPLICIT_SECRET_VAULT_KEY = String(process.env.P2PFLOW_SECRET_VAULT_KEY || process.env.CRM_SECRET_VAULT_KEY || '');
+const SECRET_VAULT_SELF_TEST = process.env.NODE_ENV === 'test' || process.argv.includes('--accounting-self-test') || process.argv.includes('--payment-split-final-action-self-test');
+const TEST_ONLY_SECRET_VAULT_KEY = SECRET_VAULT_SELF_TEST ? 'p2pflow-self-test-secret-vault-key-2026' : '';
+const SECRET_VAULT_KEY = EXPLICIT_SECRET_VAULT_KEY || APP_KEY || TEST_ONLY_SECRET_VAULT_KEY;
+if (EXPLICIT_SECRET_VAULT_KEY && EXPLICIT_SECRET_VAULT_KEY.length < 32) throw new Error('P2PFLOW_SECRET_VAULT_KEY must be at least 32 characters when configured.');
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const ENV_FILE = resolveEnvFile(__dirname, process.env);
 function defaultInstallRoot(appDirectory) {
@@ -785,6 +790,70 @@ const LOCAL_RELEASE_VERIFICATION_METHODS = Object.freeze({
 });
 const FINAL_ACTION_LOCAL_VERIFICATION_TTL_MS = 5 * 60 * 1000;
 const FINAL_ACTION_LOCAL_VERIFICATION_MAX_ATTEMPTS = 6;
+const CREDENTIAL_SECRET_VAULT_PREFIX = 'p2psec1.';
+
+function credentialSecretVaultKeyBytes(purpose = 'credential-secret', sourceKey = SECRET_VAULT_KEY) {
+  const source = Buffer.from(String(sourceKey || ''), 'utf8');
+  const salt = Buffer.from('P2PFlow credential secret vault v1', 'utf8');
+  const info = Buffer.from(String(purpose || 'credential-secret'), 'utf8');
+  return Buffer.from(crypto.hkdfSync('sha256', source, salt, info, 32));
+}
+
+function credentialSecretAad(credentialId, purpose) {
+  return Buffer.from(`p2pflow:${String(purpose || 'credential-secret')}:credential:${Number(credentialId || 0)}`, 'utf8');
+}
+
+function isCredentialSecretVaultValue(value) {
+  return String(value || '').startsWith(CREDENTIAL_SECRET_VAULT_PREFIX);
+}
+
+function sealCredentialSecret(value, credentialId, purpose = 'credential-secret') {
+  const plaintext = String(value === undefined || value === null ? '' : value);
+  if (!plaintext) return '';
+  const mode = EXPLICIT_SECRET_VAULT_KEY ? 'v' : 'a';
+  const sourceKey = mode === 'v' ? EXPLICIT_SECRET_VAULT_KEY : (APP_KEY || TEST_ONLY_SECRET_VAULT_KEY);
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', credentialSecretVaultKeyBytes(purpose, sourceKey), iv);
+  cipher.setAAD(credentialSecretAad(credentialId, purpose));
+  const encrypted = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()]);
+  return `${CREDENTIAL_SECRET_VAULT_PREFIX}${mode}.${iv.toString('base64url')}.${cipher.getAuthTag().toString('base64url')}.${encrypted.toString('base64url')}`;
+}
+
+function openCredentialSecret(value, credentialId, purpose = 'credential-secret') {
+  const stored = String(value || '');
+  if (!stored) return '';
+  if (!isCredentialSecretVaultValue(stored)) return stored; // schema <=36 legacy plaintext; migration seals it.
+  const parts = stored.slice(CREDENTIAL_SECRET_VAULT_PREFIX.length).split('.');
+  let mode = 'a';
+  let ivText, tagText, dataText;
+  if (parts.length === 4 && ['a','v'].includes(parts[0])) [mode, ivText, tagText, dataText] = parts;
+  else if (parts.length === 3) [ivText, tagText, dataText] = parts; // early v1 development compatibility
+  else throw new Error('Stored credential secret is malformed.');
+  const sourceKey = mode === 'v' ? EXPLICIT_SECRET_VAULT_KEY : (APP_KEY || TEST_ONLY_SECRET_VAULT_KEY);
+  if (!sourceKey) throw new Error(mode === 'v' ? 'P2PFLOW_SECRET_VAULT_KEY is required to decrypt the stored Fund Transfer Password.' : 'P2PFLOW_APP_KEY is required to decrypt the stored Fund Transfer Password.');
+  const decipher = crypto.createDecipheriv('aes-256-gcm', credentialSecretVaultKeyBytes(purpose, sourceKey), Buffer.from(ivText, 'base64url'));
+  decipher.setAAD(credentialSecretAad(credentialId, purpose));
+  decipher.setAuthTag(Buffer.from(tagText, 'base64url'));
+  return Buffer.concat([decipher.update(Buffer.from(dataText, 'base64url')), decipher.final()]).toString('utf8');
+}
+
+function credentialFundPasswordConfigured(credential = {}) {
+  return Boolean(String(credential.releaseFundPasswordVault || credential.releaseFundPassword || ''));
+}
+
+function readCredentialFundPassword(credential = {}) {
+  if (credential.releaseFundPasswordVault) return openCredentialSecret(credential.releaseFundPasswordVault, credential.id, 'binance-fund-password');
+  return String(credential.releaseFundPassword || '');
+}
+
+function storeCredentialFundPassword(credential, plaintext) {
+  if (!credential) return;
+  const secret = String(plaintext === undefined || plaintext === null ? '' : plaintext);
+  credential.releaseFundPasswordVault = secret ? sealCredentialSecret(secret, credential.id, 'binance-fund-password') : '';
+  // Keep the legacy field empty so rollback versions prompt for manual entry instead of
+  // mistaking ciphertext for a Binance password.
+  credential.releaseFundPassword = '';
+}
 
 function normalizeBinanceReleaseVerificationMethod(value) {
   const key = cleanStr(value || 'AUTO', 30).toUpperCase();
@@ -803,10 +872,8 @@ function normalizeCredentialReleaseVerification(credential = {}) {
   credential.releaseLocalSecondary = normalizeLocalReleaseVerificationMethod(credential.releaseLocalSecondary || 'SECRET_CODE', 'SECRET_CODE');
   if (credential.releaseLocalSecondary === credential.releaseLocalPrimary) credential.releaseLocalSecondary = 'NONE';
   if (credential.releaseFundPassword === undefined || credential.releaseFundPassword === null) credential.releaseFundPassword = '';
-  // v1.5.36: a saved Fund Transfer Password is automatically used whenever FUND_PWD
-  // is the selected Binance release verification method. P2PFlow local verification,
-  // when enabled, remains the gate before that stored secret can be used.
-  credential.releaseAutoFundPassword = credential.releaseVerificationMethod === 'FUND_PWD' && Boolean(String(credential.releaseFundPassword || ''));
+  if (credential.releaseFundPasswordVault === undefined || credential.releaseFundPasswordVault === null) credential.releaseFundPasswordVault = '';
+  credential.releaseAutoFundPassword = credential.releaseVerificationMethod === 'FUND_PWD' && credentialFundPasswordConfigured(credential);
   return credential;
 }
 
@@ -1340,6 +1407,19 @@ function migrateDb(target) {
   if (!['live-disabled','live'].includes(target.settings.apiMode)) target.settings.apiMode = 'live';
   for (const key of ['users','userRoles','apiCredentials','agents','paymentMethods','paymentAccounts','routing','orders','orderAgentAssignments','paymentSplits','ledgers','proofFiles','auditLogs','locks','notifications','offlineTransactions','chats','chatReadStates','coAgentRequests','approvalRequests','advertisements','securityRevertTokens','sessions','p2pExtensionTasks','p2pExtensionCache','userActivitySessions','businessEntries','businessDailyCloses','binanceBalanceSnapshots','chatMedia','systemUpdates','systemUpdateEvents']) {
     if (!Array.isArray(target[key])) target[key] = [];
+  }
+  // Schema 37: Fund Transfer Password becomes a field-level AES-256-GCM vault secret.
+  // The complete database state is already AES-256-GCM encrypted; this second envelope
+  // keeps the reversible Binance password sealed even in decrypted state diagnostics.
+  if (previousSchemaVersion < 37) {
+    target.apiCredentials.forEach(credential => {
+      const legacyPlaintext = String(credential.releaseFundPassword || '');
+      if (!credential.releaseFundPasswordVault && legacyPlaintext) storeCredentialFundPassword(credential, legacyPlaintext);
+      else {
+        if (credential.releaseFundPasswordVault === undefined || credential.releaseFundPasswordVault === null) credential.releaseFundPasswordVault = '';
+        credential.releaseFundPassword = '';
+      }
+    });
   }
   // Schema 26: exactly the original installation administrator becomes the
   // durable Owner. Updates and GitHub credentials are Owner-only; creating
@@ -6994,8 +7074,8 @@ function releaseVerificationPolicyForCredential(credentialOrId, viewer = null) {
     credentialName: binanceCredentialDisplayName(credential) || binanceCredentialLabel(credential),
     binanceMethod: credential.releaseVerificationMethod,
     binanceMethodLabel: releaseVerificationMethodLabel(credential.releaseVerificationMethod),
-    fundPasswordConfigured: Boolean(String(credential.releaseFundPassword || '')),
-    autoFundPassword: credential.releaseVerificationMethod === 'FUND_PWD' && Boolean(String(credential.releaseFundPassword || '')),
+    fundPasswordConfigured: credentialFundPasswordConfigured(credential),
+    autoFundPassword: credential.releaseVerificationMethod === 'FUND_PWD' && credentialFundPasswordConfigured(credential),
     localVerificationEnabled: credential.releaseLocalVerificationEnabled === true,
     localPrimary: credential.releaseLocalPrimary,
     localPrimaryLabel: localReleaseVerificationMethodLabel(credential.releaseLocalPrimary),
@@ -7030,25 +7110,27 @@ function applyCredentialReleaseVerificationSettings(user, credential, raw = {}) 
   const secondary = normalizeLocalReleaseVerificationMethod(raw.localSecondary ?? credential.releaseLocalSecondary, 'NONE');
   if (primary === 'NONE' && localEnabled) throw Object.assign(new Error(`${binanceCredentialLabel(credential)}: Primary P2PFlow verification cannot be None while local verification is enabled.`), { statusCode:422 });
   if (secondary !== 'NONE' && secondary === primary) throw Object.assign(new Error(`${binanceCredentialLabel(credential)}: Primary and Secondary P2PFlow verification must be different.`), { statusCode:422 });
-  let nextFundPassword = String(credential.releaseFundPassword || '');
+  let fundPasswordConfigured = credentialFundPasswordConfigured(credential);
   const wantsSecretChange = raw.clearFundPassword === true || (raw.fundPassword !== undefined && String(raw.fundPassword) !== '');
   if (wantsSecretChange && !userHasPermission(user, 'credentials.manage')) throw Object.assign(new Error('Only a user with credentials.manage permission can save or clear a Binance Fund Transfer Password.'), { statusCode:403 });
-  if (raw.clearFundPassword === true) nextFundPassword = '';
-  else if (raw.fundPassword !== undefined && String(raw.fundPassword) !== '') {
+  if (raw.clearFundPassword === true) {
+    storeCredentialFundPassword(credential, '');
+    fundPasswordConfigured = false;
+  } else if (raw.fundPassword !== undefined && String(raw.fundPassword) !== '') {
     const incoming = String(raw.fundPassword);
     if (incoming.length < 1 || incoming.length > 180) throw Object.assign(new Error(`${binanceCredentialLabel(credential)}: Fund Transfer Password must be 1-180 characters.`), { statusCode:422 });
-    nextFundPassword = incoming;
+    storeCredentialFundPassword(credential, incoming);
+    fundPasswordConfigured = true;
   }
-  const autoFundPassword = method === 'FUND_PWD' && Boolean(nextFundPassword);
+  const autoFundPassword = method === 'FUND_PWD' && fundPasswordConfigured;
   credential.releaseVerificationMethod = method;
   credential.releaseLocalVerificationEnabled = localEnabled;
   credential.releaseLocalPrimary = primary;
   credential.releaseLocalSecondary = secondary;
   credential.releaseAutoFundPassword = autoFundPassword;
-  credential.releaseFundPassword = nextFundPassword;
   credential.releaseVerificationUpdatedAt = nowIso();
   credential.updatedAt = nowIso();
-  return { credentialId:Number(credential.id), method, localEnabled, primary, secondary, autoFundPassword, fundPasswordConfigured:Boolean(nextFundPassword) };
+  return { credentialId:Number(credential.id), method, localEnabled, primary, secondary, autoFundPassword, fundPasswordConfigured };
 }
 
 function finalActionVerificationTokenHash(token) {
@@ -7322,7 +7404,7 @@ function releaseVerificationBodyForCredential(credential, body = {}, localVerifi
     if (policy.localVerificationEnabled && localVerification.verified !== true) {
       throw Object.assign(new Error('Complete the configured P2PFlow verification before the Fund Transfer Password can be used.'), { statusCode:428, localVerificationRequired:true });
     }
-    const storedFundPassword = configuredMethod === 'FUND_PWD' ? String(credential?.releaseFundPassword || '') : '';
+    const storedFundPassword = configuredMethod === 'FUND_PWD' ? readCredentialFundPassword(credential) : '';
     const fundPassword = rawManualFund || storedFundPassword;
     if (!fundPassword) {
       throw Object.assign(new Error('Enter the Binance Fund Transfer Password for this release, or save it in this Binance API account settings.'), { statusCode:428, fundPasswordRequired:true });
@@ -17954,7 +18036,7 @@ async function handleCredentials(req, res) {
       lastTestMessage:'Automatic format/signature validation passed during save.',
       liveTestMessage:'Automatic Binance C2C live connection passed during save.',
       ownerP2pUserNo:'', ownerP2pMerchantNo:'', ownerP2pNickname:'', ownerP2pProfileLastSyncAt:null,
-      releaseVerificationMethod:'AUTO', releaseLocalVerificationEnabled:false, releaseLocalPrimary:'USER_PASSWORD', releaseLocalSecondary:'SECRET_CODE', releaseAutoFundPassword:false, releaseFundPassword:'',
+      releaseVerificationMethod:'AUTO', releaseLocalVerificationEnabled:false, releaseLocalPrimary:'USER_PASSWORD', releaseLocalSecondary:'SECRET_CODE', releaseAutoFundPassword:false, releaseFundPassword:'', releaseFundPasswordVault:'',
       createdAt:checkedAt, updatedAt:checkedAt
     };
     db.apiCredentials.push(item);
@@ -23774,7 +23856,7 @@ function runAccountingSelfTest() {
     migrationArrays.forEach(key => { permissionMigrationTarget[key] = []; });
     permissionMigrationTarget.userRoles = defaultUserRoles();
     permissionMigrationTarget.apiCredentials = [
-      { id: 71, name: 'Legacy A', apiKey: 'legacy-a', secretKey: 'secret-a', createdAt: '2026-01-01T00:00:00.000Z' },
+      { id: 71, name: 'Legacy A', apiKey: 'legacy-a', secretKey: 'secret-a', releaseVerificationMethod:'FUND_PWD', releaseFundPassword:'Legacy-Fund-Secret', createdAt: '2026-01-01T00:00:00.000Z' },
       { id: 72, name: 'Legacy B', apiKey: 'legacy-b', secretKey: 'secret-b', createdAt: '2026-01-02T00:00:00.000Z' }
     ];
     permissionMigrationTarget.users = [
@@ -23789,7 +23871,9 @@ function runAccountingSelfTest() {
     const migratedOwner = permissionMigrationTarget.users.find(user => user.id === 11);
     const migratedManager = permissionMigrationTarget.users.find(user => user.id === 12);
     const settingsWorker = permissionMigrationTarget.users.find(user => user.id === 13);
-    if (permissionMigrationTarget.meta.schemaVersion !== 36) throw new Error(`Permission migration schema mismatch: ${permissionMigrationTarget.meta.schemaVersion}`);
+    if (permissionMigrationTarget.meta.schemaVersion !== 37) throw new Error(`Permission/vault migration schema mismatch: ${permissionMigrationTarget.meta.schemaVersion}`);
+    const migratedSecretCredential = permissionMigrationTarget.apiCredentials.find(item => item.id === 71);
+    if (!isCredentialSecretVaultValue(migratedSecretCredential.releaseFundPasswordVault) || migratedSecretCredential.releaseFundPassword || readCredentialFundPassword(migratedSecretCredential) !== 'Legacy-Fund-Secret') throw new Error('Schema 37 did not field-encrypt the legacy Fund Transfer Password.');
     if (binanceCredentialPermissionRowsForUser(migratedOwner, permissionMigrationTarget).length !== 2) throw new Error('Schema 36 did not materialize permission-based legacy owner account access.');
     if (binanceCredentialPermissionRowsForUser(migratedManager, permissionMigrationTarget).length !== 2) throw new Error('Schema 36 did not materialize permission-based legacy operator account access.');
     if (!userHasPermission(settingsWorker, 'settings.manage') || userHasPermission(settingsWorker, 'orders.view') || binanceCredentialPermissionRowsForUser(settingsWorker, permissionMigrationTarget).length) throw new Error('Role label still changes effective permissions or account grants after schema 36.');
@@ -23869,7 +23953,7 @@ function runAccountingSelfTest() {
       ownerCashFlow: { adjustedCapitalBaseUsd: ownerSummary.summary.ownerAdjustedCapitalBaseUsd, ownerProfitUsd: ownerSummary.summary.ownerProfitUsd, ownerProfitBdt: ownerSummary.summary.ownerProfitBdt },
       separatedAccountingHistory: { completeEntries: completeEntries.length, adminCosts: adminCosts.length, agentOneCosts: agentOneCosts.length, agentTwoCosts: agentTwoCosts.length },
       paymentAccountOwnership: { ownerUserId: ownerAccountView.ownerUser?.id || null, accountType: ownerAccountView.accountType, reportMethods: filteredReport.byMethod.map(item => item.name) },
-      migrationSafety: { schemaPreserved: migrationTarget.meta.schemaVersion, accountTypes: migrationTarget.paymentAccounts.map(item => item.accountType), futureFieldsPreserved: true, weakOwnerSecretRejected: true, ownerAuthorityPreserved: migrationTarget.users[0].isOwner === true, permissionSchema: permissionMigrationTarget.meta.schemaVersion, roleNameNonAuthoritative: true, legacyAccountGrantsMaterialized: true },
+      migrationSafety: { schemaPreserved: migrationTarget.meta.schemaVersion, accountTypes: migrationTarget.paymentAccounts.map(item => item.accountType), futureFieldsPreserved: true, weakOwnerSecretRejected: true, ownerAuthorityPreserved: migrationTarget.users[0].isOwner === true, permissionSchema: permissionMigrationTarget.meta.schemaVersion, roleNameNonAuthoritative: true, legacyAccountGrantsMaterialized: true, fundPasswordVaultMigrated:true },
       advertisementUpdate: updateCheck,
       merchantCreateFallback: merchantFallback,
       advertisementCreate: { classify: createPayload.classify, defaultClassify: defaultCreatePayload.classify, genericTradePermissionBlocks: false, minimumMaximumRateGuard: true },
@@ -24324,7 +24408,7 @@ function runPaymentSplitFinalActionSelfTest() {
       settings: {},
       users: [{ id: 1, username:'admin', name:'Admin', role:'admin', enabled:true, email:'admin@example.test', passwordHash:hashPassword('SelfTestAdminPassword!'), loginSecretHash:hashPassword('739251'), permissions:PERMISSION_CATALOG.slice() }],
       agents: [],
-      apiCredentials: [{ id:50, name:'Release Test API', apiKey:'test-key', secretKey:'test-secret', disabled:false, releaseVerificationMethod:'FUND_PWD', releaseLocalVerificationEnabled:true, releaseLocalPrimary:'USER_PASSWORD', releaseLocalSecondary:'SECRET_CODE', releaseAutoFundPassword:true, releaseFundPassword:'  Fund-Pass 77  ' }],
+      apiCredentials: [{ id:50, name:'Release Test API', apiKey:'test-key', secretKey:'test-secret', disabled:false, releaseVerificationMethod:'FUND_PWD', releaseLocalVerificationEnabled:true, releaseLocalPrimary:'USER_PASSWORD', releaseLocalSecondary:'SECRET_CODE', releaseAutoFundPassword:true, releaseFundPassword:'', releaseFundPasswordVault:sealCredentialSecret('  Fund-Pass 77  ', 50, 'binance-fund-password') }],
       ownerP2pProfiles: [],
       paymentMethods: [{ id:10, code:'BKASH', name:'bKash', enabled:true }],
       paymentAccounts: [
@@ -24423,6 +24507,7 @@ function runPaymentSplitFinalActionSelfTest() {
     assert(binanceOrderPaidMarked({ externalStatus:'BINANCE_WAIT_FOR_RELEASE', status:'assigned' }) === true, 'WAIT_FOR_RELEASE was not treated as paid.');
 
     const releaseCredential = db.apiCredentials[0];
+    assert(isCredentialSecretVaultValue(releaseCredential.releaseFundPasswordVault) && !releaseCredential.releaseFundPasswordVault.includes('Fund-Pass 77') && readCredentialFundPassword(releaseCredential) === '  Fund-Pass 77  ', 'Fund Transfer Password field vault did not preserve/seal the secret.');
     const safeReleasePolicy = releaseVerificationPolicyForCredential(releaseCredential, admin);
     assert(safeReleasePolicy.binanceMethod === 'FUND_PWD' && safeReleasePolicy.localPrimary === 'USER_PASSWORD' && safeReleasePolicy.localSecondary === 'SECRET_CODE', 'Release verification policy normalization failed.');
     assert(safeReleasePolicy.fundPasswordConfigured === true && safeReleasePolicy.autoFundPassword === true && !Object.prototype.hasOwnProperty.call(safeReleasePolicy, 'releaseFundPassword') && !JSON.stringify(safeReleasePolicy).includes('Fund-Pass 77'), 'Fund Transfer Password leaked through the public release policy.');
@@ -24447,7 +24532,7 @@ function runPaymentSplitFinalActionSelfTest() {
     releaseCredential.releaseLocalVerificationEnabled = false;
     const directSavedFundBody = releaseVerificationBodyForCredential(releaseCredential, {}, { required:false, verified:true });
     assert(directSavedFundBody.authType === 'FUND_PWD' && directSavedFundBody._fundPasswordPlaintext === '  Fund-Pass 77  ', 'Saved Fund Transfer Password did not auto-prepare when CRM verification was disabled.');
-    releaseCredential.releaseFundPassword = '';
+    storeCredentialFundPassword(releaseCredential, '');
     normalizeCredentialReleaseVerification(releaseCredential);
     const manualFundBody = releaseVerificationBodyForCredential(releaseCredential, { authType:'FUND_PWD', fundPassword:'Manual-Fund-88' }, { required:false, verified:true });
     assert(manualFundBody.authType === 'FUND_PWD' && manualFundBody._fundPasswordPlaintext === 'Manual-Fund-88', 'Manual Fund Transfer Password was not accepted for Release-time entry.');
@@ -24456,7 +24541,7 @@ function runPaymentSplitFinalActionSelfTest() {
     catch (error) { manualFundRequired = error?.statusCode === 428 && error?.fundPasswordRequired === true; }
     assert(manualFundRequired, 'Missing unsaved Fund Transfer Password did not request Release-time entry.');
 
-    releaseCredential.releaseFundPassword = '  Fund-Pass 77  ';
+    storeCredentialFundPassword(releaseCredential, '  Fund-Pass 77  ');
     releaseCredential.releaseLocalVerificationEnabled = true;
     releaseCredential.releaseVerificationMethod = 'GOOGLE';
     normalizeCredentialReleaseVerification(releaseCredential);
@@ -24488,7 +24573,7 @@ function runPaymentSplitFinalActionSelfTest() {
       splitEdit:{ send1000To500RestoresLimit:true, receive1000To500RestoresLimit:true, configuredChargeRecalculated:true, receiveDoesNotApplySendMoneyCharge:true },
       splitDelete:{ balanceRestored:true, sendLimitRestored:true, receiveLimitRestored:true },
       finalAction:{ genericIdRejectedAsPayId:true, paymentCandidatePayIdSelected:true, unpaidStatusNotMisclassified:true, splitGateToggle:true, proofMandatoryOptional:true, savedSplitGateSatisfied:true, missingProofGateUnsatisfied:true },
-      releaseVerification:{ fundPasswordExactPreserved:true, fundPasswordNotExposed:true, fundPasswordRsaOaepSha256:true, encryptedFundPayloadNotTruncated:true, savedFundAutoReleaseReady:true, manualFundPasswordSupported:true, localGateRequiredForSavedFund:true, googleAndSmsMapped:true, challengeOverridesPreference:true, genericFailureDoesNotInventCode:true, ambiguousCodeDoesNotInventField:true, staleGenericChallengeIgnored:true, primarySecondaryConfigured:true }
+      releaseVerification:{ fundPasswordExactPreserved:true, fundPasswordFieldVault:true, fundPasswordNotExposed:true, fundPasswordRsaOaepSha256:true, encryptedFundPayloadNotTruncated:true, savedFundAutoReleaseReady:true, manualFundPasswordSupported:true, localGateRequiredForSavedFund:true, googleAndSmsMapped:true, challengeOverridesPreference:true, genericFailureDoesNotInventCode:true, ambiguousCodeDoesNotInventField:true, staleGenericChallengeIgnored:true, primarySecondaryConfigured:true }
     }, null, 2));
   } finally {
     db = previousDb;

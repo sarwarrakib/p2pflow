@@ -27,7 +27,7 @@ const css = read('public/style.css');
 const fail = message => { throw new Error(`Session/push/chat performance self-test failed: ${message}`); };
 const assert = (condition, message) => { if (!condition) fail(message); };
 
-assert(server.includes('const APP_SCHEMA_VERSION = 36;'), 'schema 34 is missing');
+assert(server.includes('const APP_SCHEMA_VERSION = 37;'), 'schema 34 is missing');
 assert(server.includes('function sessionBindingHashV2') && server.includes('requestUaFamily(req)'), 'stable session binding v2 is missing');
 const bindingV2 = (server.match(/function sessionBindingHashV2[\s\S]*?\n}/) || [''])[0];
 assert(bindingV2 && !bindingV2.includes('requestIpPrefix'), 'session v2 still depends on the IP prefix');

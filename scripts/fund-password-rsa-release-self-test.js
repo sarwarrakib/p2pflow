@@ -21,9 +21,10 @@ assert(server.includes('Do not insert checkIfCanReleaseCoin into that determinis
 assert(server.includes("String(body.code).slice(0, 2048)"), 'Encrypted RSA ciphertext can still be truncated to the legacy plaintext limit.');
 assert(app.includes("if (String(policy.binanceMethod || 'AUTO').toUpperCase() === 'FUND_PWD' && !policy.fundPasswordConfigured)"), 'Unsaved FUND_PWD does not open a Release-time password field.');
 assert(app.includes('fundPasswordRequired') && app.includes("add('fundPassword', 'Fund Transfer Password'"), 'Release-time Fund Transfer Password retry field is missing.');
-assert(credentials.includes('If a password is saved, FUND_PWD Release uses it automatically') && !credentials.includes('data-release-field="autoFundPassword"'), 'Saved Fund Password is not automatic or legacy auto-use checkbox remains.');
+assert(credentials.includes('If saved, the password stays in the server-side encrypted secret vault') && credentials.includes('FUND_PWD Release uses it automatically') && !credentials.includes('data-release-field="autoFundPassword"'), 'Saved Fund Password is not automatic/vaulted or legacy auto-use checkbox remains.');
 assert(credentials.includes('If P2PFlow verification is enabled, Primary/Secondary verification must pass first.'), 'CRM step-up gate is not described for saved FUND_PWD.');
 assert(!server.includes('Stored Fund Transfer Password can only be used after the configured P2PFlow verification succeeds.'), 'Legacy rule still requires CRM verification even when it is disabled.');
+assert(server.includes('releaseFundPasswordVault') && server.includes("credential.releaseFundPassword = '';"), 'Saved Fund Password is not stored in the field-level secret vault.');
 
 console.log(JSON.stringify({
   ok:true,
