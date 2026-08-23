@@ -82,8 +82,13 @@ async function systemUpdateNeutralRequest(payload, options = {}) {
     const requestPath = paths[index];
     let response;
     try {
-      const controller = options.timeoutMs ? new AbortController() : null;
-      const timer = controller ? setTimeout(() => controller.abort(), options.timeoutMs) : null;
+      const controller = (options.timeoutMs || options.signal) ? new AbortController() : null;
+      const abortFromParent = () => { try { controller?.abort(options.signal?.reason || 'navigation_changed'); } catch (_) {} };
+      if (options.signal) {
+        if (options.signal.aborted) abortFromParent();
+        else options.signal.addEventListener('abort', abortFromParent, { once:true });
+      }
+      const timer = controller && options.timeoutMs ? setTimeout(() => controller.abort('timeout'), options.timeoutMs) : null;
       try {
         response = await fetch(requestPath, {
           method:'POST',
@@ -100,9 +105,11 @@ async function systemUpdateNeutralRequest(payload, options = {}) {
         });
       } finally {
         if (timer) clearTimeout(timer);
+        if (options.signal) options.signal.removeEventListener('abort', abortFromParent);
       }
     } catch (error) {
-    if (isUiRequestCancelled(error)) return;
+      if (error?.name === 'AbortError' && options.signal?.aborted) throw error;
+      if (isUiRequestCancelled(error)) return;
       lastError = new Error(`Network request failed for ${requestPath}: ${error.message || error}`);
       continue;
     }
@@ -281,10 +288,12 @@ function updateStatusPill(label, ok, waitingLabel = 'Required') {
   return `<div class="update-mini-status"><span>${escapeHtml(label)}</span>${badge(ok ? 'Ready' : waitingLabel, ok ? 'ok' : 'warn')}</div>`;
 }
 
-async function renderSystemUpdate() {
+async function renderSystemUpdate(options={}) {
   if (state.page !== 'system-update') return;
+  const renderGuard = beginPageRenderGuard('system-update');
   setTitle('System Update');
-  const status = await api('/api/system-update');
+  const status = await api('/api/system-update', { signal:renderGuard.signal, navigationScoped:false, silent:!!options.background });
+  if (!pageRenderGuardCurrent(renderGuard) || state.page !== 'system-update') return;
   const release = status.availableRelease;
   const updateAvailable = Boolean(status.availableVersion && release);
   const config = status.config || {};
@@ -294,9 +303,10 @@ async function renderSystemUpdate() {
   const securityReady = Boolean(config.releaseSecurityReady || (!config.signatureRequired || config.publicKeyConfigured));
   let controlTransportReady = true;
   let controlTransportError = '';
-  try { await systemUpdateNeutralRequest({ a:'g' }, { silent:true, timeoutMs:5000 }); }
+  try { await systemUpdateNeutralRequest({ a:'g' }, { silent:true, timeoutMs:5000, signal:renderGuard.signal }); }
   catch (error) {
     if (isUiRequestCancelled(error)) return; controlTransportReady = false; controlTransportError = String(error?.message || error || 'Update control channel is unavailable.'); }
+  if (!pageRenderGuardCurrent(renderGuard) || state.page !== 'system-update') return;
   const automaticInstallReady = Boolean(config.automaticInstallReady || config.ready) && controlTransportReady;
   const staged = Boolean((status.installedReleases || []).some(item => item.version === status.availableVersion));
   const latestBackup = (status.backups || [])[0] || null;
@@ -313,10 +323,11 @@ async function renderSystemUpdate() {
       ? 'The new GitHub source is detected. P2PFlow will check automatically until the signed Release is published.'
       : (status.lastCheckMessage || 'Push the next version to GitHub, then press Check Now.'));
 
+  if (!pageRenderGuardCurrent(renderGuard) || state.page !== 'system-update') return;
   $('#content').innerHTML = `
-    <div class="system-update-page">
-      <main class="system-update-main">
-        <section class="update-hero-card ${updateAvailable ? 'has-update' : ''}">
+    <div class="system-update-page" data-stable-key="system-update-page">
+      <main class="system-update-main" data-stable-key="system-update-main">
+        <section class="update-hero-card ${updateAvailable ? 'has-update' : ''}" data-stable-key="update-hero">
           <div class="update-hero-copy">
             <span class="update-eyebrow">P2PFlow ${escapeHtml(currentLabel)}</span>
             <h2>${escapeHtml(headline)}</h2>
@@ -333,7 +344,7 @@ async function renderSystemUpdate() {
         ${status.lastResult?.error ? `<div class="error update-page-message">${escapeHtml(status.lastResult.error)}</div>` : ''}
         ${stageJob.status === 'failed' && stageJob.error ? `<div class="error update-page-message"><b>Update verification failed:</b> ${escapeHtml(stageJob.error)}</div>` : ''}
 
-        <section class="update-overview-grid">
+        <section class="update-overview-grid" data-stable-key="update-overview">
           <div class="update-overview-card"><span>Current version</span><b>${escapeHtml(currentLabel)}</b><small>Schema ${escapeHtml(status.schemaVersion)}</small></div>
           <div class="update-overview-card"><span>GitHub</span><b>${connectionReady ? 'Connected' : 'Not connected'}</b><small>${escapeHtml(config.repository || 'Connection required')}</small></div>
           <div class="update-overview-card"><span>Last backup</span><b>${latestBackup ? 'Ready' : 'Not created'}</b><small>${latestBackup ? escapeHtml(systemUpdateDate(latestBackup.created_at)) : 'Created before installation'}</small></div>
@@ -345,7 +356,7 @@ async function renderSystemUpdate() {
           <div class="update-safe-line"><b>No data loss:</b> active writes finish first, then a database backup is created before code activation.</div>
         </section>` : `<section class="update-release-card update-empty-state"><b>No new release</b><span>Upload the next source version to GitHub and press Check Now.</span></section>`}
 
-        <section class="update-settings-card">
+        <section class="update-settings-card" data-stable-key="update-settings">
           <div class="update-settings-row">
             <div><span>Repository</span><b>${escapeHtml(config.repository || 'Not connected')}</b></div>
             <button id="openGithubConnectionBtn" class="secondary small">${connectionReady ? 'Connection Settings' : 'Connect GitHub'}</button>
@@ -356,14 +367,14 @@ async function renderSystemUpdate() {
           </div>
         </section>
 
-        <details class="update-details-card">
+        <details class="update-details-card" data-stable-key="installed-versions">
           <summary>Installed versions <span>${(status.installedReleases || []).length}</span></summary>
           <div class="table-wrap"><table><thead><tr><th>Version</th><th>Installed</th><th>Status</th><th>Action</th></tr></thead><tbody>
             ${(status.installedReleases || []).map(item => `<tr><td><b>${escapeHtml(systemVersionLabel(item.version))}</b></td><td>${escapeHtml(systemUpdateDate(item.installedAt))}</td><td>${item.current ? badge('Current','ok') : badge('Ready','muted')}</td><td>${item.current ? '-' : (compareVersionText(item.version, status.currentVersion) < 0 ? `<button class="danger small" data-rollback-version="${escapeAttr(item.version)}" ${!automaticInstallReady ? 'disabled' : ''}>Roll Back</button>` : `<button class="success small" data-install-version="${escapeAttr(item.version)}" ${!automaticInstallReady ? 'disabled' : ''}>Install</button>`)}</td></tr>`).join('') || '<tr><td colspan="4" class="empty">No version history yet.</td></tr>'}
           </tbody></table></div>
         </details>
 
-        <details class="update-details-card">
+        <details class="update-details-card" data-stable-key="database-backups">
           <summary>Database backups <span>${(status.backups || []).length}</span></summary>
           <div class="table-wrap"><table><thead><tr><th>Label</th><th>Revision</th><th>Version</th><th>Created</th></tr></thead><tbody>
             ${(status.backups || []).map(item => `<tr><td>${escapeHtml(item.label)}</td><td>${escapeHtml(item.source_revision)}</td><td>${escapeHtml(systemVersionLabel(item.app_version || '-'))}</td><td>${escapeHtml(systemUpdateDate(item.created_at))}</td></tr>`).join('') || '<tr><td colspan="4" class="empty">A backup will be created before the first installation.</td></tr>'}
@@ -371,7 +382,7 @@ async function renderSystemUpdate() {
         </details>
       </main>
 
-      <aside class="update-note-panel">
+      <aside class="update-note-panel" data-stable-key="update-guide">
         <div class="update-note-pin">NOTE</div>
         <h3>Update guide</h3>
         <ol>
@@ -395,18 +406,18 @@ async function renderSystemUpdate() {
   if (sourcePending && connectionReady && systemUpdateReleasePollCount < 20) {
     systemUpdateReleasePollCount += 1;
     systemUpdateReleasePollTimer = setTimeout(async () => {
-      if (!$('#checkSystemUpdateBtn')) return;
-      try { await systemUpdateNeutralRequest({ a:'c' }, { silent:true }); await renderSystemUpdate(); } catch {}
+      if (state.page !== 'system-update' || !$('#checkSystemUpdateBtn')) return;
+      try { await systemUpdateNeutralRequest({ a:'c' }, { silent:true }); if (state.page === 'system-update') await renderSystemUpdate({ background:true }); } catch {}
     }, 15000);
   } else if (!sourcePending) {
     systemUpdateReleasePollCount = 0;
   }
   if (stageRunning) {
     setTimeout(async () => {
-      if (!$('#installSystemUpdateBtn')) return;
+      if (state.page !== 'system-update' || !$('#installSystemUpdateBtn')) return;
       try {
         const job = await systemUpdateStageStatusRequest(6000);
-        if (job.status !== 'verifying') await renderSystemUpdate();
+        if (job.status !== 'verifying' && state.page === 'system-update') await renderSystemUpdate({ background:true });
       } catch {}
     }, 3000);
   }

@@ -14,7 +14,7 @@ function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 
-assert(app.includes("!['ads','settings','p2p-market','chat'].includes(state.page)"), 'Interactive pages are still subject to generic db_updated re-rendering.');
+assert(app.includes('backgroundPatchAllowed(state.page)') && app.includes("!['ads','settings','p2p-market','chat'].includes(state.page)"), 'Generic db_updated events are not constrained to approved non-destructive page patches.');
 assert(app.includes('refreshCurrentOrderStateNonDestructive'), 'Open-order background refresh is not non-destructive.');
 assert(app.includes("mergeCurrentOrderChatItems(updated.chats || [], { forceScroll:false })"), 'Open-order chat delta is not merged without force scrolling.');
 assert(app.includes('state.currentOrderChatLastUserScrollAt = Date.now()'), 'Chat user scroll state is not tracked.');
@@ -50,5 +50,6 @@ console.log(JSON.stringify({
   imageFreshPresignRetry: true,
   marketViewportAnchor: true,
   fastOrderDiscoveryMs: 3000,
-  paidMarkFastPath: true
+  paidMarkFastPath: true,
+  fixedShellRealtimeGate: true
 }, null, 2));

@@ -10,8 +10,22 @@ const css = read('public/style.css');
 const orders = read('public/js/pages/orders.js');
 const market = read('public/js/pages/p2p-market.js');
 const ads = read('public/js/pages/ads.js');
+const systemUpdate = read('public/js/pages/system-update.js');
 const pkg = JSON.parse(read('package.json'));
 const assert = (condition, message) => { if (!condition) throw new Error(`Stable shell navigation self-test failed: ${message}`); };
+
+
+assert(app.includes('function installStableContentArchitecture()') && app.includes("Object.defineProperty(content, 'innerHTML'"), 'global stable content commit gate is missing');
+assert(app.includes('function stableMorphContent(container, html)') && app.includes('function morphStableNode(current, next)'), 'non-destructive DOM morph layer is missing');
+assert(app.includes('routeViewCache: new Map()') && app.includes('function cacheActiveRouteView') && app.includes('function restoreCachedRouteView'), 'per-route DOM cache is missing');
+assert(app.includes('if (!restoredView) mountRouteStaticShell(route)') && app.includes('const sameRoute = previousRouteKey === nextRouteKey'), 'target route shell is not mounted/restored immediately');
+assert(app.includes('function backgroundPatchAllowed(page=state.page)') && app.includes('if (!backgroundPatchAllowed(state.page)) return;'), 'generic realtime events can still trigger unapproved full page renders');
+assert(css.includes('overflow-y:scroll; scrollbar-gutter:stable') && css.includes('overflow-x:hidden'), 'root scrollbar geometry is not stable');
+const routeProgressBlock = (css.match(/\.route-progress\{[^}]+\}/) || [''])[0];
+assert(routeProgressBlock.includes('position:fixed') && routeProgressBlock.includes('overflow:hidden') && !routeProgressBlock.includes('overflow:visible'), 'route progress animation can still create viewport overflow');
+assert(css.includes('#content.soft-updating { opacity:1; transform:none; }'), 'background data patch still visually shifts the full page');
+assert(systemUpdate.includes('data-stable-key="system-update-page"') && systemUpdate.includes('data-stable-key="update-guide"'), 'System Update static structure is not keyed for in-place patching');
+assert(systemUpdate.includes("beginPageRenderGuard('system-update')") && systemUpdate.includes('signal:renderGuard.signal') && systemUpdate.includes("state.page !== 'system-update'"), 'System Update slow neutral/API responses can still overwrite another route');
 
 assert(app.includes('function beginNavigationScope(route = {})') && app.includes("state.navigationController?.abort('navigation_changed')"), 'latest-navigation cancellation scope is missing');
 assert(app.includes("if (location.hash === hash) {") && app.includes('if (opts.force === true) return routeFromLocation'), 're-clicking current route still starts duplicate renders');
@@ -44,5 +58,10 @@ console.log(JSON.stringify({
   orderDetailDynamicPatch:true,
   chatDomPersistent:true,
   marketLatestRequestWins:true,
-  adsBackgroundStablePatch:true
+  adsBackgroundStablePatch:true,
+  routeDomCache:true,
+  stableDomMorph:true,
+  targetShellImmediate:true,
+  overflowSafeProgress:true,
+  systemUpdateInPlace:true
 }, null, 2));

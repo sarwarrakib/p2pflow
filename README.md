@@ -27,31 +27,32 @@ Updater code এবং database আলাদা রাখে। Update install-�
 
 ## Version
 
-Internal SemVer: `1.5.39`
+Internal SemVer: `1.5.40`
 UI: `1.5`
 Database schema: `37`
 
 Normal next version: `SET_NEXT_VERSION.bat` -> `1.6.0`  
-Hotfix: `SET_HOTFIX_VERSION.bat` -> `1.5.40`
+Hotfix: `SET_HOTFIX_VERSION.bat` -> `1.5.41`
 
 ## Database history safety
 
 P2PFlow keeps authoritative business/application data in MariaDB/MySQL/PostgreSQL. State payloads are compressed with Brotli before AES-256-GCM encryption, proofs/chat media are stored as encrypted database objects, and identical newly uploaded proof/media bytes use content-addressed object IDs to avoid duplicate blobs. The default is 3 retained recovery checkpoints with a 6-hour archive interval and 5 retained automatic database backups. Older uncompressed state/history/backup payloads are upgraded incrementally after startup. Health Check reports each P2PFlow database table's allocated size/row count, current encrypted state payload size, compression saving percentage, and proof/chat object usage so database-MB growth can be inspected without terminal access. `shared/`, `.p2pflow`, `.env`, `releases/` and temporary restart/update markers are operational bootstrap/update metadata only; they are not an application/business-data store. The application runtime itself does not write proof, chat, audit, order, ledger, notification or recovery-code data to local files.
 
-## v1.5.39 Stable Shell, Latest Navigation Wins & Non-Destructive Realtime UI
+## v1.5.40 Fixed-Shell SPA, Per-Route View Cache & Zero-Overflow Navigation
 
-- Authenticated UI আর temporary API/hosting challenge-এর কারণে automatic full browser reload করে না। Sidebar/topbar/current structure mounted থাকে।
-- Navigation এখন **Latest Navigation Wins**: নতুন page/order click আগের pending navigation-কে stale/cancel করে; পুরোনো slow response পরে এসে বর্তমান page overwrite করতে পারে না।
-- Order detail background sync dynamic status/amount/payment/split/assignment/approval/statement অংশ in-place patch করে; পুরো order HTML বা Chat DOM rebuild করে না।
-- Chat scroll position incoming message/background order update-এ ধরে রাখা হয়; existing WSS + 1.5-second active-chat fallback বজায় আছে।
-- Orders list background refresh শুধু list/count/account state patch করে এবং scroll ধরে রাখে।
-- P2P Market rapid filter requests sequence-guarded; latest filter wins এবং transient failure existing usable data destroy করে না।
-- Ads realtime refresh card/status/merchant data patch করে; search text, focus/caret, filters এবং scroll preserve হয়।
-- Settings/P2P Market/Chat/Ads generic database event দিয়ে full-render হয় না; stale async page callbacks current route authority ছাড়া DOM পরিবর্তন করতে পারে না।
-- v1.5.38-এর minimal Release Verification, Binance-reference Ads UI, BUY/SELL payment-method rules এবং security/accounting behavior অপরিবর্তিত।
-- Database schema `37`; নতুন migration প্রয়োজন নেই।
+- Authenticated application shell (`sidebar + topbar + content viewport`) এখন একবার mount হয়; normal API/SSE/WSS update-এ browser page বা app shell reload হয় না।
+- প্রতিটি route-এর DOM view আলাদাভাবে cache হয়। অন্য page-এ গিয়ে আবার ফিরে এলে আগের page structure সঙ্গে সঙ্গে restore হয়; network response-এর জন্য পুরোনো অন্য page সামনে পড়ে থাকে না।
+- প্রথমবার কোনো page খোলা হলে target page-এর নিজস্ব static shell সঙ্গে সঙ্গে mount হয়; dynamic data পরে JSON API/SSE/WSS থেকে patch হয়। Slow network-এও previous page view আর target route overwrite করতে পারে না।
+- `#content.innerHTML`-এর জন্য stable commit gate যোগ হয়েছে। একই route-এর refresh existing nodes morph/patch করে; focus, input caret, `<details>` open state, window scroll এবং keyed internal scroll containers preserve হয়।
+- Navigation **Latest Navigation Wins** থাকে: নতুন route পুরোনো GET/render scope abort করে এবং stale response current route-এর DOM commit করতে পারে না। System Update-এর neutral control request-ও route-aware abort/render guard ব্যবহার করে।
+- Generic `db_updated` event আর সব page full-render করে না। শুধু approved non-destructive page patches চালায়; Orders/Ads/Market/Chat তাদের dedicated realtime updater ব্যবহার করে।
+- System Update page-এর static cards/guide keyed করা হয়েছে, তাই release/status polling পুরো page replace করে না।
+- প্রতি সেকেন্ডের horizontal scrollbar/jump-এর root cause fixed: route progress animation আর `overflow:visible` নয়; এটি fixed, clipped overlay। Root viewport-এ stable vertical scrollbar gutter এবং hard horizontal overflow containment আছে।
+- Background data patch-এ পুরো `#content` opacity/translate animation সরানো হয়েছে; data update আর full-page visual “refresh” দেখায় না।
+- Actual signed System Update activation/restart সফল হওয়ার পর intentional browser reload এখনও থাকে; normal navigation/data refresh-এ নয়।
+- v1.5.38 Ads reference UI এবং v1.5.37/1.5.36 Release/FUND_PWD security flow অপরিবর্তিত। Database schema `37`; নতুন migration নেই।
 
-বিস্তারিত: `P2PFlow_v1.5.39_RELEASE_NOTES_BN.md`, `P2PFlow_v1.5.39_MANUAL_UPDATE_BN.md` এবং `P2PFlow_v1.5.39_LAUNCH_CHECKLIST_BN.md`.
+বিস্তারিত: `P2PFlow_v1.5.40_RELEASE_NOTES_BN.md`, `P2PFlow_v1.5.40_MANUAL_UPDATE_BN.md` এবং `P2PFlow_v1.5.40_LAUNCH_CHECKLIST_BN.md`.
 
 ## v1.5.38 Reference UI, Minimal Verification & Binance Ad Flow (historical)
 
