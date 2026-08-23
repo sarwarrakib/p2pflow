@@ -1,4 +1,4 @@
-// P2PFlow v1.5.38
+// P2PFlow v1.5.39
 // Live Binance-style P2P market advertisement browser.
 
 function p2pMarketFmt(value, decimals = 2) {
@@ -708,11 +708,14 @@ function restoreP2pMarketViewport(snapshot) {
 }
 
 async function loadP2pMarket(refresh = false, options = {}) {
-  if (state.p2pMarketLoading) return;
   const result = $('#p2pMarketResults');
-  if (!result) return;
+  if (!result || state.page !== 'p2p-market') return;
 
   const background = !!options.background;
+  if (state.p2pMarketLoading && background) return;
+  const requestSeq = Number(state.p2pMarketRequestSeq || 0) + 1;
+  state.p2pMarketRequestSeq = requestSeq;
+  const requestGuard = background ? null : beginPageRenderGuard('p2p-market-data');
   const append = !!options.append;
   const shouldReset = options.reset === true || (!append && !background && options.reset !== false);
   if (shouldReset) p2pMarketResetInfiniteState();
@@ -733,7 +736,13 @@ async function loadP2pMarket(refresh = false, options = {}) {
   }
 
   try {
-    const data = await api(`/api/p2p-market?${p2pMarketQueryString(refresh, page)}`, { silent: true, noAutoReload: true });
+    const data = await api(`/api/p2p-market?${p2pMarketQueryString(refresh, page)}`, {
+      silent: true,
+      noAutoReload: true,
+      signal: requestGuard?.signal,
+      navigationScoped: requestGuard ? false : true
+    });
+    if (state.page !== 'p2p-market' || Number(state.p2pMarketRequestSeq || 0) !== requestSeq || (requestGuard && !pageRenderGuardCurrent(requestGuard))) return;
     const previousHasMore = state.p2pMarketHasMore;
     const previousNextPage = state.p2pMarketNextPage;
     p2pMarketStorePage(page, data);
@@ -756,10 +765,13 @@ async function loadP2pMarket(refresh = false, options = {}) {
     applyLanguage(result);
     if (background) restoreP2pMarketViewport(viewportSnapshot);
   } catch (err) {
+    if (isUiRequestCancelled(err) || state.page !== 'p2p-market' || Number(state.p2pMarketRequestSeq || 0) !== requestSeq) return;
     if (!append) {
       if (top) top.innerHTML = p2pMarketSourceHtml();
-      result.innerHTML = `<div class="p2p-market-empty error-state"><strong>Could not load Binance advertisements</strong><span>${escapeHtml(err.message || 'Unknown error')}</span><button id="p2pMarketRetryBtn" type="button">Try Again</button></div>`;
-      $('#p2pMarketRetryBtn')?.addEventListener('click', () => loadP2pMarket(true, { background: false, reset: true }));
+      if (!state.p2pMarketData) {
+        result.innerHTML = `<div class="p2p-market-empty error-state"><strong>Could not load Binance advertisements</strong><span>${escapeHtml(err.message || 'Unknown error')}</span><button id="p2pMarketRetryBtn" type="button">Try Again</button></div>`;
+        $('#p2pMarketRetryBtn')?.addEventListener('click', () => loadP2pMarket(true, { background: false, reset: true }));
+      }
     } else {
       state.p2pMarketHasMore = true;
       const sentinel = $('#p2pMarketInfiniteSentinel');
@@ -767,8 +779,10 @@ async function loadP2pMarket(refresh = false, options = {}) {
       $('#p2pMarketLoadMoreRetry')?.addEventListener('click', () => loadP2pMarket(true, { append: true }));
     }
   } finally {
-    result.classList.remove('loading');
-    state.p2pMarketLoading = false;
+    if (Number(state.p2pMarketRequestSeq || 0) === requestSeq) {
+      result.classList.remove('loading');
+      state.p2pMarketLoading = false;
+    }
   }
 }
 
@@ -807,6 +821,7 @@ function bindP2pMarketPullToRefresh() {
 }
 
 async function renderP2pMarket() {
+  if (state.page !== 'p2p-market') return;
   ensureP2pMarketState();
   setTitle('P2P Market');
   const f = state.p2pMarketFilters;

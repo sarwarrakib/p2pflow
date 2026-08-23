@@ -1,0 +1,29 @@
+# P2PFlow v1.5.39 — Launch Checklist
+
+- [ ] Production database এবং `.env`/runtime config backup নেওয়া হয়েছে
+- [ ] Application version `1.5.39`
+- [ ] Database schema `37`
+- [ ] `npm run build` pass
+- [ ] সম্পূর্ণ `npm test` pass
+- [ ] Service restart করা হয়েছে
+- [ ] Browser/PWA hard refresh করা হয়েছে
+- [ ] CDN/reverse-proxy cache purge করা হয়েছে (যদি থাকে)
+- [ ] Order প্রথমবার open করেই stable থাকে; 2–3 বার ঢোকার প্রয়োজন হয় না
+- [ ] Orders slow request অন্য page-এ যাওয়ার পরে current page overwrite করে না
+- [ ] Slow network-এ সর্বশেষ click/navigation-ই জয়ী হয়
+- [ ] API/hosting transient failure-এ full browser reload হয় না
+- [ ] Order detail background update পুরো page rebuild করে না
+- [ ] Chat open রেখে উপরে scroll করলে chat box disappear/reappear করে না
+- [ ] Incoming chat message instant/incremental আসে কিন্তু user scroll position ধরে রাখে
+- [ ] Orders background refresh scroll reset করে না
+- [ ] P2P Market rapid filter-এ stale response নতুন result overwrite করে না
+- [ ] P2P Market background refresh viewport ধরে রাখে
+- [ ] Ads realtime refresh search text/focus/scroll ধরে রাখে
+- [ ] Settings-এ typing generic refresh-এ কেটে যায় না
+- [ ] Mark Paid controlled test করা হয়েছে
+- [ ] Release Verification/FUND_PWD controlled test করা হয়েছে
+- [ ] Payment Split ON/OFF regression ঠিক আছে
+- [ ] BUY/SELL Advertisement payment-method scope ঠিক আছে
+- [ ] Permission/account isolation ঠিক আছে
+- [ ] Chat Camera/Album image send ঠিক আছে
+- [ ] Health/Updater/Accounting smoke test ঠিক আছে

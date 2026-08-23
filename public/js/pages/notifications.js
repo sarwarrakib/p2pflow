@@ -22,6 +22,7 @@ function notificationPreferenceRows(data={}) {
 }
 
 async function renderNotifications() {
+  if (state.page !== 'notifications') return;
   setTitle('Notifications');
   const data = await api('/api/notifications');
   state.pushConfig = data.backgroundNotifications || state.pushConfig;
@@ -65,6 +66,7 @@ async function renderNotifications() {
       notify('Notification preferences saved.', 'ok');
       scheduleHeaderNotificationRefresh(50);
     } catch (err) {
+    if (isUiRequestCancelled(err)) return;
       setFormMessage('#notificationPreferencesMessage', err.message || 'Could not save notification preferences.', 'danger');
     } finally {
       if (button) button.disabled = false;

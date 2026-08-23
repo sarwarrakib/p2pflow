@@ -1,4 +1,4 @@
-// P2PFlow v1.5.38
+// P2PFlow v1.5.39
 // Dedicated account/login security page. Binance P2P Profile lives on #/p2p-profile.
 
 function securityStatusPill(label, enabled) {
@@ -18,6 +18,7 @@ function securityDeviceRows(devices = []) {
 }
 
 async function renderSecurity() {
+  if (state.page !== 'security') return;
   setTitle('Security');
   const data = await api('/api/me/security');
   const content = $('#content');
@@ -101,7 +102,8 @@ async function renderSecurity() {
       }
       notify(result.message || 'Trusted browser revoked.', 'ok');
       await renderSecurity();
-    } catch (err) { notify(err.message || 'Could not revoke trusted browser.', 'danger'); }
+    } catch (err) {
+    if (isUiRequestCancelled(err)) return; notify(err.message || 'Could not revoke trusted browser.', 'danger'); }
   }));
 
   const fallbackForm = $('#securityFallbackForm');
@@ -118,7 +120,8 @@ async function renderSecurity() {
       setFormMessage('#securityFallbackMessage', result.message || 'Security Question fallback updated.', 'ok');
       notify(result.message || 'Security Question fallback updated.', 'ok');
       setTimeout(() => renderSecurity(), 350);
-    } catch (err) { setFormMessage('#securityFallbackMessage', err.message || 'Security Question update failed.', 'danger'); }
+    } catch (err) {
+    if (isUiRequestCancelled(err)) return; setFormMessage('#securityFallbackMessage', err.message || 'Security Question update failed.', 'danger'); }
   };
 
   const recoveryForm = $('#securityEmailRecoveryForm');
@@ -171,7 +174,8 @@ async function renderSecurity() {
       }
       await window.P2PFlowDeviceAuth?.forget?.();
       setTimeout(() => window.location.replace('/login'), 500);
-    } catch (err) { setFormMessage('#securityRecoveryMessage', err.message || 'Email recovery failed.', 'danger'); }
+    } catch (err) {
+    if (isUiRequestCancelled(err)) return; setFormMessage('#securityRecoveryMessage', err.message || 'Email recovery failed.', 'danger'); }
   };
 
   const form = $('#securityForm');
@@ -192,7 +196,8 @@ async function renderSecurity() {
         return;
       }
       notify('Security settings updated.', 'ok');
-    } catch (err) { setFormMessage('#securityMessage', err.message || 'Security update failed.', 'danger'); }
+    } catch (err) {
+    if (isUiRequestCancelled(err)) return; setFormMessage('#securityMessage', err.message || 'Security update failed.', 'danger'); }
   };
   applyLanguage(content);
 }

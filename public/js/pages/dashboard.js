@@ -2,6 +2,7 @@
 // Page module: dashboard. Edit this file for the dashboard page UI.
 
 async function renderDashboard() {
+  if (state.page !== 'dashboard') return;
   setTitle('Dashboard', '');
   const data = await api('/api/dashboard');
   const topUsers = data.byAgent.slice(0, 6);

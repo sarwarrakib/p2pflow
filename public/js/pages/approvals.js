@@ -2,6 +2,7 @@
 // Page module: approvals. Edit this file for the approvals page UI.
 
 async function renderApprovals() {
+  if (state.page !== 'approvals') return;
   setTitle('Approvals');
   const data = await api('/api/approvals?status=pending');
   const rows = data.items.map(a => {

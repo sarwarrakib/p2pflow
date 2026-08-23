@@ -1,6 +1,6 @@
 # GitHub Desktop - P2PFlow Unified Update
 
-P2PFlow 1.5 থেকে **GitHub-এর জন্য আলাদা ZIP নেই**। Hosting এবং GitHub দু জায়গাতেই একই `P2PFlow_v1.5.38_UNIFIED.zip` ব্যবহার করবেন।
+P2PFlow 1.5 থেকে **GitHub-এর জন্য আলাদা ZIP নেই**। Hosting এবং GitHub দু জায়গাতেই একই `P2PFlow_v1.5.39_UNIFIED.zip` ব্যবহার করবেন।
 
 ## প্রথম upload
 

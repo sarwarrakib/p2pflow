@@ -5643,3 +5643,16 @@ tr:hover td{background:#fbfbfc}
 .p2p-market-filter-button,.p2p-market-chip-select{border-color:#eceef0!important;background:#fff!important;box-shadow:none!important}
 .p2p-market-sheet-actions .primary{background:#fcd535!important;color:#111318!important}.p2p-market-sheet-actions .ghost{background:#e9eaec!important;color:#17191d!important}
 .p2p-market-sheet{box-shadow:0 -16px 45px rgba(15,23,42,.13)!important}
+
+/* v1.5.39 stable-shell navigation: static chrome stays mounted while only data requests change. */
+.route-progress{position:sticky;top:0;z-index:80;height:0;overflow:visible;opacity:0;pointer-events:none;transition:opacity .14s ease}
+.route-progress>span{display:block;height:2px;width:34%;background:#f0b90b;box-shadow:0 0 8px rgba(240,185,11,.32);animation:p2pflow-route-progress 1.05s ease-in-out infinite}
+.route-progress>small{position:absolute;right:14px;top:5px;padding:3px 7px;border:1px solid #eceef0;border-radius:999px;background:rgba(255,255,255,.94);color:#747982;font-size:10px;box-shadow:0 4px 14px rgba(15,23,42,.05)}
+body.route-pending .route-progress{opacity:1}
+@keyframes p2pflow-route-progress{0%{transform:translateX(-105%)}55%{transform:translateX(195%)}100%{transform:translateX(315%)}}
+.stable-data-shell{min-height:240px;padding:18px;border:1px solid #eceef0;border-radius:14px;background:#fff}
+.stable-data-shell-head{display:flex;align-items:center;justify-content:space-between;gap:16px}.stable-data-shell-head b{font-size:16px}.stable-data-shell-head span{color:#8b9098;font-size:11px}
+.stable-data-lines{display:grid;gap:12px;margin-top:22px}.stable-data-lines i{display:block;height:46px;border-radius:10px;background:linear-gradient(90deg,#f5f6f7,#fafafa,#f5f6f7);background-size:220% 100%;animation:p2pflow-static-skeleton 1.35s ease infinite}.stable-data-lines i:nth-child(2){width:86%}.stable-data-lines i:nth-child(3){width:72%}
+@keyframes p2pflow-static-skeleton{0%{background-position:100% 0}100%{background-position:-100% 0}}
+.stable-data-error{display:grid;gap:7px}.stable-data-error>span{color:#777c84;font-size:12px}
+@media(max-width:760px){.route-progress>small{right:8px;top:4px}.stable-data-shell{min-height:55dvh;margin:0 -4px;border-radius:0;border-left:0;border-right:0}}

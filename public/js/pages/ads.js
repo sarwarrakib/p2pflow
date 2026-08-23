@@ -1,4 +1,4 @@
-// P2PFlow v1.5.38
+// P2PFlow v1.5.39
 // Restored FULL advertisement update payload with no-updateMode compatibility retry.
 
 const ADS_COUNTRY_CODES = ["BD","US","GB","IN","PK","AE","SA","TR","NG","KE","GH","ZA","MY","SG","ID","PH","TH","VN","AU","CA","DE","FR","IT","ES","NL","BE","PT","JP","KR","CN","HK","TW","BR","MX","AR","CO","PE","CL","EG","MA","DZ","TN","QA","KW","BH","OM","LK","NP","AW","AF","AO","AI","AX","AL","AD","AM","AS","AQ","TF","AG","AT","AZ","BI","BJ","BQ","BF","BG","BS","BA","BL","BY","BZ","BM","BO","BB","BN","BT","BV","BW","CF","CC","CH","CI","CM","CD","CG","CK","KM","CV","CR","CU","CW","CX","KY","CY","CZ","DJ","DM","DK","DO","EC","ER","EH","EE","ET","FI","FJ","FK","FO","FM","GA","GE","GG","GI","GN","GP","GM","GW","GQ","GR","GD","GL","GT","GF","GU","GY","HM","HN","HR","HT","HU","IM","IO","IE","IR","IQ","IS","IL","JM","JE","JO","KZ","KG","KH","KI","KN","LA","LB","LR","LY","LC","LI","LS","LT","LU","LV","MO","MF","MC","MD","MG","MV","MH","MK","ML","MT","MM","ME","MN","MP","MZ","MR","MS","MQ","MU","MW","YT","NA","NC","NE","NF","NI","NU","NO","NR","NZ","PA","PN","PW","PG","PL","PR","KP","PY","PS","PF","RE","RO","RU","RW","SD","SN","GS","SH","SJ","SB","SL","SV","SM","SO","PM","RS","SS","ST","SR","SK","SI","SE","SZ","SX","SC","SY","TC","TD","TG","TJ","TK","TM","TL","TO","TT","TV","TZ","UG","UA","UM","UY","UZ","VA","VC","VE","VG","VI","VU","WF","WS","YE","ZM","ZW"];
@@ -283,7 +283,7 @@ async function refreshAdsRealtime(force = false) {
   try {
     const data = await api(adsPageUrl(force ? { refreshLive: 1, refreshMerchant: 1 } : {}));
     const signature = adsRealtimeSignature(data);
-    if (force || signature !== state.adsRealtimeSignature) await renderAds(data);
+    if (force || signature !== state.adsRealtimeSignature) await renderAds(data, { background:true });
   } catch (_) {
     // SSE remains the primary channel. Polling is only a quiet fallback.
   } finally {
@@ -303,18 +303,22 @@ function startAdsRealtimePolling() {
   }, 5000);
 }
 
-async function renderAds(prefetchedData = null) {
+async function renderAds(prefetchedData = null, options={}) {
+  if (state.page !== 'ads') return;
+  const renderGuard = beginPageRenderGuard('ads-page');
+  const backgroundRefresh = options.background === true;
   setTitle('My Ads', '');
   state.adsFilters = state.adsFilters || { asset: '', fiat: '', tradeType: '', status: '', search: '' };
   let data = prefetchedData;
   if (!data) {
     try {
-      data = await api(adsPageUrl());
+      data = await api(adsPageUrl(), { signal:renderGuard.signal, navigationScoped:false, noAutoReload:true });
     } catch (error) {
+      if (isUiRequestCancelled(error)) return;
       if (!state.adsCredentialId) throw error;
       state.adsCredentialId = 0;
       localStorage.removeItem('crmAdsCredentialId');
-      data = await api('/api/ads');
+      data = await api('/api/ads', { signal:renderGuard.signal, navigationScoped:false, noAutoReload:true });
     }
   }
 
@@ -324,12 +328,12 @@ async function renderAds(prefetchedData = null) {
     selectedCredentialId = 0;
     state.adsCredentialId = 0;
     localStorage.removeItem('crmAdsCredentialId');
-    if (data.selectedCredentialId) data = await api('/api/ads');
+    if (data.selectedCredentialId) data = await api('/api/ads', { signal:renderGuard.signal, navigationScoped:false, noAutoReload:true });
     credentialOptions = adsCredentialOptions(data);
   }
   if (selectedCredentialId && Number(data.selectedCredentialId || 0) !== selectedCredentialId) {
     state.adsCredentialId = selectedCredentialId;
-    data = await api(adsPageUrl());
+    data = await api(adsPageUrl(), { signal:renderGuard.signal, navigationScoped:false, noAutoReload:true });
     credentialOptions = adsCredentialOptions(data);
   }
 
@@ -367,6 +371,7 @@ async function renderAds(prefetchedData = null) {
       : Boolean(data.credentialConfigured),
     capability
   };
+  if (!pageRenderGuardCurrent(renderGuard) || state.page !== 'ads') return;
   state.adsData = data;
   state.adsRealtimeSignature = adsRealtimeSignature(data);
 
@@ -382,7 +387,7 @@ async function renderAds(prefetchedData = null) {
   const canManualSync = Boolean(selectedOption && exactManagePermission && data.liveMode && !selectedOption.disabled && selectedTarget?.configured !== false);
   const canCreate = Boolean(selectedOption && scopedCapability.canManage && !scopedCapability.breakMode);
 
-  $('#content').innerHTML = `<section class="ads-page screenshot-layout compact-ads-page">
+  const adsPageHtml = `<section class="ads-page screenshot-layout compact-ads-page">
     <div class="page-account-strip ads-account-strip">
       ${adsAccountSwitcherHtml(credentialOptions, selectedCredentialId)}
     </div>
@@ -403,8 +408,43 @@ async function renderAds(prefetchedData = null) {
     </div>
     <input class="ads-search-line" id="adsSearch" value="${escapeAttr(state.adsFilters.search || '')}" placeholder="Search ad number or payment method" />
     <div class="ads-grid screenshot-cards">${items.length ? items.map(ad => adCardHtml(ad, adsCapabilityForAdvertisement(ad, data))).join('') : '<div class="ads-no-more">No advertisements found.</div>'}</div>
-    ${data.lastSyncError ? `<div class="notice warn">${escapeHtml(data.lastSyncError)}</div>` : ''}
+    ${data.lastSyncError ? `<div class="notice warn" data-ads-sync-error>${escapeHtml(data.lastSyncError)}</div>` : ''}
   </section>`;
+
+  if (!pageRenderGuardCurrent(renderGuard) || state.page !== 'ads') return;
+  const content = $('#content');
+  const canStablePatch = backgroundRefresh && content?.querySelector('.ads-page.screenshot-layout');
+  if (canStablePatch) {
+    const scrollY = window.scrollY;
+    const active = document.activeElement;
+    const searchFocused = active?.id === 'adsSearch';
+    const selection = searchFocused ? [active.selectionStart, active.selectionEnd] : null;
+    const staging = document.createElement('div');
+    staging.innerHTML = adsPageHtml;
+    const selectors = ['.ads-grid', '.ads-sync-line', '#adsMerchantControls', '[data-ads-sync-error]'];
+    selectors.forEach(selector => {
+      const currentNode = content.querySelector(selector);
+      const nextNode = staging.querySelector(selector);
+      if (currentNode && nextNode) currentNode.innerHTML = nextNode.innerHTML;
+      else if (!currentNode && nextNode) content.querySelector('.ads-page')?.appendChild(nextNode.cloneNode(true));
+      else if (currentNode && !nextNode && selector === '[data-ads-sync-error]') currentNode.remove();
+    });
+    content.querySelectorAll('[data-ads-account]').forEach(button => {
+      const selected = Number(button.dataset.adsAccount || 0) === Number(selectedCredentialId || 0);
+      button.classList.toggle('active', selected);
+      button.setAttribute('aria-selected', selected ? 'true' : 'false');
+    });
+    requestAnimationFrame(() => {
+      window.scrollTo({ top:scrollY, left:0, behavior:'auto' });
+      if (searchFocused) {
+        const search = $('#adsSearch');
+        search?.focus({ preventScroll:true });
+        try { if (selection) search?.setSelectionRange(selection[0], selection[1]); } catch (_) {}
+      }
+    });
+  } else if (content) {
+    content.innerHTML = adsPageHtml;
+  }
 
   $$('[data-ads-account]').forEach(button => button.onclick = () => {
     state.adsCredentialId = Number(button.dataset.adsAccount || 0);
@@ -413,7 +453,7 @@ async function renderAds(prefetchedData = null) {
     setNotificationCredentialScope(state.adsCredentialId, { sync:true, immediate:true });
     state.adsData = null;
     state.adsRealtimeSignature = '';
-    renderAds();
+    renderAds().catch(error => { if (!isUiRequestCancelled(error)) console.warn(error); });
   });
 
   const rerenderWithFilters = () => {
@@ -424,7 +464,7 @@ async function renderAds(prefetchedData = null) {
       status: $('#adsStatusFilter')?.value || '',
       search: $('#adsSearch')?.value || ''
     };
-    renderAds(state.adsData);
+    renderAds(state.adsData).catch(error => { if (!isUiRequestCancelled(error)) console.warn(error); });
   };
   ['adsAssetFilter', 'adsFiatFilter', 'adsTypeFilter', 'adsStatusFilter'].forEach(id => { if ($('#' + id)) $('#' + id).onchange = rerenderWithFilters; });
   if ($('#adsSearch')) $('#adsSearch').oninput = () => {
@@ -442,6 +482,7 @@ async function renderAds(prefetchedData = null) {
       const fresh = await api(adsPageUrl({ refreshMerchant: 1 }));
       await renderAds(fresh);
     } catch (error) {
+    if (isUiRequestCancelled(error)) return;
       notify(error.message || 'Advertisement sync failed.', 'danger', 7000);
       button.disabled = false;
     }
@@ -504,6 +545,7 @@ async function renderAds(prefetchedData = null) {
           notify(`${actionName} ${enabled ? 'ON' : 'OFF'}`, 'ok', 3500);
         }
       } catch (err) {
+    if (isUiRequestCancelled(err)) return;
         restore();
         const fresh = await api(adsPageUrl({ refreshMerchant: 1 })).catch(() => null);
         if (fresh) await renderAds(fresh);
@@ -581,6 +623,7 @@ async function renderAds(prefetchedData = null) {
       if (result?.notice) notify(result.notice, result.noticeType === 'warning' ? 'warn' : 'ok', 6500);
       else notify(next === 'online' ? 'Advertisement activated.' : 'Advertisement paused.', 'ok');
     } catch (err) {
+    if (isUiRequestCancelled(err)) return;
       input.checked = !activating;
       const fresh = await api(adsPageUrl({ refreshMerchant: 1 })).catch(() => null);
       if (fresh) await renderAds(fresh);
@@ -1081,6 +1124,7 @@ function openAdvertisementEditor(ad = null, data = {}) {
       if (requestId !== balanceRequestId) return;
       renderAvailableSellBalance(result, false);
     } catch (error) {
+    if (isUiRequestCancelled(error)) return;
       if (requestId !== balanceRequestId) return;
       renderAvailableSellBalance({ available: null, warning: error.message || 'Balance check failed.' }, false);
     }
@@ -1176,6 +1220,7 @@ function openAdvertisementEditor(ad = null, data = {}) {
       if ($('#adMarketPriceLabel')) $('#adMarketPriceLabel').textContent = guide.marketPriceLabel || (side === 'BUY' ? 'Highest Order Price' : 'Lowest Ad Price');
       if ($('#adMarketPrice')) $('#adMarketPrice').textContent = Number(guide.marketPrice || 0) > 0 ? `${prefix}${adNumber(guide.marketPrice, Number(guide.priceScale ?? 2))}` : '';
     } catch (error) {
+    if (isUiRequestCancelled(error)) return;
       if (requestId !== referenceRequestId || !document.contains(form)) return;
       if (range) range.textContent = 'Live range unavailable';
       if (meta) meta.textContent = error.message || 'Could not load Binance reference price.';
@@ -1323,6 +1368,7 @@ function openAdvertisementEditor(ad = null, data = {}) {
       closeModal();
       await refreshEditorAccount();
     } catch (err) {
+    if (isUiRequestCancelled(err)) return;
       setFormMessage('#advertisementFormMessage', err.message || 'Advertisement delete failed.', 'danger');
       button.disabled = false;
     }
@@ -1366,6 +1412,7 @@ function openAdvertisementEditor(ad = null, data = {}) {
       closeModal();
       await refreshEditorAccount();
     } catch (err) {
+    if (isUiRequestCancelled(err)) return;
       setFormMessage('#advertisementFormMessage', err.message || 'Binance publish failed. The draft was preserved.', 'danger');
       button.disabled = false;
       button.textContent = 'Publish to Binance';
@@ -1407,6 +1454,7 @@ function openAdvertisementEditor(ad = null, data = {}) {
       closeModal();
       await refreshEditorAccount();
     } catch (err) {
+    if (isUiRequestCancelled(err)) return;
       setFormMessage('#advertisementFormMessage', err.message || 'Advertisement action failed.', 'danger');
       submit.disabled = false;
       submit.textContent = isEdit ? 'Save' : 'Post';

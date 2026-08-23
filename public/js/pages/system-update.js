@@ -57,6 +57,7 @@ function ownerAuthorizationModal(title, buttonText, callback, notice = '') {
     try {
       await callback({ password: form.password.value, secretCode: form.secretCode?.value || '' });
     } catch (error) {
+    if (isUiRequestCancelled(error)) return;
       button.disabled = false;
       button.textContent = buttonText;
     }
@@ -101,6 +102,7 @@ async function systemUpdateNeutralRequest(payload, options = {}) {
         if (timer) clearTimeout(timer);
       }
     } catch (error) {
+    if (isUiRequestCancelled(error)) return;
       lastError = new Error(`Network request failed for ${requestPath}: ${error.message || error}`);
       continue;
     }
@@ -270,6 +272,7 @@ async function installAvailableUpdate(version) {
     if (job.status === 'failed') throw new Error(job.error || 'Release verification failed.');
     await waitForSystemUpdateStage(version || job.version, { openAuthorization:true });
   } catch (error) {
+    if (isUiRequestCancelled(error)) return;
     if (button) { button.disabled = false; button.textContent = 'Update Now'; }
   }
 }
@@ -279,6 +282,7 @@ function updateStatusPill(label, ok, waitingLabel = 'Required') {
 }
 
 async function renderSystemUpdate() {
+  if (state.page !== 'system-update') return;
   setTitle('System Update');
   const status = await api('/api/system-update');
   const release = status.availableRelease;
@@ -291,7 +295,8 @@ async function renderSystemUpdate() {
   let controlTransportReady = true;
   let controlTransportError = '';
   try { await systemUpdateNeutralRequest({ a:'g' }, { silent:true, timeoutMs:5000 }); }
-  catch (error) { controlTransportReady = false; controlTransportError = String(error?.message || error || 'Update control channel is unavailable.'); }
+  catch (error) {
+    if (isUiRequestCancelled(error)) return; controlTransportReady = false; controlTransportError = String(error?.message || error || 'Update control channel is unavailable.'); }
   const automaticInstallReady = Boolean(config.automaticInstallReady || config.ready) && controlTransportReady;
   const staged = Boolean((status.installedReleases || []).some(item => item.version === status.availableVersion));
   const latestBackup = (status.backups || [])[0] || null;

@@ -2,6 +2,7 @@
 // Page module: routing. Edit this file for the routing page UI.
 
 async function renderRouting() {
+  if (state.page !== 'routing') return;
   setTitle('Payment Method Routing');
   const data = await api('/api/routing');
   $('#content').innerHTML = `<div class="toolbar"><div class="actions"><button id="addRouteBtn">Add Route</button></div><div class="sub">Lower priority number is checked first.</div></div>

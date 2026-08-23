@@ -1,4 +1,4 @@
-// P2PFlow v1.5.38
+// P2PFlow v1.5.39
 // Fast filtered payment accounts with transaction-specific charges/commissions and compact actions.
 
 function paymentAccountRuleSummary(rule={}, fallback='None') {
@@ -122,6 +122,7 @@ function paymentAccountFilterOptionHtml(items=[], selected='', placeholder='All'
 }
 
 async function renderAccounts() {
+  if (state.page !== 'accounts') return;
   const canCreate = hasPerm('accounts.manage');
   const filters = state.paymentAccountFilters || { search:'', accountType:'', label:'', methodId:'' };
   setTitle('Payment Accounts');

@@ -1,4 +1,4 @@
-// P2PFlow v1.5.38
+// P2PFlow v1.5.39
 // Business Accounting is separated into Overview, Expenses, Income, Capital and Daily Closing pages.
 // Individual-only Agent profit remains visible but is excluded from Company income/capital totals.
 
@@ -215,6 +215,7 @@ function accountingSyncButtonHandler(renderer) {
       notify('All connected Binance Funding Wallet balances synced.', 'ok');
       await renderer();
     } catch (error) {
+    if (isUiRequestCancelled(error)) return;
       notify(error.message, 'danger');
     } finally {
       current.disabled = false;
@@ -232,6 +233,7 @@ function renderCurrentAccountingPage(options={}) {
 }
 
 async function renderAccounting(options={}) {
+  if (state.page !== 'accounting') return;
   const pageId = 'accounting';
   if (state.accountingLoading) return;
   state.accountingLoading = true;
@@ -367,6 +369,7 @@ async function renderAccounting(options={}) {
 }
 
 async function renderAccountingExpenses(options={}) {
+  if (state.page !== 'accounting-expenses') return;
   const pageId = 'accounting-expenses';
   if (state.accountingLoading) return;
   state.accountingLoading = true;
@@ -417,6 +420,7 @@ async function renderAccountingExpenses(options={}) {
 }
 
 async function renderAccountingIncome(options={}) {
+  if (state.page !== 'accounting-income') return;
   const pageId = 'accounting-income';
   if (state.accountingLoading) return;
   state.accountingLoading = true;
@@ -458,6 +462,7 @@ async function renderAccountingIncome(options={}) {
 }
 
 async function renderAccountingCapital(options={}) {
+  if (state.page !== 'accounting-capital') return;
   const pageId = 'accounting-capital';
   if (state.accountingLoading) return;
   state.accountingLoading = true;
@@ -539,6 +544,7 @@ async function renderAccountingCapital(options={}) {
 }
 
 async function renderAccountingClosing(options={}) {
+  if (state.page !== 'accounting-closing') return;
   const pageId = 'accounting-closing';
   if (state.accountingLoading) return;
   state.accountingLoading = true;
@@ -695,7 +701,8 @@ async function openAccountingEntryModal(data={}, options={}) {
       $('#accountingInlineExpenseCategoryName').value = '';
       setFormMessage('#accountingInlineExpenseCategoryMessage', '');
       notify('Expense category saved.', 'ok');
-    } catch (error) { setFormMessage('#accountingInlineExpenseCategoryMessage', error.message); }
+    } catch (error) {
+    if (isUiRequestCancelled(error)) return; setFormMessage('#accountingInlineExpenseCategoryMessage', error.message); }
   };
   syncFields();
   form.onsubmit = async event => {
@@ -706,6 +713,7 @@ async function openAccountingEntryModal(data={}, options={}) {
       notify(`${accountingEntryTypeLabel(form.elements.type.value)} saved.`, 'ok');
       await renderCurrentAccountingPage();
     } catch (error) {
+    if (isUiRequestCancelled(error)) return;
       setFormMessage('#accountingEntryMessage', error.message);
     }
   };
@@ -732,7 +740,8 @@ function openExpenseCategoriesModal(data={}, renderer=renderAccountingExpenses) 
       closeModal();
       notify('Expense category saved.', 'ok');
       await renderer();
-    } catch (error) { setFormMessage('#expenseCategoryManagerMessage', error.message); }
+    } catch (error) {
+    if (isUiRequestCancelled(error)) return; setFormMessage('#expenseCategoryManagerMessage', error.message); }
   };
   $$('[data-delete-expense-category]').forEach(button => {
     button.onclick = async () => {
@@ -744,7 +753,8 @@ function openExpenseCategoriesModal(data={}, renderer=renderAccountingExpenses) 
         notify('Expense category deleted.', 'ok');
         closeModal();
         await renderer();
-      } catch (error) { notify(error.message, 'danger'); }
+      } catch (error) {
+    if (isUiRequestCancelled(error)) return; notify(error.message, 'danger'); }
     };
   });
 }
@@ -763,7 +773,8 @@ function openOpeningCapitalModal(data={}) {
       closeModal();
       notify('Opening capital saved.', 'ok');
       await renderAccountingCapital();
-    } catch (error) { setFormMessage('#openingCapitalMessage', error.message); }
+    } catch (error) {
+    if (isUiRequestCancelled(error)) return; setFormMessage('#openingCapitalMessage', error.message); }
   };
 }
 
@@ -791,6 +802,7 @@ function openAccountingSettingsModal(data={}) {
       notify('Accounting settings saved.', 'ok');
       await renderCurrentAccountingPage();
     } catch (error) {
+    if (isUiRequestCancelled(error)) return;
       setFormMessage('#accountingSettingsMessage', error.message);
     }
   };
@@ -814,6 +826,7 @@ function openAccountingCloseModal(data={}) {
       notify(result.existing ? 'This day was already closed.' : 'Business day closed with Owner asset snapshot.', 'ok');
       await renderCurrentAccountingPage();
     } catch (error) {
+    if (isUiRequestCancelled(error)) return;
       setFormMessage('#accountingCloseMessage', error.message);
     }
   };

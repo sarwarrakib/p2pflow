@@ -1,4 +1,4 @@
-// P2PFlow v1.5.38
+// P2PFlow v1.5.39
 // API credentials: automatic connect validation, P2P username identity, compact actions and per-account Release Verification settings.
 
 const P2PFLOW_BINANCE_RELEASE_VERIFICATION_METHODS = [
@@ -120,6 +120,7 @@ function openCredentialReleaseVerificationModal(credential = {}) {
       closeModal();
       renderCredentials();
     } catch (err) {
+    if (isUiRequestCancelled(err)) return;
       setFormMessage('#credentialReleaseVerificationMessage', err.message || 'Could not save Release Verification settings.', 'danger');
     } finally {
       if (submit) submit.disabled = false;
@@ -128,6 +129,7 @@ function openCredentialReleaseVerificationModal(credential = {}) {
 }
 
 async function renderCredentials() {
+  if (state.page !== 'credentials') return;
   setTitle('API Credentials');
   const data = await api('/api/api-credentials');
   const items = Array.isArray(data.items) ? data.items : [];
@@ -156,7 +158,8 @@ async function renderCredentials() {
   </div>`;
   $('#addCredBtn').onclick = () => openCredentialModal();
   $('#openHealthBtn').onclick = () => setRoute('health');
-  if ($('#syncBinancePaymentMethodsBtn')) $('#syncBinancePaymentMethodsBtn').onclick = async () => { try { const r = await api('/api/binance/sync/payment-methods', { method:'POST', body:'{}' }); notify(`Payment methods synced. Created ${r.created}, updated ${r.updated}.`, 'ok'); await refreshBootstrap(); renderCredentials(); } catch (err) { notify(err.message || 'Payment method sync failed', 'danger'); } };
+  if ($('#syncBinancePaymentMethodsBtn')) $('#syncBinancePaymentMethodsBtn').onclick = async () => { try { const r = await api('/api/binance/sync/payment-methods', { method:'POST', body:'{}' }); notify(`Payment methods synced. Created ${r.created}, updated ${r.updated}.`, 'ok'); await refreshBootstrap(); renderCredentials(); } catch (err) {
+    if (isUiRequestCancelled(err)) return; notify(err.message || 'Payment method sync failed', 'danger'); } };
   $$('[data-release-settings-cred]').forEach(button => button.onclick = () => {
     const credential = items.find(item => Number(item.id) === Number(button.dataset.releaseSettingsCred));
     if (credential) openCredentialReleaseVerificationModal(credential);

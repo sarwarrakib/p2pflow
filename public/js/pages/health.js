@@ -2,11 +2,13 @@
 // Page module: health. Edit this file for the health page UI.
 
 async function renderHealth() {
+  if (state.page !== 'health') return;
   setTitle('Health Check');
   $('#content').innerHTML = '<div class="card skeleton">Running health checks...</div>';
   let data;
   try { data = await api('/api/health'); }
-  catch (err) { $('#content').innerHTML = `<div class="card"><div class="error">${escapeHtml(err.message)}</div></div>`; return; }
+  catch (err) {
+    if (isUiRequestCancelled(err)) return; $('#content').innerHTML = `<div class="card"><div class="error">${escapeHtml(err.message)}</div></div>`; return; }
   const binance = data.binance || { steps: [] };
   const mail = data.mail || { steps: [] };
   const storage = data.storage || { steps: [] };
@@ -44,14 +46,16 @@ async function renderHealth() {
     try {
       const r = await api('/api/health/binance');
       $('#healthMiniRun').outerHTML = `<div class="notice"><b>Binance diagnosis:</b> ${escapeHtml(r.diagnosis || '-')}<br>${table(['Step','Status','Target','Time/Status','Detail'], stepRows(r.steps || []))}</div>`;
-    } catch (err) { $('#healthMiniRun').outerHTML = `<div class="error">${escapeHtml(err.message)}</div>`; }
+    } catch (err) {
+    if (isUiRequestCancelled(err)) return; $('#healthMiniRun').outerHTML = `<div class="error">${escapeHtml(err.message)}</div>`; }
   };
   const runHealthMailTest = async (driver, promptText) => {
     if (!confirm(promptText)) return;
     try {
       const r = await api('/api/health/mail-test', { method:'POST', body: JSON.stringify({ driver }) });
       notify(r.message || 'Test email sent', 'ok', 8000);
-    } catch (err) {}
+    } catch (err) {
+    if (isUiRequestCancelled(err)) return;}
   };
   $('#sendHealthMailBtn').onclick = () => runHealthMailTest('active', 'Test the currently selected mail route to your account email?');
   $('#sendHealthSmtpBtn').onclick = () => runHealthMailTest('smtp', 'Test authenticated SMTP directly to your account email?');

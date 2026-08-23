@@ -1,4 +1,5 @@
 async function renderP2pExtensionAdmin() {
+  if (state.page !== 'p2p-extension') return;
   setTitle('Extension Bridge');
   const data = await api('/api/p2p-extension/admin/list');
   const copyBtn = (id, label) => `<button class="secondary mini-action" data-copy="${escapeAttr(id)}">${escapeHtml(label)}</button>`;

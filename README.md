@@ -27,29 +27,38 @@ Updater code এবং database আলাদা রাখে। Update install-�
 
 ## Version
 
-Internal SemVer: `1.5.38`
+Internal SemVer: `1.5.39`
 UI: `1.5`
 Database schema: `37`
 
 Normal next version: `SET_NEXT_VERSION.bat` -> `1.6.0`  
-Hotfix: `SET_HOTFIX_VERSION.bat` -> `1.5.39`
+Hotfix: `SET_HOTFIX_VERSION.bat` -> `1.5.40`
 
 ## Database history safety
 
 P2PFlow keeps authoritative business/application data in MariaDB/MySQL/PostgreSQL. State payloads are compressed with Brotli before AES-256-GCM encryption, proofs/chat media are stored as encrypted database objects, and identical newly uploaded proof/media bytes use content-addressed object IDs to avoid duplicate blobs. The default is 3 retained recovery checkpoints with a 6-hour archive interval and 5 retained automatic database backups. Older uncompressed state/history/backup payloads are upgraded incrementally after startup. Health Check reports each P2PFlow database table's allocated size/row count, current encrypted state payload size, compression saving percentage, and proof/chat object usage so database-MB growth can be inspected without terminal access. `shared/`, `.p2pflow`, `.env`, `releases/` and temporary restart/update markers are operational bootstrap/update metadata only; they are not an application/business-data store. The application runtime itself does not write proof, chat, audit, order, ledger, notification or recovery-code data to local files.
 
-## v1.5.38 Reference UI, Minimal Verification & Binance Ad Flow
+## v1.5.39 Stable Shell, Latest Navigation Wins & Non-Destructive Realtime UI
 
-- Release Verification screen এখন ultra-minimal: শুধু current verification title, প্রয়োজনীয় input, inline error/fallback action এবং একটিমাত্র **Release Coin** button। Saved Fund Password/RSA/CRM security explanation আর user-facing screen ভরিয়ে রাখে না।
-- Google/SMS/P2PFlow local verification ভুল হলে একই screen-এ inline warning থাকে; modal remount/reload হয় না। Existing one-click Release এবং Fund Password Secret Vault flow অপরিবর্তিত।
-- Supplied Binance mobile screenshots অনুসারে P2P Orders, P2P Market, My Ads, Ads filters এবং Post Ad editor responsive compact styling পেয়েছে; existing CRM fields/actions/permissions বাদ দেওয়া হয়নি।
-- Post Ad এখন screenshot-style 3-step wizard: **Set Type & Price -> Set Amount & Method -> Set Conditions**, সাথে Preview, Fixed/Floating Price Type এবং Verification Request।
-- Editable local **Minimum Rate / Maximum Rate** fields সরানো হয়েছে। Ads editor Binance C2C `getReferencePrice` থেকে live response নেয়। Binance response-এ explicit usable min/max bound থাকলে সেটাই **Price range** হিসেবে দেখায়; না থাকলে supplied mobile UI pattern অনুযায়ী live reference-based display guide দেখায়। Editor প্রায় 5-second refresh করে; submitted price-এর final acceptance Binance-এর authoritative validation।
-- SELL advertisement-এ selected Binance API account-এর saved P2P payment account details দেখায়; BUY advertisement-এ saved account number নয়, Binance-supported generic payment-method types দেখায়। দুই ক্ষেত্রেই সর্বোচ্চ 5টি selection।
-- BUY/SELL payment selection server-side আলাদা: SELL exact account-scoped `payId`, BUY generic trade method with `payId=0`; অন্য API account-এর payment ID reuse করা হয় না।
+- Authenticated UI আর temporary API/hosting challenge-এর কারণে automatic full browser reload করে না। Sidebar/topbar/current structure mounted থাকে।
+- Navigation এখন **Latest Navigation Wins**: নতুন page/order click আগের pending navigation-কে stale/cancel করে; পুরোনো slow response পরে এসে বর্তমান page overwrite করতে পারে না।
+- Order detail background sync dynamic status/amount/payment/split/assignment/approval/statement অংশ in-place patch করে; পুরো order HTML বা Chat DOM rebuild করে না।
+- Chat scroll position incoming message/background order update-এ ধরে রাখা হয়; existing WSS + 1.5-second active-chat fallback বজায় আছে।
+- Orders list background refresh শুধু list/count/account state patch করে এবং scroll ধরে রাখে।
+- P2P Market rapid filter requests sequence-guarded; latest filter wins এবং transient failure existing usable data destroy করে না।
+- Ads realtime refresh card/status/merchant data patch করে; search text, focus/caret, filters এবং scroll preserve হয়।
+- Settings/P2P Market/Chat/Ads generic database event দিয়ে full-render হয় না; stale async page callbacks current route authority ছাড়া DOM পরিবর্তন করতে পারে না।
+- v1.5.38-এর minimal Release Verification, Binance-reference Ads UI, BUY/SELL payment-method rules এবং security/accounting behavior অপরিবর্তিত।
 - Database schema `37`; নতুন migration প্রয়োজন নেই।
 
-বিস্তারিত: `P2PFlow_v1.5.38_RELEASE_NOTES_BN.md`, `P2PFlow_v1.5.38_MANUAL_UPDATE_BN.md` এবং `P2PFlow_v1.5.38_LAUNCH_CHECKLIST_BN.md`.
+বিস্তারিত: `P2PFlow_v1.5.39_RELEASE_NOTES_BN.md`, `P2PFlow_v1.5.39_MANUAL_UPDATE_BN.md` এবং `P2PFlow_v1.5.39_LAUNCH_CHECKLIST_BN.md`.
+
+## v1.5.38 Reference UI, Minimal Verification & Binance Ad Flow (historical)
+
+- Release Verification screen ultra-minimal করা হয় এবং Binance-reference responsive Orders/Market/Ads/Post Ad UI যোগ হয়।
+- Post Ad 3-step editor, Fixed/Floating Price, live Binance reference-price guide, SELL saved payment accounts এবং BUY generic payment methods (maximum 5) যোগ হয়।
+- Existing CRM fields/actions/permissions বাদ দেওয়া হয়নি।
+- Database schema `37`; migration প্রয়োজন ছিল না।
 
 ## v1.5.35 Permission-Authoritative Roles & Advertisement Rate Guard (historical; rate inputs superseded in v1.5.38)
 

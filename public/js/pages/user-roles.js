@@ -2,6 +2,7 @@
 // Page module: user-roles. Edit this file for the user-roles page UI.
 
 async function renderUserRoles() {
+  if (state.page !== 'user-roles') return;
   setTitle('User Roles');
   const data = await api('/api/user-roles');
   state.bootstrap.userRoles = data.items;

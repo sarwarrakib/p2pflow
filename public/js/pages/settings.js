@@ -116,6 +116,7 @@ function p2pflowActivateSettingsSection(section) {
 }
 
 async function renderSettings() {
+  if (state.page !== 'settings') return;
   setTitle('Settings');
   const data = await api('/api/settings');
   const s = data.settings;
@@ -348,6 +349,7 @@ async function renderSettings() {
       const failedRoutes = Array.isArray(r.failedRoutes) && r.failedRoutes.length ? `<br/><small>Earlier failed routes: ${escapeHtml(r.failedRoutes.map(item => `${item.routeRole || ''}:${item.system || ''}:${item.code || ''}`).join(' | '))}</small>` : '';
       box.innerHTML = `<div class="okbox">${escapeHtml(r.message || 'Test email accepted.')}${r.to ? `<br/><small>Recipient: ${escapeHtml(r.to)}</small>` : ''}${failover}${failedRoutes}</div>`;
     } catch (err) {
+    if (isUiRequestCancelled(err)) return;
       const data = err?.data || {};
       const stage = data.smtpStage ? `SMTP stage: ${data.smtpStage}${data.smtpCode ? ` · code ${data.smtpCode}` : ''}` : '';
       const detail = data.detail ? String(data.detail) : '';

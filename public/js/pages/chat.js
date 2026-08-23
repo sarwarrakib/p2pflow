@@ -76,6 +76,7 @@ function filterChatInboxItems(items=[], query='') {
 }
 
 async function renderChatInbox(options={}) {
+  if (state.page !== 'chat') return;
   setTitle('P2P Message');
   const active = document.activeElement;
   const hadSearchFocus = options.preserveFocus && active?.id === 'chatInboxSearch';

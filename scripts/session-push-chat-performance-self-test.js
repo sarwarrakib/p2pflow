@@ -51,7 +51,11 @@ assert(chat.includes('backgroundNotificationToggleHtml({ compact:true })') && !n
 assert(app.includes('notificationCategoryEnabledOnDevice') && app.includes("subscription.unsubscribe()") && app.includes("method:'DELETE'"), 'notification OFF does not disable sound and remove this device push subscription');
 assert(notifications.includes('data-notification-channel="push"'), 'background notification preferences are missing');
 assert(css.includes('.background-notification-toggle') && css.includes('.chat-new-messages'), 'push/chat UI styles are missing');
-assert(ads.includes('data = await api(adsPageUrl())'), 'Ads initial load is not using the cached fast path');
+assert(
+  ads.includes("data = await api(adsPageUrl(), { signal:renderGuard.signal")
+    && ads.includes("adsPageUrl(force ? { refreshLive: 1, refreshMerchant: 1 } : {})"),
+  'Ads initial load is not using the cached fast path'
+);
 
 const receiver = crypto.createECDH('prime256v1');
 const receiverPublicKey = receiver.generateKeys();

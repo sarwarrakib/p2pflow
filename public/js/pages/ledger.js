@@ -2,6 +2,7 @@
 // Page module: ledger. Edit this file for the ledger page UI.
 
 async function renderLedger() {
+  if (state.page !== 'ledger') return;
   const q = state.ledgerAccountId ? ('?accountId=' + state.ledgerAccountId) : '';
   setTitle('Account Statement');
   const data = await api('/api/ledgers' + q);

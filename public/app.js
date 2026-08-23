@@ -1,4 +1,4 @@
-// v1.5.38: single-click P2PFlow+Binance release verification with inline retry errors and field-vaulted Fund Password storage.
+// v1.5.39: stable-shell navigation, stale-request cancellation, non-destructive order/chat updates, and latest-navigation-wins rendering.
 // v1.5.23: Payment Account serial scope treats each normalized Label, including no Label, as an independent namespace.
 // v1.5.22: Header-only Work Status, chat-only notification master, and coupled sound/push controls.
 // v1.5.20: account-scoped Binance RBAC, visible security recovery setup and individual-only profit accounting.
@@ -87,7 +87,13 @@ const state = {
   currentOrderChatNewCount: 0,
   currentOrderSoftRefreshBusy: false,
   currentOrderChatLastUserScrollAt: 0,
-  currentOrderChatPreserveScrollTop: null
+  currentOrderChatPreserveScrollTop: null,
+  navigationEpoch: 0,
+  navigationController: null,
+  navigationRouteKey: '',
+  navigationPending: false,
+  pageRenderSeq: {},
+  pageRenderControllers: {}
 };
 
 const pages = [
@@ -4047,17 +4053,11 @@ function isHostingChallengeHtml(text) {
 }
 function challengeReloadKey(path) { return `crmApiChallengeReload:${path.split('?')[0]}`; }
 function maybeReloadForChallenge(path, opts={}) {
-  if (opts.autoReloadOnChallenge === false || opts.noAutoReload) return false;
-  if (state.apiChallengeReloading) return true;
-  const key = challengeReloadKey(path);
-  const now = Date.now();
-  const last = Number(sessionStorage.getItem(key) || 0);
-  if (now - last < 45000) return false;
-  sessionStorage.setItem(key, String(now));
-  state.apiChallengeReloading = true;
-  notify('Hosting browser verification interrupted the API. Reloading the page once automatically...', 'warn', 2500);
-  setTimeout(() => window.location.reload(), 900);
-  return true;
+  // Stable-shell rule: authenticated P2PFlow pages must never destroy the current
+  // UI because an upstream host returned a temporary HTML/challenge response.
+  // The API request may retry, but the browser shell stays mounted and the user
+  // can keep scrolling/typing while connectivity recovers.
+  return false;
 }
 function compactApiError(path, status, data, type) {
   if (data && typeof data === 'object') return data.error || data.message || `Request failed (${status})`;
@@ -4110,6 +4110,9 @@ async function api(path, opts={}, attempt=0) {
   delete fetchOpts._authRetried;
   delete fetchOpts.authRetry;
   const method = (fetchOpts.method || 'GET').toUpperCase();
+  const navigationScoped = fetchOpts.navigationScoped !== false;
+  delete fetchOpts.navigationScoped;
+  if (!fetchOpts.signal && method === 'GET' && navigationScoped && state.navigationController?.signal) fetchOpts.signal = state.navigationController.signal;
   const headers = { 'Accept': 'application/json', ...(fetchOpts.headers || {}) };
   const trustedDeviceId = String(localStorage.getItem('p2pflowTrustedDeviceId') || '').trim();
   if (trustedDeviceId) headers['X-P2PFlow-Device-Id'] = trustedDeviceId;
@@ -4119,7 +4122,18 @@ async function api(path, opts={}, attempt=0) {
   try {
     res = await fetch(path, { credentials: 'include', cache: 'no-store', ...fetchOpts, method, headers });
   } catch (err) {
-    if (attempt < 1) { await new Promise(r => setTimeout(r, 700)); return api(path, opts, attempt + 1); }
+    if (err?.name === 'AbortError' || fetchOpts.signal?.aborted) {
+      const cancelled = new Error('UI request cancelled');
+      cancelled.name = 'AbortError';
+      cancelled.code = 'UI_REQUEST_CANCELLED';
+      cancelled.cancelled = true;
+      throw cancelled;
+    }
+    if (attempt < 1) {
+      await new Promise(r => setTimeout(r, 700));
+      if (fetchOpts.signal?.aborted) { const cancelled = new Error('UI request cancelled'); cancelled.name='AbortError'; cancelled.code='UI_REQUEST_CANCELLED'; cancelled.cancelled=true; throw cancelled; }
+      return api(path, { ...opts, signal:fetchOpts.signal, navigationScoped:false }, attempt + 1);
+    }
     const msg = `Network request failed for ${path}: ${err.message || err}. Check server health / hosting connectivity.`;
     if (!silent) notify(msg, 'danger');
     throw new Error(msg);
@@ -4131,12 +4145,13 @@ async function api(path, opts={}, attempt=0) {
   const shouldRetryHtml = htmlResponse && (hostingChallenge || [0, 403, 429, 500, 502, 503, 504].includes(res.status));
   if ((!res.ok || htmlResponse) && attempt < 2 && shouldRetryHtml) {
     await new Promise(r => setTimeout(r, hostingChallenge ? 1300 + attempt * 1400 : 700 + attempt * 800));
-    return api(path, opts, attempt + 1);
+    if (fetchOpts.signal?.aborted) { const cancelled = new Error('UI request cancelled'); cancelled.name='AbortError'; cancelled.code='UI_REQUEST_CANCELLED'; cancelled.cancelled=true; throw cancelled; }
+    return api(path, { ...opts, signal:fetchOpts.signal, navigationScoped:false }, attempt + 1);
   }
   if (!res.ok || htmlResponse) {
     if (res.status === 401 && path !== '/api/login' && path !== '/api/me' && authRetryAllowed && !authRetried) {
       const sessionStillValid = await confirmSessionBeforeLogout();
-      if (sessionStillValid) return api(path, { ...opts, _authRetried:true }, 0);
+      if (sessionStillValid) return api(path, { ...opts, _authRetried:true, signal:fetchOpts.signal, navigationScoped:false }, 0);
     }
     if (res.status === 401 && path !== '/api/login') redirectToLoginPage();
     const msg = compactApiError(path, res.status, data, type);
@@ -4611,6 +4626,10 @@ function stopActivityTracking(sendEnd=true) {
   if (sendEnd) sendActivityEnd('tracking_stopped');
 }
 
+window.addEventListener('unhandledrejection', event => {
+  if (isUiRequestCancelled(event.reason)) event.preventDefault();
+});
+
 function startEvents() {
   if (state.evt) state.evt.close();
   state.evt = new EventSource('/api/events', { withCredentials: true });
@@ -4791,8 +4810,7 @@ async function refreshCurrentOrderStateNonDestructive() {
     const previous = state.currentOrder || {};
     state.currentOrder = { ...previous, ...updated };
     mergeCurrentOrderChatItems(updated.chats || [], { forceScroll:false });
-    updateSelectedPaymentAccountSlot(state.currentOrder);
-    setTitle(binanceDisplayStatus(state.currentOrder), orderCounterpartyNickname(state.currentOrder));
+    patchCurrentOrderDynamicFields(previous, state.currentOrder);
   } catch (_) {
     // A background state refresh must never disturb the operator's current viewport.
   } finally {
@@ -4819,9 +4837,17 @@ async function smoothRefreshCurrent() {
   if (!state.user) return;
   if (modalOpen()) { state.pendingRefresh = true; return; }
   if (state.refreshing) { state.pendingRefresh = true; return; }
-  // While an order is open, do not re-render the whole page on every SSE event.
-  // Chat/detail background sync updates only the changed panels to keep the UI smooth like Binance.
+  // Stable-shell pages own their realtime data loops. Never replace their static
+  // structure because of a generic SSE/database event.
   if (state.page === 'orders' && state.currentOrderId) return;
+  if (state.page === 'orders' && !state.currentOrderId && typeof renderOrders === 'function') {
+    state.refreshing = true;
+    try { await renderOrders({ background:true }); }
+    catch (error) { if (!isUiRequestCancelled(error)) console.warn(error); }
+    finally { state.refreshing = false; }
+    return;
+  }
+  if (['settings','p2p-market','chat','ads'].includes(state.page)) return;
   const content = $('#content');
   const scrollY = window.scrollY;
   state.refreshing = true;
@@ -4841,6 +4867,83 @@ async function smoothRefreshCurrent() {
 function visiblePages() { return pages.filter(p => hasPerm(PAGE_PERMISSIONS[p[0]]) && (p[0] !== 'system-update' || state.user.isOwner === true)); }
 function canPage(page) { return visiblePages().some(p => p[0] === page); }
 
+function stableRouteKey(route = {}) {
+  return [String(route.page || ''), Number(route.orderId || 0), Number(route.ledgerAccountId || 0)].join(':');
+}
+
+function isUiRequestCancelled(error) {
+  return Boolean(error && (error.cancelled === true || error.name === 'AbortError' || error.code === 'UI_REQUEST_CANCELLED'));
+}
+
+function setRoutePending(pending, label='Loading data…') {
+  state.navigationPending = Boolean(pending);
+  document.body.classList.toggle('route-pending', Boolean(pending));
+  const content = $('#content');
+  if (content) content.setAttribute('aria-busy', pending ? 'true' : 'false');
+  const progress = $('#routeProgress');
+  if (progress) {
+    progress.setAttribute('aria-hidden', pending ? 'false' : 'true');
+    const text = progress.querySelector('small');
+    if (text) text.textContent = label || 'Loading data…';
+  }
+}
+
+function abortPageRenderGuards(reason='navigation_changed') {
+  const controllers = state.pageRenderControllers || {};
+  Object.values(controllers).forEach(controller => {
+    try { controller?.abort(reason); } catch (_) {}
+  });
+  state.pageRenderControllers = {};
+}
+
+function beginPageRenderGuard(key='page') {
+  const name = String(key || 'page');
+  const existing = state.pageRenderControllers?.[name];
+  try { existing?.abort('superseded'); } catch (_) {}
+  const controller = new AbortController();
+  const seq = Number(state.pageRenderSeq?.[name] || 0) + 1;
+  state.pageRenderSeq = { ...(state.pageRenderSeq || {}), [name]: seq };
+  state.pageRenderControllers = { ...(state.pageRenderControllers || {}), [name]: controller };
+  return { key:name, seq, controller, signal:controller.signal };
+}
+
+function pageRenderGuardCurrent(guard) {
+  if (!guard || guard.signal?.aborted) return false;
+  return Number(state.pageRenderSeq?.[guard.key] || 0) === Number(guard.seq || 0)
+    && state.pageRenderControllers?.[guard.key] === guard.controller;
+}
+
+function beginNavigationScope(route = {}) {
+  try { state.navigationController?.abort('navigation_changed'); } catch (_) {}
+  abortPageRenderGuards('navigation_changed');
+  const controller = new AbortController();
+  const scope = {
+    epoch: Number(state.navigationEpoch || 0) + 1,
+    routeKey: stableRouteKey(route),
+    controller,
+    signal: controller.signal
+  };
+  state.navigationEpoch = scope.epoch;
+  state.navigationController = controller;
+  state.navigationRouteKey = scope.routeKey;
+  setRoutePending(true);
+  return scope;
+}
+
+function navigationScopeCurrent(scope) {
+  return Boolean(scope && !scope.signal?.aborted
+    && Number(scope.epoch) === Number(state.navigationEpoch)
+    && String(scope.routeKey) === String(state.navigationRouteKey));
+}
+
+function finishNavigationScope(scope) {
+  if (!navigationScopeCurrent(scope)) return;
+  setRoutePending(false);
+}
+
+function stableLoadingShell(title='Loading') {
+  return `<div class="stable-data-shell" data-stable-loading="1"><div class="stable-data-shell-head"><b>${escapeHtml(title)}</b><span>Connecting…</span></div><div class="stable-data-lines"><i></i><i></i><i></i></div></div>`;
+}
 
 function parseHashRoute() {
   const raw = String(location.hash || '').replace(/^#\/?/, '');
@@ -4861,15 +4964,24 @@ function routeHash(page, opts={}) {
 
 function setRoute(page, opts={}) {
   const hash = routeHash(page, opts);
-  if (location.hash === hash) return routeFromLocation(opts.showLoading !== false);
+  if (location.hash === hash) {
+    // Re-clicking the current destination must not start another full async render.
+    if (opts.force === true) return routeFromLocation(opts.showLoading !== false);
+    return Promise.resolve();
+  }
   location.hash = hash;
+  return Promise.resolve();
 }
 
 async function routeFromLocation(showLoading=true) {
   setMobileNavigation(false, { restoreFocus: false });
-  if (showLoading !== false) window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
-  const route = parseHashRoute();
-  state.page = canPage(route.page) ? route.page : visiblePages()[0][0];
+  const parsed = parseHashRoute();
+  const route = {
+    ...parsed,
+    page: canPage(parsed.page) ? parsed.page : visiblePages()[0][0]
+  };
+  const scope = beginNavigationScope(route);
+  state.page = route.page;
   state.currentOrderId = route.orderId;
   state.ledgerAccountId = route.ledgerAccountId;
   document.body.classList.toggle('p2p-market-active', state.page === 'p2p-market');
@@ -4884,10 +4996,25 @@ async function routeFromLocation(showLoading=true) {
   markActivityInteraction('navigation', true);
   scheduleActivityHeartbeat(200);
   renderNav();
-  if (state.page === 'orders' && state.currentOrderId) return loadOrderDetail(state.currentOrderId, showLoading, true);
-  stopChatAutoSync();
-  stopOrderDetailAutoSync();
-  return renderPage(showLoading);
+  try {
+    if (state.page === 'orders' && state.currentOrderId) {
+      await loadOrderDetail(state.currentOrderId, showLoading, true, scope);
+    } else {
+      stopChatAutoSync();
+      stopOrderDetailAutoSync();
+      await renderPage(showLoading, scope);
+    }
+    if (navigationScopeCurrent(scope) && showLoading !== false) window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
+  } catch (error) {
+    if (!isUiRequestCancelled(error) && navigationScopeCurrent(scope)) {
+      const content = $('#content');
+      const hasStableView = Boolean(content && content.children.length && !content.querySelector('[data-stable-loading="1"]'));
+      notify(error.message || 'Data could not be loaded. The current screen was kept open.', 'warn', 5000);
+      if (!hasStableView && content) content.innerHTML = `<div class="card stable-data-error"><b>Data temporarily unavailable</b><span>${escapeHtml(error.message || 'Please try again.')}</span></div>`;
+    }
+  } finally {
+    finishNavigationScope(scope);
+  }
 }
 
 
@@ -5002,7 +5129,7 @@ function renderNav() {
   // legacy flat menu while this marker is absent, the browser/proxy is serving
   // stale frontend JavaScript rather than the active release.
   nav.dataset.navigationModel = 'grouped-control-center';
-  nav.dataset.uiRelease = '1.5.38';
+  nav.dataset.uiRelease = '1.5.39';
   nav.innerHTML = '';
   const visible = visiblePages();
   const visibleIds = new Set(visible.map(([id]) => id));
@@ -5129,7 +5256,7 @@ function setTitle(title, subtitle='') {
   applyLanguage(document.querySelector('.topbar') || document);
 }
 
-async function renderPage(showLoading=true) {
+async function renderPage(showLoading=true, navigationScope=null) {
   if (state.page !== 'p2p-market' && state.p2pMarketRefreshTimer) {
     clearInterval(state.p2pMarketRefreshTimer);
     state.p2pMarketRefreshTimer = null;
@@ -5143,7 +5270,8 @@ async function renderPage(showLoading=true) {
     state.accountingRefreshTimer = null;
     state.accountingLoading = false;
   }
-  if (showLoading) $('#content').innerHTML = '<div class="card skeleton">Loading...</div>';
+  const content = $('#content');
+  if (showLoading && content && !content.children.length) content.innerHTML = stableLoadingShell(state.page === 'orders' ? 'Orders' : (pages.find(p => p[0] === state.page)?.[1] || 'Loading'));
   try {
     if (state.page === 'dashboard') await renderDashboard();
     else if (state.page === 'p2p-market') await renderP2pMarket();
@@ -5173,16 +5301,21 @@ async function renderPage(showLoading=true) {
     else if (state.page === 'security') await renderSecurity();
     else if (state.page === 'notifications') await renderNotifications();
     else if (state.page === 'audit') await renderAudit();
+    if (navigationScope && !navigationScopeCurrent(navigationScope)) return;
     applyLanguage(document.querySelector('#content') || document);
     if (showLoading !== false && usesMobileNavigation()) {
       requestAnimationFrame(() => $('#content')?.focus({ preventScroll: true }));
     }
   } catch (err) {
-    const body = err.autoReloadScheduled
-      ? '<div class="notice warn"><b>Hosting verification detected.</b><br/>The page is reloading automatically. Please wait...</div>'
-      : `<div class="error">${escapeHtml(err.message)}</div>${err.hostingChallenge ? '<div class="mt-sm"><button id="forceReloadBtn">Reload Now</button> <button class="secondary" data-route="health">Open Health Check</button></div>' : ''}`;
-    $('#content').innerHTML = `<div class="card">${body}</div>`;
-    if ($('#forceReloadBtn')) $('#forceReloadBtn').onclick = () => window.location.reload();
+    if (isUiRequestCancelled(err) || (navigationScope && !navigationScopeCurrent(navigationScope))) return;
+    const currentContent = $('#content');
+    const hasStableView = Boolean(currentContent && currentContent.children.length && !currentContent.querySelector('[data-stable-loading="1"]'));
+    if (hasStableView) {
+      notify(err.hostingChallenge ? 'Connection verification interrupted this data request. The current screen was kept open.' : (err.message || 'Data refresh failed. The current screen was kept open.'), 'warn', 5000);
+      return;
+    }
+    const body = `<div class="error">${escapeHtml(err.message)}</div>${err.hostingChallenge ? '<div class="mt-sm"><button class="secondary" data-route="health">Open Health Check</button></div>' : ''}`;
+    if (currentContent) currentContent.innerHTML = `<div class="card stable-data-error">${body}</div>`;
     $$('[data-route]').forEach(el => el.onclick = () => setRoute(el.dataset.route));
     applyLanguage(document.querySelector('#content') || document);
   }
@@ -5569,6 +5702,101 @@ function finalActionButtons(o, finalAction, idPrefix='') {
   return '';
 }
 
+function bindCurrentOrderDynamicActionButtons(order) {
+  const o = order || state.currentOrder;
+  if (!o || state.page !== 'orders' || Number(state.currentOrderId || 0) !== Number(o.id || 0)) return;
+  const finalAction = o.orderSource === 'offline' ? 'complete' : (o.type === 'BUY' ? 'paid_mark' : 'release');
+  ['additionalKycVerifyBtn','mobileTopAdditionalKycVerifyBtn','chatTopAdditionalKycVerifyBtn'].forEach(id => {
+    const button = $('#' + id);
+    if (button) button.onclick = () => verifyOrderAdditionalKyc(o, button);
+  });
+  ['CoAgentDoneBtn','mobileTopCoAgentDoneBtn','chatTopCoAgentDoneBtn'].forEach(id => {
+    const button = $('#' + id);
+    if (button) button.onclick = () => openCoAgentDoneModal(o, currentUserOrderAssignment(o));
+  });
+  ['finalActionBtn','mobileTopFinalActionBtn','chatTopFinalActionBtn'].forEach(id => {
+    const button = $('#' + id);
+    if (button && !button.disabled) button.onclick = () => openOrderFinalActionFlow(o, finalAction);
+  });
+  ['quickReleaseBtn','mobileTopQuickReleaseBtn','chatTopQuickReleaseBtn'].forEach(id => {
+    const button = $('#' + id);
+    if (button) button.onclick = () => openOrderFinalActionFlow(o, 'quick_release');
+  });
+  $$('[data-update-split]').forEach(button => button.onclick = () => openUpdateSplitModal(o, Number(button.dataset.updateSplit)));
+  $$('[data-delete-split]').forEach(button => button.onclick = () => deletePaymentSplit(o, Number(button.dataset.deleteSplit)));
+  $$('[data-complete-agent]').forEach(button => button.onclick = () => openCompleteUserModal(o, Number(button.dataset.completeAgent)));
+}
+
+function patchCurrentOrderDynamicFields(previousOrder = {}, updatedOrder = {}) {
+  const o = updatedOrder || {};
+  if (!o.id || state.page !== 'orders' || Number(state.currentOrderId || 0) !== Number(o.id || 0)) return false;
+  const assetSummary = orderAssetSummaryView(o);
+  const displayedAssetQuantity = o.type === 'BUY' ? assetSummary.receiveQuantity : assetSummary.releaseQuantity;
+  const viewerSummary = orderViewerSummary(o);
+  const viewerFiatAmount = viewerSummary.assignedAmount;
+  const viewerDisplayedAssetQuantity = viewerAssetQuantity(o, displayedAssetQuantity);
+  const flowText = o.type === 'BUY'
+    ? `Pay ${money(viewerFiatAmount)} and receive ${assetFmt(viewerDisplayedAssetQuantity, o.asset)} after fee`
+    : `Release ${assetFmt(viewerDisplayedAssetQuantity, o.asset)} and receive ${money(viewerFiatAmount)}`;
+  const statusText = binanceDisplayStatus(o);
+  setTitle(statusText, orderCounterpartyNickname(o));
+
+  const statusLine = $('#orderMobileStatusLine');
+  if (statusLine) statusLine.innerHTML = `${escapeHtml(statusText)}${isFulfilledOrder(o) ? '' : ` · ${orderCountdownHtml(o, 'strong')}`}`;
+  const mobileAmount = $('#orderMobileAmountValue');
+  if (mobileAmount) mobileAmount.textContent = money(viewerFiatAmount);
+  const mobileRemaining = $('#orderMobileRemainingValue');
+  if (mobileRemaining) mobileRemaining.textContent = money(viewerSummary.viewerRemaining);
+  const mobileActual = $('#orderMobileActualValue');
+  if (mobileActual) mobileActual.textContent = `${o.type === 'BUY' ? 'Paid so far' : 'Received so far'}: ${money(viewerSummary.viewerActual)}`;
+  const flow = $('#orderHeroFlowText');
+  if (flow) flow.textContent = flowText;
+  const statusBadge = $('#orderHeroStatusBadge');
+  if (statusBadge) statusBadge.innerHTML = badge(statusText, isCancelledOrder(o) ? 'danger' : statusText === 'PAID' ? 'warn' : statusText === 'COMPLETED' ? 'ok' : 'blue');
+  const heroAmount = $('#orderHeroPaymentAmount');
+  if (heroAmount) heroAmount.textContent = money(viewerFiatAmount);
+  const heroActual = $('#orderHeroActualAmount');
+  if (heroActual) heroActual.textContent = money(viewerSummary.viewerActual);
+  const heroRemaining = $('#orderHeroRemainingAmount');
+  if (heroRemaining) heroRemaining.textContent = money(viewerSummary.viewerRemaining);
+  const heroMeta = $('#orderHeroPaymentMeta');
+  if (heroMeta) heroMeta.textContent = `${o.type === 'BUY' ? `Net ${assetFmt(assetSummary.receiveQuantity, o.asset)} · Total ${assetFmt(assetSummary.totalQuantity, o.asset)} · Fee ${assetFeeDisplay(o, assetSummary)}` : `Release ${assetFmt(assetSummary.releaseQuantity, o.asset)} · Total ${assetFmt(assetSummary.totalQuantity, o.asset)} · Fee ${assetFeeDisplay(o, assetSummary)}`} · ${o.fiatUnit || 'BDT'}`;
+
+  const verificationSlot = $('#orderAdditionalVerificationSlot');
+  if (verificationSlot) verificationSlot.innerHTML = additionalVerificationNoticeHtml(o);
+  updateSelectedPaymentAccountSlot(o);
+  const paymentDetails = $('#orderCustomerPaymentDetailsSlot');
+  if (paymentDetails) paymentDetails.innerHTML = customerPaymentDetailsCard(o);
+  const splitsCard = $('#orderSplitsCard');
+  if (splitsCard) splitsCard.innerHTML = `<div class="section-head"><h3>Payment Splits</h3><span>${o.paymentSplits.length} ${o.paymentSplits.length === 1 ? 'entry' : 'entries'}</span></div>${o.paymentSplits.length ? `<div class="split-list">${o.paymentSplits.map(renderSplit).join('')}</div>` : '<div class="empty-state">No split yet. Add payment split, select wallet/account, then update actual amount and proof.</div>'}`;
+  const assignedCard = $('#orderAssignedCard');
+  if (assignedCard) assignedCard.innerHTML = `<div class="section-head"><h3>Assigned Users</h3><span>Lead + co-users progress</span></div>${table(['User','Role','Assigned','Actual','Direction','Status','Action'], (o.assignments || []).map(a => [a.agent?.name || ('#'+a.agentId), a.role, money(a.assignedAmount), money(a.actualAmount || 0), a.direction, badge(a.status, statusClass(a.status)), agentTaskAction(a, o)]))}<div class="sub mt-sm">Each assigned user can complete their own part. If a co-user pays less, the short amount stays with the lead user automatically.</div>`;
+  const approvals = $('#orderApprovalsSlot');
+  if (approvals) approvals.innerHTML = renderOrderApprovals(o);
+  const statements = $('#orderStatementFeed');
+  if (statements) statements.innerHTML = statementFeed(o.ledgers);
+
+  const finalAction = o.orderSource === 'offline' ? 'complete' : (o.type === 'BUY' ? 'paid_mark' : 'release');
+  const mobileActions = $('#orderMobileTopActions');
+  if (mobileActions) mobileActions.innerHTML = finalActionButtons(o, finalAction, 'mobileTop');
+  const chatActions = $('#orderChatTopActions');
+  if (chatActions) chatActions.innerHTML = finalActionButtons(o, finalAction, 'chatTop');
+  bindCurrentOrderDynamicActionButtons(o);
+  startCountdownTimers();
+  applyLanguage(document.querySelector('#content') || document);
+  return true;
+}
+
+function applyUpdatedCurrentOrder(updatedOrder = {}, fallbackOrderId = 0) {
+  const orderId = Number(updatedOrder?.id || fallbackOrderId || 0);
+  if (!orderId || state.page !== 'orders' || Number(state.currentOrderId || 0) !== orderId) return false;
+  const previous = state.currentOrder || {};
+  const merged = { ...previous, ...(updatedOrder || {}) };
+  state.currentOrder = merged;
+  if (Array.isArray(updatedOrder?.chats)) mergeCurrentOrderChatItems(updatedOrder.chats, { forceScroll:false });
+  return patchCurrentOrderDynamicFields(previous, merged);
+}
+
 function setOrderInternalNotePanel(open=false) {
   const panel = $('#orderInternalNotePanel');
   const button = $('#chatInternalNoteRailBtn');
@@ -5675,9 +5903,9 @@ async function refreshOrdersFromButton(btn) {
   try {
     await renderOrders({ manual: true });
   } catch (err) {
-    if (err.autoReloadScheduled) return;
+    if (isUiRequestCancelled(err)) return;
     if (err.hostingChallenge) {
-      notify('Hosting verification blocked the Orders API. Reloading once or wait a few seconds and try again.', 'warn');
+      notify('Hosting verification interrupted the Orders request. The current screen was kept open; try again shortly.', 'warn');
       return;
     }
     notify(err.message || 'Could not refresh orders.', 'danger');
@@ -5698,27 +5926,39 @@ async function verifyOrderAdditionalKyc(order, button=null) {
       method:'POST',
       body: JSON.stringify({ binanceOrderNumber: order.externalOrderNo || order.orderNo })
     });
-    state.currentOrder = updated;
     notify('Additional Verification completed.', 'ok');
-    await loadOrderDetail(order.id, false, true);
+    applyUpdatedCurrentOrder(updated, order.id);
   } catch (err) {
     notify(err.message || 'Additional Verification failed.', 'danger');
     if (button) { button.disabled = false; button.textContent = original || 'Verified'; }
   }
 }
 
-async function loadOrderDetail(id, showLoading=true, fromRoute=false) {
+async function loadOrderDetail(id, showLoading=true, fromRoute=false, navigationScope=null) {
+  const numericId = Number(id || 0);
+  if (!numericId) return null;
+  if (fromRoute && (state.page !== 'orders' || Number(state.currentOrderId || 0) !== numericId)) return null;
+  if (navigationScope && !navigationScopeCurrent(navigationScope)) return null;
+  const renderGuard = beginPageRenderGuard('order-detail');
   const previousOrderId = Number(state.currentOrderId || 0);
   const previousChatBox = $('#chatBox');
   const preserveExistingChatScroll = previousOrderId === Number(id) && previousChatBox && !chatBoxNearBottom(previousChatBox);
   state.currentOrderChatPreserveScrollTop = preserveExistingChatScroll ? Number(previousChatBox.scrollTop || 0) : null;
-  state.currentOrderId = id;
+  state.currentOrderId = numericId;
   const restoreMobileChat = document.body.classList.contains('order-chat-open');
   const restoreInternalNotes = $('#orderInternalNotePanel')?.classList.contains('is-open') || false;
   document.body.classList.remove('order-chat-open');
-  if (!fromRoute && location.hash !== routeHash('orders', { orderId: id })) history.replaceState(null, '', routeHash('orders', { orderId: id }));
-  if (showLoading) $('#content').innerHTML = '<div class="card">Loading order...</div>';
-  let o = await api('/api/orders/' + id);
+  if (!fromRoute && location.hash !== routeHash('orders', { orderId: numericId })) history.replaceState(null, '', routeHash('orders', { orderId: numericId }));
+  const content = $('#content');
+  if (showLoading && content && !content.children.length) content.innerHTML = stableLoadingShell('Order');
+  let o;
+  try {
+    o = await api('/api/orders/' + numericId, { signal:renderGuard.signal, navigationScoped:false, noAutoReload:true });
+  } catch (error) {
+    if (isUiRequestCancelled(error)) return null;
+    throw error;
+  }
+  if (!pageRenderGuardCurrent(renderGuard) || state.page !== 'orders' || Number(state.currentOrderId || 0) !== numericId || (navigationScope && !navigationScopeCurrent(navigationScope))) return null;
   state.currentOrder = o;
   initializeCurrentOrderChatState(o.chats || []);
   const direction = o.type === 'BUY' ? 'send' : 'receive';
@@ -5739,6 +5979,7 @@ async function loadOrderDetail(id, showLoading=true, fromRoute=false) {
   const mobileTopActions = finalActionButtons(o, finalAction, 'mobileTop');
   const chatTopActions = finalActionButtons(o, finalAction, 'chatTop');
   setTitle(binanceDisplayStatus(o), mobileCounterpartyNickname);
+  if (!pageRenderGuardCurrent(renderGuard) || state.page !== 'orders' || Number(state.currentOrderId || 0) !== numericId || (navigationScope && !navigationScopeCurrent(navigationScope))) return null;
   $('#content').innerHTML = `
     <div class="order-page">
       <div class="order-floating-actions" id="orderFloatingActions">
@@ -5759,7 +6000,7 @@ async function loadOrderDetail(id, showLoading=true, fromRoute=false) {
           <div class="order-mobile-avatar">${escapeHtml(String(mobileCounterpartyNickname || 'C').charAt(0).toUpperCase())}</div>
           <div class="order-mobile-unified-identity">
             <b>${escapeHtml(mobileCounterpartyNickname)}</b>
-            <span>${escapeHtml(binanceDisplayStatus(o))}${isFulfilledOrder(o) ? '' : ` · ${orderCountdownHtml(o, 'strong')}`}</span>
+            <span id="orderMobileStatusLine">${escapeHtml(binanceDisplayStatus(o))}${isFulfilledOrder(o) ? '' : ` · ${orderCountdownHtml(o, 'strong')}`}</span>
           </div>
           <button class="order-mobile-chat-btn" id="mobileOrderChatBtn" type="button" aria-controls="orderChatPanel" aria-expanded="false" aria-label="Open chat" title="Chat">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h16v12H8l-4 4V4zm4 5h8M8 12h5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -5777,10 +6018,10 @@ async function loadOrderDetail(id, showLoading=true, fromRoute=false) {
           <span><small>Created</small><b>${fmt(o.createdAt)}</b></span>
         </div>
         <div class="order-mobile-amount-strip">
-          <div><span>${escapeHtml(mobileAmountLabel)}</span><b>${money(viewerFiatAmount)}</b>${viewerSummary.isScoped ? `<small>${escapeHtml(viewerSummary.assignmentRole === 'co_agent' ? 'Co-agent allocation' : 'Lead allocation')}</small>` : ''}</div>
-          <div><span>${escapeHtml(mobileRemainingLabel)}</span><b>${money(viewerSummary.viewerRemaining)}</b><small>${o.type === 'BUY' ? 'Paid so far' : 'Received so far'}: ${money(viewerSummary.viewerActual)}</small></div>
+          <div><span>${escapeHtml(mobileAmountLabel)}</span><b id="orderMobileAmountValue">${money(viewerFiatAmount)}</b>${viewerSummary.isScoped ? `<small>${escapeHtml(viewerSummary.assignmentRole === 'co_agent' ? 'Co-agent allocation' : 'Lead allocation')}</small>` : ''}</div>
+          <div><span>${escapeHtml(mobileRemainingLabel)}</span><b id="orderMobileRemainingValue">${money(viewerSummary.viewerRemaining)}</b><small id="orderMobileActualValue">${o.type === 'BUY' ? 'Paid so far' : 'Received so far'}: ${money(viewerSummary.viewerActual)}</small></div>
         </div>
-        <div class="order-mobile-top-actions">${mobileTopActions}</div>
+        <div class="order-mobile-top-actions" id="orderMobileTopActions">${mobileTopActions}</div>
       </header>
       <section class="order-hero-panel">
         <div class="order-hero-main">
@@ -5788,11 +6029,11 @@ async function loadOrderDetail(id, showLoading=true, fromRoute=false) {
             ${badge(o.orderSource === 'offline' ? 'OFFLINE ORDER' : 'BINANCE P2P', o.orderSource === 'offline' ? 'warn' : 'blue')}
             ${badge(o.type, o.type === 'BUY' ? 'blue' : 'ok')}
             <span class="method-badge">${escapeHtml(displayPaymentMethodName(o) || 'No method')}</span>
-            ${badge(binanceDisplayStatus(o), isCancelledOrder(o) ? 'danger' : binanceDisplayStatus(o) === 'PAID' ? 'warn' : binanceDisplayStatus(o) === 'COMPLETED' ? 'ok' : 'blue')}
+            <span id="orderHeroStatusBadge">${badge(binanceDisplayStatus(o), isCancelledOrder(o) ? 'danger' : binanceDisplayStatus(o) === 'PAID' ? 'warn' : binanceDisplayStatus(o) === 'COMPLETED' ? 'ok' : 'blue')}</span>
           </div>
           <h2 class="order-hero-desktop-number">${escapeHtml(o.orderNo)}</h2>
           <h2 class="order-hero-mobile-name">${escapeHtml(mobileCounterpartyRealName)}</h2>
-          <p>${escapeHtml(flowText)}</p>
+          <p id="orderHeroFlowText">${escapeHtml(flowText)}</p>
           ${orderQuantityBreakdownHtml(o, assetSummary)}
           <div class="order-hero-pills">
             <span>Order No. <b>${escapeHtml(o.orderNo || o.externalOrderNo || '-')}</b></span>
@@ -5804,27 +6045,27 @@ async function loadOrderDetail(id, showLoading=true, fromRoute=false) {
         </div>
         <div class="order-hero-amount-card">
           <span>Payment Summary</span>
-          <b>${money(viewerFiatAmount)}</b>
-          <small>${o.type === 'BUY' ? `Net ${assetFmt(assetSummary.receiveQuantity, o.asset)} · Total ${assetFmt(assetSummary.totalQuantity, o.asset)} · Fee ${assetFeeDisplay(o, assetSummary)}` : `Release ${assetFmt(assetSummary.releaseQuantity, o.asset)} · Total ${assetFmt(assetSummary.totalQuantity, o.asset)} · Fee ${assetFeeDisplay(o, assetSummary)}`} · ${escapeHtml(o.fiatUnit || 'BDT')}</small>
+          <b id="orderHeroPaymentAmount">${money(viewerFiatAmount)}</b>
+          <small id="orderHeroPaymentMeta">${o.type === 'BUY' ? `Net ${assetFmt(assetSummary.receiveQuantity, o.asset)} · Total ${assetFmt(assetSummary.totalQuantity, o.asset)} · Fee ${assetFeeDisplay(o, assetSummary)}` : `Release ${assetFmt(assetSummary.releaseQuantity, o.asset)} · Total ${assetFmt(assetSummary.totalQuantity, o.asset)} · Fee ${assetFeeDisplay(o, assetSummary)}`} · ${escapeHtml(o.fiatUnit || 'BDT')}</small>
           <div class="order-hero-summary-grid">
-            <div><span>${o.type === 'BUY' ? 'Paid So Far' : 'Received So Far'}</span><b>${money(viewerSummary.viewerActual)}</b></div>
-            <div><span>Remaining</span><b>${money(viewerSummary.viewerRemaining)}</b></div>
+            <div><span>${o.type === 'BUY' ? 'Paid So Far' : 'Received So Far'}</span><b id="orderHeroActualAmount">${money(viewerSummary.viewerActual)}</b></div>
+            <div><span>Remaining</span><b id="orderHeroRemainingAmount">${money(viewerSummary.viewerRemaining)}</b></div>
           </div>
         </div>
       </section>
 
       <div class="order-workspace order-desktop-body mt">
         <div class="order-main-stack order-detail-stack">
-          ${additionalVerificationNoticeHtml(o)}
+          <div id="orderAdditionalVerificationSlot">${additionalVerificationNoticeHtml(o)}</div>
           <div id="selectedPaymentAccountSlot">${selectedPaymentAccountHtml(o)}</div>
-          <div class="order-payment-immediate">${customerPaymentDetailsCard(o)}</div>
+          <div class="order-payment-immediate" id="orderCustomerPaymentDetailsSlot">${customerPaymentDetailsCard(o)}</div>
 
-          <div class="card order-card splits-card">
+          <div class="card order-card splits-card" id="orderSplitsCard">
             <div class="section-head"><h3>Payment Splits</h3><span>${o.paymentSplits.length} ${o.paymentSplits.length === 1 ? 'entry' : 'entries'}</span></div>
             ${o.paymentSplits.length ? `<div class="split-list">${o.paymentSplits.map(renderSplit).join('')}</div>` : '<div class="empty-state">No split yet. Add payment split, select wallet/account, then update actual amount and proof.</div>'}
           </div>
 
-          <div class="card order-card assigned-card">
+          <div class="card order-card assigned-card" id="orderAssignedCard">
             <div class="section-head"><h3>Assigned Users</h3><span>Lead + co-users progress</span></div>
             ${table(['User','Role','Assigned','Actual','Direction','Status','Action'], o.assignments.map(a => [
               a.agent?.name || ('#'+a.agentId),
@@ -5838,7 +6079,7 @@ async function loadOrderDetail(id, showLoading=true, fromRoute=false) {
             <div class="sub mt-sm">Each assigned user can complete their own part. If a co-user pays less, the short amount stays with the lead user automatically.</div>
           </div>
 
-          ${renderOrderApprovals(o)}
+          <div id="orderApprovalsSlot">${renderOrderApprovals(o)}</div>
         </div>
 
         <aside class="order-side-stack">
@@ -5851,7 +6092,7 @@ async function loadOrderDetail(id, showLoading=true, fromRoute=false) {
               </div>
               ${isRealBinanceOrder(o) ? '<button class="order-chat-header-icon" id="chatP2pInfoBtn" type="button" aria-label="Open P2P information">ⓘ</button>' : '<span class="order-chat-header-spacer"></span>'}
             </header>
-            <div class="order-chat-primary-actionbar">${chatTopActions}</div>
+            <div class="order-chat-primary-actionbar" id="orderChatTopActions">${chatTopActions}</div>
 
             <div class="order-chat-panel-content">
               ${hasPerm('accounts.view') && hasPerm('orders.split') ? '<button class="order-chat-rail-btn left" id="chatPaymentSplitRailBtn" type="button" aria-label="Open payment split">≡</button>' : ''}
@@ -5912,7 +6153,7 @@ async function loadOrderDetail(id, showLoading=true, fromRoute=false) {
 
           <div class="card order-card statement-feed-card">
             <div class="section-head"><h3>Recent Statement Entries</h3><span>Wallet movement</span></div>
-            ${statementFeed(o.ledgers)}
+            <div id="orderStatementFeed">${statementFeed(o.ledgers)}</div>
           </div>
         </aside>
       </div>
@@ -5988,6 +6229,7 @@ async function loadOrderDetail(id, showLoading=true, fromRoute=false) {
     const button = $('#' + id);
     if (button) button.onclick = () => openOrderFinalActionFlow(o, 'quick_release');
   });
+  bindCurrentOrderDynamicActionButtons(o);
   ['p2pInfoBtn','mobileP2pInfoBtn','chatP2pInfoBtn'].forEach(id => {
     const button = $('#' + id);
     if (button) button.onclick = () => openP2pInfoModal(o);
@@ -6281,7 +6523,8 @@ async function loadOrderDetail(id, showLoading=true, fromRoute=false) {
   $$('[data-delete-split]').forEach(b => b.onclick = () => deletePaymentSplit(o, Number(b.dataset.deleteSplit)));
   $$('[data-complete-agent]').forEach(b => b.onclick = () => openCompleteUserModal(o, Number(b.dataset.completeAgent)));
   applyLanguage(document.querySelector('#content') || document);
-  if (isAssignmentScopedClient()) await api(`/api/orders/${o.id}/heartbeat`, { method:'POST', body:'{}' }).catch(()=>{});
+  if (state.page === 'orders' && Number(state.currentOrderId || 0) === numericId && isAssignmentScopedClient()) await api(`/api/orders/${o.id}/heartbeat`, { method:'POST', body:'{}', silent:true }).catch(()=>{});
+  return o;
 }
 
 
@@ -7285,7 +7528,7 @@ function openCoUserModal(order) {
       const updated = await api(`/api/orders/${order.id}/request-coagent`, { method:'POST', body: JSON.stringify(formObj(e.target)) });
       notify('Co-user request processed.', 'ok');
       closeModal();
-      await loadOrderDetail(updated.id || order.id, false, true);
+      applyUpdatedCurrentOrder(updated, order.id);
     } catch (err) { setFormMessage('#coUserMessage', err.message || 'Co-user request failed', 'danger'); }
   };
 }
@@ -7304,7 +7547,7 @@ function openLeaveModal(order) {
       const updated = await api(`/api/orders/${order.id}/leave`, { method:'POST', body: JSON.stringify(formObj(e.target)) });
       notify('Order left/reassigned.', 'ok');
       closeModal();
-      await loadOrderDetail(updated.id || order.id, false, true);
+      applyUpdatedCurrentOrder(updated, order.id);
     } catch (err) { setFormMessage('#leaveMessage', err.message || 'Leave failed', 'danger'); }
   };
 }
@@ -7327,7 +7570,7 @@ function openAssignModal(order) {
       const updated = await api(`/api/orders/${order.id}/assign`, { method:'POST', body: JSON.stringify(obj) });
       notify('Order assignment saved.', 'ok');
       closeModal();
-      await loadOrderDetail(updated.id || order.id, false, true);
+      applyUpdatedCurrentOrder(updated, order.id);
     } catch (err) { setFormMessage('#assignMessage', err.message || 'Assign failed', 'danger'); }
   };
 }
@@ -7374,7 +7617,7 @@ async function syncCurrentBinanceDetail(order) {
   try {
     const updated = await api(`/api/orders/${order.id}/binance-refresh`, { method:'POST', body: JSON.stringify({ binanceOrderNumber: order.externalOrderNo || order.orderNo }) });
     notify('Binance order detail synced.', 'ok');
-    await loadOrderDetail(updated.id || order.id, false, true);
+    applyUpdatedCurrentOrder(updated, order.id);
   } catch (err) { notify(err.message || 'Binance detail sync failed', 'danger'); }
 }
 
@@ -7382,7 +7625,7 @@ async function syncCurrentBinanceStats(order) {
   try {
     const updated = await api(`/api/orders/${order.id}/binance-counterparty`, { method:'POST', body: JSON.stringify({ binanceOrderNumber: order.externalOrderNo || order.orderNo }) });
     notify('Binance counterparty stats synced.', 'ok');
-    await loadOrderDetail(updated.id || order.id, false, true);
+    applyUpdatedCurrentOrder(updated, order.id);
   } catch (err) { notify(err.message || 'Binance stats sync failed', 'danger'); }
 }
 
@@ -7858,7 +8101,7 @@ async function attemptReleaseDirect(order, finalAction='release', options={}) {
       return;
     }
     notify('Coin released successfully.', 'ok');
-    await loadOrderDetail(updated.id || order.id, false, true);
+    applyUpdatedCurrentOrder(updated, order.id);
   } catch (err) {
     if (err?.data?.order && typeof err.data.order === 'object') {
       Object.assign(order, err.data.order);
@@ -7970,7 +8213,7 @@ function openReleaseVerificationPage(order, finalAction='release', options={}) {
       }
       notify('Coin released successfully.', 'ok');
       closeModal(backdrop);
-      await loadOrderDetail(updated.id || order.id, false, true);
+      applyUpdatedCurrentOrder(updated, order.id);
     } catch (err) {
       if (err?.data?.order && typeof err.data.order === 'object') {
         Object.assign(order, err.data.order);
@@ -8053,12 +8296,12 @@ function openFinalActionModal(order, finalAction) {
         const issueText = (updated.issues || []).map(i => i.code).join(', ');
         setFormMessage('#finalActionMessage', 'Approval request sent to manager: ' + issueText, 'warn');
         notify('Manager approval required. Request added to Approval Queue.', 'warn');
-        setTimeout(() => { closeModal(); loadOrderDetail(order.id, false, true); }, 600);
+        setTimeout(() => { closeModal(); if (state.page === 'orders' && Number(state.currentOrderId || 0) === Number(order.id || 0)) refreshCurrentOrderStateNonDestructive().catch(()=>{}); }, 600);
         return;
       }
       notify(liveMode ? 'Final action completed with Binance live call.' : 'Final action completed.', 'ok');
       closeModal();
-      await loadOrderDetail(updated.id || order.id, false, true);
+      applyUpdatedCurrentOrder(updated, order.id);
     } catch (err) {
       if (err?.data?.order && typeof err.data.order === 'object') {
         Object.assign(order, err.data.order);
@@ -8247,7 +8490,7 @@ async function openAddSplitModal(order) {
       }
       notify(batchMode ? 'Payment splits saved.' : 'Payment split saved.', 'ok');
       closeModal();
-      await loadOrderDetail(updated.id || order.id, false, true);
+      applyUpdatedCurrentOrder(updated, order.id);
     } catch (error) {
       setFormMessage('#splitFormMessage', error.message || 'Split save failed', 'danger');
     }
@@ -8265,7 +8508,7 @@ async function deletePaymentSplit(order, splitId) {
     const updated = await api('/api/splits/' + splitId, { method:'DELETE' });
     notify('Payment split deleted. Balance and limits were restored.', 'ok');
     closeModal();
-    await loadOrderDetail(updated.id || order.id, false, true);
+    applyUpdatedCurrentOrder(updated, order.id);
   } catch (err) {
     notify(err.message || 'Payment split delete failed.', 'danger');
   }
@@ -8335,7 +8578,7 @@ function openUpdateSplitModal(order, splitId) {
       const updated = await api('/api/splits/' + splitId, { method:'PATCH', body: JSON.stringify(obj) });
       notify('Payment split updated. Balance and limits were recalculated.', 'ok');
       closeModal();
-      await loadOrderDetail(updated.id || order.id, false, true);
+      applyUpdatedCurrentOrder(updated, order.id);
     } catch (err) { setFormMessage('#updateSplitMessage', err.message || 'Payment split update failed', 'danger'); }
   };
 }
@@ -8368,7 +8611,7 @@ function openCoAgentDoneModal(order, assignment = null) {
       const updated = await api(`/api/orders/${order.id}/complete-agent-task`, { method:'POST', body: JSON.stringify(obj) });
       notify('Co-agent work completed. Remaining and lead payment details updated in realtime.', 'ok');
       closeModal();
-      await loadOrderDetail(updated.id || order.id, false, true);
+      applyUpdatedCurrentOrder(updated, order.id);
     } catch (err) {
       setFormMessage('#coAgentDoneMessage', err.message || 'Done action failed.', 'danger');
     }

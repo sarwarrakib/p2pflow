@@ -23,6 +23,7 @@ function activityUserLabel(row={}) {
 }
 
 async function renderActivityMonitor(options={}) {
+  if (state.page !== 'activity') return;
   setTitle('Activity Monitor');
   const filter = state.activityFilter || { period:'daily', start:'', end:'', userId:'' };
   const qs = new URLSearchParams({ period: filter.period || 'daily' });

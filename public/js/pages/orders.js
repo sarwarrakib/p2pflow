@@ -76,6 +76,7 @@ async function setOrderAcceptance(accepting, options={}) {
     if (!options.silent) notify(result.accepting ? (state.lang === 'bn' ? 'কাজের অবস্থা অন হয়েছে।' : 'Work status is ON.') : (state.lang === 'bn' ? 'কাজের অবস্থা বিরতিতে গেছে।' : 'Work status is PAUSED.'), 'ok');
     return result;
   } catch (error) {
+    if (isUiRequestCancelled(error)) return;
     if (!options.silent) notify(error.message || 'Could not update work status.', 'danger', 6000);
     throw error;
   } finally {
@@ -115,6 +116,7 @@ function maybePromptOrderAcceptance(status = {}) {
       closeModal();
       notify(isBn ? 'কাজের অবস্থা অন হয়েছে।' : 'Work status is ON.', 'ok');
     } catch (error) {
+    if (isUiRequestCancelled(error)) return;
       yesButton.disabled = false;
       setFormMessage('#orderAcceptancePromptMessage', error.message || 'Could not enable work status.', 'danger');
     }
@@ -122,19 +124,24 @@ function maybePromptOrderAcceptance(status = {}) {
 }
 
 async function renderOrders(opts={}) {
+  if (state.page !== 'orders') return;
   setTitle('Orders');
+  const renderGuard = beginPageRenderGuard('orders-list');
+  const backgroundRefresh = opts.background === true;
   let requestedCredentialId = Number(state.orderCredentialId || 0);
   const orderUrl = () => `/api/orders${requestedCredentialId ? `?credentialId=${encodeURIComponent(requestedCredentialId)}` : ''}`;
   let data;
   try {
-    data = await api(orderUrl(), { autoReloadOnChallenge: true });
+    data = opts.prefetchedData || await api(orderUrl(), { autoReloadOnChallenge: false, noAutoReload:true, signal:renderGuard.signal, navigationScoped:false });
   } catch (error) {
+    if (isUiRequestCancelled(error)) return;
     if (!requestedCredentialId) throw error;
     requestedCredentialId = 0;
     state.orderCredentialId = 0;
     localStorage.removeItem('crmOrderCredentialId');
-    data = await api('/api/orders', { autoReloadOnChallenge: true });
+    data = await api('/api/orders', { autoReloadOnChallenge: false, noAutoReload:true, signal:renderGuard.signal, navigationScoped:false });
   }
+  if (!pageRenderGuardCurrent(renderGuard) || state.page !== 'orders' || state.currentOrderId) return;
   const unreadData = { counts: data.unreadCounts || {}, total: Number(data.unreadTotal || 0), latestByOrder: data.unreadLatestByOrder || {} };
   const credentialOptions = orderAccountOptions(data);
   const liveCredentialOptions = Array.isArray(data.liveCredentialOptions) ? data.liveCredentialOptions : [];
@@ -205,7 +212,7 @@ async function renderOrders(opts={}) {
       <div class="order-tabs">${tabs.map(t => `<button class="order-tab ${t[0]===activeTabKey?'active':''}" data-tab-scope="${scope}" data-tab-key="${t[0]}">${t[1]} <b>${t[2].length}</b></button>`).join('')}</div>
       ${tabs.map(t => `<div class="order-tab-panel ${t[0]===activeTabKey?'active':''}" data-panel-scope="${scope}" data-panel-key="${t[0]}">${t[2].length ? `<div class="order-desktop-view">${table(tableHead, orderRows(t[2]))}</div><div class="order-mobile-view">${renderOrderMobileList(t[2], previousSnapshot, nextSnapshot)}</div>` : '<div class="empty-state">No orders in this tab.</div>'}</div>`).join('')}
     </div>`;
-  $('#content').innerHTML = `
+  const ordersPageHtml = `
     <div class="page-account-strip order-account-strip">
       ${orderAccountSwitcherHtml(credentialOptions, requestedCredentialId)}
     </div>
@@ -220,6 +227,30 @@ async function renderOrders(opts={}) {
       </div>
     </div>
     ${section(selectedTabs, group)}`;
+  if (!pageRenderGuardCurrent(renderGuard) || state.page !== 'orders' || state.currentOrderId) return;
+  const content = $('#content');
+  const canStablePatch = backgroundRefresh && content?.querySelector('.order-group-switch') && content?.querySelector('.order-section');
+  if (canStablePatch) {
+    const scrollY = window.scrollY;
+    const staging = document.createElement('div');
+    staging.innerHTML = ordersPageHtml;
+    const nextSection = staging.querySelector('.order-section');
+    const currentSection = content.querySelector('.order-section');
+    if (nextSection && currentSection) currentSection.innerHTML = nextSection.innerHTML;
+    const nextGroups = staging.querySelectorAll('[data-order-group]');
+    nextGroups.forEach(nextButton => {
+      const currentButton = content.querySelector(`[data-order-group="${nextButton.dataset.orderGroup}"]`);
+      if (currentButton) currentButton.innerHTML = nextButton.innerHTML;
+    });
+    content.querySelectorAll('[data-order-account]').forEach(button => {
+      const active = Number(button.dataset.orderAccount || 0) === Number(requestedCredentialId || 0);
+      button.classList.toggle('active', active);
+      button.setAttribute('aria-selected', active ? 'true' : 'false');
+    });
+    requestAnimationFrame(() => window.scrollTo({ top:scrollY, left:0, behavior:'auto' }));
+  } else if (content) {
+    content.innerHTML = ordersPageHtml;
+  }
   state.orderSnapshot = nextSnapshot;
   $$('[data-order-account]').forEach(button => button.onclick = () => {
     state.orderCredentialId = Number(button.dataset.orderAccount || 0);
@@ -227,7 +258,7 @@ async function renderOrders(opts={}) {
     else localStorage.removeItem('crmOrderCredentialId');
     setNotificationCredentialScope(state.orderCredentialId, { sync:true, immediate:true });
     state.orderSnapshot = null;
-    renderOrders();
+    renderOrders().catch(error => { if (!isUiRequestCancelled(error)) console.warn(error); });
   });
   $('#refreshBtn').onclick = () => refreshOrdersFromButton($('#refreshBtn'));
   if (canSyncBinance && $('#syncBinanceOrdersBtn')) $('#syncBinanceOrdersBtn').onclick = () => openBinanceOrderSyncModal(liveCredentialOptions, requestedCredentialId);
@@ -237,7 +268,7 @@ async function renderOrders(opts={}) {
   $$('[data-order-group]').forEach(btn => btn.onclick = () => {
     state.orderGroup = btn.dataset.orderGroup || 'ongoing';
     localStorage.setItem('crmOrderGroup', state.orderGroup);
-    renderOrders();
+    renderOrders({ prefetchedData:data }).catch(error => { if (!isUiRequestCancelled(error)) console.warn(error); });
   });
   $$('[data-open-order-card]').forEach(card => {
     const openOrder = () => setRoute('orders', { orderId: Number(card.dataset.openOrderCard) });

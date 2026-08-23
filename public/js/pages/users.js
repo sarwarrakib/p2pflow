@@ -2,6 +2,7 @@
 // Page module: users. Edit this file for the users page UI.
 
 async function renderUsers() {
+  if (state.page !== 'agents') return;
   setTitle('Users & Permissions');
   const agents = await api('/api/agents');
   const accounts = await api('/api/payment-accounts');
@@ -68,6 +69,7 @@ async function renderUsers() {
       try {
         handler(event);
       } catch (error) {
+    if (isUiRequestCancelled(error)) return;
         console.error('User action failed', error);
         notify(error?.message || 'Could not complete the user action.', 'danger', 6500);
       }

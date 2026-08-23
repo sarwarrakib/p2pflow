@@ -63,6 +63,7 @@ function offlineTransactionCard(transaction={}) {
 }
 
 async function renderOfflineTransactions() {
+  if (state.page !== 'offline-transactions') return;
   setTitle('Offline Business');
   const data = await api('/api/offline-transactions');
   const items = data.items || [];
@@ -88,6 +89,7 @@ async function renderOfflineTransactions() {
       notify('Received amount added to the payment account balance.', 'ok');
       await renderOfflineTransactions();
     } catch (err) {
+    if (isUiRequestCancelled(err)) return;
       button.disabled = false;
       notify(err.message || 'Could not mark received.', 'danger');
     }
@@ -105,6 +107,7 @@ async function renderOfflineTransactions() {
       notify(`Offline order ${result.order?.orderNo || ''} created.`, 'ok');
       await renderOfflineTransactions();
     } catch (err) {
+    if (isUiRequestCancelled(err)) return;
       button.disabled = false;
       notify(err.message || 'Could not create offline order.', 'danger');
     }
@@ -167,6 +170,7 @@ function openOfflineTransactionModal() {
       $('#offlineCandidateSummary').textContent = `${candidateData.items?.length || 0} eligible · Suggested ${money(candidateData.suggestedTotal || 0)}${Number(candidateData.uncoveredAmount || 0) > 0 ? ` · Uncovered ${money(candidateData.uncoveredAmount)}` : ''}`;
       $('#createOfflineTransactionBtn').disabled = !(candidateData.items || []).some(item => Number(item.suggestedAmount || 0) > 0);
     } catch (err) {
+    if (isUiRequestCancelled(err)) return;
       setFormMessage('#offlineTransactionMessage', err.message || 'Could not find eligible numbers.', 'danger');
     } finally { button.disabled = false; }
   };
@@ -184,6 +188,7 @@ function openOfflineTransactionModal() {
       closeModal();
       await renderOfflineTransactions();
     } catch (err) {
+    if (isUiRequestCancelled(err)) return;
       button.disabled = false;
       setFormMessage('#offlineTransactionMessage', err.message || 'Could not create offline receipt session.', 'danger');
     }

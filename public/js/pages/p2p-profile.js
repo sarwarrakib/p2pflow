@@ -1,4 +1,4 @@
-// P2PFlow v1.5.38
+// P2PFlow v1.5.39
 // Dedicated Binance-style P2P Profile workspace. Login security is kept on the separate Security page.
 
 function profileMetricValue(value, suffix = '') {
@@ -483,6 +483,7 @@ function mobileProfileFeedbackHtml(data = {}, result = {}) {
 }
 
 async function renderP2PProfile() {
+  if (state.page !== 'p2p-profile') return;
   setTitle('P2P Profile');
   state.mobileProfileView = state.mobileProfileView || 'main';
   state.mobileProfileTab = state.mobileProfileTab || 'trade';
@@ -567,7 +568,8 @@ async function renderP2PProfile() {
 
   const openPaymentMethodAdd = async () => {
     if (!profilePaymentDefinitions(p2pResult).length && p2pResult.canSync && p2pResult.credentialAvailable) {
-      try { await syncProfile(); } catch (err) { notify(err.message || 'Could not load Binance payment methods.', 'warn', 5000); }
+      try { await syncProfile(); } catch (err) {
+    if (isUiRequestCancelled(err)) return; notify(err.message || 'Could not load Binance payment methods.', 'warn', 5000); }
     }
     const currencies = profilePaymentCurrencies(p2pResult);
     const currency = String(currencies[0]?.code || 'BDT').toUpperCase();
@@ -605,13 +607,15 @@ async function renderP2PProfile() {
       button.disabled = true;
       button.classList.add('syncing');
       try { await syncProfile(); }
-      catch (err) { notify(err.message || 'P2P profile sync failed.', 'danger', 6000); }
+      catch (err) {
+    if (isUiRequestCancelled(err)) return; notify(err.message || 'P2P profile sync failed.', 'danger', 6000); }
       finally { if (button?.isConnected) { button.disabled = false; button.classList.remove('syncing'); } }
     });
     $('#mobileProfileCredentialSwitchBtn')?.addEventListener('click', () => $('#mobileProfileCredentialMenu')?.classList.toggle('hidden'));
     $$('[data-mobile-profile-credential]').forEach(button => button.onclick = async () => {
       try { await loadCredentialProfile(button.dataset.mobileProfileCredential); }
-      catch (err) { notify(err.message || 'Could not switch P2P API profile.', 'danger', 5000); }
+      catch (err) {
+    if (isUiRequestCancelled(err)) return; notify(err.message || 'Could not switch P2P API profile.', 'danger', 5000); }
     });
     $('#mobileProfileShareBtn')?.addEventListener('click', async () => {
       const profile = p2pResult.profile || {};
@@ -621,6 +625,7 @@ async function renderP2PProfile() {
         else if (navigator.clipboard) { await navigator.clipboard.writeText(shareData.url); notify('Profile link copied.', 'ok'); }
         else showUnavailable('Share Profile');
       } catch (err) {
+    if (isUiRequestCancelled(err)) return;
         if (err?.name !== 'AbortError') notify(err.message || 'Could not share profile.', 'warn');
       }
     });
@@ -632,7 +637,8 @@ async function renderP2PProfile() {
       const button = event.currentTarget;
       button.disabled = true;
       try { await syncProfile(); notify('Payment methods synced from Binance.', 'ok'); }
-      catch (err) { notify(err.message || 'Could not sync Binance payment methods.', 'danger', 6000); }
+      catch (err) {
+    if (isUiRequestCancelled(err)) return; notify(err.message || 'Could not sync Binance payment methods.', 'danger', 6000); }
       finally { if (button?.isConnected) button.disabled = false; }
     });
     $('#mobileProfilePaymentEditorBack')?.addEventListener('click', () => { state.mobileProfilePaymentEditor = null; state.mobileProfileView = 'payments'; render(); window.scrollTo({ top:0, behavior:'auto' }); });

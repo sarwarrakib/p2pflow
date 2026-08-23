@@ -1,7 +1,8 @@
-// P2PFlow v1.5.38
+// P2PFlow v1.5.39
 // Page module: reports. Edit this file for the reports page UI.
 
 async function renderReports() {
+  if (state.page !== 'reports') return;
   setTitle('Digital Reports');
   const rf = state.reportFilter || { period: 'daily', start: '', end: '' };
   const qs = new URLSearchParams();
