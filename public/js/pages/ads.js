@@ -68,8 +68,15 @@ function adsAccountDisplayName(value = {}) {
 function adsPaymentMethodsForCredential(data = {}, credentialId = 0) {
   const id = Number(credentialId || 0);
   const scoped = id ? data.paymentMethodsByCredential?.[String(id)] : null;
-  const methods = Array.isArray(scoped) ? scoped : (Array.isArray(data.paymentMethods) ? data.paymentMethods : []);
-  return methods.filter(method => method && method.enabled !== false && method.availableForCredential !== false);
+  // In a multi-account setup, never fall back to another account's/global
+  // payment-method view when an advertisement is bound to a credential.
+  const methods = id
+    ? (Array.isArray(scoped) ? scoped : [])
+    : (Array.isArray(data.paymentMethods) ? data.paymentMethods : []);
+  return methods.filter(method => method
+    && method.enabled !== false
+    && method.availableForCredential !== false
+    && (!id || !Number(method.credentialId || 0) || Number(method.credentialId) === id));
 }
 
 function adsPaymentDataForCredential(data = {}, credentialId = 0) {
@@ -167,7 +174,7 @@ function adCardHtml(ad = {}, capability = {}) {
           <input type="checkbox" data-ad-toggle="${Number(ad.id || 0)}" ${online ? 'checked' : ''} ${canToggle ? '' : 'disabled'} />
           <span></span>
         </label>
-        <button class="ad-more-btn" type="button" data-edit-ad="${Number(ad.id || 0)}" ${controlsAvailable ? '' : 'disabled'} aria-label="Edit advertisement">⋮</button>
+        <button class="ad-more-btn" type="button" data-ad-menu="${Number(ad.id || 0)}" ${canManage ? '' : 'disabled'} aria-label="Advertisement actions" aria-haspopup="dialog">⋮</button>
       </div>
     </div>
     <div class="crm-ad-price"><span>${pricePrefix}</span><b>${adNumber(ad.price, 2)}</b></div>
@@ -513,7 +520,7 @@ async function renderAds(prefetchedData = null, options={}) {
         return;
       }
       state.adsMerchantCommandBusy.add(control);
-      $$('[data-merchant-control], [data-ad-toggle], [data-edit-ad], #createAdBtn, #syncAdsBtn').forEach(node => { node.disabled = true; });
+      $$('[data-merchant-control], [data-ad-toggle], [data-ad-menu], #createAdBtn, #syncAdsBtn').forEach(node => { node.disabled = true; });
       try {
         const scopeText = applyToAll ? 'all permitted accounts' : adsAccountDisplayName(selectedOption || {});
         if (control === 'business' && !enabled) {
@@ -556,9 +563,9 @@ async function renderAds(prefetchedData = null, options={}) {
     };
   });
 
-  $$('[data-edit-ad]').forEach(btn => btn.onclick = () => {
-    const ad = (data.items || []).find(item => Number(item.id) === Number(btn.dataset.editAd));
-    if (ad && adsCapabilityForAdvertisement(ad, data).canManage) openAdvertisementEditor(ad, data);
+  $$('[data-ad-menu]').forEach(btn => btn.onclick = () => {
+    const ad = (data.items || []).find(item => Number(item.id) === Number(btn.dataset.adMenu));
+    if (ad && adsCapabilityForAdvertisement(ad, data).canManage) openAdvertisementActionSheet(ad, data);
   });
 
   $$('[data-ad-toggle]').forEach(input => input.onchange = async () => {
@@ -676,6 +683,83 @@ function confirmAdsAction(title, message, confirmLabel = 'Continue') {
   });
 }
 
+function advertisementEditorDataFromResponse(data = {}, response = {}, credentialId = 0) {
+  const id = Number(credentialId || response?.item?.credentialId || 0);
+  if (!id) return data;
+  const scopedPaymentMethods = Array.isArray(response.paymentMethods) ? response.paymentMethods : null;
+  const scopedGenericMethods = Array.isArray(response.genericPaymentMethods) ? response.genericPaymentMethods : null;
+  return {
+    ...data,
+    selectedCredentialId: id,
+    paymentMethodsByCredential: scopedPaymentMethods
+      ? { ...(data.paymentMethodsByCredential || {}), [String(id)]: scopedPaymentMethods }
+      : (data.paymentMethodsByCredential || {}),
+    genericPaymentMethodsByCredential: scopedGenericMethods
+      ? { ...(data.genericPaymentMethodsByCredential || {}), [String(id)]: scopedGenericMethods }
+      : (data.genericPaymentMethodsByCredential || {})
+  };
+}
+
+async function openAdvertisementEditorFromAction(ad = {}, data = {}, button = null) {
+  const expectedCredentialId = Number(ad.credentialId || 0);
+  if (!expectedCredentialId) return notify('This advertisement is not linked to a Binance account.', 'danger', 6000);
+  const originalHtml = button?.innerHTML || '';
+  if (button) {
+    button.disabled = true;
+    button.innerHTML = "<span>…</span><b>Loading...</b><small>Refreshing this account\'s live ad and payment methods</small>";
+  }
+  try {
+    const response = await api(`/api/ads/${encodeURIComponent(ad.id)}?refresh=1`, { silent:true, noAutoReload:true });
+    const freshAd = response?.item;
+    if (!freshAd) throw new Error('Advertisement details were not returned.');
+    if (Number(freshAd.credentialId || 0) !== expectedCredentialId) {
+      throw new Error('The advertisement account changed unexpectedly. Edit was blocked for safety.');
+    }
+    const scopedData = advertisementEditorDataFromResponse(data, response, expectedCredentialId);
+    closeAdsSheet();
+    openAdvertisementEditor(freshAd, scopedData);
+    if (Array.isArray(response.warnings) && response.warnings.length) {
+      notify(response.warnings[0], 'warn', 7000);
+    }
+  } catch (error) {
+    if (isUiRequestCancelled(error)) return;
+    notify(error.message || 'Could not load the latest advertisement details.', 'danger', 7000);
+    if (button) {
+      button.disabled = false;
+      button.innerHTML = originalHtml;
+    }
+  }
+}
+
+async function deleteAdvertisementFromAction(ad = {}, data = {}) {
+  const message = ad?.advNo
+    ? `Delete advertisement ${ad.advNo}? It will be closed on Binance first and then removed from the dashboard.`
+    : 'Delete this advertisement draft?';
+  const approved = await confirmAdsAction('Delete Advertisement?', message, 'Delete');
+  if (!approved) return;
+  try {
+    await api(`/api/ads/${encodeURIComponent(ad.id)}`, { method:'DELETE', silent:true });
+    notify(ad?.advNo ? 'Advertisement closed on Binance and removed from the dashboard.' : 'Advertisement draft deleted.', 'ok');
+    const fresh = await api(adsPageUrl({ refreshMerchant:1 }), { silent:true, noAutoReload:true });
+    await renderAds(fresh);
+  } catch (error) {
+    if (isUiRequestCancelled(error)) return;
+    notify(error.message || 'Advertisement delete failed.', 'danger', 7000);
+  }
+}
+
+function openAdvertisementActionSheet(ad = {}, data = {}) {
+  const accountName = adsAccountDisplayName(ad);
+  const sheet = openAdsSheet('Advertisement Actions', `<div class="ads-ad-action-menu">
+    <div class="ads-ad-action-summary"><b>${escapeHtml(ad.tradeType || 'BUY')} ${escapeHtml(ad.asset || 'USDT')} / ${escapeHtml(ad.fiatUnit || 'BDT')}</b><small>${escapeHtml(accountName)}${ad.advNo ? ` · ${escapeHtml(ad.advNo)}` : ''}</small></div>
+    <button type="button" data-ad-action-edit><span>✎</span><b>Edit</b><small>Open the complete advertisement form</small></button>
+    <button type="button" class="danger" data-ad-action-delete><span>⌫</span><b>Delete</b><small>${ad.advNo ? 'Close on Binance and remove from P2PFlow' : 'Remove this private draft'}</small></button>
+  </div>`);
+  const editButton = sheet.querySelector('[data-ad-action-edit]');
+  editButton?.addEventListener('click', () => openAdvertisementEditorFromAction(ad, data, editButton));
+  sheet.querySelector('[data-ad-action-delete]')?.addEventListener('click', () => deleteAdvertisementFromAction(ad, data));
+}
+
 function paymentMethodMatchesTrade(method = {}, trade = {}) {
   const methodTokens = [method.binanceIdentifier, method.binancePayType, method.code, method.name].map(v => String(v || '').toLowerCase()).filter(Boolean);
   const tradeTokens = [trade.identifier, trade.payType, trade.tradeMethodName].map(v => String(v || '').toLowerCase()).filter(Boolean);
@@ -684,23 +768,28 @@ function paymentMethodMatchesTrade(method = {}, trade = {}) {
 }
 
 function resolvedAdPaymentIds(ad = {}, data = {}) {
-  const available = adsPaymentMethodsForCredential(data, ad.credentialId || data.selectedCredentialId || state.adsCredentialId || 0);
-  const ids = new Set((ad.paymentMethodIds || []).map(Number).filter(Number.isFinite));
+  const credentialId = Number(ad.credentialId || data.selectedCredentialId || state.adsCredentialId || 0);
+  const available = adsPaymentMethodsForCredential(data, credentialId);
+  const availableIds = new Set(available.map(method => Number(method.id)).filter(Number.isFinite));
+  const ids = new Set((ad.paymentMethodIds || []).map(Number).filter(id => Number.isFinite(id) && availableIds.has(id)));
   for (const trade of (ad.tradeMethods || [])) {
     const match = available.find(method => paymentMethodMatchesTrade(method, trade));
-    if (match) ids.add(Number(match.id));
+    if (match && availableIds.has(Number(match.id))) ids.add(Number(match.id));
   }
   return [...ids].slice(0, 5);
 }
 
 function resolvedAdGenericKeys(ad = {}, data = {}) {
-  const credentialId = ad.credentialId || data.selectedCredentialId || state.adsCredentialId || 0;
+  const credentialId = Number(ad.credentialId || data.selectedCredentialId || state.adsCredentialId || 0);
   const available = adsGenericPaymentMethodsForCredential(data, credentialId, ad.fiatUnit || '');
-  const keys = new Set((ad.paymentMethodKeys || []).map(value => String(value || '').toLowerCase()).filter(Boolean));
+  const availableKeys = new Set(available.map(method => String(method.selectionKey || '').toLowerCase()).filter(Boolean));
+  const keys = new Set((ad.paymentMethodKeys || [])
+    .map(value => String(value || '').toLowerCase())
+    .filter(key => key && availableKeys.has(key)));
   for (const trade of (ad.tradeMethods || [])) {
     const tokens = [trade.identifier, trade.payType, trade.tradeMethodName].map(value => String(value || '').toLowerCase()).filter(Boolean);
     const match = available.find(method => [method.selectionKey, method.identifier, method.payType, method.name].map(value => String(value || '').toLowerCase()).some(token => tokens.includes(token)));
-    if (match) keys.add(match.selectionKey);
+    if (match && availableKeys.has(String(match.selectionKey || '').toLowerCase())) keys.add(String(match.selectionKey || '').toLowerCase());
   }
   return [...keys].slice(0, 5);
 }
@@ -874,7 +963,12 @@ function openAdvertisementEditor(ad = null, data = {}) {
   let currentRate = Number(ad?.commissionRate || data.defaultCommissionRate || 0);
   const manageCredentialOptions = adsCredentialOptions(data).filter(option => adsAccountHasPermission(option, 'ads.manage'));
   let editorCredentialId = Number(ad?.credentialId || data.selectedCredentialId || state.adsCredentialId || 0);
-  if (!manageCredentialOptions.some(option => Number(option.id) === editorCredentialId)) editorCredentialId = Number(manageCredentialOptions[0]?.id || 0);
+  const exactEditorCredentialAvailable = manageCredentialOptions.some(option => Number(option.id) === editorCredentialId);
+  if (isEdit && !exactEditorCredentialAvailable) {
+    notify('The original Binance account for this advertisement is unavailable. Edit was blocked to prevent cross-account payment-method use.', 'danger', 7000);
+    return;
+  }
+  if (!isEdit && !exactEditorCredentialAvailable) editorCredentialId = Number(manageCredentialOptions[0]?.id || 0);
   if (!editorCredentialId) {
     notify('No enabled Binance account is assigned with Ads Manage permission.', 'warn', 6000);
     return;
@@ -884,15 +978,20 @@ function openAdvertisementEditor(ad = null, data = {}) {
   const assetOptions = [...new Set([...(data.assets || []), ad?.asset || 'USDT'].filter(Boolean).map(v => String(v).toUpperCase()))];
   const fiatOptions = [...new Set([...(data.fiats || []), ad?.fiatUnit || 'BDT'].filter(Boolean).map(v => String(v).toUpperCase()))];
 
-  modal(isEdit ? 'Edit Advertisement' : 'Post Normal Ad', `<form id="advertisementForm" class="ads-editor-form screenshot-editor">
-    <div class="ads-wizard-head">
-      <div class="ads-wizard-title">${isEdit ? 'Edit Advertisement' : 'Post Normal Ad'}</div>
+  modal(isEdit ? 'Edit Advertisement' : 'Post Normal Ad', `<form id="advertisementForm" class="ads-editor-form screenshot-editor ${isEdit ? 'ads-editor-fullpage' : 'ads-editor-wizard'}">
+    ${isEdit ? `<div class="ads-wizard-head ads-edit-full-head">
+      <button type="button" class="ads-editor-close" data-close-ad-editor aria-label="Close">×</button>
+      <div class="ads-wizard-title">Edit Advertisement</div>
+      <small>All advertisement information and settings are shown on this single page.</small>
+    </div>` : `<div class="ads-wizard-head">
+      <button type="button" class="ads-editor-close" data-close-ad-editor aria-label="Close">×</button>
+      <div class="ads-wizard-title">Post Normal Ad</div>
       <div class="ads-wizard-progress" data-ad-wizard-progress>
         <button type="button" class="active" data-ad-step-nav="1"><b>1</b><span>Set Type & Price</span></button><i></i>
         <button type="button" data-ad-step-nav="2"><b>2</b><span>Set Amount & Method</span></button><i></i>
         <button type="button" data-ad-step-nav="3"><b>3</b><span>Set Conditions</span></button>
       </div>
-    </div>
+    </div>`}
     <section class="ads-edit-identity" data-ad-step="1">
       <div>
         ${isEdit ? `<div class="ads-fixed-side ${tradeType === 'BUY' ? 'buy' : 'sell'}"><b>${tradeType === 'BUY' ? 'Buy' : 'Sell'}</b> <span data-pair-asset>${escapeHtml(ad?.asset || 'USDT')}</span> With <span data-pair-fiat>${escapeHtml(ad?.fiatUnit || 'BDT')}</span></div>` : `<div class="ads-create-side-group"><span class="ads-label">I want to</span><div class="ads-create-side-tabs"><label><input type="radio" name="tradeType" value="BUY" checked><span class="buy">Buy</span></label><label><input type="radio" name="tradeType" value="SELL"><span class="sell">Sell</span></label></div></div>`}
@@ -930,7 +1029,7 @@ function openAdvertisementEditor(ad = null, data = {}) {
         <div class="ads-unit-input"><input name="priceFloatingRatio" type="number" step="0.01" value="${escapeAttr(ad?.priceFloatingRatio || 0)}"><span>%</span></div>
       </div>
       <div class="ads-live-price-guide" id="adLivePriceGuide">
-        <div class="ads-live-price-range"><span>Price range</span><b id="adLivePriceRange">Loading live range...</b></div>
+        <div class="ads-live-price-range"><span>Fixed price limit</span><b id="adLivePriceRange">Loading live range...</b></div>
         <div class="ads-live-price-lines"><span>Your Price <b id="adYourPrice">${escapeHtml(ad?.fiatUnit === 'BDT' ? 'Tk.' : ad?.fiatUnit || '')}${adNumber(ad?.price || 0, 2)}</b></span><span id="adMarketPriceLine" hidden><u id="adMarketPriceLabel">Market Price</u> <b id="adMarketPrice"></b></span></div>
         <small id="adReferencePriceMeta">Binance live reference</small>
       </div>
@@ -1010,27 +1109,36 @@ function openAdvertisementEditor(ad = null, data = {}) {
       <button type="button" class="ads-fee-trigger" id="adFeeTrigger"><span id="adFeeLabel">${tradeType === 'SELL' ? 'Reserved Fee' : 'Estimated Fee'}</span><b id="adEstimatedFee">${adNumber(ad?.estimatedFee || 0, 8)} ${escapeHtml(ad?.asset || 'USDT')}</b><small id="adFeePercent">${percentRate(currentRate)}</small></button>
       ${ad?.publishPending || ad?.lastPublishError ? `<div class="notice warn ads-draft-warning"><b>Draft</b><br>${escapeHtml(ad?.apiTradePermissionRequired ? 'Binance API key Trading is OFF. Enable Trading in Binance API Management, then publish this draft again.' : (ad?.apiTradingLocked ? 'Binance API trading is locked. Resolve the restriction, then publish this draft again.' : (ad?.merchantStatusRequired ? 'Binance P2P merchant status is not active. Turn Business ON, Break OFF and Online ON, then publish again.' : (ad?.binancePermissionRequired ? (ad?.createPermissionDeniedAfterPreflight ? 'Binance rejected Create Advertisement (83749) even after Trade permission and active merchant preflight. The /ads/post privilege must be enabled or repaired by Binance CS.' : 'Binance Private P2P Advertisement Create API permission is required (83749).') : ad?.lastPublishError || 'This advertisement is not published to Binance yet.'))))}${ad?.createPrivilegeDiagnostic ? '<br><button type="button" class="link-button ads-copy-create-diagnostic" id="copyAdCreateDiagnosticBtn">Copy Binance CS Details</button>' : ''}</div>` : ''}
       <div id="advertisementFormMessage"></div>
-      <div class="ads-editor-action-row ads-wizard-actions">
-        <button type="button" class="secondary ads-wizard-prev" id="adWizardPrevious" hidden>Previous</button>
-        ${isEdit ? '<button type="button" class="danger ads-delete-button" id="deleteAdvertisementBtn" hidden>Delete</button>' : ''}
-        ${isEdit && !ad?.advNo ? '<button type="button" class="secondary ads-publish-button" id="publishAdvertisementBtn" hidden>Publish to Binance</button>' : ''}
-        <button type="button" class="ads-save-button ads-wizard-next" id="adWizardNext">Next</button>
-        ${!isEdit ? '<button type="button" class="ads-save-button ads-wizard-preview" id="adWizardPreview" hidden>Preview</button>' : ''}
-        <button type="submit" class="ads-save-button" id="adWizardSubmit" hidden>${isEdit ? 'Save' : 'Post'}</button>
+      <div class="ads-editor-action-row ads-wizard-actions ${isEdit ? 'ads-edit-full-actions' : ''}">
+        ${isEdit
+          ? `${!ad?.advNo ? '<button type="button" class="secondary ads-publish-button" id="publishAdvertisementBtn">Publish to Binance</button>' : ''}<button type="submit" class="ads-save-button" id="adWizardSubmit">Save Changes</button>`
+          : '<button type="button" class="secondary ads-wizard-prev" id="adWizardPrevious" hidden>Previous</button><button type="button" class="ads-save-button ads-wizard-next" id="adWizardNext">Next</button><button type="button" class="ads-save-button ads-wizard-preview" id="adWizardPreview" hidden>Preview</button><button type="submit" class="ads-save-button" id="adWizardSubmit" hidden>Post</button>'}
       </div>
     </div>
   </form>`);
 
   const dialog = document.querySelector('.modal-backdrop:last-child .modal');
-  if (dialog) dialog.classList.add('ads-editor-modal', 'screenshot-modal');
+  if (dialog) dialog.classList.add('ads-editor-modal', 'screenshot-modal', isEdit ? 'ads-edit-full-modal' : 'ads-create-wizard-modal');
   const form = $('#advertisementForm');
   if (!form) return;
+  form.querySelector('[data-close-ad-editor]')?.addEventListener('click', closeModal);
   const currentCredentialId = () => Number(form.elements.credentialId?.value || editorCredentialId || 0);
   const currentTradeType = () => isEdit ? tradeType : (form.querySelector('input[name="tradeType"]:checked')?.value || 'BUY');
   const currentPaymentData = () => currentTradeType() === 'SELL'
     ? adsPaymentDataForCredential(data, currentCredentialId())
     : adsGenericPaymentDataForCredential(data, currentCredentialId(), form.elements.fiatUnit?.value || 'BDT');
   const currentSelectedPayments = () => currentTradeType() === 'SELL' ? selectedMethodIds : selectedGenericKeys;
+  const currentReferencePayType = () => {
+    if (currentTradeType() === 'SELL') {
+      const selectedId = Number(selectedMethodIds[0] || 0);
+      const method = adsPaymentMethodsForCredential(data, currentCredentialId()).find(item => Number(item.id || 0) === selectedId) || {};
+      return String(method.binancePayType || method.binanceIdentifier || method.code || '').trim();
+    }
+    const selectedKey = String(selectedGenericKeys[0] || '').toLowerCase();
+    const method = adsGenericPaymentMethodsForCredential(data, currentCredentialId(), form.elements.fiatUnit?.value || 'BDT')
+      .find(item => String(item.selectionKey || '').toLowerCase() === selectedKey) || {};
+    return String(method.payType || method.identifier || selectedKey || '').trim();
+  };
   const setCurrentSelectedPayments = values => {
     if (currentTradeType() === 'SELL') selectedMethodIds = values.map(Number).filter(Number.isFinite).slice(0,5);
     else selectedGenericKeys = values.map(value => String(value || '').toLowerCase()).filter(Boolean).slice(0,5);
@@ -1067,6 +1175,7 @@ function openAdvertisementEditor(ad = null, data = {}) {
       const key = String(button.dataset.removeMethod || '');
       setCurrentSelectedPayments(selected.filter(value => String(value) !== key));
       renderMethods();
+      scheduleReferenceRefresh();
     });
   };
   const renderTags = () => {
@@ -1075,7 +1184,7 @@ function openAdvertisementEditor(ad = null, data = {}) {
   };
   renderMethods(); renderTags();
 
-  $('#addAdPaymentMethod').onclick = () => openPaymentMethodSheet(currentPaymentData(), currentSelectedPayments(), values => { setCurrentSelectedPayments(values); renderMethods(); });
+  $('#addAdPaymentMethod').onclick = () => openPaymentMethodSheet(currentPaymentData(), currentSelectedPayments(), values => { setCurrentSelectedPayments(values); renderMethods(); scheduleReferenceRefresh(); });
   $('#chooseAdTermsTags').onclick = () => openTermsTagSheet(selectedTags, tags => { selectedTags = tags; renderTags(); scheduleFeeRefresh(); });
   $('#chooseAdRegions').onclick = () => openRegionSheet(selectedRegions, regions => {
     selectedRegions = regions;
@@ -1171,6 +1280,29 @@ function openAdvertisementEditor(ad = null, data = {}) {
   let latestReferenceGuide = null;
   const currentPriceType = () => Number(form.elements.priceType?.value || 1) === 2 ? 2 : 1;
   const pricePrefixForEditor = () => String(form.elements.fiatUnit?.value || 'BDT').toUpperCase() === 'BDT' ? 'Tk.' : `${String(form.elements.fiatUnit?.value || '').toUpperCase()} `;
+  const fixedPriceRangeMessage = guide => {
+    if (!guide || !(Number(guide.minPrice) > 0) || !(Number(guide.maxPrice) >= Number(guide.minPrice))) return '';
+    if (guide.validationMessage) return String(guide.validationMessage);
+    const scale = Number(guide.priceScale ?? 2);
+    return `Fixed price must fall within the limited range of: ${adNumber(guide.minPrice, scale)}~${adNumber(guide.maxPrice, scale)}`;
+  };
+  const fixedPriceWithinGuide = guide => {
+    if (currentPriceType() !== 1 || !guide) return true;
+    const price = Number(form.elements.price?.value || 0);
+    const scale = Math.max(0, Math.min(8, Number(guide.priceScale ?? 2)));
+    const factor = 10 ** scale;
+    return Math.round(price * factor) >= Math.round(Number(guide.minPrice || 0) * factor)
+      && Math.round(price * factor) <= Math.round(Number(guide.maxPrice || 0) * factor);
+  };
+  const renderFixedPriceValidity = () => {
+    const priceInput = form.elements.price;
+    const guideBox = $('#adLivePriceGuide');
+    const invalid = currentPriceType() === 1 && Boolean(latestReferenceGuide) && !fixedPriceWithinGuide(latestReferenceGuide);
+    priceInput?.classList.toggle('is-invalid', invalid);
+    guideBox?.classList.toggle('is-invalid', invalid);
+    if (priceInput) priceInput.setAttribute('aria-invalid', invalid ? 'true' : 'false');
+    return !invalid;
+  };
   const floatingPriceFromGuide = () => {
     const reference = Number(latestReferenceGuide?.referencePrice || 0);
     if (!(reference > 0)) return Number(form.elements.price?.value || 0);
@@ -1202,7 +1334,8 @@ function openAdvertisementEditor(ad = null, data = {}) {
     const fiat = String(form.elements.fiatUnit?.value || 'BDT').toUpperCase();
     const side = currentTradeType();
     try {
-      const guide = await api(`/api/ads/reference-price?credentialId=${encodeURIComponent(currentCredentialId())}&asset=${encodeURIComponent(asset)}&fiat=${encodeURIComponent(fiat)}&tradeType=${encodeURIComponent(side)}${force ? '&force=1' : ''}`, { silent:true, noAutoReload:true });
+      const payType = currentReferencePayType();
+      const guide = await api(`/api/ads/reference-price?credentialId=${encodeURIComponent(currentCredentialId())}&asset=${encodeURIComponent(asset)}&fiat=${encodeURIComponent(fiat)}&tradeType=${encodeURIComponent(side)}${payType ? `&payType=${encodeURIComponent(payType)}` : ''}${force ? '&force=1' : ''}`, { silent:true, noAutoReload:true });
       if (requestId !== referenceRequestId || !document.contains(form)) return;
       latestReferenceGuide = guide;
       if (currentPriceType() === 2 && form.elements.price) {
@@ -1211,26 +1344,43 @@ function openAdvertisementEditor(ad = null, data = {}) {
       }
       updateYourPrice();
       const prefix = pricePrefixForEditor();
-      if (range) range.textContent = `${prefix}${adNumber(guide.minPrice, Number(guide.priceScale ?? 2))} - ${prefix}${adNumber(guide.maxPrice, Number(guide.priceScale ?? 2))}`;
-      if (meta) meta.textContent = guide.explicitBounds
-        ? `Binance live range · reference ${prefix}${adNumber(guide.referencePrice, Number(guide.priceScale ?? 2))}`
-        : `Binance reference ${prefix}${adNumber(guide.referencePrice, Number(guide.priceScale ?? 2))}`;
+      const scale = Number(guide.priceScale ?? 2);
+      const priceInput = form.elements.price;
+      if (priceInput) {
+        priceInput.step = String(10 ** -Math.max(0, Math.min(8, scale)));
+        if (currentPriceType() === 1) {
+          priceInput.min = String(guide.minPrice);
+          priceInput.max = String(guide.maxPrice);
+        } else {
+          priceInput.min = '0';
+          priceInput.removeAttribute('max');
+        }
+      }
+      if (range) range.textContent = `${prefix}${adNumber(guide.minPrice, scale)}~${prefix}${adNumber(guide.maxPrice, scale)}`;
+      if (meta) meta.textContent = currentPriceType() === 1
+        ? fixedPriceRangeMessage(guide)
+        : `Binance live reference: ${prefix}${adNumber(guide.referencePrice, scale)}`;
       const marketLine = $('#adMarketPriceLine');
       if (marketLine) marketLine.hidden = !(Number(guide.marketPrice || 0) > 0);
       if ($('#adMarketPriceLabel')) $('#adMarketPriceLabel').textContent = guide.marketPriceLabel || (side === 'BUY' ? 'Highest Order Price' : 'Lowest Ad Price');
       if ($('#adMarketPrice')) $('#adMarketPrice').textContent = Number(guide.marketPrice || 0) > 0 ? `${prefix}${adNumber(guide.marketPrice, Number(guide.priceScale ?? 2))}` : '';
+      renderFixedPriceValidity();
+      return guide;
     } catch (error) {
     if (isUiRequestCancelled(error)) return;
       if (requestId !== referenceRequestId || !document.contains(form)) return;
+      latestReferenceGuide = null;
       if (range) range.textContent = 'Live range unavailable';
       if (meta) meta.textContent = error.message || 'Could not load Binance reference price.';
+      renderFixedPriceValidity();
+      return null;
     }
   };
   const scheduleReferenceRefresh = () => { clearTimeout(referenceTimer); referenceTimer = setTimeout(() => refreshReferencePrice(false), 120); };
   form.elements.asset.onchange = () => { updatePairLabels(); renderMethods(); scheduleFeeRefresh(); scheduleReferenceRefresh(); refreshAvailableSellBalance(true); };
   form.elements.fiatUnit.onchange = () => { updatePairLabels(); renderMethods(); scheduleFeeRefresh(); scheduleReferenceRefresh(); };
-  form.elements.price.oninput = updateYourPrice;
-  if (form.elements.priceType) form.elements.priceType.onchange = () => { syncPriceTypeUi(); updateYourPrice(); scheduleReferenceRefresh(); };
+  form.elements.price.oninput = () => { updateYourPrice(); renderFixedPriceValidity(); };
+  if (form.elements.priceType) form.elements.priceType.onchange = () => { syncPriceTypeUi(); updateYourPrice(); renderFixedPriceValidity(); scheduleReferenceRefresh(); };
   if (form.elements.priceFloatingRatio) form.elements.priceFloatingRatio.oninput = () => { if (currentPriceType() === 2) updateYourPrice(); };
   form.elements.initAmount.oninput = updateEstimatedFee;
   form.querySelectorAll('input[name="tradeType"]').forEach(input => input.onchange = () => { updatePairLabels(); renderMethods(); scheduleFeeRefresh(); scheduleReferenceRefresh(); refreshAvailableSellBalance(true); });
@@ -1266,6 +1416,15 @@ function openAdvertisementEditor(ad = null, data = {}) {
     if (step === 1) {
       if (!currentCredentialId()) { setFormMessage('#advertisementFormMessage', 'Select a Binance account.', 'danger'); return false; }
       if (!(Number(form.elements.price?.value || 0) > 0)) { setFormMessage('#advertisementFormMessage', 'Enter a valid advertisement price.', 'danger'); form.elements.price?.focus(); return false; }
+      if (data.liveMode && currentPriceType() === 1 && !latestReferenceGuide) {
+        setFormMessage('#advertisementFormMessage', 'Wait for the current Binance fixed-price range to load.', 'danger');
+        return false;
+      }
+      if (!fixedPriceWithinGuide(latestReferenceGuide)) {
+        setFormMessage('#advertisementFormMessage', fixedPriceRangeMessage(latestReferenceGuide), 'danger');
+        form.elements.price?.focus();
+        return false;
+      }
       return true;
     }
     if (step === 2) {
@@ -1281,6 +1440,16 @@ function openAdvertisementEditor(ad = null, data = {}) {
     }
     return true;
   };
+  const refreshAndValidateFixedPrice = async () => {
+    if (data.liveMode && currentPriceType() === 1) {
+      const guide = await refreshReferencePrice(true);
+      if (!guide) {
+        setFormMessage('#advertisementFormMessage', 'The current Binance fixed-price range could not be loaded. No advertisement action was sent.', 'danger');
+        return false;
+      }
+    }
+    return validateWizardStep(1);
+  };
   const currentPaymentMethodLabels = () => {
     const paymentData = currentPaymentData();
     const generic = paymentData.paymentSelectionMode === 'generic';
@@ -1290,8 +1459,8 @@ function openAdvertisementEditor(ad = null, data = {}) {
       return wanted.has(key);
     }).slice(0,5).map(method => method.name || method.tradeMethodName || method.code || method.identifier || 'Payment Method');
   };
-  const openAdvertisementPreview = () => {
-    if (!validateWizardStep(1) || !validateWizardStep(2)) return;
+  const openAdvertisementPreview = async () => {
+    if (!(await refreshAndValidateFixedPrice()) || !validateWizardStep(2)) return;
     const asset = String(form.elements.asset?.value || 'USDT').toUpperCase();
     const fiat = String(form.elements.fiatUnit?.value || 'BDT').toUpperCase();
     const side = currentTradeType();
@@ -1325,6 +1494,17 @@ function openAdvertisementEditor(ad = null, data = {}) {
   };
 
   const showWizardStep = step => {
+    if (isEdit) {
+      currentStep = 3;
+      form.querySelectorAll('[data-ad-step]').forEach(section => { section.hidden = false; });
+      const submit = $('#adWizardSubmit');
+      if (submit) submit.hidden = false;
+      const publish = $('#publishAdvertisementBtn');
+      if (publish) publish.hidden = false;
+      const feeTrigger = $('#adFeeTrigger');
+      if (feeTrigger) feeTrigger.hidden = false;
+      return;
+    }
     currentStep = Math.max(1, Math.min(3, Number(step || 1)));
     form.querySelectorAll('[data-ad-step]').forEach(section => { section.hidden = Number(section.dataset.adStep) !== currentStep; });
     form.querySelectorAll('[data-ad-step-nav]').forEach(button => {
@@ -1347,11 +1527,16 @@ function openAdvertisementEditor(ad = null, data = {}) {
     dialog?.querySelector('.modal-body')?.scrollTo({ top:0, behavior:'auto' });
   };
   $('#adWizardPrevious')?.addEventListener('click', () => showWizardStep(currentStep - 1));
-  $('#adWizardNext')?.addEventListener('click', () => { if (validateWizardStep(currentStep)) showWizardStep(currentStep + 1); });
+  $('#adWizardNext')?.addEventListener('click', async () => {
+    const valid = currentStep === 1 ? await refreshAndValidateFixedPrice() : validateWizardStep(currentStep);
+    if (valid) showWizardStep(currentStep + 1);
+  });
   $('#adWizardPreview')?.addEventListener('click', openAdvertisementPreview);
-  form.querySelectorAll('[data-ad-step-nav]').forEach(button => button.addEventListener('click', () => {
+  form.querySelectorAll('[data-ad-step-nav]').forEach(button => button.addEventListener('click', async () => {
     const target = Number(button.dataset.adStepNav || 1);
-    if (target <= currentStep || validateWizardStep(currentStep)) showWizardStep(target);
+    if (target <= currentStep) return showWizardStep(target);
+    const valid = currentStep === 1 ? await refreshAndValidateFixedPrice() : validateWizardStep(currentStep);
+    if (valid) showWizardStep(target);
   }));
   showWizardStep(1);
 
@@ -1421,7 +1606,8 @@ function openAdvertisementEditor(ad = null, data = {}) {
 
   form.onsubmit = async event => {
     event.preventDefault();
-    if (!validateWizardStep(2)) { showWizardStep(2); return; }
+    if (!(await refreshAndValidateFixedPrice())) { if (!isEdit) showWizardStep(1); return; }
+    if (!validateWizardStep(2)) { if (!isEdit) showWizardStep(2); return; }
     const fd = new FormData(form);
     const obj = Object.fromEntries(fd.entries());
     obj.tradeType = currentTradeType();
@@ -1457,7 +1643,7 @@ function openAdvertisementEditor(ad = null, data = {}) {
     if (isUiRequestCancelled(err)) return;
       setFormMessage('#advertisementFormMessage', err.message || 'Advertisement action failed.', 'danger');
       submit.disabled = false;
-      submit.textContent = isEdit ? 'Save' : 'Post';
+      submit.textContent = isEdit ? 'Save Changes' : 'Post';
     }
   };
 }

@@ -5768,3 +5768,44 @@ body.p2pflow-app-shell .modal-backdrop{overscroll-behavior:contain}
 @media(max-width:480px){
   body.p2pflow-app-shell .sidebar{width:min(93vw,324px);max-width:324px}
 }
+
+/* P2PFlow ads workflow update: create wizard, single-page editor, scoped actions. */
+.ads-editor-close{
+  position:absolute;right:18px;top:12px;z-index:3;width:34px;height:34px;display:grid;place-items:center;
+  border:0!important;border-radius:50%!important;background:#f3f4f5!important;color:#34373c!important;
+  padding:0!important;font-size:24px!important;font-weight:400!important;line-height:1!important;box-shadow:none!important
+}
+.ads-editor-close:hover{background:#e8eaed!important;color:#111318!important}
+.ads-edit-full-head{display:grid;justify-items:center;gap:5px;padding-right:64px;padding-left:64px}
+.ads-edit-full-head>small{display:block;color:#8a8f96;font-size:11px;line-height:1.35;text-align:center}
+.ads-editor-modal.ads-edit-full-modal{width:min(900px,100%);max-width:900px;max-height:96dvh}
+.ads-edit-full-modal>.modal-body{scroll-behavior:smooth}
+.ads-editor-fullpage{padding-bottom:112px}
+.ads-editor-fullpage .ads-field-section{padding-top:18px;padding-bottom:18px}
+.ads-editor-fullpage .ads-edit-identity{padding-top:20px;padding-bottom:16px}
+.ads-editor-fullpage .ads-editor-sticky{margin-bottom:-112px}
+.ads-edit-full-actions{grid-template-columns:repeat(2,minmax(0,1fr))}
+.ads-edit-full-actions>button:only-child{grid-column:1/-1}
+.ads-live-price-guide{border-radius:9px;transition:background .15s ease,box-shadow .15s ease,padding .15s ease}
+.ads-live-price-guide.is-invalid{padding:10px;background:#fff4f4;box-shadow:inset 0 0 0 1px #ffd0d0}
+.ads-live-price-guide.is-invalid #adReferencePriceMeta,.ads-live-price-guide.is-invalid .ads-live-price-range b{color:#c43b45}
+.ads-price-box input.is-invalid{color:#c62828!important}
+.ads-ad-action-menu{display:grid;gap:0}
+.ads-ad-action-summary{display:grid;gap:5px;margin:0 0 8px;padding:12px 13px;border-radius:10px;background:#f7f8f9}
+.ads-ad-action-summary>b{color:#17191d;font-size:14px}
+.ads-ad-action-summary>small{overflow-wrap:anywhere;color:#858a92;font-size:10px;line-height:1.4}
+.ads-ad-action-menu>button{display:grid;grid-template-columns:38px minmax(0,1fr);grid-template-rows:auto auto;column-gap:10px;align-items:center;width:100%;min-height:66px;padding:10px 4px;border:0!important;border-bottom:1px solid #f0f1f2!important;border-radius:0!important;background:#fff!important;color:#1b1e23!important;text-align:left!important;box-shadow:none!important}
+.ads-ad-action-menu>button>span{grid-row:1/3;width:36px;height:36px;display:grid;place-items:center;border-radius:9px;background:#f1f2f4;color:#34373c;font-size:18px}
+.ads-ad-action-menu>button>b{align-self:end;font-size:14px;font-weight:700}
+.ads-ad-action-menu>button>small{align-self:start;color:#8b9097;font-size:10px;font-weight:500;line-height:1.35}
+.ads-ad-action-menu>button.danger>b{color:#d43c4e}
+.ads-ad-action-menu>button.danger>span{background:#fff0f2;color:#d43c4e}
+.ads-ad-action-menu>button:disabled{opacity:.55;cursor:wait}
+
+@media(max-width:760px){
+  .ads-editor-close{right:12px;top:10px}
+  .ads-edit-full-head{padding-left:54px;padding-right:54px}
+  .ads-editor-modal.ads-edit-full-modal{width:100%;height:100dvh;max-height:100dvh}
+  .ads-editor-fullpage{padding-bottom:104px}
+  .ads-editor-fullpage .ads-editor-sticky{margin-bottom:-104px}
+}

@@ -15,14 +15,47 @@ function block(source, start, end) {
   assert(a >= 0 && b > a, `Block not found: ${start}`);
   return source.slice(a, b);
 }
+
 assert(/getAdReferencePrice:\s*\['POST',\s*'\/sapi\/v1\/c2c\/ads\/getReferencePrice'\]/.test(adapter), 'Binance Ads reference-price endpoint is missing.');
 assert(/async function handleAdvertisementReferencePrice/.test(server) && /\/api\/ads\/reference-price/.test(server), 'Ads reference-price API route is missing.');
 const guide = block(server, 'function normalizeAdvertisementReferencePriceResponse(', 'async function advertisementReferencePriceGuide(');
-assert(/referencePrice/.test(guide) && /binance_explicit_live_bounds/.test(guide) && /reference_ui_derived/.test(guide), 'Live Binance reference-price guide/bounds normalization is missing.');
+assert(/referencePrice/.test(guide) && /binance_explicit_live_bounds/.test(guide) && /binance_live_reference_rule/.test(guide), 'Live Binance reference-price guide/bounds normalization is missing.');
+assert(/validationMessage/.test(guide) && /Fixed price must fall within the limited range of:/.test(guide), 'Exact fixed-price range message is missing.');
+assert(/decimalFloorScale/.test(server) && /122\.48 x 1\.08 = 132\.2784/.test(server), 'Binance price-tick truncation rule is missing.');
+assert(/assertAdvertisementFixedPriceWithinLiveRange/.test(server) && /ADS_FIXED_PRICE_OUT_OF_RANGE/.test(server), 'Server-side live fixed-price validation is missing.');
+assert((server.match(/assertAdvertisementFixedPriceWithinLiveRange\(/g) || []).length >= 4, 'Create, edit and publish do not all enforce the live price range.');
+assert(/function advertisementReferencePayType/.test(server) && /payType:advertisementReferencePayType\(item\)/.test(server), 'Server price validation is not scoped to the selected payment method.');
+assert(/currentReferencePayType/.test(ads) && /payType=\$\{encodeURIComponent\(payType\)\}/.test(ads), 'Editor reference-price request does not include the selected payment method.');
 assert(!/name="minRate"/.test(ads) && !/name="maxRate"/.test(ads), 'Editable Minimum/Maximum Rate inputs still exist.');
-assert(/Price range/.test(ads) && /adLivePriceRange/.test(ads) && /Highest Order Price/.test(ads) && /Lowest Ad Price/.test(ads), 'Screenshot-style live price guide is incomplete.');
+assert(/Fixed price limit/.test(ads) && /adLivePriceRange/.test(ads) && /Highest Order Price/.test(ads) && /Lowest Ad Price/.test(ads), 'Live price-limit guide is incomplete.');
+assert(/refreshReferencePrice\(true\)/.test(ads) && /fixedPriceWithinGuide/.test(ads), 'The editor does not force a fresh Binance price-range validation before action.');
 assert(/name="priceType"/.test(ads) && /Fixed/.test(ads) && /Floating/.test(ads) && /name="priceFloatingRatio"/.test(ads), 'Price Type controls are missing.');
+
 assert(/Set Type & Price/.test(ads) && /Set Amount & Method/.test(ads) && /Set Conditions/.test(ads), 'Three-step Post Ad wizard is missing.');
+assert(/isEdit \? `<div class="ads-wizard-head ads-edit-full-head">/.test(ads), 'Edit Advertisement single-page header is missing.');
+assert(/form\.querySelectorAll\('\[data-ad-step\]'\).*section\.hidden = false/.test(ads), 'Edit Advertisement does not reveal every section on one page.');
+assert(/ads-edit-full-modal/.test(ads) && /\.ads-editor-modal\.ads-edit-full-modal/.test(css), 'Single-page Edit Advertisement layout is missing.');
+assert(/data-ad-menu/.test(ads) && /openAdvertisementActionSheet/.test(ads), 'Advertisement three-dot action menu is missing.');
+assert(/data-ad-action-edit/.test(ads) && /data-ad-action-delete/.test(ads), 'Three-dot menu does not expose both Edit and Delete.');
+assert(!/data-edit-ad/.test(ads), 'Three-dot button still opens Edit directly.');
+
+const paymentScope = block(ads, 'function adsPaymentMethodsForCredential(', 'function adsPaymentDataForCredential(');
+assert(/Array\.isArray\(scoped\) \? scoped : \[\]/.test(paymentScope), 'Credential payment methods still fall back to a global/other account list.');
+assert(/method\.credentialId/.test(paymentScope), 'Credential ID mismatch guard is missing from payment-method filtering.');
+assert(/availableForCredential === true/.test(server), 'Server does not filter payment methods to the selected Binance credential.');
+assert(/fetchAdvertisementAccountPaymentMethods\(credential\)/.test(server) && /const genericPaymentMethods = advertisementGenericPaymentCatalogForCredential/.test(server), 'Edit action does not refresh account-scoped payment methods.');
+assert(/ADS_ACCOUNT_PAYMENT_METHOD_MISMATCH/.test(server), 'Account-scoped payment method mismatch protection is missing.');
+assert(/function advertisementScopedPaymentMethodIds/.test(server) && /allowGlobalFallback:false/.test(server), 'Advertisement responses do not remove payment IDs that belong to another Binance account.');
+assert(/ADS_CREDENTIAL_SCOPE_MISMATCH/.test(server), 'Advertisement credential reassignment guard is missing.');
+assert(/exactEditorCredentialAvailable/.test(ads) && /Edit was blocked to prevent cross-account payment-method use/.test(ads), 'Edit UI can still fall back to a different Binance account.');
+assert(/ADS_LIVE_DETAIL_REQUIRED/.test(server) && /ADS_ACCOUNT_PAYMENT_METHODS_REQUIRED/.test(server), 'Edit preload is not fail-closed on exact-account live detail/payment-method verification.');
+const editPatch = block(server, "if (!action && req.method === 'PATCH')", "if (action === 'status'");
+assert(editPatch.indexOf('prepareAdvertisementTradeMethodsForCredential') < editPatch.lastIndexOf('assertAdvertisementFixedPriceWithinLiveRange'), 'Edit validation checks price before resolving exact-account payment methods.');
+
+assert(/compareAdvertisementsByStableCreationOrder/.test(server), 'Stable advertisement ordering comparator is missing.');
+assert(/items\.sort\(compareAdvertisementsByStableCreationOrder\)/.test(server), 'Advertisement list still sorts by edit/update time.');
+assert(/order: cleanStr\(opts\.order \|\| 'createTime'/.test(server), 'Binance advertisement sync does not request stable create-time order.');
+
 assert(/Verification Request/.test(ads) && /name="additionalKyc"/.test(ads), 'Verification Request control is missing.');
 assert(/Preview Ad/.test(ads) && /data-preview-post/.test(ads), 'Advertisement preview flow is missing.');
 assert(/paymentSelectionMode === 'generic'/.test(ads), 'BUY generic payment-method mode is missing.');
@@ -32,11 +65,23 @@ assert(/obj\.paymentMethodIds = selectedMethodIds\.map\(Number\)/.test(ads) && /
 assert(/slice\(0,\s*5\)/.test(ads) && /maximum of 5 payment methods/.test(ads), 'Five-payment-method cap is missing.');
 const normalize = block(server, 'function normalizeAdvertisementInput(', 'function advertisementCreateClassifyForCredential(');
 assert(/tradeType === 'SELL'/.test(normalize) && /paymentMethodIds/.test(normalize) && /paymentMethodKeys/.test(normalize), 'Server BUY/SELL payment selection model is incomplete.');
+
 const releasePage = block(app, 'function openReleaseVerificationPage(', 'function openFinalActionModal(');
 for (const verbose of ['Saved Fund Transfer Password ready', 'Primary/Secondary P2PFlow verification is available', 'Protected Release · P2PFlow / Binance Risk', 'Binance verification check']) {
   assert(!releasePage.includes(verbose), `Verbose Release verification text remains: ${verbose}`);
 }
 assert(/release-verify-minimal/.test(releasePage) && /release-verify-submit/.test(releasePage), 'Minimal Release verification shell/button is missing.');
-assert(/\.release-verify-minimal/.test(css) && /\.ads-wizard-progress/.test(css) && /\.screenshot-filters/.test(css), 'Responsive Binance-reference CSS overrides are missing.');
+assert(/\.release-verify-minimal/.test(css) && /\.ads-wizard-progress/.test(css) && /\.ads-ad-action-menu/.test(css), 'Responsive ads workflow CSS is missing.');
 assert(pkg.version === '1.6.0', `expected v1.6.0, got ${pkg.version}`);
-console.log(JSON.stringify({ ok:true, liveReferencePrice:true, editableRateBounds:false, sellSavedAccounts:true, buyGenericMethods:true, maxPaymentMethods:5, releaseVerification:'minimal-one-button', referenceUi:true }));
+console.log(JSON.stringify({
+  ok:true,
+  createFlow:'three-step',
+  editFlow:'single-page',
+  actionMenu:['edit','delete'],
+  fixedPrice:'live-client-and-server-validated',
+  paymentScope:'credential-isolated-fail-closed',
+  referencePriceScope:'account-pair-side-payment-method',
+  adOrder:'stable-create-time',
+  maxPaymentMethods:5,
+  referenceUi:true
+}));
