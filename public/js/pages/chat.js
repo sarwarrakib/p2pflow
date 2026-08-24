@@ -88,14 +88,14 @@ async function renderChatInbox(options={}) {
   if (options.preserveFocus && existingList && state.page === 'chat') {
     const page = existingList.closest('.chat-inbox-page');
     const pageScrollTop = page?.scrollTop || 0;
-    const windowScrollY = window.scrollY || 0;
+    const windowScrollY = appScrollTop() || 0;
     existingList.innerHTML = renderChatInboxThreads(visible);
     const summary = $('#chatInboxSummary');
     if (summary) summary.innerHTML = `<span>${items.length} conversation${items.length === 1 ? '' : 's'}</span>${Number(data?.totalUnread || 0) ? `<b>${Number(data.totalUnread)} unread</b>` : ''}`;
     bindChatInboxThreadClicks();
     bindBackgroundNotificationControls(page || document);
     if (page) page.scrollTop = pageScrollTop;
-    requestAnimationFrame(() => window.scrollTo({ top:windowScrollY, left:0, behavior:'auto' }));
+    requestAnimationFrame(() => appScrollTo({ top:windowScrollY, left:0, behavior:'auto' }));
     if (hadSearchFocus) {
       const search = $('#chatInboxSearch');
       search?.focus({ preventScroll:true });

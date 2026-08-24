@@ -1,4 +1,4 @@
-# P2PFlow 1.5 - Unified Package
+# P2PFlow 1.6 - Unified Package
 
 এই সংস্করণে Hostinger, GitHub এবং manual update-এর জন্য আলাদা package নেই। **একটাই ZIP সব কাজে ব্যবহার হবে।**
 
@@ -27,32 +27,33 @@ Updater code এবং database আলাদা রাখে। Update install-�
 
 ## Version
 
-Internal SemVer: `1.5.40`
-UI: `1.5`
+Internal SemVer: `1.6.0`
+UI: `1.6`
 Database schema: `37`
 
-Normal next version: `SET_NEXT_VERSION.bat` -> `1.6.0`  
-Hotfix: `SET_HOTFIX_VERSION.bat` -> `1.5.41`
+Normal next version: `SET_NEXT_VERSION.bat` -> `1.7.0`  
+Hotfix: `SET_HOTFIX_VERSION.bat` -> `1.6.1`
 
 ## Database history safety
 
 P2PFlow keeps authoritative business/application data in MariaDB/MySQL/PostgreSQL. State payloads are compressed with Brotli before AES-256-GCM encryption, proofs/chat media are stored as encrypted database objects, and identical newly uploaded proof/media bytes use content-addressed object IDs to avoid duplicate blobs. The default is 3 retained recovery checkpoints with a 6-hour archive interval and 5 retained automatic database backups. Older uncompressed state/history/backup payloads are upgraded incrementally after startup. Health Check reports each P2PFlow database table's allocated size/row count, current encrypted state payload size, compression saving percentage, and proof/chat object usage so database-MB growth can be inspected without terminal access. `shared/`, `.p2pflow`, `.env`, `releases/` and temporary restart/update markers are operational bootstrap/update metadata only; they are not an application/business-data store. The application runtime itself does not write proof, chat, audit, order, ledger, notification or recovery-code data to local files.
 
-## v1.5.40 Fixed-Shell SPA, Per-Route View Cache & Zero-Overflow Navigation
+## v1.6.0 Dedicated Frontend Architecture — Fixed AppShell & Clean History Routes
 
-- Authenticated application shell (`sidebar + topbar + content viewport`) এখন একবার mount হয়; normal API/SSE/WSS update-এ browser page বা app shell reload হয় না।
-- প্রতিটি route-এর DOM view আলাদাভাবে cache হয়। অন্য page-এ গিয়ে আবার ফিরে এলে আগের page structure সঙ্গে সঙ্গে restore হয়; network response-এর জন্য পুরোনো অন্য page সামনে পড়ে থাকে না।
-- প্রথমবার কোনো page খোলা হলে target page-এর নিজস্ব static shell সঙ্গে সঙ্গে mount হয়; dynamic data পরে JSON API/SSE/WSS থেকে patch হয়। Slow network-এও previous page view আর target route overwrite করতে পারে না।
-- `#content.innerHTML`-এর জন্য stable commit gate যোগ হয়েছে। একই route-এর refresh existing nodes morph/patch করে; focus, input caret, `<details>` open state, window scroll এবং keyed internal scroll containers preserve হয়।
-- Navigation **Latest Navigation Wins** থাকে: নতুন route পুরোনো GET/render scope abort করে এবং stale response current route-এর DOM commit করতে পারে না। System Update-এর neutral control request-ও route-aware abort/render guard ব্যবহার করে।
-- Generic `db_updated` event আর সব page full-render করে না। শুধু approved non-destructive page patches চালায়; Orders/Ads/Market/Chat তাদের dedicated realtime updater ব্যবহার করে।
-- System Update page-এর static cards/guide keyed করা হয়েছে, তাই release/status polling পুরো page replace করে না।
-- প্রতি সেকেন্ডের horizontal scrollbar/jump-এর root cause fixed: route progress animation আর `overflow:visible` নয়; এটি fixed, clipped overlay। Root viewport-এ stable vertical scrollbar gutter এবং hard horizontal overflow containment আছে।
-- Background data patch-এ পুরো `#content` opacity/translate animation সরানো হয়েছে; data update আর full-page visual “refresh” দেখায় না।
-- Actual signed System Update activation/restart সফল হওয়ার পর intentional browser reload এখনও থাকে; normal navigation/data refresh-এ নয়।
-- v1.5.38 Ads reference UI এবং v1.5.37/1.5.36 Release/FUND_PWD security flow অপরিবর্তিত। Database schema `37`; নতুন migration নেই।
+- Authenticated browser document এখন `100dvh` fixed AppShell; `html/body/#app/main` আর application page-এর সঙ্গে scroll করে না। Desktop sidebar ও top header স্থায়ী, শুধু active route viewport page scroll করে।
+- Canonical navigation clean History API URL ব্যবহার করে: `/orders/123`, `/p2p/market`, `/accounting`, `/system/update`। পুরোনো `/#/...` bookmark readable এবং clean URL-এ migrate হয়।
+- Node server known SPA route-এ History fallback দিয়ে `index.html` serve করে, তাই nested route সরাসরি refresh করলেও application খুলতে পারে।
+- প্রতিটি route-এর persistent detached DOM host আছে। Inactive route live DOM থেকে detach হয়, কিন্তু form/DOM/scroll state bounded cache-এ preserve হয়; target route নিজের shell সঙ্গে সঙ্গে mount/restore হয়।
+- Navigation **Latest Navigation Wins**: নতুন route পুরোনো navigation request abort করে; stale response guard mismatch হলে current page DOM-এ commit করতে পারে না। Browser Back/Forward একই authority ব্যবহার করে।
+- Explicit `PAGE_RUNTIME` lifecycle registry page leave-এর সঙ্গে Market observer/timer, Order/Chat sync, Ads polling এবং Accounting timer deactivate করে। Existing feature pageগুলো `public/js/pages/*.js` আলাদা file-এই থাকে।
+- Realtime/API refresh active route host destroy করে না। Stable DOM morph existing nodes/data patch করে; Orders/Chat/Market/Ads dedicated incremental updater বহাল।
+- Page modules document/window scrolling ব্যবহার করে না; active route scroller API ব্যবহার করে। Settings/Order sticky controls fixed header-এর বাইরে নতুন viewport অনুযায়ী adjust করা হয়েছে।
+- Global route progress fixed clipped overlay; browser width পরিবর্তন বা প্রতি cycle horizontal scrollbar তৈরি করতে পারে না। Table/chip-এর প্রয়োজনীয় local horizontal scroll আলাদা wrapper-এ সীমাবদ্ধ।
+- PWA start URL, login return, push notification links এবং Security redirect clean routes ব্যবহার করে।
+- v1.5.38 Ads UI, v1.5.37 secret vault/one-click verification, v1.5.36 Binance FUND_PWD RSA flow এবং permission/accounting/realtime backend behavior preserved।
+- Database schema `37`; নতুন migration নেই।
 
-বিস্তারিত: `P2PFlow_v1.5.40_RELEASE_NOTES_BN.md`, `P2PFlow_v1.5.40_MANUAL_UPDATE_BN.md` এবং `P2PFlow_v1.5.40_LAUNCH_CHECKLIST_BN.md`.
+বিস্তারিত: `P2PFlow_v1.6.0_RELEASE_NOTES_BN.md`, `P2PFlow_v1.6.0_MANUAL_UPDATE_BN.md` এবং `P2PFlow_v1.6.0_LAUNCH_CHECKLIST_BN.md`.
 
 ## v1.5.38 Reference UI, Minimal Verification & Binance Ad Flow (historical)
 

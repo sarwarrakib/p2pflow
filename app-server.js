@@ -5957,8 +5957,8 @@ function notificationPushTitle(item = {}) {
 function notificationPushPayload(item = {}, recipient = null) {
   const order = item.orderId ? orderById(item.orderId) : null;
   const route = order && recipient?.user && canAccessOrder(recipient.user, order)
-    ? `/#/orders/${Number(order.id)}`
-    : '/#/notifications';
+    ? `/orders/${Number(order.id)}`
+    : '/notifications';
   const category = notificationCategoryForType(item.type, item);
   return {
     title: notificationPushTitle(item),
@@ -12137,6 +12137,25 @@ function sameOriginOk(req) {
   try { return new URL(origin).origin === expectedOrigin; } catch { return false; }
 }
 
+const SPA_APPLICATION_ROUTE_PATTERNS = Object.freeze([
+  /^\/dashboard\/?$/,
+  /^\/p2p\/(?:market|profile|messages|advertisements|approvals)\/?$/,
+  /^\/orders(?:\/\d+)?\/?$/,
+  /^\/payments\/(?:accounts|offline-business|statement(?:\/account\/\d+)?)\/?$/,
+  /^\/team\/(?:users|roles|routing)\/?$/,
+  /^\/reports\/?$/,
+  /^\/accounting(?:\/(?:expenses|income|capital|closing))?\/?$/,
+  /^\/monitor\/(?:activity|audit)\/?$/,
+  /^\/system\/(?:api-credentials|health|update|settings|extension|security)\/?$/,
+  /^\/notifications\/?$/,
+  // Transitional v1.x aliases are still served so the client can canonicalize them.
+  /^\/(?:p2p-market|p2p-profile|offline-transactions|user-roles|p2p-extension|system-update)\/?$/
+]);
+function isSpaApplicationRoute(pathname='') {
+  const value = String(pathname || '');
+  return SPA_APPLICATION_ROUTE_PATTERNS.some(pattern => pattern.test(value));
+}
+
 function serveStatic(req, res) {
   if (!['GET', 'HEAD'].includes(String(req.method || '').toUpperCase())) {
     return sendText(res, 405, 'Method not allowed', 'text/plain; charset=utf-8', req);
@@ -12151,7 +12170,7 @@ function serveStatic(req, res) {
   }
   if (pathname.includes('\0')) return sendText(res, 400, 'Bad request', 'text/plain; charset=utf-8', req);
   if (pathname === '/login' || pathname === '/login/') pathname = '/login.html';
-  if (pathname === '/') pathname = '/index.html';
+  if (pathname === '/' || isSpaApplicationRoute(pathname)) pathname = '/index.html';
   const relativePath = pathname.replace(/^\/+/, '');
   const filePath = path.resolve(PUBLIC_DIR, relativePath);
   const relative = path.relative(PUBLIC_DIR, filePath);

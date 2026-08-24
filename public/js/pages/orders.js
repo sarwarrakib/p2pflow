@@ -231,7 +231,7 @@ async function renderOrders(opts={}) {
   const content = $('#content');
   const canStablePatch = backgroundRefresh && content?.querySelector('.order-group-switch') && content?.querySelector('.order-section');
   if (canStablePatch) {
-    const scrollY = window.scrollY;
+    const scrollY = appScrollTop();
     const staging = document.createElement('div');
     staging.innerHTML = ordersPageHtml;
     const nextSection = staging.querySelector('.order-section');
@@ -247,7 +247,7 @@ async function renderOrders(opts={}) {
       button.classList.toggle('active', active);
       button.setAttribute('aria-selected', active ? 'true' : 'false');
     });
-    requestAnimationFrame(() => window.scrollTo({ top:scrollY, left:0, behavior:'auto' }));
+    requestAnimationFrame(() => appScrollTo({ top:scrollY, left:0, behavior:'auto' }));
   } else if (content) {
     content.innerHTML = ordersPageHtml;
   }

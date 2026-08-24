@@ -1,5 +1,5 @@
-// v1.5.40: fixed-shell SPA architecture, route DOM cache, stable morph commits, overflow-safe progress, and latest-navigation-wins rendering.
-// v1.5.40: stable-shell navigation, stale-request cancellation, non-destructive order/chat updates, and latest-navigation-wins rendering.
+// v1.6.0: fixed-viewport AppShell, clean History routes, persistent per-route hosts, lifecycle rendering, and data-only DOM patching.
+// v1.6.0: stable-shell navigation, stale-request cancellation, non-destructive order/chat updates, and latest-navigation-wins rendering.
 // v1.5.23: Payment Account serial scope treats each normalized Label, including no Label, as an independent namespace.
 // v1.5.22: Header-only Work Status, chat-only notification master, and coupled sound/push controls.
 // v1.5.20: account-scoped Binance RBAC, visible security recovery setup and individual-only profit accounting.
@@ -98,7 +98,7 @@ const state = {
   routeViewCache: new Map(),
   routeViewCacheOrder: [],
   activeContentRouteKey: '',
-  stableContentCommitInstalled: false,
+  routeHostManager: null,
   backgroundPatchDepth: 0
 };
 
@@ -4424,7 +4424,7 @@ function setupGlobalPullToRefresh() {
     indicator.classList.remove('show', 'ready');
   };
   document.addEventListener('touchstart', event => {
-    if (!state.user || state.page === 'p2p-market' || window.scrollY > 0 || blockedTarget(event.target) || event.touches.length !== 1) return;
+    if (!state.user || state.page === 'p2p-market' || appScrollTop() > 0 || blockedTarget(event.target) || event.touches.length !== 1) return;
     pulling = true;
     startY = event.touches[0].clientY;
     currentY = startY;
@@ -4449,7 +4449,7 @@ function setupGlobalPullToRefresh() {
 }
 
 async function init() {
-  installStableContentArchitecture();
+  setupApplicationShellArchitecture();
   setupLanguageControls();
   setupNotificationSoundControls();
   setupPermissionHelpTooltips();
@@ -4458,7 +4458,11 @@ async function init() {
   setupGlobalPullToRefresh();
   setupConnectivityStatus();
 
-  window.addEventListener('hashchange', () => { if (state.user) routeFromLocation(); });
+  window.addEventListener('popstate', () => { if (state.user) routeFromLocation(false); });
+  window.addEventListener('hashchange', () => {
+    if (!state.user) return;
+    if (window.P2PFlowHistoryRouter?.legacyHashToRoute?.(location.hash || '')) routeFromLocation(false);
+  });
   const logoutButton = $('#logoutBtn');
   if (logoutButton) logoutButton.onclick = async () => {
     await sendActivityEnd('logout').catch(()=>{});
@@ -4497,8 +4501,12 @@ async function bootApp() {
   startMobileBottomNavSync();
   startEvents();
   startActivityTracking();
-  if (!location.hash) {
-    history.replaceState(null, '', '#/' + (canPage(state.page) ? state.page : visiblePages()[0][0]));
+  const legacyRoute = window.P2PFlowHistoryRouter?.legacyHashToRoute?.(location.hash || '');
+  if (legacyRoute) {
+    history.replaceState({ p2pflow:true, migratedFromHash:true }, '', canonicalRoutePath(legacyRoute));
+  } else if (location.pathname === '/' || !window.P2PFlowHistoryRouter?.pathToRoute?.(location.pathname)) {
+    const firstPage = canPage(state.page) ? state.page : (visiblePages()[0]?.[0] || 'dashboard');
+    history.replaceState({ p2pflow:true }, '', routePath(firstPage));
   }
   await routeFromLocation();
 }
@@ -5026,8 +5034,42 @@ function stableScrollableKey(node, index=0) {
   return stableNodeKey(node) || `${node.tagName || 'NODE'}:${node.className || ''}:${index}`;
 }
 
+function appScrollElement() {
+  return window.P2PFlowViewport?.active?.() || document.getElementById('content') || document.scrollingElement;
+}
+function appScrollTop() { return Number(window.P2PFlowViewport?.top?.() ?? appScrollElement()?.scrollTop ?? 0); }
+function appScrollLeft() { return Number(window.P2PFlowViewport?.left?.() ?? appScrollElement()?.scrollLeft ?? 0); }
+function appScrollTo(options={}) {
+  if (window.P2PFlowViewport?.to) return window.P2PFlowViewport.to(options);
+  const el = appScrollElement();
+  if (!el) return;
+  const top = Number(options.top ?? el.scrollTop ?? 0), left = Number(options.left ?? el.scrollLeft ?? 0);
+  if (typeof el.scrollTo === 'function') el.scrollTo({ top, left, behavior:options.behavior || 'auto' });
+  else { el.scrollTop = top; el.scrollLeft = left; }
+}
+function appScrollBy(options={}) {
+  if (window.P2PFlowViewport?.by) return window.P2PFlowViewport.by(options);
+  const el = appScrollElement();
+  if (!el) return;
+  const top = Number(options.top || 0), left = Number(options.left || 0);
+  if (typeof el.scrollBy === 'function') el.scrollBy({ top, left, behavior:options.behavior || 'auto' });
+  else { el.scrollTop += top; el.scrollLeft += left; }
+}
+function appScrollNearBottom(distance=420) {
+  if (window.P2PFlowViewport?.nearBottom) return window.P2PFlowViewport.nearBottom(distance);
+  const el = appScrollElement();
+  return Boolean(el && Number(el.clientHeight || 0) + Number(el.scrollTop || 0) >= Number(el.scrollHeight || 0) - Number(distance || 0));
+}
+function setupApplicationShellArchitecture() {
+  if (state.routeHostManager) return state.routeHostManager;
+  const viewport = document.getElementById('routeViewport');
+  if (!viewport || !window.P2PFlowRouteHosts?.create) throw new Error('P2PFlow route-host runtime is unavailable.');
+  state.routeHostManager = window.P2PFlowRouteHosts.create(viewport, { activeId:'content', maxHosts:12 });
+  return state.routeHostManager;
+}
+
 function captureStableViewport(container) {
-  const viewport = { x:window.scrollX, y:window.scrollY, scroll:[], focus:null };
+  const viewport = { x:Number(container?.scrollLeft || 0), y:Number(container?.scrollTop || 0), scroll:[], focus:null };
   const active = document.activeElement;
   if (active && container.contains(active)) {
     viewport.focus = {
@@ -5087,7 +5129,8 @@ function restoreStableViewport(container, viewport) {
         }
       }
     }
-    window.scrollTo({ top:viewport.y, left:viewport.x, behavior:'auto' });
+    if (container && typeof container.scrollTo === 'function') container.scrollTo({ top:viewport.y, left:viewport.x, behavior:'auto' });
+    else if (container) { container.scrollTop = viewport.y; container.scrollLeft = viewport.x; }
   });
 }
 
@@ -5188,11 +5231,9 @@ function stableMorphContent(container, html) {
   restoreStableViewport(container, viewport);
 }
 
-function installStableContentArchitecture() {
-  if (state.stableContentCommitInstalled) return;
-  const content = document.getElementById('content');
+function installStableContentArchitecture(content = document.getElementById('content')) {
   const descriptor = nativeContentInnerHtmlDescriptor();
-  if (!content || !descriptor?.get || !descriptor?.set) return;
+  if (!content || content.dataset.stableCommitInstalled === '1' || !descriptor?.get || !descriptor?.set) return;
   Object.defineProperty(content, 'innerHTML', {
     configurable:true,
     get() { return descriptor.get.call(this); },
@@ -5202,48 +5243,30 @@ function installStableContentArchitecture() {
       else stableMorphContent(this, html);
     }
   });
-  state.stableContentCommitInstalled = true;
+  content.dataset.stableCommitInstalled = '1';
 }
 
-function trimRouteViewCache() {
-  while (state.routeViewCacheOrder.length > STABLE_ROUTE_CACHE_LIMIT) {
-    const key = state.routeViewCacheOrder.shift();
-    if (key && key !== state.activeContentRouteKey) state.routeViewCache.delete(key);
-  }
-}
-
-function cacheActiveRouteView(routeKey = state.activeContentRouteKey || currentStateRouteKey()) {
-  const content = document.getElementById('content');
-  if (!content || !routeKey || !content.childNodes.length || content.querySelector('[data-route-shell]')) return;
-  let entry = state.routeViewCache.get(routeKey);
-  if (!entry) entry = { holder:document.createElement('div'), scrollY:0, scrollX:0, savedAt:0 };
-  entry.holder.replaceChildren(...content.childNodes);
-  entry.scrollY = window.scrollY;
-  entry.scrollX = window.scrollX;
-  entry.savedAt = Date.now();
-  state.routeViewCache.set(routeKey, entry);
-  state.routeViewCacheOrder = state.routeViewCacheOrder.filter(key => key !== routeKey);
-  state.routeViewCacheOrder.push(routeKey);
-  trimRouteViewCache();
+function cacheActiveRouteView() {
+  // v1.6.0 keeps the entire route host intact instead of moving/recreating page
+  // children. Capturing is therefore only a scroll-state operation.
+  state.routeHostManager?.captureActive?.();
 }
 
 function restoreCachedRouteView(routeKey) {
-  const content = document.getElementById('content');
-  const entry = state.routeViewCache.get(routeKey);
-  if (!content || !entry?.holder?.childNodes?.length) return false;
-  content.replaceChildren(...entry.holder.childNodes);
-  content.dataset.routeKey = routeKey;
-  requestAnimationFrame(() => window.scrollTo({ top:entry.scrollY || 0, left:entry.scrollX || 0, behavior:'auto' }));
+  if (!state.routeHostManager?.has?.(routeKey)) return false;
+  const activation = state.routeHostManager.activate(routeKey);
+  installStableContentArchitecture(activation.host);
+  activation.host.dataset.routeKey = routeKey;
   return true;
 }
 
-function mountRouteStaticShell(route = {}) {
-  const content = document.getElementById('content');
+function mountRouteStaticShell(route = {}, content = document.getElementById('content')) {
   const descriptor = nativeContentInnerHtmlDescriptor();
   if (!content || !descriptor?.set) return;
   descriptor.set.call(content, routeStaticShellHtml(route));
   content.dataset.routeKey = stableRouteKey(route);
-  window.scrollTo({ top:0, left:0, behavior:'auto' });
+  if (typeof content.scrollTo === 'function') content.scrollTo({ top:0, left:0, behavior:'auto' });
+  else { content.scrollTop = 0; content.scrollLeft = 0; }
 }
 
 function backgroundPatchAllowed(page=state.page) {
@@ -5251,55 +5274,109 @@ function backgroundPatchAllowed(page=state.page) {
 }
 
 function parseHashRoute() {
+  const router = window.P2PFlowHistoryRouter;
+  if (router?.legacyHashToRoute) return router.legacyHashToRoute(location.hash) || { page:'dashboard', orderId:null, ledgerAccountId:null };
   const raw = String(location.hash || '').replace(/^#\/?/, '');
   const parts = raw.split('/').filter(Boolean);
   const page = parts[0] || 'dashboard';
-  const route = { page, orderId: null, ledgerAccountId: null };
+  const route = { page, orderId:null, ledgerAccountId:null };
   if (page === 'orders' && parts[1]) route.orderId = Number(parts[1]) || null;
   if (page === 'ledger' && parts[1] === 'account' && parts[2]) route.ledgerAccountId = Number(parts[2]) || null;
   return route;
 }
 
-function routeHash(page, opts={}) {
-  let hash = '#/' + page;
-  if (page === 'orders' && opts.orderId) hash += '/' + Number(opts.orderId);
-  if (page === 'ledger' && opts.accountId) hash += '/account/' + Number(opts.accountId);
-  return hash;
+function parseLocationRoute() {
+  const router = window.P2PFlowHistoryRouter;
+  if (router?.locationToRoute) return router.locationToRoute(location);
+  return parseHashRoute();
+}
+
+function routePath(page, opts={}) {
+  const route = {
+    page,
+    orderId: page === 'orders' ? Number(opts.orderId || 0) || null : null,
+    ledgerAccountId: page === 'ledger' ? Number(opts.accountId || opts.ledgerAccountId || 0) || null : null
+  };
+  const routed = window.P2PFlowHistoryRouter?.routeToPath?.(route);
+  if (routed) return routed;
+  if (route.page === 'orders' && route.orderId) return `/orders/${route.orderId}`;
+  if (route.page === 'ledger' && route.ledgerAccountId) return `/payments/statement/account/${route.ledgerAccountId}`;
+  return `/${encodeURIComponent(String(route.page || 'dashboard'))}`;
+}
+
+function canonicalRoutePath(route={}) {
+  return window.P2PFlowHistoryRouter?.routeToPath?.(route)
+    || routePath(route.page || 'dashboard', { orderId:route.orderId, accountId:route.ledgerAccountId });
+}
+
+function migrateLegacyHashLocation() {
+  const router = window.P2PFlowHistoryRouter;
+  const legacy = router?.legacyHashToRoute?.(location.hash || '');
+  if (!legacy) return null;
+  const path = router.routeToPath(legacy);
+  history.replaceState({ p2pflow:true, migratedFromHash:true }, '', path);
+  return legacy;
 }
 
 function setRoute(page, opts={}) {
-  const hash = routeHash(page, opts);
-  if (location.hash === hash) {
-    // Re-clicking the current destination must not start another full async render.
+  const targetRoute = {
+    page,
+    orderId: page === 'orders' ? Number(opts.orderId || 0) || null : null,
+    ledgerAccountId: page === 'ledger' ? Number(opts.accountId || opts.ledgerAccountId || 0) || null : null
+  };
+  const target = canonicalRoutePath(targetRoute);
+  const current = canonicalRoutePath(parseLocationRoute());
+  const legacyHash = Boolean(window.P2PFlowHistoryRouter?.legacyHashToRoute?.(location.hash || ''));
+  if (!legacyHash && current === target && location.pathname === target) {
     if (opts.force === true) return routeFromLocation(opts.showLoading !== false);
     return Promise.resolve();
   }
-  location.hash = hash;
-  return Promise.resolve();
+  history.pushState({ p2pflow:true, route:targetRoute }, '', target);
+  return routeFromLocation(opts.showLoading !== false);
 }
 
 async function routeFromLocation(showLoading=true) {
-  setMobileNavigation(false, { restoreFocus: false });
-  const parsed = parseHashRoute();
+  setMobileNavigation(false, { restoreFocus:false });
+  setupApplicationShellArchitecture();
+  migrateLegacyHashLocation();
+  const parsed = parseLocationRoute();
+  const fallbackPage = visiblePages()[0]?.[0] || 'dashboard';
   const route = {
     ...parsed,
-    page: canPage(parsed.page) ? parsed.page : visiblePages()[0][0]
+    page: canPage(parsed.page) ? parsed.page : fallbackPage
   };
+  if (route.page !== parsed.page) {
+    route.orderId = null;
+    route.ledgerAccountId = null;
+  }
+  const canonicalPath = canonicalRoutePath(route);
+  if (location.pathname !== canonicalPath || location.hash) {
+    history.replaceState({ p2pflow:true, route }, '', canonicalPath);
+  }
+
   const nextRouteKey = stableRouteKey(route);
+  const previousPage = state.page;
   const previousRouteKey = state.activeContentRouteKey || currentStateRouteKey();
-  const sameRoute = previousRouteKey === nextRouteKey && Boolean(document.getElementById('content')?.children.length);
-  if (!sameRoute && previousRouteKey) cacheActiveRouteView(previousRouteKey);
   const scope = beginNavigationScope(route);
+  if (previousPage && previousPage !== route.page) deactivatePageRuntime(previousPage, route.page);
+
+  // State switches before data fetching. This is what makes old async results
+  // fail their route/page guards even on a slow connection.
   state.page = route.page;
   state.currentOrderId = route.orderId;
   state.ledgerAccountId = route.ledgerAccountId;
   state.activeContentRouteKey = nextRouteKey;
+
+  const activation = state.routeHostManager.activate(nextRouteKey, {
+    shellHtml: routeStaticShellHtml(route)
+  });
+  const contentHost = activation.host;
+  installStableContentArchitecture(contentHost);
+  contentHost.dataset.routeKey = nextRouteKey;
+  contentHost.dataset.page = route.page;
+  setRoutePending(true);
   setTitle(routeDisplayTitle(route), '');
-  let restoredView = sameRoute;
-  if (!sameRoute) restoredView = restoreCachedRouteView(nextRouteKey);
-  if (!restoredView) mountRouteStaticShell(route);
-  const contentHost = document.getElementById('content');
-  if (contentHost) contentHost.dataset.routeKey = nextRouteKey;
+
   document.body.classList.toggle('p2p-market-active', state.page === 'p2p-market');
   document.body.classList.toggle('profile-mobile-active', state.page === 'p2p-profile');
   if (state.page !== 'p2p-profile') document.body.classList.remove('profile-payment-subpage-active');
@@ -5312,6 +5389,7 @@ async function routeFromLocation(showLoading=true) {
   markActivityInteraction('navigation', true);
   scheduleActivityHeartbeat(200);
   renderNav();
+
   try {
     if (state.page === 'orders' && state.currentOrderId) {
       await loadOrderDetail(state.currentOrderId, showLoading, true, scope);
@@ -5320,10 +5398,10 @@ async function routeFromLocation(showLoading=true) {
       stopOrderDetailAutoSync();
       await renderPage(showLoading, scope);
     }
-    if (navigationScopeCurrent(scope) && showLoading !== false && !restoredView) window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
+    if (navigationScopeCurrent(scope) && showLoading !== false && activation.created) appScrollTo({ top:0, left:0, behavior:'auto' });
   } catch (error) {
     if (!isUiRequestCancelled(error) && navigationScopeCurrent(scope)) {
-      const content = $('#content');
+      const content = document.getElementById('content');
       const hasStableView = Boolean(content && content.children.length && !content.querySelector('[data-stable-loading="1"]'));
       notify(error.message || 'Data could not be loaded. The current screen was kept open.', 'warn', 5000);
       if (!hasStableView && content) content.innerHTML = `<div class="card stable-data-error"><b>Data temporarily unavailable</b><span>${escapeHtml(error.message || 'Please try again.')}</span></div>`;
@@ -5445,7 +5523,7 @@ function renderNav() {
   // legacy flat menu while this marker is absent, the browser/proxy is serving
   // stale frontend JavaScript rather than the active release.
   nav.dataset.navigationModel = 'grouped-control-center';
-  nav.dataset.uiRelease = '1.5.40';
+  nav.dataset.uiRelease = '1.6.0';
   nav.innerHTML = '';
   const visible = visiblePages();
   const visibleIds = new Set(visible.map(([id]) => id));
@@ -5463,7 +5541,7 @@ function renderNav() {
     button.innerHTML = `${navIcon(iconName)}<span class="nav-item-label">${escapeHtml(label || pageLabels.get(id) || id)}</span><span class="nav-item-badge-slot">${navPageBadge(id)}</span>`;
     button.onclick = () => {
       setMobileNavigation(false, { restoreFocus:false });
-      if (usesMobileNavigation()) window.scrollTo({ top:0, left:0, behavior:'auto' });
+      if (usesMobileNavigation()) appScrollTo({ top:0, left:0, behavior:'auto' });
       setRoute(id);
     };
     return button;
@@ -5572,6 +5650,42 @@ function setTitle(title, subtitle='') {
   applyLanguage(document.querySelector('.topbar') || document);
 }
 
+const PAGE_RUNTIME = Object.freeze({
+  dashboard: { render:() => renderDashboard() },
+  'p2p-market': { render:() => renderP2pMarket(), deactivate:() => { if (state.p2pMarketRefreshTimer) clearInterval(state.p2pMarketRefreshTimer); state.p2pMarketRefreshTimer = null; try { state.p2pMarketInfiniteObserver?.disconnect?.(); } catch (_) {} } },
+  'p2p-profile': { render:() => renderP2PProfile() },
+  orders: { render:() => renderOrders(), deactivate:() => { stopChatAutoSync(); stopOrderDetailAutoSync(); } },
+  chat: { render:() => renderChatInbox(), deactivate:() => { if (typeof stopChatInboxAutoRefresh === 'function') stopChatInboxAutoRefresh(); } },
+  ads: { render:() => renderAds(), deactivate:() => { if (state.adsLivePollTimer) clearInterval(state.adsLivePollTimer); state.adsLivePollTimer = null; } },
+  approvals: { render:() => renderApprovals() },
+  accounts: { render:() => renderAccounts() },
+  'offline-transactions': { render:() => renderOfflineTransactions() },
+  ledger: { render:() => renderLedger() },
+  agents: { render:() => renderUsers() },
+  'user-roles': { render:() => renderUserRoles() },
+  routing: { render:() => renderRouting() },
+  reports: { render:() => renderReports() },
+  accounting: { render:() => renderAccounting(), deactivate:() => { if (state.accountingRefreshTimer) clearInterval(state.accountingRefreshTimer); state.accountingRefreshTimer = null; state.accountingLoading = false; } },
+  'accounting-expenses': { render:() => renderAccountingExpenses(), deactivate:() => { if (state.accountingRefreshTimer) clearInterval(state.accountingRefreshTimer); state.accountingRefreshTimer = null; state.accountingLoading = false; } },
+  'accounting-income': { render:() => renderAccountingIncome(), deactivate:() => { if (state.accountingRefreshTimer) clearInterval(state.accountingRefreshTimer); state.accountingRefreshTimer = null; state.accountingLoading = false; } },
+  'accounting-capital': { render:() => renderAccountingCapital(), deactivate:() => { if (state.accountingRefreshTimer) clearInterval(state.accountingRefreshTimer); state.accountingRefreshTimer = null; state.accountingLoading = false; } },
+  'accounting-closing': { render:() => renderAccountingClosing(), deactivate:() => { if (state.accountingRefreshTimer) clearInterval(state.accountingRefreshTimer); state.accountingRefreshTimer = null; state.accountingLoading = false; } },
+  activity: { render:() => renderActivityMonitor() },
+  credentials: { render:() => renderCredentials() },
+  health: { render:() => renderHealth() },
+  'system-update': { render:() => renderSystemUpdate() },
+  settings: { render:() => renderSettings() },
+  'p2p-extension': { render:() => renderP2pExtensionAdmin() },
+  security: { render:() => renderSecurity() },
+  notifications: { render:() => renderNotifications() },
+  audit: { render:() => renderAudit() }
+});
+
+function deactivatePageRuntime(page, nextPage='') {
+  if (!page || page === nextPage) return;
+  try { PAGE_RUNTIME[page]?.deactivate?.(); } catch (error) { console.warn('Page deactivate failed', page, error); }
+}
+
 async function renderPage(showLoading=true, navigationScope=null) {
   if (state.page !== 'p2p-market' && state.p2pMarketRefreshTimer) {
     clearInterval(state.p2pMarketRefreshTimer);
@@ -5589,34 +5703,9 @@ async function renderPage(showLoading=true, navigationScope=null) {
   const content = $('#content');
   if (showLoading && content && !content.children.length) content.innerHTML = stableLoadingShell(state.page === 'orders' ? 'Orders' : (pages.find(p => p[0] === state.page)?.[1] || 'Loading'));
   try {
-    if (state.page === 'dashboard') await renderDashboard();
-    else if (state.page === 'p2p-market') await renderP2pMarket();
-    else if (state.page === 'orders') await renderOrders();
-    else if (state.page === 'chat') await renderChatInbox();
-    else if (state.page === 'approvals') await renderApprovals();
-    else if (state.page === 'ads') await renderAds();
-    else if (state.page === 'accounts') await renderAccounts();
-    else if (state.page === 'offline-transactions') await renderOfflineTransactions();
-    else if (state.page === 'ledger') await renderLedger();
-    else if (state.page === 'agents') await renderUsers();
-    else if (state.page === 'user-roles') await renderUserRoles();
-    else if (state.page === 'routing') await renderRouting();
-    else if (state.page === 'reports') await renderReports();
-    else if (state.page === 'accounting') await renderAccounting();
-    else if (state.page === 'accounting-expenses') await renderAccountingExpenses();
-    else if (state.page === 'accounting-income') await renderAccountingIncome();
-    else if (state.page === 'accounting-capital') await renderAccountingCapital();
-    else if (state.page === 'accounting-closing') await renderAccountingClosing();
-    else if (state.page === 'activity') await renderActivityMonitor();
-    else if (state.page === 'credentials') await renderCredentials();
-    else if (state.page === 'health') await renderHealth();
-    else if (state.page === 'system-update') await renderSystemUpdate();
-    else if (state.page === 'settings') await renderSettings();
-    else if (state.page === 'p2p-extension') await renderP2pExtensionAdmin();
-    else if (state.page === 'p2p-profile') await renderP2PProfile();
-    else if (state.page === 'security') await renderSecurity();
-    else if (state.page === 'notifications') await renderNotifications();
-    else if (state.page === 'audit') await renderAudit();
+    const pageRuntime = PAGE_RUNTIME[state.page];
+    if (!pageRuntime?.render) throw new Error(`Page module is unavailable: ${state.page}`);
+    await pageRuntime.render();
     if (navigationScope && !navigationScopeCurrent(navigationScope)) return;
     applyLanguage(document.querySelector('#content') || document);
     if (showLoading !== false && usesMobileNavigation()) {
@@ -6264,7 +6353,10 @@ async function loadOrderDetail(id, showLoading=true, fromRoute=false, navigation
   const restoreMobileChat = document.body.classList.contains('order-chat-open');
   const restoreInternalNotes = $('#orderInternalNotePanel')?.classList.contains('is-open') || false;
   document.body.classList.remove('order-chat-open');
-  if (!fromRoute && location.hash !== routeHash('orders', { orderId: numericId })) history.replaceState(null, '', routeHash('orders', { orderId: numericId }));
+  if (!fromRoute) {
+    const orderPath = routePath('orders', { orderId:numericId });
+    if (location.pathname !== orderPath || location.hash) history.replaceState({ p2pflow:true, route:{ page:'orders', orderId:numericId, ledgerAccountId:null } }, '', orderPath);
+  }
   const content = $('#content');
   if (showLoading && content && !content.children.length) content.innerHTML = stableLoadingShell('Order');
   let o;

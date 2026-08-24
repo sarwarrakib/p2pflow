@@ -24,11 +24,11 @@ function t(en, bn) { return lang === 'bn' ? bn : en; }
 function safeNextUrl() {
   try {
     const raw = String(new URLSearchParams(location.search).get('next') || '').trim();
-    if (!raw || !raw.startsWith('/') || raw.startsWith('//')) return '/#/dashboard';
+    if (!raw || !raw.startsWith('/') || raw.startsWith('//')) return '/dashboard';
     const parsed = new URL(raw, location.origin);
-    if (parsed.origin !== location.origin || /^\/login(?:\.html)?\/?$/i.test(parsed.pathname)) return '/#/dashboard';
-    return `${parsed.pathname}${parsed.search}${parsed.hash}` || '/#/dashboard';
-  } catch { return '/#/dashboard'; }
+    if (parsed.origin !== location.origin || /^\/login(?:\.html)?\/?$/i.test(parsed.pathname)) return '/dashboard';
+    return `${parsed.pathname}${parsed.search}${parsed.hash}` || '/dashboard';
+  } catch { return '/dashboard'; }
 }
 
 function looksLikeHtml(text) { return /<!doctype html|<html[\s>]|<head[\s>]|<body[\s>]/i.test(String(text || '').slice(0, 500)); }

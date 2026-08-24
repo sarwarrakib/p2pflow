@@ -38,7 +38,7 @@ assert(server.includes("url.pathname === '/api/push'"), 'push API route is missi
 assert(server.includes('notificationPreferencesWithAllPushEnabled'), 'master notification ON does not enable every push category');
 
 assert(index.includes('rel="manifest"') && index.includes('globalWorkAvailabilityToggle'), 'manifest or global work button is missing');
-assert(manifest.start_url === '/#/orders' && manifest.display === 'standalone', 'PWA manifest is invalid');
+assert(manifest.start_url === '/orders' && manifest.display === 'standalone', 'PWA manifest is invalid');
 assert(sw.includes("self.addEventListener('push'") && sw.includes('showNotification') && sw.includes("self.addEventListener('notificationclick'"), 'service worker push handlers are missing');
 assert(app.includes('confirmSessionBeforeLogout') && app.includes('_authRetried:true'), 'transient 401 confirmation/retry is missing');
 assert(app.includes('scheduleCurrentOrderChatDelta') && app.includes('/chat-delta?afterId='), 'incremental chat merge is missing');

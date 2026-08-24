@@ -1,5 +1,5 @@
-// P2PFlow v1.5.40
-// Dedicated account/login security page. Binance P2P Profile lives on #/p2p-profile.
+// P2PFlow v1.6.0
+// Dedicated account/login security page. Binance P2P Profile lives on /p2p/profile.
 
 function securityStatusPill(label, enabled) {
   return `<span class="security-status-pill ${enabled ? 'ok' : 'muted'}"><b>${enabled ? '✓' : '–'}</b>${escapeHtml(label)}</span>`;
@@ -169,7 +169,7 @@ async function renderSecurity() {
       }
       setFormMessage('#securityRecoveryMessage', result.message || 'Email corrected.', 'ok');
       if (result.recoveredAndSignedIn) {
-        setTimeout(() => window.location.replace('/#/security'), 400);
+        setTimeout(() => window.location.replace('/system/security'), 400);
         return;
       }
       await window.P2PFlowDeviceAuth?.forget?.();

@@ -1,4 +1,4 @@
-// P2PFlow v1.5.40
+// P2PFlow v1.6.0
 // Business Accounting is separated into Overview, Expenses, Income, Capital and Daily Closing pages.
 // Individual-only Agent profit remains visible but is excluded from Company income/capital totals.
 
@@ -143,7 +143,7 @@ function accountingStartRefresh(pageId, renderer) {
 }
 
 function accountingRenderDone(pageId, renderer, options={}, restoreY=0) {
-  if (options.background) requestAnimationFrame(() => window.scrollTo({ top: restoreY, left: 0, behavior: 'auto' }));
+  if (options.background) requestAnimationFrame(() => appScrollTo({ top: restoreY, left: 0, behavior: 'auto' }));
   accountingStartRefresh(pageId, renderer);
 }
 
@@ -237,7 +237,7 @@ async function renderAccounting(options={}) {
   const pageId = 'accounting';
   if (state.accountingLoading) return;
   state.accountingLoading = true;
-  const restoreY = options.background ? window.scrollY : 0;
+  const restoreY = options.background ? appScrollTop() : 0;
   try {
     setTitle('Accounting Overview');
     const data = await accountingLoadSummary(pageId, options);
@@ -373,7 +373,7 @@ async function renderAccountingExpenses(options={}) {
   const pageId = 'accounting-expenses';
   if (state.accountingLoading) return;
   state.accountingLoading = true;
-  const restoreY = options.background ? window.scrollY : 0;
+  const restoreY = options.background ? appScrollTop() : 0;
   try {
     setTitle('Expense');
     const [data, costs, categoryData] = await Promise.all([accountingLoadSummary(pageId, options), accountingLoadCosts(pageId, options), accountingLoadExpenseCategories(options)]);
@@ -424,7 +424,7 @@ async function renderAccountingIncome(options={}) {
   const pageId = 'accounting-income';
   if (state.accountingLoading) return;
   state.accountingLoading = true;
-  const restoreY = options.background ? window.scrollY : 0;
+  const restoreY = options.background ? appScrollTop() : 0;
   try {
     setTitle('Business Income');
     const [data, entries] = await Promise.all([accountingLoadSummary(pageId, options), accountingLoadEntries(pageId, 'income', options)]);
@@ -466,7 +466,7 @@ async function renderAccountingCapital(options={}) {
   const pageId = 'accounting-capital';
   if (state.accountingLoading) return;
   state.accountingLoading = true;
-  const restoreY = options.background ? window.scrollY : 0;
+  const restoreY = options.background ? appScrollTop() : 0;
   try {
     setTitle('Capital');
     const [data, entries] = await Promise.all([accountingLoadSummary(pageId, options), accountingLoadEntries(pageId, 'capital_in,capital_out', options)]);
@@ -548,7 +548,7 @@ async function renderAccountingClosing(options={}) {
   const pageId = 'accounting-closing';
   if (state.accountingLoading) return;
   state.accountingLoading = true;
-  const restoreY = options.background ? window.scrollY : 0;
+  const restoreY = options.background ? appScrollTop() : 0;
   try {
     setTitle('Daily Closing');
     const data = await accountingLoadSummary(pageId, options);

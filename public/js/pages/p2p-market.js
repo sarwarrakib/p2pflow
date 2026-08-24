@@ -1,4 +1,4 @@
-// P2PFlow v1.5.40
+// P2PFlow v1.6.0
 // Live Binance-style P2P market advertisement browser.
 
 function p2pMarketFmt(value, decimals = 2) {
@@ -213,17 +213,17 @@ function p2pMarketBindInfiniteScroll() {
       if (visible && state.page === 'p2p-market' && !state.p2pMarketLoading && state.p2pMarketHasMore !== false) {
         loadP2pMarket(true, { append: true, reset: false });
       }
-    }, { root: null, rootMargin: '320px 0px', threshold: 0.01 });
+    }, { root: appScrollElement(), rootMargin: '320px 0px', threshold: 0.01 });
     state.p2pMarketInfiniteObserver.observe(sentinel);
     return;
   }
   const onScroll = () => {
     if (state.page !== 'p2p-market' || state.p2pMarketLoading || state.p2pMarketHasMore === false) return;
-    if (window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 420) {
+    if (appScrollNearBottom(420)) {
       loadP2pMarket(true, { append: true, reset: false });
     }
   };
-  window.addEventListener('scroll', onScroll, { passive: true, once: true });
+  appScrollElement()?.addEventListener('scroll', onScroll, { passive:true, once:true });
 }
 
 function p2pMarketSelectedPayments() {
@@ -681,7 +681,7 @@ function p2pMarketQueryString(refresh = false, page = 1) {
 
 
 function captureP2pMarketViewport() {
-  const scrollY = Number(window.scrollY || 0);
+  const scrollY = Number(appScrollTop() || 0);
   const cards = Array.from(document.querySelectorAll('#p2pMarketResults .p2p-market-ad[data-market-key]'));
   const visible = cards.find(card => card.getBoundingClientRect().bottom > 0) || null;
   return {
@@ -699,11 +699,11 @@ function restoreP2pMarketViewport(snapshot) {
       const card = document.querySelector(`#p2pMarketResults .p2p-market-ad[data-market-key="${escaped}"]`);
       if (card && Number.isFinite(snapshot.top)) {
         const delta = card.getBoundingClientRect().top - snapshot.top;
-        if (Math.abs(delta) > 0.5) window.scrollBy({ top:delta, left:0, behavior:'auto' });
+        if (Math.abs(delta) > 0.5) appScrollBy({ top:delta, left:0, behavior:'auto' });
         return;
       }
     }
-    window.scrollTo({ top:snapshot.scrollY, left:0, behavior:'auto' });
+    appScrollTo({ top:snapshot.scrollY, left:0, behavior:'auto' });
   });
 }
 
@@ -801,7 +801,7 @@ function bindP2pMarketPullToRefresh() {
     ui.pullCurrentY = 0;
   };
   shell.addEventListener('touchstart', event => {
-    if (window.scrollY > 0 || state.p2pMarketLoading) return;
+    if (appScrollTop() > 0 || state.p2pMarketLoading) return;
     ui.pulling = true;
     ui.pullStartY = event.touches[0].clientY;
     ui.pullCurrentY = ui.pullStartY;

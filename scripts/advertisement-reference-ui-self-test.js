@@ -38,5 +38,5 @@ for (const verbose of ['Saved Fund Transfer Password ready', 'Primary/Secondary 
 }
 assert(/release-verify-minimal/.test(releasePage) && /release-verify-submit/.test(releasePage), 'Minimal Release verification shell/button is missing.');
 assert(/\.release-verify-minimal/.test(css) && /\.ads-wizard-progress/.test(css) && /\.screenshot-filters/.test(css), 'Responsive Binance-reference CSS overrides are missing.');
-assert(String(pkg.version).startsWith('1.5.'), 'Package version is invalid.');
+assert(pkg.version === '1.6.0', `expected v1.6.0, got ${pkg.version}`);
 console.log(JSON.stringify({ ok:true, liveReferencePrice:true, editableRateBounds:false, sellSavedAccounts:true, buyGenericMethods:true, maxPaymentMethods:5, releaseVerification:'minimal-one-button', referenceUi:true }));

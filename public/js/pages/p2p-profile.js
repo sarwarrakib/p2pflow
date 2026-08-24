@@ -1,4 +1,4 @@
-// P2PFlow v1.5.40
+// P2PFlow v1.6.0
 // Dedicated Binance-style P2P Profile workspace. Login security is kept on the separate Security page.
 
 function profileMetricValue(value, suffix = '') {
@@ -514,7 +514,7 @@ async function renderP2PProfile() {
     state.mobileProfileCredentialId = Number(out.selectedCredentialId || id);
     state.mobileProfileView = 'main';
     render();
-    window.scrollTo({ top: 0, behavior: 'smooth' });
+    appScrollTo({ top: 0, behavior: 'smooth' });
     const selectedSyncAt = Date.parse(out?.profile?.syncedAt || '') || 0;
     const selectedMissingCoreStats = profileCoreStatsMissing(out?.profile?.stats || {});
     if (out.canSync && out.credentialAvailable && (selectedMissingCoreStats || !selectedSyncAt || Date.now() - selectedSyncAt > 10 * 60 * 1000)) {
@@ -563,7 +563,7 @@ async function renderP2PProfile() {
     };
     state.mobileProfileView = 'payment-editor';
     render();
-    window.scrollTo({ top:0, behavior:'auto' });
+    appScrollTo({ top:0, behavior:'auto' });
   };
 
   const openPaymentMethodAdd = async () => {
@@ -580,7 +580,7 @@ async function renderP2PProfile() {
     state.mobileProfilePaymentEditor = { mode:'add', rowKey:'', methodKey, method, currency, fieldDefs:fields, fieldValues:editorValuesFromFields(fields), picker:'' };
     state.mobileProfileView = 'payment-editor';
     render();
-    window.scrollTo({ top:0, behavior:'auto' });
+    appScrollTo({ top:0, behavior:'auto' });
   };
 
   const updatePaymentEditorConfirmState = () => {
@@ -600,7 +600,7 @@ async function renderP2PProfile() {
   const bindProfileActions = () => {
     $('#mobileProfileBackBtn')?.addEventListener('click', () => setRoute(canPage('p2p-market') ? 'p2p-market' : visiblePages()[0]?.[0]));
     $('#mobileProfileSubBackBtn')?.addEventListener('click', () => { state.mobileProfileView = 'main'; render(); });
-    $('#mobileProfileMoreBtn')?.addEventListener('click', () => { state.mobileProfileView = 'details'; render(); window.scrollTo({ top: 0, behavior: 'smooth' }); });
+    $('#mobileProfileMoreBtn')?.addEventListener('click', () => { state.mobileProfileView = 'details'; render(); appScrollTo({ top: 0, behavior: 'smooth' }); });
     $('#mobileProfileSettingsBtn')?.addEventListener('click', () => { if (canPage('security')) setRoute('security'); else notify('Security page is not available for this role.', 'warn'); });
     $('#mobileProfileEditBtn')?.addEventListener('click', async event => {
       const button = event.currentTarget;
@@ -630,7 +630,7 @@ async function renderP2PProfile() {
       }
     });
     $$('[data-mobile-profile-tab]').forEach(button => button.onclick = () => { state.mobileProfileTab = button.dataset.mobileProfileTab; render(); });
-    $$('[data-mobile-feedback-tab]').forEach(button => button.onclick = () => { state.mobileProfileFeedbackTab = button.dataset.mobileFeedbackTab; render(); window.scrollTo({ top: 0, behavior: 'smooth' }); });
+    $$('[data-mobile-feedback-tab]').forEach(button => button.onclick = () => { state.mobileProfileFeedbackTab = button.dataset.mobileFeedbackTab; render(); appScrollTo({ top: 0, behavior: 'smooth' }); });
     $$('[data-mobile-payment-edit]').forEach(button => button.onclick = () => openBinancePaymentMethods());
     $('#mobileProfileAddPaymentBtn')?.addEventListener('click', () => openBinancePaymentMethods());
     $('#mobileProfileSyncPaymentBtn')?.addEventListener('click', async event => {
@@ -641,7 +641,7 @@ async function renderP2PProfile() {
     if (isUiRequestCancelled(err)) return; notify(err.message || 'Could not sync Binance payment methods.', 'danger', 6000); }
       finally { if (button?.isConnected) button.disabled = false; }
     });
-    $('#mobileProfilePaymentEditorBack')?.addEventListener('click', () => { state.mobileProfilePaymentEditor = null; state.mobileProfileView = 'payments'; render(); window.scrollTo({ top:0, behavior:'auto' }); });
+    $('#mobileProfilePaymentEditorBack')?.addEventListener('click', () => { state.mobileProfilePaymentEditor = null; state.mobileProfileView = 'payments'; render(); appScrollTo({ top:0, behavior:'auto' }); });
     $('#mobileProfileCurrencyPicker')?.addEventListener('click', () => { if (!state.mobileProfilePaymentEditor) return; state.mobileProfilePaymentEditor.picker = 'currency'; render(); });
     $('#mobileProfileMethodPicker')?.addEventListener('click', () => { if (!state.mobileProfilePaymentEditor) return; state.mobileProfilePaymentEditor.picker = 'method'; render(); });
     $('#mobileProfilePaymentPickerDismiss')?.addEventListener('click', () => { if (!state.mobileProfilePaymentEditor) return; state.mobileProfilePaymentEditor.picker = ''; render(); });
@@ -670,9 +670,9 @@ async function renderP2PProfile() {
     $('#mobileProfilePaymentEditorSave')?.addEventListener('click', submitPaymentEditor);
     $$('[data-profile-action]').forEach(button => button.onclick = () => {
       const action = button.dataset.profileAction;
-      if (action === 'feedback') { state.mobileProfileView = 'feedback'; state.mobileProfileFeedbackTab = 'all'; render(); window.scrollTo({ top: 0, behavior: 'smooth' }); return; }
+      if (action === 'feedback') { state.mobileProfileView = 'feedback'; state.mobileProfileFeedbackTab = 'all'; render(); appScrollTo({ top: 0, behavior: 'smooth' }); return; }
       if (action === 'alerts') { if (canPage('notifications')) setRoute('notifications'); else showUnavailable('Custom Alerts'); return; }
-      if (action === 'payment-methods') { state.mobileProfileView = 'payments'; render(); window.scrollTo({ top:0, behavior:'smooth' }); if ((!profilePaymentCatalog(p2pResult).currencies.length || !profilePaymentCatalog(p2pResult).methods.length) && p2pResult.canSync && p2pResult.credentialAvailable) setTimeout(() => syncProfile().catch(() => {}), 80); return; }
+      if (action === 'payment-methods') { state.mobileProfileView = 'payments'; render(); appScrollTo({ top:0, behavior:'smooth' }); if ((!profilePaymentCatalog(p2pResult).currencies.length || !profilePaymentCatalog(p2pResult).methods.length) && p2pResult.canSync && p2pResult.credentialAvailable) setTimeout(() => syncProfile().catch(() => {}), 80); return; }
       if (action === 'activities') { if (canPage('activity')) setRoute('activity'); else showUnavailable('Activities'); return; }
       if (action === 'merchant-portal') { if (canPage('ads')) setRoute('ads'); else showUnavailable('Merchant Portal'); return; }
       if (action === 'add-home') {

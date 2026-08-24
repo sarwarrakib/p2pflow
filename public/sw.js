@@ -29,7 +29,7 @@ self.addEventListener('push', event => {
     requireInteraction: payload.requireInteraction === true,
     silent: false,
     vibrate: Array.isArray(payload.vibrate) ? payload.vibrate : [220, 100, 220],
-    data: payload.data && typeof payload.data === 'object' ? payload.data : { url: '/#/notifications' },
+    data: payload.data && typeof payload.data === 'object' ? payload.data : { url: '/notifications' },
     timestamp: Date.parse(payload.data?.createdAt || '') || Date.now()
   };
   event.waitUntil(self.registration.showNotification(title, options));
@@ -37,7 +37,7 @@ self.addEventListener('push', event => {
 
 self.addEventListener('notificationclick', event => {
   event.notification.close();
-  const target = new URL(String(event.notification.data?.url || '/#/notifications'), self.location.origin).toString();
+  const target = new URL(String(event.notification.data?.url || '/notifications'), self.location.origin).toString();
   event.waitUntil((async () => {
     const windows = await self.clients.matchAll({ type:'window', includeUncontrolled:true });
     for (const client of windows) {
