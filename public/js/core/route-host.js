@@ -1,6 +1,6 @@
 'use strict';
 
-// P2PFlow v1.6.0 persistent route-host runtime.
+// P2PFlow v1.6.1 persistent route-host runtime.
 // Only one page host is attached to the live DOM at a time. Inactive pages are
 // detached intact, preserving their form state, component DOM and scroll state
 // without duplicate IDs leaking into document queries.
@@ -103,10 +103,12 @@
       if (!restored && activateOptions.shellHtml !== undefined) host.innerHTML = String(activateOptions.shellHtml || '');
       const scrollTop = restored ? Number(record.scrollTop || 0) : 0;
       const scrollLeft = restored ? Number(record.scrollLeft || 0) : 0;
-      requestAnimationFrame(() => {
-        if (activeKey !== routeKey || host.id !== activeId) return;
+      // Restore the detached host synchronously. Deferring this to the next
+      // animation frame creates a race where a user can start scrolling the
+      // newly activated page and then get snapped back to the old position.
+      if (activeKey === routeKey && host.id === activeId) {
         host.scrollTo({ top:scrollTop, left:scrollLeft, behavior:'auto' });
-      });
+      }
       trim();
       return { host, restored, created:!restored, same:false, previousKey };
     }

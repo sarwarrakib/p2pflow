@@ -1,5 +1,5 @@
-// v1.6.0: fixed-viewport AppShell, clean History routes, persistent per-route hosts, lifecycle rendering, and data-only DOM patching.
-// v1.6.0: stable-shell navigation, stale-request cancellation, non-destructive order/chat updates, and latest-navigation-wins rendering.
+// v1.6.1: fixed-viewport AppShell, clean History routes, persistent per-route hosts, lifecycle rendering, and data-only DOM patching.
+// v1.6.1: stable-shell navigation, stale-request cancellation, non-destructive order/chat updates, and latest-navigation-wins rendering.
 // v1.5.23: Payment Account serial scope treats each normalized Label, including no Label, as an independent namespace.
 // v1.5.22: Header-only Work Status, chat-only notification master, and coupled sound/push controls.
 // v1.5.20: account-scoped Binance RBAC, visible security recovery setup and individual-only profit accounting.
@@ -1010,14 +1010,18 @@ function mergeCurrentOrderChatItems(chats=[], options={}) {
   const box = $('#chatBox');
   if (!box) return added.length;
   const nearBottom = chatBoxNearBottom(box);
+  const userIsActivelyScrolling = Date.now() - Number(state.currentOrderChatLastUserScrollAt || 0) < 1400;
   box.querySelector('.empty-state')?.remove();
   const verificationCompleted = state.currentOrderChatItems.some(chatVerificationCompleted);
   const context = { order: state.currentOrder || {}, verificationCompleted };
   for (const chat of added) box.insertAdjacentHTML('beforeend', chatMessageHtml(chat, context));
   bindChatImagePreviews(box);
   bindChatScrollState();
-  if (nearBottom || options.forceScroll || options.outgoing) {
-    requestAnimationFrame(() => { box.scrollTop = box.scrollHeight; });
+  if (options.forceScroll || options.outgoing || (nearBottom && !userIsActivelyScrolling)) {
+    // Apply the stick-to-bottom decision synchronously. A delayed RAF write
+    // can fire after the user has started scrolling upward and pull the chat
+    // straight back to the bottom.
+    box.scrollTop = box.scrollHeight;
     state.currentOrderChatNewCount = 0;
   } else {
     state.currentOrderChatNewCount = Number(state.currentOrderChatNewCount || 0) + added.length;
@@ -5247,7 +5251,7 @@ function installStableContentArchitecture(content = document.getElementById('con
 }
 
 function cacheActiveRouteView() {
-  // v1.6.0 keeps the entire route host intact instead of moving/recreating page
+  // v1.6.1 keeps the entire route host intact instead of moving/recreating page
   // children. Capturing is therefore only a scroll-state operation.
   state.routeHostManager?.captureActive?.();
 }
@@ -5523,7 +5527,7 @@ function renderNav() {
   // legacy flat menu while this marker is absent, the browser/proxy is serving
   // stale frontend JavaScript rather than the active release.
   nav.dataset.navigationModel = 'grouped-control-center';
-  nav.dataset.uiRelease = '1.6.0';
+  nav.dataset.uiRelease = '1.6.1';
   nav.innerHTML = '';
   const visible = visiblePages();
   const visibleIds = new Set(visible.map(([id]) => id));

@@ -18,8 +18,13 @@ function assert(value, message) {
   if (!value) throw new Error(`Multi-account UI self-test failed: ${message}`);
 }
 
-assert(/data-order-account="0"/.test(orders), 'Orders All account button is missing.');
-assert(/class="binance-account-tab/.test(orders), 'Orders account buttons are missing.');
+assert(!/data-order-account=/.test(orders), 'Legacy Orders API account selector buttons are still present.');
+assert(/orderFilterMenuHtml/.test(orders) && /id="orderFilterBtn"/.test(orders), 'Orders filter popup is missing.');
+assert(/name="credentialId"/.test(orders), 'Orders API-account filter is missing.');
+assert(/name="tradeType"/.test(orders), 'Orders BUY/SELL filter is missing.');
+assert(/name="paymentMethod"/.test(orders), 'Orders payment-method filter is missing.');
+assert(/name="date"/.test(orders), 'Orders date filter is missing.');
+assert(/persistOrderFilters/.test(orders) && /orderFilterSaveBtn/.test(orders), 'Orders saved-filter behavior is missing.');
 assert(/orderAccountDisplayName/.test(orders) && /p2pUsername/.test(orders), 'Orders do not prefer the Binance P2P username.');
 assert(/const tableHead = \['Order','Source','Type'/.test(orders), 'Orders Source column was not preserved.');
 assert(!/const tableHead = \[[^\n]*'Binance Account'/.test(orders), 'Orders still has a separate Binance Account column.');
@@ -58,6 +63,7 @@ for (const marker of [
   '.binance-account-switcher',
   '.binance-account-tab',
   '.binance-account-tab.active',
+  '.order-filter-panel',
   '.ads-merchant-inline-item.is-mixed'
 ]) assert(css.includes(marker), `CSS marker missing: ${marker}`);
 

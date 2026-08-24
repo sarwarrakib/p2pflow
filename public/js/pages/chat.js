@@ -1,4 +1,4 @@
-// P2PFlow v1.5.28
+// P2PFlow v1.6.1
 // Binance-style P2P message inbox. Threads open the corresponding order chat.
 
 function stopChatInboxAutoRefresh() {
@@ -95,7 +95,10 @@ async function renderChatInbox(options={}) {
     bindChatInboxThreadClicks();
     bindBackgroundNotificationControls(page || document);
     if (page) page.scrollTop = pageScrollTop;
-    requestAnimationFrame(() => appScrollTo({ top:windowScrollY, left:0, behavior:'auto' }));
+    // Keep the viewport where it is at the exact DOM commit. Deferring this
+    // restore to requestAnimationFrame races with a user who is already
+    // scrolling and causes the inbox to snap back during its live refresh.
+    appScrollTo({ top:windowScrollY, left:0, behavior:'auto' });
     if (hadSearchFocus) {
       const search = $('#chatInboxSearch');
       search?.focus({ preventScroll:true });

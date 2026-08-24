@@ -18,7 +18,7 @@ const css = read('public/style.css');
 const fail = message => { throw new Error(`Account-scoped Binance RBAC self-test failed: ${message}`); };
 const assert = (condition, message) => { if (!condition) fail(message); };
 
-assert(pkg.version === '1.6.0', `expected v1.6.0, got ${pkg.version}`);
+assert(pkg.version === '1.6.1', `expected v1.6.1, got ${pkg.version}`);
 assert(server.includes('const APP_SCHEMA_VERSION = 37;'), 'schema migration version 33 is missing');
 
 for (const marker of [
@@ -57,8 +57,9 @@ assert(server.includes("const canManageUsers = Boolean(viewer && userHasPermissi
 assert(users.includes('Individual only') && users.includes('Company total'), 'Users page does not show profit accounting scope');
 
 for (const marker of [
-  'orderAccountSwitcherHtml',
-  'data-order-account',
+  'orderFilterMenuHtml',
+  'applyOrderFilters',
+  'name="credentialId"',
   'orderSourceAccountHtml',
   'orders.create',
   'binance.sync'

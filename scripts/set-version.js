@@ -21,9 +21,15 @@ function compare(a,b) {
   for (const key of ['major','minor','patch']) if (a[key] !== b[key]) return a[key] - b[key];
   return 0;
 }
-function nextPatch(v) { return { ...v, patch:v.patch+1, text:`${v.major}.${v.minor}.${v.patch+1}` }; }
-function nextMinor(v) { return { major:v.major, minor:v.minor+1, patch:0, text:`${v.major}.${v.minor+1}.0` }; }
 function nextMajor(v) { return { major:v.major+1, minor:0, patch:0, text:`${v.major+1}.0.0` }; }
+function nextMinor(v) {
+  if (v.minor >= 9) return nextMajor(v);
+  return { major:v.major, minor:v.minor+1, patch:0, text:`${v.major}.${v.minor+1}.0` };
+}
+function nextPatch(v) {
+  if (v.patch >= 9) return nextMinor(v);
+  return { ...v, patch:v.patch+1, text:`${v.major}.${v.minor}.${v.patch+1}` };
+}
 
 const currentParsed = parse(current);
 if (!currentParsed) throw new Error(`package.json has an invalid version: ${current}`);
@@ -45,6 +51,7 @@ fs.writeFileSync(lockPath, JSON.stringify(lock,null,2)+'\n');
 
 const textFiles = [
   'public/index.html','public/login.html','public/login.js','public/device-auth.js','public/setup.html','public/app.js',
+  'public/js/core/history-router.js','public/js/core/route-host.js','public/js/pages/orders.js','public/js/pages/chat.js','public/js/pages/credentials.js',
   'public/js/pages/accounting.js','public/js/pages/accounts.js','public/js/pages/ads.js',
   'public/js/pages/p2p-market.js','public/js/pages/p2p-profile.js','public/js/pages/reports.js','public/js/pages/security.js',
   'public/js/pages/system-update.js','README.md','UNIFIED_INSTALL_BN.md',
@@ -68,6 +75,24 @@ for (const relative of textFiles) {
     after = after.replace(/Hotfix: `SET_HOTFIX_VERSION\.bat` -> `\d+\.\d+\.\d+`/, `Hotfix: \`SET_HOTFIX_VERSION.bat\` -> \`${futurePatch}\``);
   }
   fs.writeFileSync(file,after);
+}
+
+// Keep version assertions/cache-busting expectations in the shipped self-test
+// suite synchronized without rewriting unrelated historical release notes.
+const scriptsDir = path.join(root, 'scripts');
+if (fs.existsSync(scriptsDir)) {
+  for (const name of fs.readdirSync(scriptsDir)) {
+    if (!name.endsWith('.js')) continue;
+    const file = path.join(scriptsDir, name);
+    const before = fs.readFileSync(file, 'utf8');
+    const escapedCurrent = current.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const after = before
+      .replace(new RegExp(`pkg\\.version === '${escapedCurrent}'`, 'g'), `pkg.version === '${next.text}'`)
+      .replace(new RegExp(`expected v${escapedCurrent}`, 'g'), `expected v${next.text}`)
+      .replace(new RegExp(`expected ${escapedCurrent}`, 'g'), `expected ${next.text}`)
+      .replace(new RegExp(`\\?v=${escapedCurrent}`, 'g'), `?v=${next.text}`);
+    if (after !== before) fs.writeFileSync(file, after);
+  }
 }
 console.log(`P2PFlow version updated: ${current} -> ${next.text}`);
 console.log(requested === 'patch' || requested === 'hotfix'

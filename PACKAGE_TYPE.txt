@@ -1,5 +1,5 @@
 P2PFlow UNIFIED PACKAGE
-Version: 1.6.0
+Version: 1.6.1
 
 ONE ZIP FOR ALL USES
 - Fresh server: extract to the Node application root; run npm ci --omit=dev --ignore-scripts, npm run build, npm test, then npm start and complete /setup.
@@ -7,5 +7,5 @@ ONE ZIP FOR ALL USES
 - GitHub: extract the same ZIP into the repository root, review the diff, commit and push without runtime secrets or persistent data.
 - Future updates: System Update checks signed GitHub Releases and installs them without replacing database records.
 
-Complete P2PFlow_v1.6.0_LAUNCH_CHECKLIST_BN.md before public traffic is enabled.
+Complete P2PFlow_v1.6.1_LAUNCH_CHECKLIST_BN.md before public traffic is enabled.
 Never copy runtime .env/.p2pflow/shared/database files into GitHub.

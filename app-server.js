@@ -12116,9 +12116,28 @@ function requireOwner(req, res) {
   if (user.isOwner !== true) { sendJson(res, 403, { error: 'Only the P2PFlow Owner can manage software updates.' }, {}, req); return null; }
   return user;
 }
+const CSRF_PRESESSION_AUTH_PATHS = new Set([
+  '/api/login',
+  '/api/login/device/upgrade',
+  '/api/login/device/challenge',
+  '/api/login/device',
+  '/api/login/recover-email'
+]);
+function csrfPreSessionAuthPath(req) {
+  try { return CSRF_PRESESSION_AUTH_PATHS.has(new URL(req.url || '/', 'http://localhost').pathname); }
+  catch { return false; }
+}
 function checkCsrf(req, res) {
   if (!['POST','PATCH','PUT','DELETE'].includes(req.method)) return true;
-  if (req.url === '/api/login') return true;
+  // Login/trusted-device bootstrap writes happen before the login page owns an
+  // application CSRF token. They are still protected by sameOriginOk() and by
+  // their own password / PIN / signed-device challenge checks. If a stale but
+  // valid session cookie happens to exist, requiring that old session's CSRF
+  // token here makes the login UI report "Invalid CSRF token" even though the
+  // new session may already have been created. Keep only these exact auth
+  // bootstrap paths CSRF-exempt; authenticated writes such as /api/logout stay
+  // protected.
+  if (csrfPreSessionAuthPath(req)) return true;
   const s = getSession(req);
   if (!s) return true; // requireAuth will reject later.
   const token = req.headers['x-csrf-token'];

@@ -16,7 +16,7 @@ const css = read('public/style.css');
 const fail = message => { throw new Error(`Payment rules / notification scope self-test failed: ${message}`); };
 const assert = (condition, message) => { if (!condition) fail(message); };
 
-assert(pkg.version === '1.6.0', `expected v1.6.0, got ${pkg.version}`);
+assert(pkg.version === '1.6.1', `expected v1.6.1, got ${pkg.version}`);
 assert(server.includes('const APP_SCHEMA_VERSION = 37;'), 'schema 35 is missing.');
 assert(server.includes("send_money: { prefix: 'sendMoneyCharge'") && server.includes("cash_out: { prefix: 'cashOutCharge'"), 'separate Personal/Merchant fee rules are missing.');
 assert(server.includes("receive_money: { prefix: 'receiveMoneyCommission'") && server.includes("cash_in: { prefix: 'cashInCommission'"), 'separate Agent commission rules are missing.');
@@ -34,7 +34,7 @@ assert(server.includes('function pushSubscriptionAllowsNotification') && server.
 assert(server.includes("action === 'scope'") && server.includes('notificationCredentialId = credentialId'), 'per-device push scope endpoint is missing.');
 assert(app.includes('function setNotificationCredentialScope') && app.includes('function notificationCredentialMatches'), 'client notification account scope helpers are missing.');
 assert(app.includes("notificationCredentialMatches(event.credentialId, 'orders')") && app.includes("notificationCredentialMatches(event.credentialId, 'messages')"), 'foreground order/message notification scope enforcement is missing.');
-assert(orders.includes('setNotificationCredentialScope(requestedCredentialId') && orders.includes('setNotificationCredentialScope(state.orderCredentialId'), 'Orders account selector does not drive notification scope.');
+assert(orders.includes('setNotificationCredentialScope(0, { sync:true })') && !orders.includes('data-order-account='), 'Orders should keep notification scope on all accessible accounts after removing the page-level account selector.');
 assert(ads.includes('setNotificationCredentialScope(selectedCredentialId') && ads.includes('setNotificationCredentialScope(state.adsCredentialId'), 'Ads account selector does not drive notification scope.');
 assert(app.includes('notificationCredentialId:activeNotificationCredentialScope()'), 'new push subscription does not persist the selected account scope.');
 

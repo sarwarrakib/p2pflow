@@ -1,4 +1,4 @@
-// P2PFlow v1.6.0
+// P2PFlow v1.6.1
 // Live Binance-style P2P market advertisement browser.
 
 function p2pMarketFmt(value, decimals = 2) {
@@ -693,18 +693,19 @@ function captureP2pMarketViewport() {
 
 function restoreP2pMarketViewport(snapshot) {
   if (!snapshot || state.page !== 'p2p-market') return;
-  requestAnimationFrame(() => {
-    if (snapshot.key) {
-      const escaped = typeof CSS !== 'undefined' && CSS.escape ? CSS.escape(snapshot.key) : snapshot.key.replace(/["\\]/g, '\\$&');
-      const card = document.querySelector(`#p2pMarketResults .p2p-market-ad[data-market-key="${escaped}"]`);
-      if (card && Number.isFinite(snapshot.top)) {
-        const delta = card.getBoundingClientRect().top - snapshot.top;
-        if (Math.abs(delta) > 0.5) appScrollBy({ top:delta, left:0, behavior:'auto' });
-        return;
-      }
+  // Restore immediately after the DOM commit. A deferred animation-frame
+  // restore can overwrite a real user scroll that happens while live refresh
+  // is finishing, which feels like the market jumps back every few seconds.
+  if (snapshot.key) {
+    const escaped = typeof CSS !== 'undefined' && CSS.escape ? CSS.escape(snapshot.key) : snapshot.key.replace(/["\\]/g, '\\$&');
+    const card = document.querySelector(`#p2pMarketResults .p2p-market-ad[data-market-key="${escaped}"]`);
+    if (card && Number.isFinite(snapshot.top)) {
+      const delta = card.getBoundingClientRect().top - snapshot.top;
+      if (Math.abs(delta) > 0.5) appScrollBy({ top:delta, left:0, behavior:'auto' });
+      return;
     }
-    appScrollTo({ top:snapshot.scrollY, left:0, behavior:'auto' });
-  });
+  }
+  appScrollTo({ top:snapshot.scrollY, left:0, behavior:'auto' });
 }
 
 async function loadP2pMarket(refresh = false, options = {}) {
@@ -725,7 +726,6 @@ async function loadP2pMarket(refresh = false, options = {}) {
     : Math.max(1, Number(options.page || 1));
   const top = $('#p2pMarketResultsTop');
 
-  const viewportSnapshot = background ? captureP2pMarketViewport() : null;
   state.p2pMarketLoading = true;
   if (!background) result.classList.add('loading');
   if (!background && !append && !state.p2pMarketData) {
@@ -758,12 +758,16 @@ async function loadP2pMarket(refresh = false, options = {}) {
     state.p2pMarketFilters.page = 1;
     state.p2pMarketFilters.rows = 20;
 
+    // Capture at commit time, not when the request starts. The user may have
+    // scrolled a long way during a slow Binance request; restoring an old
+    // request-start position is the primary source of periodic jump-back.
+    const viewportSnapshot = (background || append) ? captureP2pMarketViewport() : null;
     if (top && !background) top.innerHTML = p2pMarketSourceHtml();
     result.innerHTML = p2pMarketResultHtml(state.p2pMarketData);
     bindP2pMarketResultActions();
     if (top && !background) applyLanguage(top);
     applyLanguage(result);
-    if (background) restoreP2pMarketViewport(viewportSnapshot);
+    if (viewportSnapshot) restoreP2pMarketViewport(viewportSnapshot);
   } catch (err) {
     if (isUiRequestCancelled(err) || state.page !== 'p2p-market' || Number(state.p2pMarketRequestSeq || 0) !== requestSeq) return;
     if (!append) {
