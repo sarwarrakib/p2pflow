@@ -5838,3 +5838,62 @@ body.p2pflow-app-shell .modal-backdrop{overscroll-behavior:contain}
   .ads-editor-fullpage{padding-bottom:104px}
   .ads-editor-fullpage .ads-editor-sticky{margin-bottom:-104px}
 }
+
+
+/* v1.6.2 - fast Orders filter, P2P Market filter icon, mobile order contrast and clear navigation drawer */
+.order-filter-trigger svg{
+  display:block;width:28px!important;height:28px!important;margin:0 auto;
+  fill:none!important;stroke:#111!important;stroke-width:1.8!important;stroke-linecap:round;stroke-linejoin:round!important;
+  pointer-events:none
+}
+.order-filter-market-dot{
+  position:absolute;right:1px;top:4px;width:7px;height:7px;border-radius:50%;
+  background:#f0c400;box-shadow:0 0 0 2px #fff;pointer-events:none
+}
+.order-filter-panel{
+  position:fixed!important;top:72px;right:16px;z-index:1005!important;
+  max-height:calc(100dvh - 88px);overflow:auto;overscroll-behavior:contain;
+  contain:layout paint;background:#fff;transform:translateZ(0)
+}
+.order-list-more-wrap{display:flex;justify-content:center;padding:12px 0 2px}
+.order-list-more{
+  display:inline-flex;align-items:center;justify-content:center;gap:7px;min-height:38px;padding:8px 13px;
+  border:1px solid #e5e7eb;border-radius:999px;background:#fff;color:#34373c;box-shadow:none;font-size:12px;font-weight:800
+}
+.order-list-more:hover{background:#f7f8f9;transform:none;filter:none}
+.order-list-more b{color:#111827}
+.order-list-more small{color:#8a9099;font-size:10px;font-weight:700}
+
+@media(max-width:900px){
+  .order-filter-trigger svg{width:24px!important;height:24px!important;stroke-width:1.75!important}
+  .order-filter-market-dot{right:0;top:2px}
+
+  /* The fixed-shell rule used the same z-index for drawer and backdrop. On iOS
+     the backdrop could therefore sit above the drawer and blur/dim its text. */
+  body.p2pflow-app-shell .sidebar{
+    z-index:1002!important;filter:none!important;-webkit-backdrop-filter:none!important;backdrop-filter:none!important;
+    transform:translate3d(-105%,0,0)
+  }
+  body.p2pflow-app-shell .sidebar.is-open{transform:translate3d(0,0,0)}
+  .sidebar-backdrop{
+    z-index:1001!important;background:rgba(2,6,23,.66)!important;
+    -webkit-backdrop-filter:none!important;backdrop-filter:none!important
+  }
+  .sidebar .brand{-webkit-backdrop-filter:none!important;backdrop-filter:none!important}
+
+  /* A later global hero theme was overriding the intended light mobile order
+     card, producing dark text on a dark surface. Keep the mobile order detail
+     readable and consistent with the surrounding payment cards. */
+  body.order-detail-active .order-hero-panel{
+    background:#fff!important;color:#0f172a!important;border:1px solid #e5e7eb!important;
+    box-shadow:0 10px 28px rgba(15,23,42,.055)!important
+  }
+  body.order-detail-active .order-hero-main h2{color:#0f172a!important}
+  body.order-detail-active .order-hero-main p{color:#475569!important}
+  body.order-detail-active .order-hero-pills{border-top-color:#eef2f7!important}
+  body.order-detail-active .order-hero-pills span{
+    background:transparent!important;color:#6b7280!important;border-color:#eef2f7!important
+  }
+  body.order-detail-active .order-hero-pills b{color:#111827!important}
+  body.order-detail-active .order-asset-breakdown{background:#f8fafc!important;color:#0f172a!important;border-color:#e5e7eb!important}
+}

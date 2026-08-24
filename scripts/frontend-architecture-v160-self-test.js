@@ -6,7 +6,7 @@ const path = require('path');
 const vm = require('vm');
 const root = path.resolve(__dirname, '..');
 const read = file => fs.readFileSync(path.join(root, file), 'utf8');
-const assert = (condition, message) => { if (!condition) throw new Error(`Frontend architecture v1.6.1 self-test failed: ${message}`); };
+const assert = (condition, message) => { if (!condition) throw new Error(`Frontend architecture v1.6.2 self-test failed: ${message}`); };
 
 const app = read('public/app.js');
 const index = read('public/index.html');
@@ -20,7 +20,7 @@ const sw = read('public/sw.js');
 const security = read('public/js/pages/security.js');
 const pkg = JSON.parse(read('package.json'));
 
-assert(pkg.version === '1.6.1', `expected v1.6.1, got ${pkg.version}`);
+assert(pkg.version === '1.6.2', `expected v1.6.2, got ${pkg.version}`);
 assert(index.includes('class="p2pflow-app-root"') && index.includes('class="p2pflow-app-shell"'), 'fixed shell root/body classes are missing');
 assert(index.includes('id="routeViewport"') && index.includes('class="route-page-host"'), 'isolated route viewport/host is missing');
 assert(index.includes('/js/core/history-router.js') && index.includes('/js/core/route-host.js'), 'routing/route-host cores are not loaded before the app');
@@ -68,7 +68,7 @@ assert(security.includes("window.location.replace('/system/security')"), 'securi
 
 console.log(JSON.stringify({
   ok:true,
-  architecture:'v1.6.1-fixed-shell-history-router',
+  architecture:'v1.6.2-fixed-shell-history-router',
   documentScroll:false,
   cleanHistoryRoutes:true,
   legacyHashMigration:true,

@@ -1,4 +1,4 @@
-// P2PFlow v1.6.1
+// P2PFlow v1.6.2
 // Page module: orders. Edit this file for the orders page UI.
 
 function orderAccountOptions(data = {}) {
@@ -19,6 +19,40 @@ function orderSourceAccountHtml(order = {}) {
 }
 
 const ORDER_FILTER_STORAGE_VERSION = 1;
+const ORDER_RENDER_BATCH_SIZE = 120;
+
+function orderRenderLimitKey(scope, tabKey) {
+  return `${String(scope || 'ongoing')}:${String(tabKey || 'all')}`;
+}
+
+function ensureOrderRenderLimits() {
+  if (!state.orderRenderLimits || typeof state.orderRenderLimits !== 'object') state.orderRenderLimits = {};
+  return state.orderRenderLimits;
+}
+
+function orderRenderLimit(scope, tabKey, total=0) {
+  const limits = ensureOrderRenderLimits();
+  const key = orderRenderLimitKey(scope, tabKey);
+  const configured = Math.max(ORDER_RENDER_BATCH_SIZE, Number(limits[key] || ORDER_RENDER_BATCH_SIZE));
+  return Math.min(Math.max(0, Number(total || 0)), configured);
+}
+
+function resetOrderRenderLimits(scope='', tabKey='') {
+  if (!scope) {
+    state.orderRenderLimits = {};
+    return;
+  }
+  const limits = ensureOrderRenderLimits();
+  delete limits[orderRenderLimitKey(scope, tabKey || state.orderActiveTabs?.[scope] || 'all')];
+}
+
+function growOrderRenderLimit(scope, tabKey, total=0) {
+  const limits = ensureOrderRenderLimits();
+  const key = orderRenderLimitKey(scope, tabKey);
+  const current = Math.max(ORDER_RENDER_BATCH_SIZE, Number(limits[key] || ORDER_RENDER_BATCH_SIZE));
+  limits[key] = Math.min(Math.max(0, Number(total || 0)), current + ORDER_RENDER_BATCH_SIZE);
+  return limits[key];
+}
 
 function orderFilterStorageKey() {
   const userRef = state.user?.id || state.user?.username || state.user?.email || 'default';
@@ -105,8 +139,8 @@ function orderFilterMenuHtml(data = {}, filters = ensureOrderFilters()) {
   const activeCount = orderFilterActiveCount(f);
   return `<div class="order-filter-menu ${activeCount ? 'has-active-filter' : ''}">
     <button class="order-filter-trigger" id="orderFilterBtn" type="button" aria-label="Filter orders" aria-haspopup="dialog" aria-expanded="false" aria-controls="orderFilterPanel" title="Filter orders">
-      <img src="/assets/order-filter.png" alt="" aria-hidden="true" />
-      ${activeCount ? `<span class="order-filter-count" aria-label="${activeCount} active filters">${activeCount}</span>` : ''}
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 5.5h17L14 13v5.2l-4 2.3V13L3.5 5.5Z"></path></svg>
+      ${activeCount ? `<span class="order-filter-count" aria-label="${activeCount} active filters">${activeCount}</span>` : '<span class="order-filter-market-dot" aria-hidden="true"></span>'}
     </button>
     <div class="order-filter-panel" id="orderFilterPanel" role="dialog" aria-label="Order filters" hidden>
       <form id="orderFilterForm" class="order-filter-form">
@@ -284,7 +318,7 @@ async function renderOrders(opts={}) {
     return { rowClass:rowMeta.rowClass, openOrderId:o.id, cells:[
       orderNumberLabelHtml(o),
       orderSourceAccountHtml(o),
-      badge(o.type, o.type === 'BUY' ? 'blue' : 'ok'),
+      badge(o.type, o.type === 'BUY' ? 'ok' : 'danger'),
       methodLabelHtml(o),
       `${money(o.amount)}<br/><span class="sub">${assetFmt(o.assetAmount, o.asset)}</span>`,
       o.orderSource === 'offline' ? '-' : `${money(o.rate).replace('৳','৳ ')} / ${escapeHtml(o.asset || 'USDT')}`,
@@ -321,10 +355,19 @@ async function renderOrders(opts={}) {
 
   const section = (tabs, scope) => {
     const activeTabKey = state.orderActiveTabs[scope] || 'all';
+    const activeTab = tabs.find(tab => tab[0] === activeTabKey) || tabs[0] || ['all','All',[]];
+    const totalVisible = activeTab[2].length;
+    const renderLimit = orderRenderLimit(scope, activeTab[0], totalVisible);
+    const renderedItems = activeTab[2].slice(0, renderLimit);
+    const remaining = Math.max(0, totalVisible - renderedItems.length);
     const hidden = scope !== group;
+    const listHtml = renderedItems.length
+      ? `<div class="order-desktop-view">${table(tableHead, orderRows(renderedItems))}</div><div class="order-mobile-view">${renderOrderMobileList(renderedItems, previousSnapshot, nextSnapshot)}</div>`
+      : '<div class="empty-state">No orders in this tab.</div>';
+    const loadMoreHtml = remaining ? `<div class="order-list-more-wrap"><button type="button" class="order-list-more" data-order-load-more="${scope}" data-order-load-more-tab="${activeTab[0]}" data-order-load-more-total="${totalVisible}">Load more <b>${Math.min(ORDER_RENDER_BATCH_SIZE, remaining)}</b><small>${remaining} remaining</small></button></div>` : '';
     return `<div class="card order-section order-section-${scope}" data-order-scope="${scope}" ${hidden ? 'hidden' : ''} aria-hidden="${hidden ? 'true' : 'false'}">
-      <div class="order-tabs">${tabs.map(tab => `<button class="order-tab ${tab[0] === activeTabKey ? 'active' : ''}" data-tab-scope="${scope}" data-tab-key="${tab[0]}">${tab[1]} <b>${tab[2].length}</b></button>`).join('')}</div>
-      ${tabs.map(tab => `<div class="order-tab-panel ${tab[0] === activeTabKey ? 'active' : ''}" data-panel-scope="${scope}" data-panel-key="${tab[0]}">${tab[2].length ? `<div class="order-desktop-view">${table(tableHead, orderRows(tab[2]))}</div><div class="order-mobile-view">${renderOrderMobileList(tab[2], previousSnapshot, nextSnapshot)}</div>` : '<div class="empty-state">No orders in this tab.</div>'}</div>`).join('')}
+      <div class="order-tabs">${tabs.map(tab => `<button class="order-tab ${tab[0] === activeTab[0] ? 'active' : ''}" data-tab-scope="${scope}" data-tab-key="${tab[0]}">${tab[1]} <b>${tab[2].length}</b></button>`).join('')}</div>
+      <div class="order-tab-panel active" data-panel-scope="${scope}" data-panel-key="${activeTab[0]}">${listHtml}${loadMoreHtml}</div>
     </div>`;
   };
 
@@ -373,10 +416,11 @@ async function renderOrders(opts={}) {
     appScrollTo({ top:scrollY, left:0, behavior:'auto' });
   } else if (content) {
     if (opts.fastCommit === true) {
+      const preservedScrollY = opts.preserveScroll === true ? appScrollTop() : 0;
       const staging = document.createElement('div');
       staging.innerHTML = ordersPageHtml;
       content.replaceChildren(...staging.childNodes);
-      appScrollTo({ top:0, left:0, behavior:'auto' });
+      appScrollTo({ top:preservedScrollY, left:0, behavior:'auto' });
     } else {
       content.innerHTML = ordersPageHtml;
     }
@@ -433,11 +477,40 @@ async function renderOrders(opts={}) {
   $$('[data-tab-scope]').forEach(btn => btn.onclick = () => {
     const scope = btn.dataset.tabScope;
     const key = btn.dataset.tabKey;
+    if (!scope || !key || state.orderActiveTabs[scope] === key) return;
     state.orderActiveTabs[scope] = key;
+    resetOrderRenderLimits(scope, key);
     try { localStorage.setItem(`crmOrderTab:${scope}`, key); } catch {}
-    $$(`[data-tab-scope="${scope}"]`).forEach(x => x.classList.toggle('active', x.dataset.tabKey === key));
-    $$(`[data-panel-scope="${scope}"]`).forEach(x => x.classList.toggle('active', x.dataset.panelKey === key));
+    renderOrders({ prefetchedData:data, fastCommit:true, preserveScroll:true }).catch(error => {
+      if (!isUiRequestCancelled(error)) notify(error.message || 'Could not switch order tab.', 'danger');
+    });
   });
+
+  if (state.orderLoadMoreObserver) {
+    try { state.orderLoadMoreObserver.disconnect(); } catch {}
+    state.orderLoadMoreObserver = null;
+  }
+  const loadMoreButtons = $$('[data-order-load-more]');
+  loadMoreButtons.forEach(button => button.onclick = () => {
+    if (button.dataset.loading === '1') return;
+    button.dataset.loading = '1';
+    const scope = button.dataset.orderLoadMore || 'ongoing';
+    const key = button.dataset.orderLoadMoreTab || 'all';
+    const total = Number(button.dataset.orderLoadMoreTotal || 0);
+    growOrderRenderLimit(scope, key, total);
+    renderOrders({ prefetchedData:data, fastCommit:true, preserveScroll:true }).catch(error => {
+      if (!isUiRequestCancelled(error)) notify(error.message || 'Could not load more orders.', 'danger');
+    });
+  });
+  if (loadMoreButtons.length && 'IntersectionObserver' in window) {
+    state.orderLoadMoreObserver = new IntersectionObserver(entries => {
+      entries.forEach(entry => {
+        const button = entry.target;
+        if (entry.isIntersecting && button && button.dataset.loading !== '1') button.click();
+      });
+    }, { root:null, rootMargin:'280px 0px' });
+    loadMoreButtons.forEach(button => state.orderLoadMoreObserver.observe(button));
+  }
   startCountdownTimers();
   window.setTimeout(() => maybePromptOrderAcceptance(state.orderAcceptance || {}), 80);
   if (state.orderListRefreshTimer) clearTimeout(state.orderListRefreshTimer);
@@ -467,10 +540,12 @@ function bindOrderFilterMenu(data = {}) {
       actionTrigger.setAttribute('aria-expanded', 'false');
       actionTrigger.classList.remove('active');
     }
+    const rect = trigger.getBoundingClientRect();
+    panel.style.top = `${Math.max(8, Math.min(window.innerHeight - 88, rect.bottom + 7))}px`;
+    panel.style.right = `${Math.max(8, window.innerWidth - rect.right)}px`;
     panel.hidden = false;
     trigger.setAttribute('aria-expanded', 'true');
     trigger.classList.add('active');
-    form.querySelector('select,input')?.focus({ preventScroll:true });
   };
   const formFilters = () => normalizeOrderFilters({
     credentialId:Number(form.elements.credentialId?.value || 0),
@@ -482,8 +557,9 @@ function bindOrderFilterMenu(data = {}) {
     state.orderFilters = formFilters();
     if (save) persistOrderFilters(state.orderFilters);
     state.orderSnapshot = null;
+    resetOrderRenderLimits();
     close();
-    await renderOrders({ prefetchedData:data, fastCommit:true });
+    await renderOrders({ prefetchedData:data, fastCommit:true, preserveScroll:true });
   };
 
   trigger.onclick = event => {
@@ -501,8 +577,9 @@ function bindOrderFilterMenu(data = {}) {
   if ($('#orderFilterResetBtn')) $('#orderFilterResetBtn').onclick = () => {
     clearSavedOrderFilters();
     state.orderSnapshot = null;
+    resetOrderRenderLimits();
     close();
-    renderOrders({ prefetchedData:data, fastCommit:true }).catch(error => {
+    renderOrders({ prefetchedData:data, fastCommit:true, preserveScroll:true }).catch(error => {
       if (!isUiRequestCancelled(error)) notify(error.message || 'Could not reset order filter.', 'danger');
     });
   };
