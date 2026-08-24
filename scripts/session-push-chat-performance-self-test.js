@@ -72,7 +72,20 @@ const encrypted = encryptPayload(subscription, payload);
 const decrypted = decryptPayloadForTest(receiver.getPrivateKey(), authSecret, encrypted.body);
 assert(decrypted.payload.toString('utf8') === payload, 'RFC 8291/RFC 8188 push payload roundtrip failed');
 const vapid = generateVapidKeys();
-validateVapidKeys(vapid);
+const validatedGeneratedVapid = validateVapidKeys(vapid);
+assert(validatedGeneratedVapid.privateKey.length === 32, 'generated VAPID private key is not normalized to 32 bytes');
+
+// Regression: Node/OpenSSL can return a P-256 private scalar in 31-byte form
+// when its high byte is zero. This previously made CI fail intermittently with
+// "Invalid VAPID private key" even though the scalar was mathematically valid.
+const shortScalar = Buffer.alloc(31, 1);
+const shortScalarEcdh = crypto.createECDH('prime256v1');
+shortScalarEcdh.setPrivateKey(shortScalar);
+const validatedShortVapid = validateVapidKeys({
+  publicKey: base64urlEncode(shortScalarEcdh.getPublicKey()),
+  privateKey: base64urlEncode(shortScalar)
+});
+assert(validatedShortVapid.privateKey.length === 32 && validatedShortVapid.privateKey[0] === 0, 'short VAPID scalar compatibility is broken');
 
 console.log(JSON.stringify({
   ok:true,

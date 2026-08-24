@@ -13,12 +13,18 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
+      - name: Check out repository
+        uses: actions/checkout@v5
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
-      - run: npm ci --ignore-scripts
-      - run: npm audit --omit=dev --audit-level=high
-      - run: npm run build
-      - run: npm test
+      - name: Install locked dependencies
+        run: npm ci --ignore-scripts
+      - name: Block known high-severity dependency issues
+        run: npm audit --omit=dev --audit-level=high
+      - name: Run build self-tests
+        run: npm run build
+      - name: Run complete test suite
+        run: npm test

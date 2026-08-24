@@ -17,10 +17,10 @@ const versioner = read('scripts/set-version.js');
 const css = read('public/style.css');
 
 const assert = (value, message) => {
-  if (!value) throw new Error(`v1.6.2 stability/order-filter/mobile-ui self-test failed: ${message}`);
+  if (!value) throw new Error(`v1.6.3 stability/order-filter/mobile-ui self-test failed: ${message}`);
 };
 
-assert(pkg.version === '1.6.2', `expected v1.6.2, got ${pkg.version}`);
+assert(pkg.version === '1.6.3', `expected v1.6.3, got ${pkg.version}`);
 
 for (const endpoint of [
   '/api/login',
