@@ -12,7 +12,7 @@ const pkg = JSON.parse(read('package.json'));
 const fail = message => { throw new Error(`Mail routing self-test failed: ${message}`); };
 const assert = (ok, message) => { if (!ok) fail(message); };
 
-assert(pkg.version === '1.6.3', `expected v1.6.3, got ${pkg.version}`);
+assert(pkg.version === '1.6.4', `expected v1.6.4, got ${pkg.version}`);
 
 const systems = [
   ['auto','Hosting Auto'], ['php','PHP mail'], ['sendmail','Sendmail'],

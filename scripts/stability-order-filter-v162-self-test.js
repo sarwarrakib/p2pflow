@@ -15,12 +15,13 @@ const market = read('public/js/pages/p2p-market.js');
 const routeHost = read('public/js/core/route-host.js');
 const versioner = read('scripts/set-version.js');
 const css = read('public/style.css');
+const cleanup = read('scripts/cleanup-obsolete-assets.js');
 
 const assert = (value, message) => {
   if (!value) throw new Error(`v1.6.3 stability/order-filter/mobile-ui self-test failed: ${message}`);
 };
 
-assert(pkg.version === '1.6.3', `expected v1.6.3, got ${pkg.version}`);
+assert(pkg.version === '1.6.4', `expected v1.6.4, got ${pkg.version}`);
 
 for (const endpoint of [
   '/api/login',
@@ -60,6 +61,8 @@ assert(market.includes(p2pFilterPath), 'P2P Market filter SVG path is missing');
 assert(orders.includes(p2pFilterPath), 'Orders does not reuse the P2P Market filter SVG');
 assert(!orders.includes('/assets/order-filter.png'), 'Orders still references the uploaded PNG filter image');
 assert(!fs.existsSync(path.join(root, 'public/assets/order-filter.png')), 'Unused Orders PNG filter asset is still shipped');
+assert(cleanup.includes("public/assets/order-filter.png") && cleanup.includes('fs.rmSync'), 'Obsolete Orders PNG cleanup script is missing');
+assert(pkg.scripts && pkg.scripts.prebuild === 'npm run clean:obsolete' && pkg.scripts.pretest === 'npm run clean:obsolete', 'Obsolete asset cleanup is not wired to prebuild/pretest');
 
 assert(orders.includes('const ORDER_RENDER_BATCH_SIZE = 120;'), 'Orders progressive render batch is missing');
 assert(orders.includes('activeTab[2].slice(0, renderLimit)'), 'Orders still renders every row of every fulfilled tab up front');

@@ -27,18 +27,18 @@ Updater code এবং database আলাদা রাখে। Update install-�
 
 ## Version
 
-Internal SemVer: `1.6.3`
+Internal SemVer: `1.6.4`
 UI: `1.6`
 Database schema: `37`
 
 Normal next version: `SET_NEXT_VERSION.bat` -> `1.7.0`  
-Hotfix: `SET_HOTFIX_VERSION.bat` -> `1.6.4`
+Hotfix: `SET_HOTFIX_VERSION.bat` -> `1.6.5`
 
 ## Database history safety
 
 P2PFlow keeps authoritative business/application data in MariaDB/MySQL/PostgreSQL. State payloads are compressed with Brotli before AES-256-GCM encryption, proofs/chat media are stored as encrypted database objects, and identical newly uploaded proof/media bytes use content-addressed object IDs to avoid duplicate blobs. The default is 3 retained recovery checkpoints with a 6-hour archive interval and 5 retained automatic database backups. Older uncompressed state/history/backup payloads are upgraded incrementally after startup. Health Check reports each P2PFlow database table's allocated size/row count, current encrypted state payload size, compression saving percentage, and proof/chat object usage so database-MB growth can be inspected without terminal access. `shared/`, `.p2pflow`, `.env`, `releases/` and temporary restart/update markers are operational bootstrap/update metadata only; they are not an application/business-data store. The application runtime itself does not write proof, chat, audit, order, ledger, notification or recovery-code data to local files.
 
-## v1.6.3 Dedicated Frontend Architecture — Fixed AppShell & Clean History Routes
+## v1.6.4 Dedicated Frontend Architecture — Fixed AppShell & Clean History Routes
 
 - Authenticated browser document এখন `100dvh` fixed AppShell; `html/body/#app/main` আর application page-এর সঙ্গে scroll করে না। Desktop sidebar ও top header স্থায়ী, শুধু active route viewport page scroll করে।
 - Canonical navigation clean History API URL ব্যবহার করে: `/orders/123`, `/p2p/market`, `/accounting`, `/system/update`। পুরোনো `/#/...` bookmark readable এবং clean URL-এ migrate হয়।
@@ -53,7 +53,7 @@ P2PFlow keeps authoritative business/application data in MariaDB/MySQL/PostgreSQ
 - v1.5.38 Ads UI, v1.5.37 secret vault/one-click verification, v1.5.36 Binance FUND_PWD RSA flow এবং permission/accounting/realtime backend behavior preserved।
 - Database schema `37`; নতুন migration নেই।
 
-বিস্তারিত: `P2PFlow_v1.6.3_RELEASE_NOTES_BN.md`, `P2PFlow_v1.6.3_MANUAL_UPDATE_BN.md` এবং `P2PFlow_v1.6.3_LAUNCH_CHECKLIST_BN.md`.
+বিস্তারিত: `P2PFlow_v1.6.4_RELEASE_NOTES_BN.md`, `P2PFlow_v1.6.4_MANUAL_UPDATE_BN.md` এবং `P2PFlow_v1.6.4_LAUNCH_CHECKLIST_BN.md`.
 
 ## v1.5.38 Reference UI, Minimal Verification & Binance Ad Flow (historical)
 

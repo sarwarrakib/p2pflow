@@ -5840,7 +5840,7 @@ body.p2pflow-app-shell .modal-backdrop{overscroll-behavior:contain}
 }
 
 
-/* v1.6.3 - fast Orders filter, P2P Market filter icon, mobile order contrast and clear navigation drawer */
+/* v1.6.4 - fast Orders filter, P2P Market filter icon, mobile order contrast and clear navigation drawer */
 .order-filter-trigger svg{
   display:block;width:28px!important;height:28px!important;margin:0 auto;
   fill:none!important;stroke:#111!important;stroke-width:1.8!important;stroke-linecap:round;stroke-linejoin:round!important;

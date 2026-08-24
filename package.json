@@ -1,6 +1,6 @@
 {
   "name": "p2pflow",
-  "version": "1.6.3",
+  "version": "1.6.4",
   "description": "P2PFlow unified package for fresh install, manual update, GitHub release publishing, and in-panel signed automatic updates.",
   "main": "server.js",
   "scripts": {
@@ -17,7 +17,10 @@
     "version:minor": "node scripts/set-version.js minor",
     "version:hotfix": "node scripts/set-version.js patch",
     "version:next": "node scripts/set-version.js minor",
-    "package:unified": "node scripts/build-unified-package.js"
+    "package:unified": "node scripts/build-unified-package.js",
+    "clean:obsolete": "node scripts/cleanup-obsolete-assets.js",
+    "prebuild": "npm run clean:obsolete",
+    "pretest": "npm run clean:obsolete"
   },
   "license": "UNLICENSED",
   "dependencies": {
