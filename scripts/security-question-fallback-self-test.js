@@ -15,7 +15,7 @@ const pkg = JSON.parse(read('package.json'));
 const fail = message => { throw new Error(`Security Question fallback self-test failed: ${message}`); };
 const assert = (ok, message) => { if (!ok) fail(message); };
 
-assert(pkg.version === '1.6.9', `expected v1.6.9, got ${pkg.version}`);
+assert(pkg.version === '1.7.0', `expected v1.7.0, got ${pkg.version}`);
 assert(server.includes('loginSecurityQuestionFallbackEnabled: true'), 'global fallback default is missing');
 assert(server.includes("securityQuestion: cleanStr(opts.securityQuestion || '', 240)"), 'user securityQuestion field is missing');
 assert(server.includes("securityAnswerHash: opts.securityAnswer ? hashPassword(String(opts.securityAnswer)) : ''"), 'security answer is not hashed at user creation');

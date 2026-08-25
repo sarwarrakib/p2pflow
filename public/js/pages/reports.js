@@ -1,4 +1,4 @@
-// P2PFlow v1.6.9
+// P2PFlow v1.7.0
 // Page module: reports. Edit this file for the reports page UI.
 
 async function renderReports() {

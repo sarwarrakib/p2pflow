@@ -4,7 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const root = path.resolve(__dirname, '..');
 const src = fs.readFileSync(path.join(root,'app-server.js'),'utf8');
-function assert(value, message){ if(!value) throw new Error(`v1.6.9 account-feature overlay self-test failed: ${message}`); }
+function assert(value, message){ if(!value) throw new Error(`v1.7.0 account-feature overlay self-test failed: ${message}`); }
 function bodyOf(name){
   const asyncStart = src.indexOf(`async function ${name}`);
   const syncStart = src.indexOf(`function ${name}`);
@@ -32,4 +32,4 @@ assert(src.includes("userBinanceCredentialFeatureEnabled(agentLoginUser(x.agent.
 assert(src.includes('target.settings.userAccountFeatureOverlayV169Initialized'), 'stale v1.6.5-v1.6.8 control reset is missing');
 assert(src.includes("if (url.pathname === '/api/chat-account-controls')"), 'chat account controls endpoint missing');
 assert(src.includes('ordersAccessibleToUser(user, { respectFeatureControls:false })'), 'Chat was incorrectly coupled to Orders OFF');
-console.log(JSON.stringify({ok:true,version:'1.6.9',orderCore:'v1.6.4-preserved',userOverlay:'deny-only',staleControlsResetToOn:true,chatIndependentFromOrdersToggle:true}));
+console.log(JSON.stringify({ok:true,version:'1.7.0',orderCore:'v1.6.4-preserved',userOverlay:'deny-only',staleControlsResetToOn:true,chatIndependentFromOrdersToggle:true}));

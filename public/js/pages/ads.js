@@ -1,4 +1,4 @@
-// P2PFlow v1.6.9
+// P2PFlow v1.7.0
 // Restored FULL advertisement update payload with no-updateMode compatibility retry.
 
 const ADS_COUNTRY_CODES = ["BD","US","GB","IN","PK","AE","SA","TR","NG","KE","GH","ZA","MY","SG","ID","PH","TH","VN","AU","CA","DE","FR","IT","ES","NL","BE","PT","JP","KR","CN","HK","TW","BR","MX","AR","CO","PE","CL","EG","MA","DZ","TN","QA","KW","BH","OM","LK","NP","AW","AF","AO","AI","AX","AL","AD","AM","AS","AQ","TF","AG","AT","AZ","BI","BJ","BQ","BF","BG","BS","BA","BL","BY","BZ","BM","BO","BB","BN","BT","BV","BW","CF","CC","CH","CI","CM","CD","CG","CK","KM","CV","CR","CU","CW","CX","KY","CY","CZ","DJ","DM","DK","DO","EC","ER","EH","EE","ET","FI","FJ","FK","FO","FM","GA","GE","GG","GI","GN","GP","GM","GW","GQ","GR","GD","GL","GT","GF","GU","GY","HM","HN","HR","HT","HU","IM","IO","IE","IR","IQ","IS","IL","JM","JE","JO","KZ","KG","KH","KI","KN","LA","LB","LR","LY","LC","LI","LS","LT","LU","LV","MO","MF","MC","MD","MG","MV","MH","MK","ML","MT","MM","ME","MN","MP","MZ","MR","MS","MQ","MU","MW","YT","NA","NC","NE","NF","NI","NU","NO","NR","NZ","PA","PN","PW","PG","PL","PR","KP","PY","PS","PF","RE","RO","RU","RW","SD","SN","GS","SH","SJ","SB","SL","SV","SM","SO","PM","RS","SS","ST","SR","SK","SI","SE","SZ","SX","SC","SY","TC","TD","TG","TJ","TK","TM","TL","TO","TT","TV","TZ","UG","UA","UM","UY","UZ","VA","VC","VE","VG","VI","VU","WF","WS","YE","ZM","ZW"];
@@ -76,7 +76,7 @@ function adsPaymentMethodsForCredential(data = {}, credentialId = 0) {
   return methods.filter(method => method
     && method.enabled !== false
     && method.availableForCredential !== false
-    && (!id || !Number(method.credentialId || 0) || Number(method.credentialId) === id));
+    && (!id || Number(method.credentialId || 0) === id));
 }
 
 function adsPaymentDataForCredential(data = {}, credentialId = 0) {
@@ -340,6 +340,7 @@ async function renderAds(prefetchedData = null, options={}) {
   }
   if (selectedCredentialId && Number(data.selectedCredentialId || 0) !== selectedCredentialId) {
     state.adsCredentialId = selectedCredentialId;
+  state.adsLastData = data;
     data = await api(adsPageUrl(), { signal:renderGuard.signal, navigationScoped:false, noAutoReload:true });
     credentialOptions = adsCredentialOptions(data);
   }
@@ -652,6 +653,7 @@ async function renderAds(prefetchedData = null, options={}) {
 
 function closeAdsSheet() {
   $$('.ads-sheet-backdrop').forEach(node => node.remove());
+  document.body.classList.remove('ads-sheet-open');
 }
 
 function openAdsSheet(title, bodyHtml, onReady) {
@@ -661,6 +663,7 @@ function openAdsSheet(title, bodyHtml, onReady) {
   wrap.innerHTML = `<section class="ads-bottom-sheet" role="dialog" aria-modal="true"><div class="ads-sheet-handle"></div><header><h3>${escapeHtml(title)}</h3><button type="button" data-close-ads-sheet>×</button></header><div class="ads-sheet-body">${bodyHtml}</div></section>`;
   wrap.addEventListener('click', event => { if (event.target === wrap) closeAdsSheet(); });
   document.body.appendChild(wrap);
+  document.body.classList.add('ads-sheet-open');
   wrap.querySelector('[data-close-ads-sheet]')?.addEventListener('click', closeAdsSheet);
   if (typeof onReady === 'function') onReady(wrap);
   return wrap;
@@ -703,32 +706,31 @@ function advertisementEditorDataFromResponse(data = {}, response = {}, credentia
 async function openAdvertisementEditorFromAction(ad = {}, data = {}, button = null) {
   const expectedCredentialId = Number(ad.credentialId || 0);
   if (!expectedCredentialId) return notify('This advertisement is not linked to a Binance account.', 'danger', 6000);
-  const originalHtml = button?.innerHTML || '';
-  if (button) {
-    button.disabled = true;
-    button.innerHTML = "<span>…</span><b>Loading...</b><small>Refreshing this account\'s live ad and payment methods</small>";
-  }
-  try {
-    const response = await api(`/api/ads/${encodeURIComponent(ad.id)}?refresh=1`, { silent:true, noAutoReload:true });
-    const freshAd = response?.item;
-    if (!freshAd) throw new Error('Advertisement details were not returned.');
-    if (Number(freshAd.credentialId || 0) !== expectedCredentialId) {
-      throw new Error('The advertisement account changed unexpectedly. Edit was blocked for safety.');
-    }
-    const scopedData = advertisementEditorDataFromResponse(data, response, expectedCredentialId);
-    closeAdsSheet();
-    openAdvertisementEditor(freshAd, scopedData);
-    if (Array.isArray(response.warnings) && response.warnings.length) {
-      notify(response.warnings[0], 'warn', 7000);
-    }
-  } catch (error) {
-    if (isUiRequestCancelled(error)) return;
-    notify(error.message || 'Could not load the latest advertisement details.', 'danger', 7000);
-    if (button) {
-      button.disabled = false;
-      button.innerHTML = originalHtml;
-    }
-  }
+
+  // Open instantly from the already-synchronized account-scoped snapshot. A
+  // live Binance refresh continues in the background, so a slow SAPI response
+  // can never make the operator wait 20-30 seconds just to enter the editor.
+  const scopedData = adsPaymentDataForCredential(data, expectedCredentialId);
+  closeAdsSheet();
+  openAdvertisementEditor(ad, scopedData);
+
+  api(`/api/ads/${encodeURIComponent(ad.id)}?refresh=1`, { silent:true, noAutoReload:true })
+    .then(response => {
+      const freshAd = response?.item;
+      if (!freshAd || Number(freshAd.credentialId || 0) !== expectedCredentialId) return;
+      const merged = advertisementEditorDataFromResponse(scopedData, response, expectedCredentialId);
+      Object.assign(scopedData, merged);
+      const current = (state.adsLastData?.items || []).find(item => Number(item.id) === Number(ad.id));
+      if (current) Object.assign(current, freshAd);
+      window.dispatchEvent(new CustomEvent('p2pflow:ads-editor-live-refresh', { detail:{
+        advertisementId:Number(ad.id || 0), credentialId:expectedCredentialId, item:freshAd, data:merged
+      } }));
+      if (Array.isArray(response.warnings) && response.warnings.length) notify(response.warnings[0], 'warn', 6500);
+    })
+    .catch(error => {
+      if (isUiRequestCancelled(error)) return;
+      notify(error.message || 'Live Binance refresh is temporarily unavailable. The saved account-scoped advertisement is still open.', 'warn', 6500);
+    });
 }
 
 async function deleteAdvertisementFromAction(ad = {}, data = {}) {
@@ -1184,6 +1186,24 @@ function openAdvertisementEditor(ad = null, data = {}) {
   };
   renderMethods(); renderTags();
 
+  // The editor opens from cached account-scoped data for zero perceived wait.
+  // When the exact credential's live Binance snapshot arrives, merge only that
+  // account and refresh the visible payment selection without reopening the form.
+  if (isEdit) {
+    window.addEventListener('p2pflow:ads-editor-live-refresh', event => {
+      if (!document.body.contains(form)) return;
+      const detail = event?.detail || {};
+      if (Number(detail.advertisementId || 0) !== Number(ad?.id || 0)) return;
+      if (Number(detail.credentialId || 0) !== Number(editorCredentialId || 0)) return;
+      if (detail.data && typeof detail.data === 'object') Object.assign(data, detail.data);
+      if (detail.item && typeof detail.item === 'object') Object.assign(ad, detail.item);
+      selectedMethodIds = resolvedAdPaymentIds(ad || {}, data);
+      selectedGenericKeys = resolvedAdGenericKeys(ad || {}, data);
+      renderMethods();
+      scheduleReferenceRefresh();
+    }, { once:true });
+  }
+
   $('#addAdPaymentMethod').onclick = () => openPaymentMethodSheet(currentPaymentData(), currentSelectedPayments(), values => { setCurrentSelectedPayments(values); renderMethods(); scheduleReferenceRefresh(); });
   $('#chooseAdTermsTags').onclick = () => openTermsTagSheet(selectedTags, tags => { selectedTags = tags; renderTags(); scheduleFeeRefresh(); });
   $('#chooseAdRegions').onclick = () => openRegionSheet(selectedRegions, regions => {
@@ -1281,18 +1301,23 @@ function openAdvertisementEditor(ad = null, data = {}) {
   const currentPriceType = () => Number(form.elements.priceType?.value || 1) === 2 ? 2 : 1;
   const pricePrefixForEditor = () => String(form.elements.fiatUnit?.value || 'BDT').toUpperCase() === 'BDT' ? 'Tk.' : `${String(form.elements.fiatUnit?.value || '').toUpperCase()} `;
   const fixedPriceRangeMessage = guide => {
-    if (!guide || !(Number(guide.minPrice) > 0) || !(Number(guide.maxPrice) >= Number(guide.minPrice))) return '';
+    if (!guide) return '';
     if (guide.validationMessage) return String(guide.validationMessage);
+    if (guide.explicitBounds !== true || !(Number(guide.minPrice) > 0) || !(Number(guide.maxPrice) >= Number(guide.minPrice))) {
+      const scale = Number(guide.priceScale ?? 2);
+      return Number(guide.referencePrice || 0) > 0 ? `Binance live reference: ${adNumber(guide.referencePrice, scale)}` : '';
+    }
     const scale = Number(guide.priceScale ?? 2);
     return `Fixed price must fall within the limited range of: ${adNumber(guide.minPrice, scale)}~${adNumber(guide.maxPrice, scale)}`;
   };
   const fixedPriceWithinGuide = guide => {
-    if (currentPriceType() !== 1 || !guide) return true;
+    if (currentPriceType() !== 1 || !guide || guide.explicitBounds !== true) return true;
+    if (!(Number(guide.minPrice) > 0) || !(Number(guide.maxPrice) >= Number(guide.minPrice))) return true;
     const price = Number(form.elements.price?.value || 0);
     const scale = Math.max(0, Math.min(8, Number(guide.priceScale ?? 2)));
     const factor = 10 ** scale;
-    return Math.round(price * factor) >= Math.round(Number(guide.minPrice || 0) * factor)
-      && Math.round(price * factor) <= Math.round(Number(guide.maxPrice || 0) * factor);
+    return Math.round(price * factor) >= Math.round(Number(guide.minPrice) * factor)
+      && Math.round(price * factor) <= Math.round(Number(guide.maxPrice) * factor);
   };
   const renderFixedPriceValidity = () => {
     const priceInput = form.elements.price;
@@ -1348,7 +1373,7 @@ function openAdvertisementEditor(ad = null, data = {}) {
       const priceInput = form.elements.price;
       if (priceInput) {
         priceInput.step = String(10 ** -Math.max(0, Math.min(8, scale)));
-        if (currentPriceType() === 1) {
+        if (currentPriceType() === 1 && guide.explicitBounds === true && Number(guide.minPrice) > 0 && Number(guide.maxPrice) >= Number(guide.minPrice)) {
           priceInput.min = String(guide.minPrice);
           priceInput.max = String(guide.maxPrice);
         } else {
@@ -1356,7 +1381,10 @@ function openAdvertisementEditor(ad = null, data = {}) {
           priceInput.removeAttribute('max');
         }
       }
-      if (range) range.textContent = `${prefix}${adNumber(guide.minPrice, scale)}~${prefix}${adNumber(guide.maxPrice, scale)}`;
+      const hasBounds = guide.explicitBounds === true && Number(guide.minPrice) > 0 && Number(guide.maxPrice) >= Number(guide.minPrice);
+      if (range) range.textContent = hasBounds
+        ? `${prefix}${adNumber(guide.minPrice, scale)}~${prefix}${adNumber(guide.maxPrice, scale)}`
+        : `Reference ${prefix}${adNumber(guide.referencePrice, scale)}`;
       if (meta) meta.textContent = currentPriceType() === 1
         ? fixedPriceRangeMessage(guide)
         : `Binance live reference: ${prefix}${adNumber(guide.referencePrice, scale)}`;

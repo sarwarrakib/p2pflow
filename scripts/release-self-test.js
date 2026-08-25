@@ -47,8 +47,7 @@ const app = fs.readFileSync(path.join(root, 'app-server.js'), 'utf8');
 for (const marker of ['createStateStore({', 'createDatabaseBackup(', 'startSystemUpdateCheckLoop(', 'repositorySourceVersion()', 'hasSupervisorChannel()', 'supervisorSend(', 'beginSystemUpdateStage(', "url.pathname === '/api/session-step'", 'decodeOwnerSessionStepEnvelope(', "action === 'stage-status'", "action === 'permit'", "action === 'commit'", 'issueSystemUpdatePermit(', 'consumeSystemUpdatePermit(', 'syncManagedPublicMirrorFrom(__dirname)']) {
   if (!app.includes(marker)) throw new Error(`Application server is missing marker: ${marker}`);
 }
-if (app.includes('max-age=31536000, immutable')) throw new Error('Frontend application assets must not use immutable one-year caching.');
-for (const marker of ["const appCodeAsset = ['.html','.js','.css'].includes(ext)", "'no-store, no-cache, must-revalidate, max-age=0'", "'X-P2PFlow-Version': APP_VERSION"]) {
+for (const marker of ["const appCodeAsset = ['.html','.js','.css'].includes(ext)", "requestedAssetVersion === APP_VERSION", "const versionedAppAsset = ['.js','.css'].includes(ext)", "'public, max-age=31536000, immutable'", "'no-store, no-cache, must-revalidate, max-age=0'", "'X-P2PFlow-Version': APP_VERSION"]) {
   if (!app.includes(marker)) throw new Error(`Frontend cache-safety marker is missing: ${marker}`);
 }
 for (const forbidden of ['CRM_DB_PROVIDER=file','CRM_DB_FILE','0.0032','shared/email-recovery-code.txt']) {

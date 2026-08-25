@@ -19,9 +19,9 @@ function block(source, start, end) {
 assert(/getAdReferencePrice:\s*\['POST',\s*'\/sapi\/v1\/c2c\/ads\/getReferencePrice'\]/.test(adapter), 'Binance Ads reference-price endpoint is missing.');
 assert(/async function handleAdvertisementReferencePrice/.test(server) && /\/api\/ads\/reference-price/.test(server), 'Ads reference-price API route is missing.');
 const guide = block(server, 'function normalizeAdvertisementReferencePriceResponse(', 'async function advertisementReferencePriceGuide(');
-assert(/referencePrice/.test(guide) && /binance_explicit_live_bounds/.test(guide) && /binance_live_reference_rule/.test(guide), 'Live Binance reference-price guide/bounds normalization is missing.');
+assert(/referencePrice/.test(guide) && /binance_explicit_live_bounds/.test(guide) && /binance_reference_only/.test(guide), 'Live Binance reference-price guide/bounds normalization is missing.');
 assert(/validationMessage/.test(guide) && /Fixed price must fall within the limited range of:/.test(guide), 'Exact fixed-price range message is missing.');
-assert(/decimalFloorScale/.test(server) && /122\.48 x 1\.08 = 132\.2784/.test(server), 'Binance price-tick truncation rule is missing.');
+assert(!/referencePrice\s*\*\s*1\.(?:08|10)/.test(server) && /not_returned_by_reference_api/.test(guide), 'Undocumented percentage-derived fixed-price limits remain.');
 assert(/assertAdvertisementFixedPriceWithinLiveRange/.test(server) && /ADS_FIXED_PRICE_OUT_OF_RANGE/.test(server), 'Server-side live fixed-price validation is missing.');
 assert((server.match(/assertAdvertisementFixedPriceWithinLiveRange\(/g) || []).length >= 4, 'Create, edit and publish do not all enforce the live price range.');
 assert(/function advertisementReferencePayType/.test(server) && /payType:advertisementReferencePayType\(item\)/.test(server), 'Server price validation is not scoped to the selected payment method.');
@@ -43,7 +43,7 @@ const paymentScope = block(ads, 'function adsPaymentMethodsForCredential(', 'fun
 assert(/Array\.isArray\(scoped\) \? scoped : \[\]/.test(paymentScope), 'Credential payment methods still fall back to a global/other account list.');
 assert(/method\.credentialId/.test(paymentScope), 'Credential ID mismatch guard is missing from payment-method filtering.');
 assert(/availableForCredential === true/.test(server), 'Server does not filter payment methods to the selected Binance credential.');
-assert(/fetchAdvertisementAccountPaymentMethods\(credential\)/.test(server) && /const genericPaymentMethods = advertisementGenericPaymentCatalogForCredential/.test(server), 'Edit action does not refresh account-scoped payment methods.');
+assert(/fetchAdvertisementAccountPaymentMethods\(credential, \{ enrich:false \}\)/.test(server) && /const genericPaymentMethods = advertisementGenericPaymentCatalogForCredential/.test(server), 'Edit action does not refresh exact-account payment methods.');
 assert(/ADS_ACCOUNT_PAYMENT_METHOD_MISMATCH/.test(server), 'Account-scoped payment method mismatch protection is missing.');
 assert(/function advertisementScopedPaymentMethodIds/.test(server) && /allowGlobalFallback:false/.test(server), 'Advertisement responses do not remove payment IDs that belong to another Binance account.');
 assert(/ADS_CREDENTIAL_SCOPE_MISMATCH/.test(server), 'Advertisement credential reassignment guard is missing.');
@@ -72,7 +72,7 @@ for (const verbose of ['Saved Fund Transfer Password ready', 'Primary/Secondary 
 }
 assert(/release-verify-minimal/.test(releasePage) && /release-verify-submit/.test(releasePage), 'Minimal Release verification shell/button is missing.');
 assert(/\.release-verify-minimal/.test(css) && /\.ads-wizard-progress/.test(css) && /\.ads-ad-action-menu/.test(css), 'Responsive ads workflow CSS is missing.');
-assert(pkg.version === '1.6.9', `expected v1.6.9, got ${pkg.version}`);
+assert(pkg.version === '1.7.0', `expected v1.7.0, got ${pkg.version}`);
 console.log(JSON.stringify({
   ok:true,
   createFlow:'three-step',
