@@ -548,6 +548,29 @@ function userBinanceCredentialFeatureEnabled(user = {}, credentialOrId, feature,
   return Object.prototype.hasOwnProperty.call(controls, key) ? controls[key] !== false : true;
 }
 
+// Account controls are a deny-only CRM-user overlay. They never replace the
+// established permission/assignment model. Centralizing the effective Orders
+// account state avoids subtle drift between list visibility, live-order access,
+// assignment routing and realtime filtering when a user turns an account back ON.
+function userBinanceOrderAccountAccess(user = {}, credentialOrId, target = db, options = {}) {
+  const credentialId = Number(typeof credentialOrId === 'object' && credentialOrId ? credentialOrId.id : credentialOrId || 0);
+  const respectFeatureControl = options.respectFeatureControl !== false;
+  if (!user || !credentialId) {
+    return { credentialId, canView:false, canLiveSync:false, featureEnabled:true, effectiveView:false, effectiveLive:false };
+  }
+  const canView = userHasBinanceCredentialPermission(user, credentialId, 'orders.view', target);
+  const canLiveSync = userHasBinanceCredentialPermission(user, credentialId, 'binance.sync', target);
+  const featureEnabled = userBinanceCredentialFeatureEnabled(user, credentialId, 'orders', target);
+  return {
+    credentialId,
+    canView,
+    canLiveSync,
+    featureEnabled,
+    effectiveView: Boolean(canView && (!respectFeatureControl || featureEnabled)),
+    effectiveLive: Boolean(canLiveSync && (!respectFeatureControl || featureEnabled))
+  };
+}
+
 function setUserBinanceCredentialFeatureControls(user, credentialOrId, patch = {}, target = db) {
   if (!user) return normalizeBinanceCredentialFeatureControls({});
   const credentialId = Number(typeof credentialOrId === 'object' && credentialOrId ? credentialOrId.id : credentialOrId || 0);
@@ -3814,13 +3837,19 @@ function assignmentAccountingGuardEnabledForAgent(agent) {
   return assignmentAccountingGuardEnabledForUser(linkedUser);
 }
 
-function agentAvailableForAssignment(agent) {
+function agentAvailableForAssignment(agent, order = null) {
   if (!agent) return false;
   const linkedUser = db.users.find(u => Number(u.id) === Number(agent.userId) && u.enabled);
   if (!linkedUser || Number(linkedUser.agentId || 0) !== Number(agent.id) || !userHasPermission(linkedUser, 'orders.view')) return false;
-  // Live-order Agents do not have a Work toggle. Once account-level live access
-  // is granted, a stale hidden Work OFF value must not silently block assignment.
-  if (userHasLiveOrderAccess(linkedUser)) return true;
+  // Live-order bypass is account-specific. If API A Live Order is ON it may
+  // bypass Work Status only for API A. API B continues the established Work
+  // Status/assignment rules unless the user also has effective Live Order for B.
+  if (order && order.orderSource !== 'offline' && Number(order.credentialId || 0)) {
+    const access = userBinanceOrderAccountAccess(linkedUser, order.credentialId);
+    if (access.effectiveLive) return true;
+  } else if (userHasLiveOrderAccess(linkedUser)) {
+    return true;
+  }
   if (agent.allowNewOrders === false || linkedUser.workAvailable === false) return false;
   return true;
 }
@@ -5826,15 +5855,11 @@ function eligibleAgentRoutes(paymentMethodId, excludeAgentId = null, order = nul
   return db.routing
     .filter(r => r.paymentMethodId === Number(paymentMethodId) && r.enabled)
     .map(r => ({ route: r, agent: agentById(r.agentId) }))
-    .filter(x => x.agent && agentAvailableForAssignment(x.agent) && x.agent.id !== Number(excludeAgentId))
+    .filter(x => x.agent && agentAvailableForAssignment(x.agent, order) && x.agent.id !== Number(excludeAgentId))
     .filter(x => {
       if (!order || order.orderSource === 'offline' || !Number(order.credentialId || 0)) return true;
       const agentUser = agentLoginUser(x.agent.id);
-      return Boolean(
-        agentUser &&
-        userHasBinanceCredentialPermission(agentUser, order.credentialId, 'orders.view') &&
-        userBinanceCredentialFeatureEnabled(agentUser, order.credentialId, 'orders')
-      );
+      return Boolean(agentUser && userBinanceOrderAccountAccess(agentUser, order.credentialId).effectiveView);
     })
     .filter(x => !order || !x.route.minOrderAmount || num(order.amount) >= num(x.route.minOrderAmount))
     .filter(x => !order || !x.route.maxOrderAmount || num(order.amount) <= num(x.route.maxOrderAmount))
@@ -5890,26 +5915,53 @@ function canAccessOrder(user, order) {
 function orderFeatureEnabledForUser(user, order = {}) {
   if (!order || order.orderSource === 'offline') return true;
   const credentialId = Number(order.credentialId || 0);
-  return !credentialId || userBinanceCredentialFeatureEnabled(user, credentialId, 'orders');
+  return !credentialId || userBinanceOrderAccountAccess(user, credentialId).featureEnabled;
+}
+
+function orderVisibleToUserInOrdersPage(user, order = {}, options = {}) {
+  if (!order || !user || !userHasPermission(user, 'orders.view')) return false;
+  const respectFeatureControls = options.respectFeatureControls !== false;
+  if (order.orderSource === 'offline') {
+    if (!userIsAssignmentScoped(user)) return true;
+    return (db.orderAgentAssignments || []).some(assignment => Number(assignment.orderId) === Number(order.id) && Number(assignment.agentId) === Number(user.agentId || 0) && assignment.status !== 'left');
+  }
+  const credentialId = Number(order.credentialId || 0);
+  if (!credentialId) return false;
+  const accountAccess = userBinanceOrderAccountAccess(user, credentialId, db, { respectFeatureControl:respectFeatureControls });
+  if (!accountAccess.effectiveView) return false;
+  // Preserve the old visibility model exactly: managers/admins/assignment
+  // override operators see the account immediately; an assignment-scoped user
+  // sees existing assigned orders, while Live Order (binance.sync) sees the
+  // account without requiring assignment. The new Orders switch only adds the
+  // per-user per-account deny gate above.
+  if (!userIsAssignmentScoped(user)) return true;
+  const assigned = (db.orderAgentAssignments || []).some(assignment => Number(assignment.orderId) === Number(order.id) && Number(assignment.agentId) === Number(user.agentId || 0) && assignment.status !== 'left');
+  return assigned || accountAccess.canLiveSync;
 }
 
 function ordersAccessibleToUser(user, options = {}) {
   if (!user || !userHasPermission(user, 'orders.view')) return [];
-  const respectFeatureControls = options.respectFeatureControls !== false;
-  const assignedOrderIds = userIsAssignmentScoped(user)
-    ? new Set((db.orderAgentAssignments || []).filter(assignment => Number(assignment.agentId) === Number(user.agentId || 0) && assignment.status !== 'left').map(assignment => Number(assignment.orderId)))
-    : null;
-  return (db.orders || []).filter(order => {
-    if (order.orderSource === 'offline') {
-      if (assignedOrderIds && !assignedOrderIds.has(Number(order.id))) return false;
-      return true;
-    }
-    const credentialId = Number(order.credentialId || 0);
-    if (!credentialId || !userHasBinanceCredentialPermission(user, credentialId, 'orders.view')) return false;
-    if (assignedOrderIds && !assignedOrderIds.has(Number(order.id)) && !userHasBinanceCredentialPermission(user, credentialId, 'binance.sync')) return false;
-    if (respectFeatureControls && !userBinanceCredentialFeatureEnabled(user, credentialId, 'orders')) return false;
-    return true;
-  });
+  return (db.orders || []).filter(order => orderVisibleToUserInOrdersPage(user, order, options));
+}
+
+function orderVisibilitySummaryForUserCredential(user, credentialOrId) {
+  const credentialId = Number(typeof credentialOrId === 'object' && credentialOrId ? credentialOrId.id : credentialOrId || 0);
+  const access = userBinanceOrderAccountAccess(user, credentialId);
+  const baseItems = ordersAccessibleToUser(user, { respectFeatureControls:false }).filter(order => Number(order.credentialId || 0) === credentialId);
+  const visibleItems = ordersAccessibleToUser(user).filter(order => Number(order.credentialId || 0) === credentialId);
+  const openBase = baseItems.filter(order => !orderIsClosed(order));
+  const openVisible = visibleItems.filter(order => !orderIsClosed(order));
+  return {
+    credentialId,
+    ordersEnabled: access.featureEnabled,
+    hasOrdersView: access.canView,
+    hasLiveOrder: access.canLiveSync,
+    assignmentScoped: userIsAssignmentScoped(user),
+    permittedCount: baseItems.length,
+    permittedOpenCount: openBase.length,
+    visibleCount: visibleItems.length,
+    visibleOpenCount: openVisible.length
+  };
 }
 
 function canUseOrderCredential(user, order, permission) {
@@ -18352,9 +18404,15 @@ function handleLogout(req, res) {
   if (s) { closeUserActivitySession(s.session, 'logout'); sessions.delete(s.sid); syncPersistentSessions(); saveDb(); }
   return sendJson(res, 200, { ok: true }, { 'Set-Cookie': clearSessionCookieHeader(req) }, req);
 }
-function userHasLiveOrderAccess(user) {
+function userHasLiveOrderAccess(user, credentialId = 0, options = {}) {
   if (!user || user.enabled === false) return false;
-  return binanceCredentialIdsForUserPermission(user, 'binance.sync', { includeDisabled: true }).length > 0;
+  const includeDisabled = options.includeDisabled === true;
+  const requestedCredentialId = Number(credentialId || 0);
+  const credentials = (db.apiCredentials || []).filter(item => includeDisabled || !item.disabled);
+  return credentials.some(item => {
+    if (requestedCredentialId && Number(item.id) !== requestedCredentialId) return false;
+    return userBinanceOrderAccountAccess(user, item.id).effectiveLive;
+  });
 }
 
 function orderAcceptanceForUser(user) {
@@ -20617,11 +20675,28 @@ async function handleChatAccountControls(req, res) {
   const credential = binanceCredentialById(credentialId);
   if (!credential) return sendJson(res, 404, { error:'Binance account not found.' }, {}, req);
   if (!items.some(item => Number(item.id) === credentialId)) return sendJson(res, 403, { error:'You do not have access to this Binance account.' }, {}, req);
-  const controls = setUserBinanceCredentialFeatureControls(user, credentialId, body.featureControls || body.controls || body);
-  logAudit(user, 'user_binance_account_feature_controls_updated', 'user', user.id, { credentialId, controls });
+  const beforeControls = userBinanceCredentialFeatureControls(user, credentialId);
+  const requestedControls = body.featureControls || body.controls || body;
+  const controls = setUserBinanceCredentialFeatureControls(user, credentialId, requestedControls);
+  const changedFeatures = ['orders','notifications','advertisements'].filter(key => Boolean(beforeControls[key]) !== Boolean(controls[key]));
+  // Saving Orders ON is also a deliberate recovery/reconcile action. A browser
+  // can hold a detached/stale Orders route from the earlier OFF state even when
+  // the server already has ON (for example after another tab/session changed it).
+  const forceOrdersReload = changedFeatures.includes('orders') || (typeof requestedControls?.orders === 'boolean' && controls.orders === true);
+  const orderVisibility = orderVisibilitySummaryForUserCredential(user, credentialId);
+  logAudit(user, 'user_binance_account_feature_controls_updated', 'user', user.id, { credentialId, beforeControls, controls, changedFeatures, orderVisibility });
   saveDb({ broadcast:false, reason:'user_binance_account_feature_controls_updated' });
-  broadcast({ type:'binance.account.features.updated', userId:Number(user.id), credentialId, featureControls:controls, at:nowIso() });
-  return sendJson(res, 200, { ok:true, credentialId, featureControls:controls, items:chatAccountOptionsForUser(user) }, {}, req);
+  broadcast({
+    type:'binance.account.features.updated',
+    userId:Number(user.id),
+    credentialId,
+    featureControls:controls,
+    changedFeatures,
+    orderVisibility,
+    forceOrdersReload,
+    at:nowIso()
+  });
+  return sendJson(res, 200, { ok:true, credentialId, featureControls:controls, changedFeatures, orderVisibility, forceOrdersReload, items:chatAccountOptionsForUser(user) }, {}, req);
 }
 
 async function handleChatInbox(req, res) {
@@ -20762,8 +20837,13 @@ async function handleOrders(req, res, url) {
       unreadTotal: unread.total,
       unreadLatestByOrder: unread.latestByOrder,
       orderAcceptance: orderAcceptanceForUser(user),
-      credentialOptions: binanceCredentialOptionsForUser(user, 'orders.view', { includeDisabled: true }),
+      // An Orders-OFF account is intentionally absent from the Orders page
+      // account filter/actions for this CRM user. Turning it ON makes the next
+      // list request restore the exact old permission-scoped account immediately.
+      credentialOptions: binanceCredentialOptionsForUser(user, 'orders.view', { includeDisabled: true })
+        .filter(option => userBinanceCredentialFeatureEnabled(user, option.id, 'orders')),
       liveCredentialOptions: usableBinanceCredentialOptionsForUser(user, 'orders.view')
+        .filter(option => userBinanceCredentialFeatureEnabled(user, option.id, 'orders'))
     }, {}, req);
   }
   if (req.method === 'POST') {
@@ -21212,7 +21292,7 @@ async function managerAssign(req, res, user, order) {
   const agentId = Number(body.agentId);
   const agent = agentById(agentId);
   if (!agent) return sendJson(res, 404, { error: 'Agent not found' }, {}, req);
-  if (!agentAvailableForAssignment(agent)) return sendJson(res, 422, { error: 'That user is not accepting new orders or does not have Orders View permission.' }, {}, req);
+  if (!agentAvailableForAssignment(agent, order)) return sendJson(res, 422, { error: 'That user is not accepting new orders or does not have effective Orders access for this Binance account.' }, {}, req);
   const targetAgentUser = agentLoginUser(agentId);
   if (order.orderSource !== 'offline' && !userHasBinanceCredentialPermission(targetAgentUser, order.credentialId, 'orders.view')) {
     return sendJson(res, 422, { error: 'That user is not assigned orders.view permission for this Binance account.' }, {}, req);
@@ -25690,10 +25770,27 @@ function runPerUserBinanceFeatureControlsSelfTest() {
       binanceCredentialFeatureControls:[],
       notificationPreferences:defaultNotificationPreferences()
     };
+    const liveAgent = {
+      id:3, username:'live-agent', name:'Live Agent', role:'agent', enabled:true, agentId:31,
+      permissions:['orders.view','binance.sync'],
+      binanceCredentialPermissions:[{ credentialId:101, permissions:['orders.view','binance.sync'] }],
+      binanceCredentialFeatureControls:[{ credentialId:101, orders:false, notifications:true, advertisements:true }],
+      notificationPreferences:defaultNotificationPreferences(), workAvailable:false
+    };
+    const assignedAgent = {
+      id:4, username:'assigned-agent', name:'Assigned Agent', role:'agent', enabled:true, agentId:32,
+      permissions:['orders.view'],
+      binanceCredentialPermissions:[{ credentialId:101, permissions:['orders.view'] }],
+      binanceCredentialFeatureControls:[{ credentialId:101, orders:false, notifications:true, advertisements:true }],
+      notificationPreferences:defaultNotificationPreferences(), workAvailable:true
+    };
     db = {
       meta:{ nextId:9000, schemaVersion:APP_SCHEMA_VERSION, dataCompatibilityEpoch:APP_DATA_COMPATIBILITY_EPOCH },
       settings:defaultSettings(),
-      userRoles:[], users:[userA,userB], agents:[],
+      userRoles:[], users:[userA,userB,liveAgent,assignedAgent], agents:[
+        { id:31, userId:3, name:'Live Agent', status:'active', allowNewOrders:true },
+        { id:32, userId:4, name:'Assigned Agent', status:'active', allowNewOrders:true }
+      ],
       apiCredentials:[
         // Legacy credential-level switches are deliberately false. Runtime
         // behavior must ignore them after schema 39 and remain per CRM user.
@@ -25701,10 +25798,10 @@ function runPerUserBinanceFeatureControlsSelfTest() {
         { id:202, name:'API B', apiKey:'b', secretKey:'b', disabled:false, featureControls:{ orders:true, notifications:true, advertisements:true }, createdAt:at }
       ],
       orders:[
-        { id:1001, credentialId:101, orderSource:'binance', orderNo:'A-ORDER', status:'assigned', type:'BUY', createdAt:at },
-        { id:1002, credentialId:202, orderSource:'binance', orderNo:'B-ORDER', status:'assigned', type:'SELL', createdAt:at }
+        { id:1001, credentialId:101, orderSource:'binance', orderNo:'A-ORDER', status:'assigned', type:'BUY', paymentMethodId:91, amount:1000, createdAt:at },
+        { id:1002, credentialId:202, orderSource:'binance', orderNo:'B-ORDER', status:'assigned', type:'SELL', paymentMethodId:91, amount:1000, createdAt:at }
       ],
-      orderAgentAssignments:[], advertisements:[
+      orderAgentAssignments:[{ id:2001, orderId:1001, agentId:32, role:'lead', status:'assigned', assignedAmount:1000, createdAt:at }], advertisements:[
         { id:3001, credentialId:101, advNo:'A-AD', archived:false },
         { id:3002, credentialId:202, advNo:'B-AD', archived:false }
       ],
@@ -25712,7 +25809,10 @@ function runPerUserBinanceFeatureControlsSelfTest() {
         { id:4001, credentialId:101, type:'order_created', category:'orders', audience:'all', message:'A notification', status:'unread', read:false, createdAt:at },
         { id:4002, credentialId:202, type:'order_created', category:'orders', audience:'all', message:'B notification', status:'unread', read:false, createdAt:at }
       ],
-      paymentMethods:[], paymentAccounts:[], routing:[], paymentSplits:[], ledgers:[], proofFiles:[], auditLogs:[], locks:[],
+      paymentMethods:[{ id:91, name:'Bank' }], paymentAccounts:[], routing:[
+        { id:2101, paymentMethodId:91, agentId:31, enabled:true, priority:1, capacityGuard:false },
+        { id:2102, paymentMethodId:91, agentId:32, enabled:true, priority:2, capacityGuard:false }
+      ], paymentSplits:[], ledgers:[], proofFiles:[], auditLogs:[], locks:[],
       offlineTransactions:[], chats:[], chatReadStates:[], coAgentRequests:[], approvalRequests:[], securityRevertTokens:[], sessions:[],
       p2pExtensionTasks:[], p2pExtensionCache:[], userActivitySessions:[], businessEntries:[], businessDailyCloses:[], binanceBalanceSnapshots:[],
       chatMedia:[], systemUpdates:[], systemUpdateEvents:[], ownerP2pProfiles:[]
@@ -25742,9 +25842,25 @@ function runPerUserBinanceFeatureControlsSelfTest() {
 
     setUserBinanceCredentialFeatureControls(userA, 101, { orders:true });
     assert(userBinanceCredentialFeatureEnabled(userA, 101, 'orders') === true, 'Updating User A preference failed.');
+    assert(ordersAccessibleToUser(userA).map(order => Number(order.credentialId)).join(',') === '101,202', 'Manager/admin-style visibility did not restore immediately after Orders ON.');
     assert(userBinanceCredentialFeatureEnabled(userB, 101, 'orders') === true, 'Updating User A preference changed User B.');
     assert(db.apiCredentials[0].featureControls.orders === false, 'Personal preference write mutated the credential-level legacy field.');
     setUserBinanceCredentialFeatureControls(userA, 101, { orders:false });
+
+    assert(ordersAccessibleToUser(liveAgent).length === 0, 'Live Order user saw API A while personal Orders was OFF.');
+    assert(eligibleAgentRoutes(91, null, db.orders[0]).every(row => Number(row.agent.id) !== 31), 'Orders OFF live user remained eligible for API A auto assignment.');
+    setUserBinanceCredentialFeatureControls(liveAgent, 101, { orders:true });
+    assert(ordersAccessibleToUser(liveAgent).some(order => Number(order.id) === 1001), 'Existing API A order did not reappear for a Live Order user after Orders ON.');
+    assert(userHasLiveOrderAccess(liveAgent, 101) === true, 'Effective Live Order access was not restored for API A after Orders ON.');
+    assert(eligibleAgentRoutes(91, null, db.orders[0]).some(row => Number(row.agent.id) === 31), 'Orders ON live user did not return to normal API A auto-assignment eligibility.');
+
+    assert(ordersAccessibleToUser(assignedAgent).length === 0, 'Assigned user saw API A while personal Orders was OFF.');
+    setUserBinanceCredentialFeatureControls(assignedAgent, 101, { orders:true });
+    assert(ordersAccessibleToUser(assignedAgent).some(order => Number(order.id) === 1001), 'Existing assigned API A order did not reappear after Orders ON.');
+    db.orderAgentAssignments = db.orderAgentAssignments.filter(row => Number(row.agentId) !== 32);
+    assert(ordersAccessibleToUser(assignedAgent).length === 0, 'Assignment-scoped user saw an unassigned order without Live Order access.');
+    db.orderAgentAssignments.push({ id:2002, orderId:1001, agentId:32, role:'lead', status:'assigned', assignedAmount:1000, createdAt:at });
+    assert(ordersAccessibleToUser(assignedAgent).some(order => Number(order.id) === 1001), 'Manual/auto assignment did not restore the order for an assignment-scoped user.');
 
     const migrationArrays = ['users','userRoles','apiCredentials','agents','paymentMethods','paymentAccounts','routing','orders','orderAgentAssignments','paymentSplits','ledgers','proofFiles','auditLogs','locks','notifications','offlineTransactions','chats','chatReadStates','coAgentRequests','approvalRequests','advertisements','securityRevertTokens','sessions','p2pExtensionTasks','p2pExtensionCache','userActivitySessions','businessEntries','businessDailyCloses','binanceBalanceSnapshots','chatMedia','systemUpdates','systemUpdateEvents'];
     const migrationTarget = { meta:{ nextId:9900, schemaVersion:38, dataCompatibilityEpoch:APP_DATA_COMPATIBILITY_EPOCH }, settings:{} };
@@ -25770,6 +25886,9 @@ function runPerUserBinanceFeatureControlsSelfTest() {
       example:{ apiA:{ orders:false, notifications:true }, apiB:{ orders:true, notifications:false } },
       userIsolation:true,
       chatIndependentFromOrdersSwitch:true,
+      ordersOnRestoresExistingLiveVisibility:true,
+      assignmentScopedVisibilityPreserved:true,
+      accountSpecificAutoAssignmentGate:true,
       schema38MigrationToPerUser:true
     }, null, 2));
   } finally {

@@ -27,7 +27,7 @@ const section = (source, start, end) => {
   return source.slice(a, b);
 };
 
-assert(pkg.version === '1.6.6', `expected v1.6.6, got ${pkg.version}`);
+assert(pkg.version === '1.6.7', `expected v1.6.7, got ${pkg.version}`);
 assert(server.includes('const APP_SCHEMA_VERSION = 39;'), 'schema 35 is missing.');
 
 // Payment-account authorization is permission-only: accounts.manage_all gives all-account scope; otherwise ownership/access rules apply.
@@ -71,9 +71,9 @@ assert(!availability.includes('linkedUser.role'), 'Auto-assignment eligibility s
 assert(availability.includes("userHasPermission(linkedUser, 'orders.view')"), 'Orders View is not required for assignment eligibility.');
 assert(!availability.includes('userPresenceView') && !availability.includes('agentDynamicStatus'), 'Presence still controls assignment eligibility.');
 const manualAssign = section(server, 'async function managerAssign', 'async function requestCoAgent');
-assert(manualAssign.includes('if (!agentAvailableForAssignment(agent))'), 'Manual assignment ignores Order Acceptance OFF.');
+assert(manualAssign.includes('if (!agentAvailableForAssignment(agent, order))'), 'Manual assignment ignores account-specific Order Acceptance / Orders access.');
 const acceptanceView = section(server, 'function userHasLiveOrderAccess', 'async function handleMyOrderAcceptance');
-assert(acceptanceView.includes("binanceCredentialIdsForUserPermission(user, 'binance.sync'"), 'Live Order account permission is not detected.');
+assert(acceptanceView.includes('userBinanceOrderAccountAccess(user, item.id).effectiveLive'), 'Effective Live Order account permission is not detected.');
 assert(acceptanceView.includes('controlsAutoAssignment = Boolean(assignable && !liveOrderAccess)'), 'Live Order users are not excluded from the Work Status control.');
 assert(index.includes('id="globalWorkAvailabilityToggle"') && index.includes('data-order-acceptance-toggle'), 'Global header Work Status button is missing.');
 assert(!orders.includes('orderAcceptanceButtonHtml') && !chat.includes('data-order-acceptance-toggle'), 'Duplicate Work Status button remains inside Orders or P2P Message.');

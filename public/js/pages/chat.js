@@ -1,4 +1,4 @@
-// P2PFlow v1.6.6
+// P2PFlow v1.6.7
 // Binance-style P2P message inbox with per-CRM-user account controls layered on existing permissions.
 
 function stopChatInboxAutoRefresh() {
@@ -108,17 +108,26 @@ function chatAccountSettingsModal(account={}) {
     const save = $('#chatAccountSettingsSave');
     save.disabled = true;
     try {
+      const requestedControls = {
+        orders:form.elements.orders.checked,
+        notifications:form.elements.notifications.checked,
+        advertisements:form.elements.advertisements.checked
+      };
       const result = await api('/api/chat-account-controls', {
         method:'PATCH',
-        body:JSON.stringify({ credentialId:Number(account.id), featureControls:{
-          orders:form.elements.orders.checked,
-          notifications:form.elements.notifications.checked,
-          advertisements:form.elements.advertisements.checked
-        }})
+        body:JSON.stringify({ credentialId:Number(account.id), featureControls:requestedControls })
       });
       state.chatAccountOptions = normalizeChatAccountOptions(result.items || state.chatAccountOptions);
+      const changedFeatures = Array.isArray(result.changedFeatures) ? result.changedFeatures : [];
+      if ((changedFeatures.includes('orders') || result.forceOrdersReload === true) && typeof invalidateOrdersListCache === 'function') {
+        invalidateOrdersListCache({ disabledCredentialId:requestedControls.orders ? 0 : Number(account.id) });
+      }
       closeModal();
-      notify('API account settings saved.', 'ok');
+      const visibility = result.orderVisibility || {};
+      const orderStatusText = changedFeatures.includes('orders') && requestedControls.orders
+        ? ` Orders ON${Number.isFinite(Number(visibility.visibleCount)) ? ` · ${Number(visibility.visibleCount)} visible` : ''}.`
+        : '';
+      notify(`API account settings saved.${orderStatusText}`, 'ok');
       renderChatInbox({ preserveFocus:true, force:true }).catch(()=>{});
     } catch (error) {
       save.disabled = false;

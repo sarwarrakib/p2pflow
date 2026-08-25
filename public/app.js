@@ -1,5 +1,5 @@
-// v1.6.6: fixed-viewport AppShell, clean History routes, persistent per-route hosts, lifecycle rendering, and data-only DOM patching.
-// v1.6.6: stable-shell navigation, stale-request cancellation, non-destructive order/chat updates, and latest-navigation-wins rendering.
+// v1.6.7: fixed-viewport AppShell, clean History routes, persistent per-route hosts, lifecycle rendering, and data-only DOM patching.
+// v1.6.7: stable-shell navigation, stale-request cancellation, non-destructive order/chat updates, and latest-navigation-wins rendering.
 // v1.5.23: Payment Account serial scope treats each normalized Label, including no Label, as an independent namespace.
 // v1.5.22: Header-only Work Status, chat-only notification master, and coupled sound/push controls.
 // v1.5.20: account-scoped Binance RBAC, visible security recovery setup and individual-only profit accounting.
@@ -4708,9 +4708,13 @@ function notifyOrderChange(change = {}, sourceType = '') {
 function handleServerEvent(event = {}) {
   if (!event || typeof event !== 'object') return;
   if (event.type === 'binance.account.features.updated') {
+    const changedFeatures = Array.isArray(event.changedFeatures) ? event.changedFeatures : ['orders','notifications','advertisements'];
+    if (changedFeatures.includes('orders') || event.forceOrdersReload === true) {
+      invalidateOrdersListCache({ disabledCredentialId:event.featureControls?.orders === false ? Number(event.credentialId || 0) : 0 });
+      if (state.page === 'orders' && !state.currentOrderId && !modalOpen()) scheduleSmoothRefresh(20);
+    }
+    if (changedFeatures.includes('advertisements') && state.page === 'ads' && typeof scheduleAdsRealtimeRefresh === 'function') scheduleAdsRealtimeRefresh(40);
     if (state.page === 'chat' && typeof renderChatInbox === 'function' && !modalOpen()) renderChatInbox({ preserveFocus:true }).catch(()=>{});
-    else if (state.page === 'ads' && typeof scheduleAdsRealtimeRefresh === 'function') scheduleAdsRealtimeRefresh(80);
-    else if (state.page === 'orders' && !state.currentOrderId && !modalOpen()) scheduleSmoothRefresh(80);
   }
   if (event.type === 'system.update.available') {
     if (state.bootstrap?.settings) {
@@ -5262,7 +5266,7 @@ function installStableContentArchitecture(content = document.getElementById('con
 }
 
 function cacheActiveRouteView() {
-  // v1.6.6 keeps the entire route host intact instead of moving/recreating page
+  // v1.6.7 keeps the entire route host intact instead of moving/recreating page
   // children. Capturing is therefore only a scroll-state operation.
   state.routeHostManager?.captureActive?.();
 }
@@ -5273,6 +5277,31 @@ function restoreCachedRouteView(routeKey) {
   installStableContentArchitecture(activation.host);
   activation.host.dataset.routeKey = routeKey;
   return true;
+}
+
+function invalidateOrdersListCache(options={}) {
+  state.ordersListData = null;
+  state.orderSnapshot = null;
+  state.orderRenderLimits = {};
+  const disabledCredentialId = Number(options.disabledCredentialId || 0);
+  if (disabledCredentialId) {
+    try {
+      const storageKey = typeof orderFilterStorageKey === 'function' ? orderFilterStorageKey() : '';
+      const currentFilters = typeof ensureOrderFilters === 'function' ? ensureOrderFilters() : null;
+      if (currentFilters && Number(currentFilters.credentialId || 0) === disabledCredentialId) {
+        const next = { ...currentFilters, credentialId:0 };
+        state.orderFilters = next;
+        if (storageKey) localStorage.setItem(storageKey, JSON.stringify(next));
+      }
+    } catch (_) {}
+  }
+  // If Orders is not the active route, remove its detached host so a user who
+  // re-enables an API account can never return to the stale empty DOM captured
+  // while that account was OFF. The next navigation mounts fresh permission-
+  // scoped data immediately; the active Orders page is refreshed separately.
+  if (!(state.page === 'orders' && !state.currentOrderId)) {
+    try { state.routeHostManager?.drop?.(stableRouteKey({ page:'orders', orderId:null, ledgerAccountId:null })); } catch (_) {}
+  }
 }
 
 function mountRouteStaticShell(route = {}, content = document.getElementById('content')) {
@@ -5563,7 +5592,7 @@ function renderNav() {
   // legacy flat menu while this marker is absent, the browser/proxy is serving
   // stale frontend JavaScript rather than the active release.
   nav.dataset.navigationModel = 'grouped-control-center';
-  nav.dataset.uiRelease = '1.6.6';
+  nav.dataset.uiRelease = '1.6.7';
   nav.innerHTML = '';
   const visible = visiblePages();
   const visibleIds = new Set(visible.map(([id]) => id));

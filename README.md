@@ -27,18 +27,18 @@ Updater code এবং database আলাদা রাখে। Update install-�
 
 ## Version
 
-Internal SemVer: `1.6.6`
+Internal SemVer: `1.6.7`
 UI: `1.6`
 Database schema: `39`
 
 Normal next version: `SET_NEXT_VERSION.bat` -> `1.7.0`  
-Hotfix: `SET_HOTFIX_VERSION.bat` -> `1.6.7`
+Hotfix: `SET_HOTFIX_VERSION.bat` -> `1.6.8`
 
 ## Database history safety
 
 P2PFlow keeps authoritative business/application data in MariaDB/MySQL/PostgreSQL. State payloads are compressed with Brotli before AES-256-GCM encryption, proofs/chat media are stored as encrypted database objects, and identical newly uploaded proof/media bytes use content-addressed object IDs to avoid duplicate blobs. The default is 3 retained recovery checkpoints with a 6-hour archive interval and 5 retained automatic database backups. Older uncompressed state/history/backup payloads are upgraded incrementally after startup. Health Check reports each P2PFlow database table's allocated size/row count, current encrypted state payload size, compression saving percentage, and proof/chat object usage so database-MB growth can be inspected without terminal access. `shared/`, `.p2pflow`, `.env`, `releases/` and temporary restart/update markers are operational bootstrap/update metadata only; they are not an application/business-data store. The application runtime itself does not write proof, chat, audit, order, ledger, notification or recovery-code data to local files.
 
-## v1.6.6 Per-User Binance Account Controls + Existing Permission Logic
+## v1.6.7 Per-User Binance Account Controls + Existing Permission Logic
 
 - Database writes no longer run Brotli compression synchronously on the Node HTTP event loop. MySQL/PostgreSQL state checkpoints and legacy payload compaction use asynchronous compression so background durability work cannot monopolize requests/SSE handling.
 - Fast Binance order discovery defaults to about 2 seconds, runs enabled API accounts in parallel and broadcasts material order changes before the queued database checkpoint. The full reconciliation path now fetches details only for changed/open orders.
@@ -55,7 +55,7 @@ P2PFlow keeps authoritative business/application data in MariaDB/MySQL/PostgreSQ
 - Background Ads/merchant loops avoid repeated whole-state saves for unchanged results or identical errors; checkpoints are bounded to material changes/error changes or a five-minute durability checkpoint.
 - Database schema `39`; schema-38 credential-level feature switches are migrated to per-user preferences when the last editor can be identified, then legacy global switches are neutralized so system-wide Binance sync is never disabled by one CRM user.
 
-বিস্তারিত: `P2PFlow_v1.6.6_RELEASE_NOTES_BN.md`, `P2PFlow_v1.6.6_MANUAL_UPDATE_BN.md` এবং `P2PFlow_v1.6.6_LAUNCH_CHECKLIST_BN.md`.
+বিস্তারিত: `P2PFlow_v1.6.7_RELEASE_NOTES_BN.md`, `P2PFlow_v1.6.7_MANUAL_UPDATE_BN.md` এবং `P2PFlow_v1.6.7_LAUNCH_CHECKLIST_BN.md`.
 
 ## v1.5.38 Reference UI, Minimal Verification & Binance Ad Flow (historical)
 

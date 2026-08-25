@@ -68,8 +68,10 @@ for (const feature of ['orders', 'notifications', 'advertisements']) {
 }
 assert(server.includes('function normalizeUserBinanceCredentialFeatureControls') && server.includes('function userBinanceCredentialFeatureEnabled'), 'Per-CRM-user Binance account feature storage is missing.');
 assert(server.includes('setUserBinanceCredentialFeatureControls(user, credentialId') && server.includes("'user_binance_account_feature_controls_updated'"), 'Chat account settings are not stored on the current CRM user.');
-assert(server.includes('const respectFeatureControls = options.respectFeatureControls !== false') && server.includes("userBinanceCredentialFeatureEnabled(user, credentialId, 'orders')"), 'Orders account feature is not layered on the current user order view.');
+assert(server.includes('function userBinanceOrderAccountAccess') && server.includes('function orderVisibleToUserInOrdersPage') && server.includes('effectiveView: Boolean(canView && (!respectFeatureControl || featureEnabled))'), 'Orders account feature is not a deny-only layer on the current user order view.');
 assert(server.includes('ordersAccessibleToUser(user, { respectFeatureControls:false })'), 'Chat no longer preserves the established order permission model independently of the Orders switch.');
+assert(app.includes('function invalidateOrdersListCache') && app.includes("state.routeHostManager?.drop?.(stableRouteKey({ page:'orders'"), 'Orders route cache is not invalidated after per-account Orders changes.');
+assert(chat.includes("changedFeatures.includes('orders') || result.forceOrdersReload === true") && chat.includes('invalidateOrdersListCache'), 'Chat account settings do not invalidate stale Orders data after Orders ON/OFF.');
 assert(server.includes("userBinanceCredentialFeatureEnabled(user, credentialId, 'notifications')"), 'Notifications account feature is not enforced per recipient.');
 assert(server.includes("userBinanceCredentialFeatureEnabled(user, id, 'advertisements')"), 'Advertisement account feature is not enforced per CRM user.');
 for (const [name, source] of [
@@ -86,7 +88,7 @@ assert(chat.includes("renderChatInbox({ preserveFocus:true, localOnly:true })"),
 assert(chat.includes('These switches apply only to your CRM user'), 'Chat account settings do not explain their per-user scope.');
 assert(server.includes('notificationAllowedByBinanceAccount') && server.includes("userBinanceCredentialFeatureEnabled(user, credentialId, 'notifications')"), 'Per-user account notification switch is not enforced in notification delivery.');
 
-assert(pkg.version === '1.6.6', `expected v1.6.6 before release bump, got ${pkg.version}`);
+assert(pkg.version === '1.6.7', `expected v1.6.7 before release bump, got ${pkg.version}`);
 console.log(JSON.stringify({
   ok:true,
   version:pkg.version,

@@ -19,7 +19,7 @@ const section = (source, start, end) => {
   return source.slice(a, b);
 };
 
-assert(pkg.version === '1.6.6', `expected v1.6.6, got ${pkg.version}`);
+assert(pkg.version === '1.6.7', `expected v1.6.7, got ${pkg.version}`);
 assert(server.includes('const APP_SCHEMA_VERSION = 39;'), 'schema 36 permission-authority migration is missing');
 assert(server.includes("'binance.sync': Object.freeze(['orders.view'])"), 'Live Order permission does not imply Orders View');
 assert(server.includes('BINANCE_ACCOUNT_PERMISSION_IMPLICATIONS'), 'account-level Live Order implication is missing');
@@ -36,14 +36,14 @@ assert(capacity.includes('!assignmentAccountingGuardEnabledForAgent(agent)'), 'r
 assert(capacity.includes('accountAssignedToAgent') && capacity.includes('sendAvailable') && capacity.includes('receiveAvailable'), 'accounting-enabled capacity protection was removed');
 
 const available = section(server, 'function agentAvailableForAssignment', 'function rangeBounds');
-assert(available.includes('userHasLiveOrderAccess(linkedUser)'), 'Live Order Agent eligibility override is missing');
+assert(available.includes('userBinanceOrderAccountAccess(linkedUser, order.credentialId)') && available.includes('access.effectiveLive'), 'Account-specific Live Order Agent eligibility override is missing');
 assert(available.includes("userHasPermission(linkedUser, 'orders.view')"), 'Orders View is not required for auto assignment');
-assert(available.indexOf('userHasLiveOrderAccess(linkedUser)') < available.indexOf('agent.allowNewOrders === false'), 'hidden stale Work OFF can still block Live Order Agents');
+assert(available.indexOf('access.effectiveLive') < available.indexOf('agent.allowNewOrders === false'), 'hidden stale Work OFF can still block Live Order Agents');
 
-const access = section(server, 'function canAccessOrder', 'function ordersAccessibleToUser');
-assert(access.includes("userHasBinanceCredentialPermission(user, order.credentialId, 'binance.sync')"), 'Agent Live Order permission does not expose an unassigned live order');
-const list = section(server, 'function ordersAccessibleToUser', 'function canUseOrderCredential');
-assert(list.includes("!userHasBinanceCredentialPermission(user, credentialId, 'binance.sync')"), 'order list still filters Live Order Agents to assigned-only');
+const access = section(server, 'function canAccessOrder', 'function orderFeatureEnabledForUser');
+assert(access.includes("userHasBinanceCredentialPermission(user, order.credentialId, 'binance.sync')"), 'Base Agent Live Order permission does not expose an unassigned live order');
+const list = section(server, 'function orderVisibleToUserInOrdersPage', 'function ordersAccessibleToUser');
+assert(list.includes('accountAccess.canLiveSync') && list.includes('assigned || accountAccess.canLiveSync'), 'Orders list does not restore Live Order visibility when the per-account Orders switch is ON');
 
 const acceptance = section(server, 'function orderAcceptanceForUser', 'function broadcastOrderAcceptanceState');
 assert(acceptance.includes('liveOrderAccess || (user.workAvailable !== false'), 'Live Order Agent assignment state still depends on hidden Work status');
