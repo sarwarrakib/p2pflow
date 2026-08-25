@@ -74,7 +74,7 @@ for (const verbose of ['Saved Fund Transfer Password ready', 'Primary/Secondary 
 }
 assert(/release-verify-minimal/.test(releasePage) && /release-verify-submit/.test(releasePage), 'Minimal Release verification shell/button is missing.');
 assert(/\.release-verify-minimal/.test(css) && /\.ads-wizard-progress/.test(css) && /\.ads-ad-action-menu/.test(css), 'Responsive ads workflow CSS is missing.');
-assert(pkg.version === '1.6.7', `expected v1.6.7, got ${pkg.version}`);
+assert(pkg.version === '1.6.8', `expected v1.6.8, got ${pkg.version}`);
 console.log(JSON.stringify({
   ok:true,
   createFlow:'three-step',

@@ -27,7 +27,7 @@ const section = (source, start, end) => {
   return source.slice(a, b);
 };
 
-assert(pkg.version === '1.6.7', `expected v1.6.7, got ${pkg.version}`);
+assert(pkg.version === '1.6.8', `expected v1.6.8, got ${pkg.version}`);
 assert(server.includes('const APP_SCHEMA_VERSION = 39;'), 'schema 35 is missing.');
 
 // Payment-account authorization is permission-only: accounts.manage_all gives all-account scope; otherwise ownership/access rules apply.

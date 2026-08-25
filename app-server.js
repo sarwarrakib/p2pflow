@@ -9040,7 +9040,11 @@ async function syncBinanceOrdersWithCredential(user, credential, opts = {}) {
   if (opts.endDate) payload.endDate = Number(opts.endDate);
   if (opts.asset) payload.asset = cleanStr(opts.asset, 30).toUpperCase();
 
-  const result = await callSignedSapi({ apiKey: credential.apiKey, secretKey: credential.secretKey, endpointName: 'listOrders', body: payload, clientType: credential.clientType || 'web', dryRun: false, timeoutMs: Math.max(3500, Number(opts.timeoutMs || 7000)) });
+  // Keep order ingestion reliability aligned with the proven v1.6.4 path.
+  // The v1.6.5 fast-path regression forced 4.5-7s timeouts; production SAPI
+  // responses can legitimately exceed that and were aborted before new orders
+  // reached the CRM. Feature controls must never affect this transport path.
+  const result = await callSignedSapi({ apiKey: credential.apiKey, secretKey: credential.secretKey, endpointName: 'listOrders', body: payload, clientType: credential.clientType || 'web', dryRun: false, timeoutMs: Math.max(10000, Number(opts.timeoutMs || 20000)) });
   const rows = extractBinanceList(result);
   const changes = [];
   let detailSynced = 0;
@@ -9058,7 +9062,7 @@ async function syncBinanceOrdersWithCredential(user, credential, opts = {}) {
     );
     if (shouldDetail) {
       try {
-        const detailResp = await callSignedSapi({ apiKey: credential.apiKey, secretKey: credential.secretKey, endpointName: 'getUserOrderDetail', body: { adOrderNo: orderNo }, clientType: credential.clientType || 'web', dryRun: false, timeoutMs: Math.max(3500, Number(opts.detailTimeoutMs || 7000)) });
+        const detailResp = await callSignedSapi({ apiKey: credential.apiKey, secretKey: credential.secretKey, endpointName: 'getUserOrderDetail', body: { adOrderNo: orderNo }, clientType: credential.clientType || 'web', dryRun: false, timeoutMs: Math.max(10000, Number(opts.detailTimeoutMs || 20000)) });
         const detail = unwrapBinanceData(detailResp);
         const detailChange = upsertBinanceOrder(detail, user, credential);
         const combined = [];
@@ -9092,7 +9096,7 @@ async function syncBinanceOrdersWithCredential(user, credential, opts = {}) {
     for (const localOrder of openOrders) {
       const orderNo = cleanStr(localOrder.externalOrderNo || localOrder.orderNo || '', 120);
       try {
-        const detailResp = await callSignedSapi({ apiKey: credential.apiKey, secretKey: credential.secretKey, endpointName: 'getUserOrderDetail', body: { adOrderNo: orderNo }, clientType: credential.clientType || 'web', dryRun: false, timeoutMs: Math.max(3500, Number(opts.detailTimeoutMs || 7000)) });
+        const detailResp = await callSignedSapi({ apiKey: credential.apiKey, secretKey: credential.secretKey, endpointName: 'getUserOrderDetail', body: { adOrderNo: orderNo }, clientType: credential.clientType || 'web', dryRun: false, timeoutMs: Math.max(10000, Number(opts.detailTimeoutMs || 20000)) });
         const detail = unwrapBinanceData(detailResp);
         const change = upsertBinanceOrder(detail, user, credential);
         if (change.order) {
@@ -9134,6 +9138,45 @@ async function syncBinanceOrdersWithCredential(user, credential, opts = {}) {
     result: sanitizedBinanceResult(result)
   };
   return out;
+}
+
+const binanceCredentialOrderReconcileRuntime = new Map();
+function scheduleBinanceCredentialOrderReconcile(credentialOrId, reason = 'orders_feature_enabled') {
+  const credentialId = Number(typeof credentialOrId === 'object' && credentialOrId ? credentialOrId.id : credentialOrId || 0);
+  const credential = (db.apiCredentials || []).find(item => Number(item.id) === credentialId);
+  if (!credential || credential.disabled || !credential.apiKey || !credential.secretKey || db.settings.apiMode !== 'live' || db.settings.binanceAutoOrderSync === false) return false;
+  const current = binanceCredentialOrderReconcileRuntime.get(credentialId) || { busy:false, lastStartedAt:0 };
+  // Do not make repeated UI saves or route refreshes create a request storm.
+  if (current.busy || Date.now() - Number(current.lastStartedAt || 0) < 2500) return false;
+  current.busy = true;
+  current.lastStartedAt = Date.now();
+  binanceCredentialOrderReconcileRuntime.set(credentialId, current);
+  setTimeout(async () => {
+    try {
+      const out = await syncBinanceOrdersWithCredential(systemBinanceSyncUser(), credential, {
+        reason,
+        rows: Math.min(50, Math.max(30, positiveNum(db.settings.binanceAutoSyncRows || 30) || 30)),
+        skipDetailSync:true,
+        reconcileOpenOrders:false,
+        includeItems:false,
+        timeoutMs:20000
+      });
+      current.lastSuccessAt = Date.now();
+      current.lastError = '';
+      if (out.created || (out.changedOrders || []).length) {
+        broadcast({ type:'binance.orders.reconciled', credentialId, credentialName:binanceCredentialLabel(credential), created:out.created || 0, updated:out.updated || 0, changedOrders:out.changedOrders || [], at:nowIso() });
+        saveDb({ broadcast:false, reason:'binance_orders_feature_reconcile' });
+      }
+    } catch (error) {
+      current.lastError = cleanStr(error.message || error, 240);
+      console.warn(`Binance order reconcile failed for ${binanceCredentialLabel(credential)}: ${current.lastError}`);
+    } finally {
+      current.busy = false;
+      current.lastFinishedAt = Date.now();
+      binanceCredentialOrderReconcileRuntime.set(credentialId, current);
+    }
+  }, 0);
+  return true;
 }
 
 async function handleBinanceOrderSync(req, res, url) {
@@ -20684,7 +20727,14 @@ async function handleChatAccountControls(req, res) {
   // the server already has ON (for example after another tab/session changed it).
   const forceOrdersReload = changedFeatures.includes('orders') || (typeof requestedControls?.orders === 'boolean' && controls.orders === true);
   const orderVisibility = orderVisibilitySummaryForUserCredential(user, credentialId);
-  logAudit(user, 'user_binance_account_feature_controls_updated', 'user', user.id, { credentialId, beforeControls, controls, changedFeatures, orderVisibility });
+  // Orders ON restores only this CRM user's visibility/assignment eligibility,
+  // while this non-blocking reconcile makes sure any order missed during an
+  // earlier transport timeout is pulled from Binance immediately. It does not
+  // depend on this user's Live Order permission and does not alter global sync.
+  const orderReconcileScheduled = controls.orders === true
+    ? scheduleBinanceCredentialOrderReconcile(credentialId, 'orders_feature_enabled')
+    : false;
+  logAudit(user, 'user_binance_account_feature_controls_updated', 'user', user.id, { credentialId, beforeControls, controls, changedFeatures, orderVisibility, orderReconcileScheduled });
   saveDb({ broadcast:false, reason:'user_binance_account_feature_controls_updated' });
   broadcast({
     type:'binance.account.features.updated',
@@ -20696,7 +20746,7 @@ async function handleChatAccountControls(req, res) {
     forceOrdersReload,
     at:nowIso()
   });
-  return sendJson(res, 200, { ok:true, credentialId, featureControls:controls, changedFeatures, orderVisibility, forceOrdersReload, items:chatAccountOptionsForUser(user) }, {}, req);
+  return sendJson(res, 200, { ok:true, credentialId, featureControls:controls, changedFeatures, orderVisibility, forceOrdersReload, orderReconcileScheduled, items:chatAccountOptionsForUser(user) }, {}, req);
 }
 
 async function handleChatInbox(req, res) {
@@ -24063,56 +24113,78 @@ async function handleNotifications(req, res) {
 }
 
 
-let binanceFastOrderDiscoveryBusy = false;
-let binanceFastOrderDiscoveryLastAt = 0;
+const binanceFastOrderCredentialState = new Map();
 let binanceAutoSyncBusy = false;
 let binanceAutoSyncLastAt = 0;
 let binanceAutoSyncLastPersistAt = 0;
 let binanceAutoSyncLastError = '';
 let binanceAutoPaymentMethodSyncLastAt = 0;
 
-async function runBinanceFastOrderDiscovery(reason = 'fast_timer') {
-  if (maintenanceMode.enabled || binanceFastOrderDiscoveryBusy) return { skipped:true };
-  if (db.settings.apiMode !== 'live' || db.settings.binanceAutoOrderSync === false) return { skipped:true };
-  const credentials = (db.apiCredentials || []).filter(item => !item.disabled && item.apiKey && item.secretKey);
-  if (!credentials.length) return { skipped:true };
-  const intervalMs = Math.max(1500, Number(process.env.CRM_FAST_ORDER_DISCOVERY_MS || 2000));
-  if (Date.now() - binanceFastOrderDiscoveryLastAt < intervalMs) return { skipped:true };
-  binanceFastOrderDiscoveryBusy = true;
-  binanceFastOrderDiscoveryLastAt = Date.now();
-  try {
-    const results = await Promise.all(credentials.map(async credential => {
-      try {
-        return await syncBinanceOrdersWithCredential(systemBinanceSyncUser(), credential, {
-          reason,
-          rows: Math.min(30, positiveNum(db.settings.binanceAutoSyncRows || 30) || 30),
-          skipDetailSync: true,
-          reconcileOpenOrders: false,
-          includeItems: false,
-          timeoutMs: 4500
-        });
-      } catch (error) {
-        return { credentialId:Number(credential.id), created:0, updated:0, totalRows:0, changedOrders:[], error:cleanStr(error.message || error, 240) };
-      }
-    }));
-    const changedOrders = results.flatMap(result => result.changedOrders || []);
-    const created = results.reduce((sum, result) => sum + Number(result.created || 0), 0);
-    const updated = results.reduce((sum, result) => sum + Number(result.updated || 0), 0);
-    // The list endpoint often reports existing rows as "updated" even when no
-    // material order field changed. Persist/broadcast only real discoveries or
-    // status/payment-method changes so the 3s fast path does not create a DB
-    // write/SSE storm. The slower detailed sync remains responsible for routine
-    // reconciliation.
-    if (created || changedOrders.length) {
-      // Realtime UI should not wait for a full encrypted database checkpoint.
-      // The durable save is queued immediately and observed by saveDb itself.
-      broadcast({ type:'binance.orders.fast_synced', created, updated, changedOrders, at:nowIso() });
-      saveDb({ broadcast:false, reason:'binance_fast_order_discovery' });
-    }
-    return { created, updated, changedOrders };
-  } finally {
-    binanceFastOrderDiscoveryBusy = false;
+function fastOrderCredentialRuntime(credentialOrId) {
+  const credentialId = Number(typeof credentialOrId === 'object' && credentialOrId ? credentialOrId.id : credentialOrId || 0);
+  if (!binanceFastOrderCredentialState.has(credentialId)) {
+    binanceFastOrderCredentialState.set(credentialId, { busy:false, lastStartedAt:0, lastFinishedAt:0, lastSuccessAt:0, lastError:'' });
   }
+  return binanceFastOrderCredentialState.get(credentialId);
+}
+
+function binanceFastOrderDiscoveryHasInflight() {
+  return [...binanceFastOrderCredentialState.values()].some(runtime => runtime?.busy === true);
+}
+
+async function runBinanceFastOrderDiscovery(reason = 'fast_timer') {
+  if (maintenanceMode.enabled) return { skipped:true, reason:'maintenance' };
+  if (db.settings.apiMode !== 'live' || db.settings.binanceAutoOrderSync === false) return { skipped:true, reason:'live_order_sync_disabled' };
+  const credentials = (db.apiCredentials || []).filter(item => !item.disabled && item.apiKey && item.secretKey);
+  if (!credentials.length) return { skipped:true, reason:'credential_missing' };
+  const intervalMs = Math.max(2000, Number(process.env.CRM_FAST_ORDER_DISCOVERY_MS || 3000));
+  const now = Date.now();
+  // Each API account owns its own in-flight lock. A slow Binance response from
+  // API A must never block API B/C from continuing their normal discovery loop.
+  const eligible = credentials.filter(credential => {
+    const runtime = fastOrderCredentialRuntime(credential);
+    return !runtime.busy && now - Number(runtime.lastStartedAt || 0) >= intervalMs;
+  });
+  if (!eligible.length) return { skipped:true, reason:'credential_requests_in_flight' };
+
+  const results = await Promise.all(eligible.map(async credential => {
+    const runtime = fastOrderCredentialRuntime(credential);
+    runtime.busy = true;
+    runtime.lastStartedAt = Date.now();
+    try {
+      const out = await syncBinanceOrdersWithCredential(systemBinanceSyncUser(), credential, {
+        reason,
+        rows: Math.min(30, positiveNum(db.settings.binanceAutoSyncRows || 30) || 30),
+        skipDetailSync: true,
+        reconcileOpenOrders: false,
+        includeItems: false,
+        // v1.6.4 used the adapter's reliable 20s timeout. Do not shorten this
+        // because account/UI feature toggles are unrelated to Binance transport.
+        timeoutMs: 20000
+      });
+      runtime.lastSuccessAt = Date.now();
+      runtime.lastError = '';
+      return out;
+    } catch (error) {
+      runtime.lastError = cleanStr(error.message || error, 240);
+      return { credentialId:Number(credential.id), credentialName:binanceCredentialLabel(credential), created:0, updated:0, totalRows:0, changedOrders:[], error:runtime.lastError };
+    } finally {
+      runtime.busy = false;
+      runtime.lastFinishedAt = Date.now();
+    }
+  }));
+
+  const changedOrders = results.flatMap(result => result.changedOrders || []);
+  const created = results.reduce((sum, result) => sum + Number(result.created || 0), 0);
+  const updated = results.reduce((sum, result) => sum + Number(result.updated || 0), 0);
+  const errors = results.filter(result => result.error).map(result => `${result.credentialName || ('API ' + result.credentialId)}: ${result.error}`);
+  if (created || changedOrders.length) {
+    // Broadcast immediately; persistence is queued so the UI never waits for an
+    // encrypted database checkpoint before seeing a Binance order/status change.
+    broadcast({ type:'binance.orders.fast_synced', created, updated, changedOrders, at:nowIso() });
+    saveDb({ broadcast:false, reason:'binance_fast_order_discovery' });
+  }
+  return { created, updated, changedOrders, errors };
 }
 
 async function runBinanceAutoOrderSync(reason = 'timer') {
@@ -24121,7 +24193,7 @@ async function runBinanceAutoOrderSync(reason = 'timer') {
   if (db.settings.apiMode !== 'live') return { skipped: true, reason: 'live_mode_disabled' };
   const credentials = (db.apiCredentials || []).filter(item => !item.disabled && item.apiKey && item.secretKey);
   if (!credentials.length) return { skipped: true, reason: 'credential_missing' };
-  const intervalMs = Math.max(12, positiveNum(db.settings.binanceAutoSyncSeconds || 15)) * 1000;
+  const intervalMs = Math.max(15, positiveNum(db.settings.binanceAutoSyncSeconds || 30)) * 1000;
   if (Date.now() - binanceAutoSyncLastAt < intervalMs) return { skipped: true, reason: 'interval' };
   binanceAutoSyncBusy = true;
   binanceAutoSyncLastAt = Date.now();
@@ -24140,8 +24212,8 @@ async function runBinanceAutoOrderSync(reason = 'timer') {
             reconcileOpenOrders:true,
             openDetailRows:Math.min(12, Math.max(4, Number(db.settings.binanceOpenOrderDetailRows || 8))),
             includeItems:false,
-            timeoutMs:7000,
-            detailTimeoutMs:7000
+            timeoutMs:20000,
+            detailTimeoutMs:20000
           });
         } catch (error) {
           errors.push(`${binanceCredentialLabel(credential)}: ${cleanStr(error.message || error, 240)}`);
@@ -24454,7 +24526,7 @@ function startBinanceAutoSyncLoop() {
     runBinanceFastOrderDiscovery('startup_fast').catch(()=>{});
     const fastInterval = setInterval(() => {
       runBinanceFastOrderDiscovery('fast_timer').catch(err => console.warn('Binance fast order discovery failed:', err.message));
-    }, Math.max(1500, Number(process.env.CRM_FAST_ORDER_DISCOVERY_MS || 2000)));
+    }, Math.max(2000, Number(process.env.CRM_FAST_ORDER_DISCOVERY_MS || 3000)));
     if (typeof fastInterval.unref === 'function') fastInterval.unref();
   }, Math.max(500, Number(process.env.CRM_FAST_ORDER_DISCOVERY_START_DELAY_MS || 900)));
   if (typeof fastFirst.unref === 'function') fastFirst.unref();
@@ -24582,7 +24654,7 @@ async function waitForMutatingRequests(maxRemaining = 0, timeoutMs = 30000) {
 }
 
 function backgroundWriteJobsBusy() {
-  return Boolean(binanceAutoSyncBusy || binanceAdsAutoSyncBusy || advertisementMerchantStatusBusy || accountingAutoCloseBusy);
+  return Boolean(binanceFastOrderDiscoveryHasInflight() || binanceAutoSyncBusy || binanceAdsAutoSyncBusy || advertisementMerchantStatusBusy || accountingAutoCloseBusy);
 }
 
 async function waitForBackgroundWriteJobs(timeoutMs = 60000) {
@@ -25846,6 +25918,19 @@ function runPerUserBinanceFeatureControlsSelfTest() {
     assert(userBinanceCredentialFeatureEnabled(userB, 101, 'orders') === true, 'Updating User A preference changed User B.');
     assert(db.apiCredentials[0].featureControls.orders === false, 'Personal preference write mutated the credential-level legacy field.');
     setUserBinanceCredentialFeatureControls(userA, 101, { orders:false });
+
+    // Ingestion itself must remain system-wide and independent of every CRM
+    // user's account preference. This reproduces a new Binance order while all
+    // assignment users have API A Orders OFF: the order must still enter db and
+    // remain visible to another permitted manager.
+    const ingestedWhileOff = upsertBinanceOrder({
+      orderNumber:'A-NEW-WHILE-OFF', tradeType:'BUY', asset:'USDT', fiat:'BDT',
+      totalPrice:750, amount:6, price:125, orderStatus:1, createTime:Date.parse(at) + 1000,
+      payType:'BANK'
+    }, systemBinanceSyncUser(), db.apiCredentials[0]);
+    assert(ingestedWhileOff.created === true && db.orders.some(order => order.orderNo === 'A-NEW-WHILE-OFF'), 'CRM user Orders OFF blocked system Binance ingestion.');
+    assert(!ordersAccessibleToUser(userA).some(order => order.orderNo === 'A-NEW-WHILE-OFF'), 'Orders OFF user saw the newly ingested API A order.');
+    assert(ordersAccessibleToUser(userB).some(order => order.orderNo === 'A-NEW-WHILE-OFF'), 'Another permitted user did not see an order ingested while User A Orders was OFF.');
 
     assert(ordersAccessibleToUser(liveAgent).length === 0, 'Live Order user saw API A while personal Orders was OFF.');
     assert(eligibleAgentRoutes(91, null, db.orders[0]).every(row => Number(row.agent.id) !== 31), 'Orders OFF live user remained eligible for API A auto assignment.');

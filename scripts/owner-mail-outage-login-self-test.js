@@ -9,7 +9,7 @@ const login = read('public/login.js');
 const html = read('public/login.html');
 const pkg = JSON.parse(read('package.json'));
 const assert = (ok, message) => { if (!ok) throw new Error(`Owner mail-outage login self-test failed: ${message}`); };
-assert(pkg.version === '1.6.7', `expected v1.6.7, got ${pkg.version}`);
+assert(pkg.version === '1.6.8', `expected v1.6.8, got ${pkg.version}`);
 assert(server.includes('pendingOwnerMailOutageChallenges'), 'memory-only owner outage challenge store is missing');
 assert(server.includes('OWNER_MAIL_OUTAGE_LOGIN_TTL_MS = 5 * 60 * 1000'), '5-minute outage challenge TTL is missing');
 assert(server.includes('ownerMailOutageFallbackAvailable(user)'), 'Owner-only availability check is missing');

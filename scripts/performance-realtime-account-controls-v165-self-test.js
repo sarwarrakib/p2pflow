@@ -39,7 +39,7 @@ assert(orders.includes('async function applyOrderRealtimeChanges') && orders.inc
 assert(app.includes("typeof applyOrderRealtimeChanges === 'function'"), 'SSE order changes still force a full Orders refetch.');
 assert(app.includes('const reusableRouteView = !activation.created') && app.includes('revalidate data in the background'), 'Mounted route stale-while-revalidate navigation is missing.');
 
-assert(server.includes('CRM_FAST_ORDER_DISCOVERY_MS || 2000') && server.includes('timeoutMs: 4500'), 'Fast order discovery is not configured for the low-latency path.');
+assert(server.includes('CRM_FAST_ORDER_DISCOVERY_MS || 3000') && server.includes('fastOrderCredentialRuntime(credential)') && server.includes('timeoutMs: 20000'), 'Fast order discovery is not configured for reliable per-account polling.');
 assert(server.includes('await Promise.all(credentials.map(async credential =>') && server.includes("detailMode:'changes'"), 'Multi-account order synchronization is not parallel/change-focused.');
 assert(server.includes("Date.now() - binanceAutoSyncLastPersistAt > 5 * 60 * 1000"), 'Order background sync checkpoint is still write-heavy.');
 assert(server.includes('advertisementMerchantStatusLastErrorSignature') && server.includes('advertisementMerchantStatusLastPersistAt > 5 * 60 * 1000'), 'Advertisement merchant loop still persists every poll/error.');
@@ -88,7 +88,7 @@ assert(chat.includes("renderChatInbox({ preserveFocus:true, localOnly:true })"),
 assert(chat.includes('These switches apply only to your CRM user'), 'Chat account settings do not explain their per-user scope.');
 assert(server.includes('notificationAllowedByBinanceAccount') && server.includes("userBinanceCredentialFeatureEnabled(user, credentialId, 'notifications')"), 'Per-user account notification switch is not enforced in notification delivery.');
 
-assert(pkg.version === '1.6.7', `expected v1.6.7 before release bump, got ${pkg.version}`);
+assert(pkg.version === '1.6.8', `expected v1.6.8 before release bump, got ${pkg.version}`);
 console.log(JSON.stringify({
   ok:true,
   version:pkg.version,
@@ -97,7 +97,7 @@ console.log(JSON.stringify({
   compactOrdersPayload:true,
   realtimeOrderDelta:true,
   cachedRouteInstant:true,
-  fastOrderDiscoveryMs:2000,
+  fastOrderDiscoveryMs:3000,
   directPaidWhenSplitOff:true,
   delegatedCopy:true,
   instantAdsEditor:true,

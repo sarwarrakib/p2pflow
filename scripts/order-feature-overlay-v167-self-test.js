@@ -11,7 +11,7 @@ const app = read('public/app.js');
 const orders = read('public/js/pages/orders.js');
 const chat = read('public/js/pages/chat.js');
 
-const fail = message => { throw new Error(`Order feature overlay v1.6.7 self-test failed: ${message}`); };
+const fail = message => { throw new Error(`Order feature overlay v1.6.8 self-test failed: ${message}`); };
 const assert = (condition, message) => { if (!condition) fail(message); };
 const section = (source, start, end) => {
   const a = source.indexOf(start);
@@ -21,7 +21,7 @@ const section = (source, start, end) => {
   return source.slice(a, b);
 };
 
-assert(pkg.version === '1.6.7', `expected v1.6.7 before release bump, got ${pkg.version}`);
+assert(pkg.version === '1.6.8', `expected v1.6.8 before release bump, got ${pkg.version}`);
 assert(server.includes('const APP_SCHEMA_VERSION = 39;'), 'behavior-only fix unexpectedly requires a schema change');
 
 const accountAccess = section(server, 'function userBinanceOrderAccountAccess', 'function setUserBinanceCredentialFeatureControls');
