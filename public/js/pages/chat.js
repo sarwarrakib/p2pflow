@@ -1,4 +1,4 @@
-// P2PFlow v1.7.0
+// P2PFlow v1.7.1
 // Binance-style P2P message inbox with per-CRM-user account controls layered on existing permissions.
 
 function stopChatInboxAutoRefresh() {

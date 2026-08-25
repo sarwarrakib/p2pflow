@@ -23,7 +23,7 @@ const packager = read('scripts/build-unified-package.js');
 const pkg = JSON.parse(read('package.json'));
 
 function assert(value, message) {
-  if (!value) throw new Error(`v1.7.0 full optimization self-test failed: ${message}`);
+  if (!value) throw new Error(`v${pkg.version} full optimization self-test failed: ${message}`);
 }
 function block(source, start, end) {
   const a = source.indexOf(start);
@@ -33,8 +33,8 @@ function block(source, start, end) {
 }
 function sha(value) { return crypto.createHash('sha256').update(value).digest('hex'); }
 
-assert(pkg.version === '1.7.0', `expected package 1.7.0, got ${pkg.version}`);
-assert(server.includes('const APP_SCHEMA_VERSION = 37;'), 'v1.7.0 unexpectedly changed the v1.6.4-compatible schema target');
+assert(pkg.version === '1.7.1', `expected package 1.7.1, got ${pkg.version}`);
+assert(server.includes('const APP_SCHEMA_VERSION = 37;'), 'v1.7.1 unexpectedly changed the v1.6.4-compatible schema target');
 
 // The production-proven v1.6.4 order engine is a hard baseline. These exact
 // byte hashes prevent a future performance patch from silently coupling user

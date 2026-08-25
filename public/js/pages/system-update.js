@@ -81,6 +81,7 @@ async function systemUpdateNeutralRequest(payload, options = {}) {
   for (let index = 0; index < paths.length; index += 1) {
     const requestPath = paths[index];
     let response;
+    let requestTimedOut = false;
     try {
       const controller = (options.timeoutMs || options.signal) ? new AbortController() : null;
       const abortFromParent = () => { try { controller?.abort(options.signal?.reason || 'navigation_changed'); } catch (_) {} };
@@ -88,7 +89,10 @@ async function systemUpdateNeutralRequest(payload, options = {}) {
         if (options.signal.aborted) abortFromParent();
         else options.signal.addEventListener('abort', abortFromParent, { once:true });
       }
-      const timer = controller && options.timeoutMs ? setTimeout(() => controller.abort('timeout'), options.timeoutMs) : null;
+      const timer = controller && options.timeoutMs ? setTimeout(() => {
+        requestTimedOut = true;
+        controller.abort('timeout');
+      }, options.timeoutMs) : null;
       try {
         response = await fetch(requestPath, {
           method:'POST',
@@ -109,8 +113,15 @@ async function systemUpdateNeutralRequest(payload, options = {}) {
       }
     } catch (error) {
       if (error?.name === 'AbortError' && options.signal?.aborted) throw error;
+      if (requestTimedOut) {
+        lastError = new Error(`Update control request timed out for ${requestPath} after ${Math.ceil(Number(options.timeoutMs || 0) / 1000)}s.`);
+        lastError.timeout = true;
+        lastError.network = true;
+        continue;
+      }
       if (isUiRequestCancelled(error)) return;
       lastError = new Error(`Network request failed for ${requestPath}: ${error.message || error}`);
+      lastError.network = true;
       continue;
     }
     const type = response.headers.get('content-type') || '';
@@ -227,9 +238,28 @@ function generateReleaseSigningKey() {
 
 function systemUpdateDelay(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
 
-async function systemUpdateStageStatusRequest(timeoutMs = 8000) {
-  const data = await systemUpdateNeutralRequest({ a:'g' }, { timeoutMs, silent:true });
-  return data.job || {};
+async function systemUpdateStageStatusRequest(timeoutMs = 12000) {
+  const controller = new AbortController();
+  let timedOut = false;
+  const timer = setTimeout(() => { timedOut = true; controller.abort('timeout'); }, Math.max(3000, Number(timeoutMs || 12000)));
+  try {
+    const data = await api('/api/system-update/stage-status', {
+      signal:controller.signal,
+      navigationScoped:false,
+      silent:true,
+      authRetry:false
+    });
+    return data?.job || {};
+  } catch (error) {
+    if (timedOut) {
+      const timeoutError = new Error(`Update verification status timed out after ${Math.ceil(Math.max(3000, Number(timeoutMs || 12000)) / 1000)}s.`);
+      timeoutError.timeout = true;
+      throw timeoutError;
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 async function waitForSystemUpdateStage(version, options = {}) {
@@ -301,13 +331,12 @@ async function renderSystemUpdate(options={}) {
   const stageRunning = stageJob.status === 'verifying';
   const connectionReady = Boolean(config.connectionReady || (config.repositoryConfigured && config.tokenConfigured));
   const securityReady = Boolean(config.releaseSecurityReady || (!config.signatureRequired || config.publicKeyConfigured));
-  let controlTransportReady = true;
-  let controlTransportError = '';
-  try { await systemUpdateNeutralRequest({ a:'g' }, { silent:true, timeoutMs:5000, signal:renderGuard.signal }); }
-  catch (error) {
-    if (isUiRequestCancelled(error)) return; controlTransportReady = false; controlTransportError = String(error?.message || error || 'Update control channel is unavailable.'); }
-  if (!pageRenderGuardCurrent(renderGuard) || state.page !== 'system-update') return;
-  const automaticInstallReady = Boolean(config.automaticInstallReady || config.ready) && controlTransportReady;
+  // Do not POST-probe the neutral update channel while merely rendering this page.
+  // Some shared-hosting WAF/LiteSpeed stacks delay or challenge POST requests even
+  // though authenticated GETs and the actual user-initiated update action work.
+  // The already-successful /api/system-update GET is the page health signal; the
+  // neutral POST transport is exercised only when the Owner performs an action.
+  const automaticInstallReady = Boolean(config.automaticInstallReady || config.ready);
   const staged = Boolean((status.installedReleases || []).some(item => item.version === status.availableVersion));
   const latestBackup = (status.backups || [])[0] || null;
   const currentLabel = systemVersionLabel(status.currentVersion);
@@ -339,7 +368,6 @@ async function renderSystemUpdate(options={}) {
           </div>
         </section>
 
-        ${!controlTransportReady ? `<div class="error update-page-message"><b>Hosting 403 detected:</b> ${escapeHtml(controlTransportError)}</div>` : ''}
         ${status.lastCheckError ? `<div class="error update-page-message">${escapeHtml(status.lastCheckError)}</div>` : ''}
         ${status.lastResult?.error ? `<div class="error update-page-message">${escapeHtml(status.lastResult.error)}</div>` : ''}
         ${stageJob.status === 'failed' && stageJob.error ? `<div class="error update-page-message"><b>Update verification failed:</b> ${escapeHtml(stageJob.error)}</div>` : ''}

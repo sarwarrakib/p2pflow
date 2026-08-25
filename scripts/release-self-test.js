@@ -65,7 +65,8 @@ const updateUi = fs.readFileSync(path.join(root, 'public', 'js', 'pages', 'syste
 for (const marker of ['systemUpdateStageStatusRequest(', 'waitForSystemUpdateStage(', "'/api/session-step'", 'systemUpdateEncodeEnvelope(', "'Content-Type':'text/plain;charset=UTF-8'", 'systemUpdateAuthorizedCommit(', 'Verifying...']) {
   if (!updateUi.includes(marker)) throw new Error(`System Update UI is missing WAF-safe staging marker: ${marker}`);
 }
-for (const forbidden of ['/api/system-update/apply', '/api/system-update/permit', '/api/system-update/commit', '/api/system-update/stage-status']) {
+if (!updateUi.includes("api('/api/system-update/stage-status'")) throw new Error('System Update stage-status polling must use the read-only GET route.');
+for (const forbidden of ['/api/system-update/apply', '/api/system-update/permit', '/api/system-update/commit']) {
   if (updateUi.includes(forbidden)) throw new Error(`System Update UI must not call WAF-sensitive mutation path directly: ${forbidden}`);
 }
 const builder = fs.readFileSync(path.join(root, 'scripts', 'build-release.js'), 'utf8');
