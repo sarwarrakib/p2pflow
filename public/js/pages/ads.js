@@ -1,4 +1,4 @@
-// P2PFlow v1.7.1
+// P2PFlow v1.7.2
 // Restored FULL advertisement update payload with no-updateMode compatibility retry.
 
 const ADS_COUNTRY_CODES = ["BD","US","GB","IN","PK","AE","SA","TR","NG","KE","GH","ZA","MY","SG","ID","PH","TH","VN","AU","CA","DE","FR","IT","ES","NL","BE","PT","JP","KR","CN","HK","TW","BR","MX","AR","CO","PE","CL","EG","MA","DZ","TN","QA","KW","BH","OM","LK","NP","AW","AF","AO","AI","AX","AL","AD","AM","AS","AQ","TF","AG","AT","AZ","BI","BJ","BQ","BF","BG","BS","BA","BL","BY","BZ","BM","BO","BB","BN","BT","BV","BW","CF","CC","CH","CI","CM","CD","CG","CK","KM","CV","CR","CU","CW","CX","KY","CY","CZ","DJ","DM","DK","DO","EC","ER","EH","EE","ET","FI","FJ","FK","FO","FM","GA","GE","GG","GI","GN","GP","GM","GW","GQ","GR","GD","GL","GT","GF","GU","GY","HM","HN","HR","HT","HU","IM","IO","IE","IR","IQ","IS","IL","JM","JE","JO","KZ","KG","KH","KI","KN","LA","LB","LR","LY","LC","LI","LS","LT","LU","LV","MO","MF","MC","MD","MG","MV","MH","MK","ML","MT","MM","ME","MN","MP","MZ","MR","MS","MQ","MU","MW","YT","NA","NC","NE","NF","NI","NU","NO","NR","NZ","PA","PN","PW","PG","PL","PR","KP","PY","PS","PF","RE","RO","RU","RW","SD","SN","GS","SH","SJ","SB","SL","SV","SM","SO","PM","RS","SS","ST","SR","SK","SI","SE","SZ","SX","SC","SY","TC","TD","TG","TJ","TK","TM","TL","TO","TT","TV","TZ","UG","UA","UM","UY","UZ","VA","VC","VE","VG","VI","VU","WF","WS","YE","ZM","ZW"];
@@ -80,7 +80,7 @@ function adsPaymentMethodsForCredential(data = {}, credentialId = 0) {
 }
 
 function adsPaymentDataForCredential(data = {}, credentialId = 0) {
-  return { ...data, paymentMethods: adsPaymentMethodsForCredential(data, credentialId), paymentSelectionMode:'saved' };
+  return { ...data, paymentMethods: adsPaymentMethodsForCredential(data, credentialId), paymentSelectionMode:'saved-payid' };
 }
 
 function adsGenericPaymentMethodsForCredential(data = {}, credentialId = 0, fiat = '') {
@@ -769,16 +769,22 @@ function paymentMethodMatchesTrade(method = {}, trade = {}) {
   return tradeTokens.some(token => methodTokens.includes(token));
 }
 
-function resolvedAdPaymentIds(ad = {}, data = {}) {
+function resolvedAdPaymentPayIds(ad = {}, data = {}) {
   const credentialId = Number(ad.credentialId || data.selectedCredentialId || state.adsCredentialId || 0);
   const available = adsPaymentMethodsForCredential(data, credentialId);
-  const availableIds = new Set(available.map(method => Number(method.id)).filter(Number.isFinite));
-  const ids = new Set((ad.paymentMethodIds || []).map(Number).filter(id => Number.isFinite(id) && availableIds.has(id)));
+  const availablePayIds = new Set(available.map(method => Number(method.binancePayId || method.selectionKey || 0)).filter(value => Number.isFinite(value) && value > 0));
+  const payIds = new Set((ad.paymentPayIds || []).map(Number).filter(value => Number.isFinite(value) && availablePayIds.has(value)));
   for (const trade of (ad.tradeMethods || [])) {
+    const directPayId = Number(trade?.payId || 0);
+    if (directPayId > 0 && availablePayIds.has(directPayId)) {
+      payIds.add(directPayId);
+      continue;
+    }
     const match = available.find(method => paymentMethodMatchesTrade(method, trade));
-    if (match && availableIds.has(Number(match.id))) ids.add(Number(match.id));
+    const matchedPayId = Number(match?.binancePayId || match?.selectionKey || 0);
+    if (matchedPayId > 0 && availablePayIds.has(matchedPayId)) payIds.add(matchedPayId);
   }
-  return [...ids].slice(0, 5);
+  return [...payIds].slice(0, 5);
 }
 
 function resolvedAdGenericKeys(ad = {}, data = {}) {
@@ -829,22 +835,26 @@ function percentRate(value) {
 function openPaymentMethodSheet(data, selectedValues, onApply) {
   const methods = Array.isArray(data.paymentMethods) ? data.paymentMethods : [];
   const generic = data.paymentSelectionMode === 'generic';
-  const keyFor = method => generic ? String(method.selectionKey || method.key || method.identifier || method.payType || method.name || '').toLowerCase() : String(Number(method.id));
+  const savedPayIdMode = data.paymentSelectionMode === 'saved-payid';
+  const keyFor = method => generic
+    ? String(method.selectionKey || method.key || method.identifier || method.payType || method.name || '').toLowerCase()
+    : String(Number(savedPayIdMode ? (method.binancePayId || method.selectionKey || 0) : method.id));
   const draft = new Set((selectedValues || []).map(value => generic ? String(value || '').toLowerCase() : String(Number(value))));
-  const title = generic ? 'Add payment method' : 'Select saved payment account';
+  const title = generic ? 'Add Binance payment method' : 'Select P2P Payment Method';
   const note = generic
-    ? 'Select up to 5 Binance-supported payment methods.'
-    : 'Select up to 5 payment accounts saved on this Binance P2P account.';
+    ? 'BUY ad: select only payment methods currently returned by Binance for this account.'
+    : 'SELL ad: this is the exact saved P2P Payment Method list from this Binance account profile.';
   openAdsSheet(title, `<input class="ads-sheet-search" data-payment-search placeholder="Search payment method">
     <div class="ads-sheet-note">${escapeHtml(note)}</div>
     <div class="ads-sheet-list payment-list" data-payment-list>${methods.length ? methods.map(method => {
       const key = keyFor(method);
       const details = generic
         ? (method.isRecommended ? 'Recommended' : (method.identifier || method.payType || ''))
-        : [method.payAccount || method.accountPreview?.accountNumber || '', method.payBank || method.accountPreview?.accountName || ''].filter(Boolean).join(' · ');
-      const search = `${method.name || method.code || ''} ${method.identifier || method.binanceIdentifier || method.payType || method.binancePayType || ''} ${details}`.toLowerCase();
+        : [method.payAccount || method.accountPreview?.accountNumber || '', method.payBank || method.accountPreview?.accountName || '', method.payee || '', method.currency || ''].filter(Boolean).join(' · ');
+      const search = `${method.name || method.tradeMethodName || method.code || ''} ${method.identifier || method.binanceIdentifier || method.payType || method.binancePayType || ''} ${details}`.toLowerCase();
       return `<label class="ads-sheet-option ${generic ? 'generic-method-option' : 'saved-account-option'}" data-payment-row="${escapeAttr(search)}"><input type="checkbox" value="${escapeAttr(key)}" ${draft.has(key) ? 'checked' : ''}><span><b><i></i>${escapeHtml(method.name || method.code || 'Payment Method')}</b><small>${escapeHtml(details)}</small></span>${method.isRecommended ? '<em>Recommended</em>' : ''}</label>`;
-    }).join('') : `<div class="notice warn">${generic ? 'No Binance payment-method catalog is cached for this account. Sync its P2P Profile first.' : 'No saved Binance payment account is available for this account. Sync its P2P Profile first.'}</div>`}</div>
+    }).join('') : `<div class="notice warn">${generic ? 'No Binance payment method is currently available for this account/fiat pair.' : 'No saved P2P Payment Method is available on this Binance account profile. Sync P2P Profile and try again.'}</div>`}</div>
+    <div class="ads-payment-search-empty" data-payment-search-empty hidden>No matching payment method.</div>
     <button type="button" class="ads-sheet-apply" data-apply-payment>Confirm</button>`, sheet => {
       sheet.querySelectorAll('input[type="checkbox"]').forEach(box => box.onchange = () => {
         const key = String(box.value || '');
@@ -856,10 +866,23 @@ function openPaymentMethodSheet(data, selectedValues, onApply) {
         if (box.checked) draft.add(key); else draft.delete(key);
       });
       const search = sheet.querySelector('[data-payment-search]');
-      if (search) search.oninput = () => {
-        const q = search.value.trim().toLowerCase();
-        sheet.querySelectorAll('[data-payment-row]').forEach(row => row.hidden = Boolean(q && !row.dataset.paymentRow.includes(q)));
+      const applySearch = () => {
+        const q = String(search?.value || '').trim().toLowerCase();
+        let visible = 0;
+        sheet.querySelectorAll('[data-payment-row]').forEach(row => {
+          const matched = !q || String(row.dataset.paymentRow || '').includes(q);
+          row.hidden = !matched;
+          row.classList.toggle('is-search-hidden', !matched);
+          if (matched) visible += 1;
+        });
+        const empty = sheet.querySelector('[data-payment-search-empty]');
+        if (empty) empty.hidden = visible > 0;
       };
+      if (search) {
+        search.addEventListener('input', applySearch);
+        search.addEventListener('search', applySearch);
+      }
+      applySearch();
       sheet.querySelector('[data-apply-payment]')?.addEventListener('click', () => {
         onApply([...draft].map(value => generic ? value : Number(value)));
         closeAdsSheet();
@@ -925,7 +948,10 @@ function renderSelectedPaymentMethods(container, data, selectedValues, ad) {
   if (!container) return;
   const methods = Array.isArray(data.paymentMethods) ? data.paymentMethods : [];
   const generic = data.paymentSelectionMode === 'generic';
-  const keyFor = method => generic ? String(method.selectionKey || method.key || method.identifier || method.payType || method.name || '').toLowerCase() : String(Number(method.id));
+  const savedPayIdMode = data.paymentSelectionMode === 'saved-payid';
+  const keyFor = method => generic
+    ? String(method.selectionKey || method.key || method.identifier || method.payType || method.name || '').toLowerCase()
+    : String(Number(savedPayIdMode ? (method.binancePayId || method.selectionKey || 0) : method.id));
   const wanted = new Set((selectedValues || []).map(value => generic ? String(value || '').toLowerCase() : String(Number(value))));
   const selected = methods.filter(method => wanted.has(keyFor(method))).slice(0, 5);
   const tradeMethods = Array.isArray(ad?.tradeMethods) ? ad.tradeMethods : [];
@@ -954,7 +980,7 @@ function openAdvertisementEditor(ad = null, data = {}) {
   const isEdit = !!ad;
   const tradeType = String(ad?.tradeType || 'BUY').toUpperCase();
   const defaultStatus = String(ad?.status || 'offline').toLowerCase();
-  let selectedMethodIds = resolvedAdPaymentIds(ad || {}, data);
+  let selectedPayIds = resolvedAdPaymentPayIds(ad || {}, data);
   let selectedGenericKeys = resolvedAdGenericKeys(ad || {}, data);
   let selectedTags = Array.isArray(ad?.termsTags) ? [...ad.termsTags] : [];
   if (Number(ad?.takerAdditionalKycRequired || 0) === 1 && !selectedTags.some(tag => /additional[ _-]*kyc/i.test(tag))) selectedTags.unshift('Additional KYC required');
@@ -1129,11 +1155,11 @@ function openAdvertisementEditor(ad = null, data = {}) {
   const currentPaymentData = () => currentTradeType() === 'SELL'
     ? adsPaymentDataForCredential(data, currentCredentialId())
     : adsGenericPaymentDataForCredential(data, currentCredentialId(), form.elements.fiatUnit?.value || 'BDT');
-  const currentSelectedPayments = () => currentTradeType() === 'SELL' ? selectedMethodIds : selectedGenericKeys;
+  const currentSelectedPayments = () => currentTradeType() === 'SELL' ? selectedPayIds : selectedGenericKeys;
   const currentReferencePayType = () => {
     if (currentTradeType() === 'SELL') {
-      const selectedId = Number(selectedMethodIds[0] || 0);
-      const method = adsPaymentMethodsForCredential(data, currentCredentialId()).find(item => Number(item.id || 0) === selectedId) || {};
+      const selectedId = Number(selectedPayIds[0] || 0);
+      const method = adsPaymentMethodsForCredential(data, currentCredentialId()).find(item => Number(item.binancePayId || item.selectionKey || 0) === selectedId) || {};
       return String(method.binancePayType || method.binanceIdentifier || method.code || '').trim();
     }
     const selectedKey = String(selectedGenericKeys[0] || '').toLowerCase();
@@ -1142,7 +1168,7 @@ function openAdvertisementEditor(ad = null, data = {}) {
     return String(method.payType || method.identifier || selectedKey || '').trim();
   };
   const setCurrentSelectedPayments = values => {
-    if (currentTradeType() === 'SELL') selectedMethodIds = values.map(Number).filter(Number.isFinite).slice(0,5);
+    if (currentTradeType() === 'SELL') selectedPayIds = values.map(Number).filter(Number.isFinite).slice(0,5);
     else selectedGenericKeys = values.map(value => String(value || '').toLowerCase()).filter(Boolean).slice(0,5);
   };
   const refreshEditorAccount = async () => {
@@ -1163,6 +1189,23 @@ function openAdvertisementEditor(ad = null, data = {}) {
     }
   };
 
+  const refreshPaymentOptions = async (force = false) => {
+    const credentialId = currentCredentialId();
+    if (!credentialId) return currentPaymentData();
+    const side = currentTradeType();
+    const fiat = String(form.elements.fiatUnit?.value || 'BDT').toUpperCase();
+    const response = await api(`/api/ads/payment-options?credentialId=${encodeURIComponent(credentialId)}&tradeType=${encodeURIComponent(side)}&fiat=${encodeURIComponent(fiat)}${force ? '&force=1' : ''}`, { silent:true, noAutoReload:true, navigationScoped:false });
+    if (Number(response?.credentialId || 0) !== credentialId) return currentPaymentData();
+    if (side === 'SELL') {
+      data.paymentMethodsByCredential = { ...(data.paymentMethodsByCredential || {}), [String(credentialId)]: Array.isArray(response.paymentMethods) ? response.paymentMethods : [] };
+      if (ad) selectedPayIds = resolvedAdPaymentPayIds(ad, data);
+    } else {
+      data.genericPaymentMethodsByCredential = { ...(data.genericPaymentMethodsByCredential || {}), [String(credentialId)]: Array.isArray(response.paymentMethods) ? response.paymentMethods : [] };
+      if (ad) selectedGenericKeys = resolvedAdGenericKeys(ad, data);
+    }
+    return currentPaymentData();
+  };
+
   const selectedContainer = $('#selectedAdPaymentMethods');
   const tagPreview = $('#adTagPreview');
   const renderMethods = () => {
@@ -1171,7 +1214,7 @@ function openAdvertisementEditor(ad = null, data = {}) {
     renderSelectedPaymentMethods(selectedContainer, paymentData, selected, ad || {});
     const hint = $('#adPaymentMethodHint');
     if (hint) hint.textContent = currentTradeType() === 'SELL'
-      ? 'Select up to 5 saved Binance payment accounts.'
+      ? 'Select up to 5 P2P Payment Methods saved on this exact Binance account.'
       : 'Select up to 5 Binance payment methods.';
     selectedContainer?.querySelectorAll('[data-remove-method]').forEach(button => button.onclick = () => {
       const key = String(button.dataset.removeMethod || '');
@@ -1185,6 +1228,7 @@ function openAdvertisementEditor(ad = null, data = {}) {
     if (tagPreview) tagPreview.innerHTML = selectedTags.map(tag => `<span>${escapeHtml(tag)}</span>`).join('');
   };
   renderMethods(); renderTags();
+  refreshPaymentOptions(false).then(() => { if (document.body.contains(form)) renderMethods(); }).catch(() => {});
 
   // The editor opens from cached account-scoped data for zero perceived wait.
   // When the exact credential's live Binance snapshot arrives, merge only that
@@ -1197,14 +1241,27 @@ function openAdvertisementEditor(ad = null, data = {}) {
       if (Number(detail.credentialId || 0) !== Number(editorCredentialId || 0)) return;
       if (detail.data && typeof detail.data === 'object') Object.assign(data, detail.data);
       if (detail.item && typeof detail.item === 'object') Object.assign(ad, detail.item);
-      selectedMethodIds = resolvedAdPaymentIds(ad || {}, data);
+      selectedPayIds = resolvedAdPaymentPayIds(ad || {}, data);
       selectedGenericKeys = resolvedAdGenericKeys(ad || {}, data);
       renderMethods();
       scheduleReferenceRefresh();
     }, { once:true });
   }
 
-  $('#addAdPaymentMethod').onclick = () => openPaymentMethodSheet(currentPaymentData(), currentSelectedPayments(), values => { setCurrentSelectedPayments(values); renderMethods(); scheduleReferenceRefresh(); });
+  $('#addAdPaymentMethod').onclick = async () => {
+    const button = $('#addAdPaymentMethod');
+    const cached = currentPaymentData();
+    const hasCached = Array.isArray(cached.paymentMethods) && cached.paymentMethods.length > 0;
+    if (!hasCached) {
+      if (button) button.disabled = true;
+      try { await refreshPaymentOptions(false); }
+      catch (error) { if (!isUiRequestCancelled(error)) notify(error.message || 'Binance payment methods could not be refreshed.', 'warn', 6500); }
+      finally { if (button) button.disabled = false; }
+    } else {
+      refreshPaymentOptions(false).then(() => { if (document.body.contains(form)) renderMethods(); }).catch(() => {});
+    }
+    openPaymentMethodSheet(currentPaymentData(), currentSelectedPayments(), values => { setCurrentSelectedPayments(values); renderMethods(); scheduleReferenceRefresh(); });
+  };
   $('#chooseAdTermsTags').onclick = () => openTermsTagSheet(selectedTags, tags => { selectedTags = tags; renderTags(); scheduleFeeRefresh(); });
   $('#chooseAdRegions').onclick = () => openRegionSheet(selectedRegions, regions => {
     selectedRegions = regions;
@@ -1311,7 +1368,7 @@ function openAdvertisementEditor(ad = null, data = {}) {
     return `Fixed price must fall within the limited range of: ${adNumber(guide.minPrice, scale)}~${adNumber(guide.maxPrice, scale)}`;
   };
   const fixedPriceWithinGuide = guide => {
-    if (currentPriceType() !== 1 || !guide || guide.explicitBounds !== true) return true;
+    if (currentPriceType() !== 1 || !guide || guide.stale === true || guide.explicitBounds !== true) return true;
     if (!(Number(guide.minPrice) > 0) || !(Number(guide.maxPrice) >= Number(guide.minPrice))) return true;
     const price = Number(form.elements.price?.value || 0);
     const scale = Math.max(0, Math.min(8, Number(guide.priceScale ?? 2)));
@@ -1354,7 +1411,7 @@ function openAdvertisementEditor(ad = null, data = {}) {
     const requestId = ++referenceRequestId;
     const range = $('#adLivePriceRange');
     const meta = $('#adReferencePriceMeta');
-    if (range) range.textContent = 'Loading Binance range...';
+    if (range) range.textContent = 'Loading Binance reference...';
     const asset = String(form.elements.asset?.value || 'USDT').toUpperCase();
     const fiat = String(form.elements.fiatUnit?.value || 'BDT').toUpperCase();
     const side = currentTradeType();
@@ -1373,7 +1430,7 @@ function openAdvertisementEditor(ad = null, data = {}) {
       const priceInput = form.elements.price;
       if (priceInput) {
         priceInput.step = String(10 ** -Math.max(0, Math.min(8, scale)));
-        if (currentPriceType() === 1 && guide.explicitBounds === true && Number(guide.minPrice) > 0 && Number(guide.maxPrice) >= Number(guide.minPrice)) {
+        if (currentPriceType() === 1 && guide.stale !== true && guide.explicitBounds === true && Number(guide.minPrice) > 0 && Number(guide.maxPrice) >= Number(guide.minPrice)) {
           priceInput.min = String(guide.minPrice);
           priceInput.max = String(guide.maxPrice);
         } else {
@@ -1381,13 +1438,15 @@ function openAdvertisementEditor(ad = null, data = {}) {
           priceInput.removeAttribute('max');
         }
       }
-      const hasBounds = guide.explicitBounds === true && Number(guide.minPrice) > 0 && Number(guide.maxPrice) >= Number(guide.minPrice);
+      const hasBounds = guide.stale !== true && guide.explicitBounds === true && Number(guide.minPrice) > 0 && Number(guide.maxPrice) >= Number(guide.minPrice);
       if (range) range.textContent = hasBounds
         ? `${prefix}${adNumber(guide.minPrice, scale)}~${prefix}${adNumber(guide.maxPrice, scale)}`
         : `Reference ${prefix}${adNumber(guide.referencePrice, scale)}`;
-      if (meta) meta.textContent = currentPriceType() === 1
-        ? fixedPriceRangeMessage(guide)
-        : `Binance live reference: ${prefix}${adNumber(guide.referencePrice, scale)}`;
+      if (meta) meta.textContent = guide.stale
+        ? `${fixedPriceRangeMessage(guide)} · Last known quote; Binance will validate on submit.`
+        : (currentPriceType() === 1
+          ? fixedPriceRangeMessage(guide)
+          : `Binance live reference: ${prefix}${adNumber(guide.referencePrice, scale)}`);
       const marketLine = $('#adMarketPriceLine');
       if (marketLine) marketLine.hidden = !(Number(guide.marketPrice || 0) > 0);
       if ($('#adMarketPriceLabel')) $('#adMarketPriceLabel').textContent = guide.marketPriceLabel || (side === 'BUY' ? 'Highest Order Price' : 'Lowest Ad Price');
@@ -1395,13 +1454,14 @@ function openAdvertisementEditor(ad = null, data = {}) {
       renderFixedPriceValidity();
       return guide;
     } catch (error) {
-    if (isUiRequestCancelled(error)) return;
-      if (requestId !== referenceRequestId || !document.contains(form)) return;
-      latestReferenceGuide = null;
-      if (range) range.textContent = 'Live range unavailable';
-      if (meta) meta.textContent = error.message || 'Could not load Binance reference price.';
+      if (isUiRequestCancelled(error)) return null;
+      if (requestId !== referenceRequestId || !document.contains(form)) return null;
+      if (range) range.textContent = latestReferenceGuide?.referencePrice
+        ? `Last reference ${pricePrefixForEditor()}${adNumber(latestReferenceGuide.referencePrice, Number(latestReferenceGuide.priceScale ?? 2))}`
+        : 'Reference temporarily unavailable';
+      if (meta) meta.textContent = `${error.message || 'Could not load Binance reference price.'} You can still submit; Binance will validate the current price.`;
       renderFixedPriceValidity();
-      return null;
+      return latestReferenceGuide;
     }
   };
   const scheduleReferenceRefresh = () => { clearTimeout(referenceTimer); referenceTimer = setTimeout(() => refreshReferencePrice(false), 120); };
@@ -1414,11 +1474,12 @@ function openAdvertisementEditor(ad = null, data = {}) {
   form.querySelectorAll('input[name="tradeType"]').forEach(input => input.onchange = () => { updatePairLabels(); renderMethods(); scheduleFeeRefresh(); scheduleReferenceRefresh(); refreshAvailableSellBalance(true); });
   if (!isEdit && form.elements.credentialId) form.elements.credentialId.onchange = () => {
     editorCredentialId = currentCredentialId();
-    const availableIds = new Set(adsPaymentMethodsForCredential(data, editorCredentialId).map(method => Number(method.id)));
-    selectedMethodIds = selectedMethodIds.filter(id => availableIds.has(Number(id)));
+    const availableIds = new Set(adsPaymentMethodsForCredential(data, editorCredentialId).map(method => Number(method.binancePayId || method.selectionKey || 0)).filter(value => value > 0));
+    selectedPayIds = selectedPayIds.filter(id => availableIds.has(Number(id)));
     const genericKeys = new Set(adsGenericPaymentMethodsForCredential(data, editorCredentialId, form.elements.fiatUnit?.value || 'BDT').map(method => method.selectionKey));
     selectedGenericKeys = selectedGenericKeys.filter(key => genericKeys.has(String(key)));
     renderMethods();
+    refreshPaymentOptions(false).then(() => { if (document.body.contains(form)) renderMethods(); }).catch(() => {});
     feeOverview = null;
     scheduleFeeRefresh();
     scheduleReferenceRefresh();
@@ -1433,7 +1494,7 @@ function openAdvertisementEditor(ad = null, data = {}) {
     openFeeRateSheet(feeOverview || { source: 'configured', rates: [] }, currentTradeType(), Number(form.elements.initAmount.value || 0), form.elements.asset.value);
   };
   syncPriceTypeUi(); updatePairLabels(); updateYourPrice(); updateEstimatedFee(); scheduleFeeRefresh(); scheduleReferenceRefresh(); refreshAvailableSellBalance(true);
-  const referenceInterval = setInterval(() => { if (!document.contains(form)) return clearInterval(referenceInterval); refreshReferencePrice(false); }, 5000);
+  const referenceInterval = setInterval(() => { if (!document.contains(form)) return clearInterval(referenceInterval); refreshReferencePrice(false); }, 15000);
   const priceButtons = form.querySelectorAll('.ads-price-box button');
   if (priceButtons[0]) priceButtons[0].onclick = () => { const input = form.elements.price; const step = Number(input.step || 0.01) || 0.01; input.value = Math.max(0, Number(input.value || 0) - step).toFixed(8).replace(/\.?0+$/, ''); input.dispatchEvent(new Event('input', { bubbles:true })); };
   if (priceButtons[1]) priceButtons[1].onclick = () => { const input = form.elements.price; const step = Number(input.step || 0.01) || 0.01; input.value = (Number(input.value || 0) + step).toFixed(8).replace(/\.?0+$/, ''); input.dispatchEvent(new Event('input', { bubbles:true })); };
@@ -1444,10 +1505,6 @@ function openAdvertisementEditor(ad = null, data = {}) {
     if (step === 1) {
       if (!currentCredentialId()) { setFormMessage('#advertisementFormMessage', 'Select a Binance account.', 'danger'); return false; }
       if (!(Number(form.elements.price?.value || 0) > 0)) { setFormMessage('#advertisementFormMessage', 'Enter a valid advertisement price.', 'danger'); form.elements.price?.focus(); return false; }
-      if (data.liveMode && currentPriceType() === 1 && !latestReferenceGuide) {
-        setFormMessage('#advertisementFormMessage', 'Wait for the current Binance fixed-price range to load.', 'danger');
-        return false;
-      }
       if (!fixedPriceWithinGuide(latestReferenceGuide)) {
         setFormMessage('#advertisementFormMessage', fixedPriceRangeMessage(latestReferenceGuide), 'danger');
         form.elements.price?.focus();
@@ -1462,20 +1519,14 @@ function openAdvertisementEditor(ad = null, data = {}) {
       if (!(amount > 0)) { setFormMessage('#advertisementFormMessage', 'Enter target quantity.', 'danger'); return false; }
       if (!(min > 0 && max >= min)) { setFormMessage('#advertisementFormMessage', 'Enter a valid order limit.', 'danger'); return false; }
       const selected = currentSelectedPayments();
-      if (!selected.length) { setFormMessage('#advertisementFormMessage', currentTradeType() === 'SELL' ? 'Select at least one saved Binance payment account.' : 'Select at least one Binance payment method.', 'danger'); return false; }
+      if (!selected.length) { setFormMessage('#advertisementFormMessage', currentTradeType() === 'SELL' ? 'Select at least one P2P Payment Method saved on this Binance account.' : 'Select at least one Binance payment method.', 'danger'); return false; }
       if (selected.length > 5) { setFormMessage('#advertisementFormMessage', 'Select a maximum of 5 payment methods.', 'danger'); return false; }
       return true;
     }
     return true;
   };
   const refreshAndValidateFixedPrice = async () => {
-    if (data.liveMode && currentPriceType() === 1) {
-      const guide = await refreshReferencePrice(true);
-      if (!guide) {
-        setFormMessage('#advertisementFormMessage', 'The current Binance fixed-price range could not be loaded. No advertisement action was sent.', 'danger');
-        return false;
-      }
-    }
+    if (data.liveMode && currentPriceType() === 1) refreshReferencePrice(true).catch(() => {});
     return validateWizardStep(1);
   };
   const currentPaymentMethodLabels = () => {
@@ -1483,7 +1534,7 @@ function openAdvertisementEditor(ad = null, data = {}) {
     const generic = paymentData.paymentSelectionMode === 'generic';
     const wanted = new Set(currentSelectedPayments().map(value => generic ? String(value || '').toLowerCase() : String(Number(value))));
     return (paymentData.paymentMethods || []).filter(method => {
-      const key = generic ? String(method.selectionKey || method.key || method.identifier || method.payType || '').toLowerCase() : String(Number(method.id));
+      const key = generic ? String(method.selectionKey || method.key || method.identifier || method.payType || '').toLowerCase() : String(Number(method.binancePayId || method.selectionKey || 0));
       return wanted.has(key);
     }).slice(0,5).map(method => method.name || method.tradeMethodName || method.code || method.identifier || 'Payment Method');
   };
@@ -1642,9 +1693,11 @@ function openAdvertisementEditor(ad = null, data = {}) {
     obj.credentialId = currentCredentialId();
     if (!obj.credentialId) return setFormMessage('#advertisementFormMessage', 'Select the Binance account for this advertisement.', 'danger');
     if (obj.tradeType === 'SELL') {
-      obj.paymentMethodIds = selectedMethodIds.map(Number);
+      obj.paymentPayIds = selectedPayIds.map(Number).filter(value => Number.isFinite(value) && value > 0).slice(0, 5);
+      obj.paymentMethodIds = [];
       obj.paymentMethodKeys = [];
     } else {
+      obj.paymentPayIds = [];
       obj.paymentMethodIds = [];
       obj.paymentMethodKeys = selectedGenericKeys.slice(0, 5);
     }

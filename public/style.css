@@ -5947,3 +5947,9 @@ body.p2pflow-app-shell .modal-backdrop{overscroll-behavior:contain}
   .chat-page-controls .background-notification-toggle{width:42px;min-width:42px;padding:6px;justify-content:center}
 }
 
+
+/* v1.7.2 Ads payment-method search: explicit override so filtered rows stay hidden. */
+.ads-sheet-option.is-search-hidden,
+.ads-sheet-option[hidden],
+.ads-payment-search-empty[hidden]{display:none!important}
+.ads-payment-search-empty{padding:14px 4px;text-align:center;color:#7a7f86;font-size:12px}

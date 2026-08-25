@@ -13046,6 +13046,57 @@ function advertisementPaymentMethodView(method, user = null, credentialId = 0) {
   return out;
 }
 
+function advertisementSavedPaymentOptionsForCredential(user = null, credentialId = 0) {
+  const id = Number(credentialId || 0);
+  if (!id) return [];
+  const profile = ownerP2pProfileRecord(id) || ownerP2pProfileBase(id);
+  const rows = Array.isArray(profile?.paymentMethods) ? profile.paymentMethods : [];
+  const out = [];
+  const seen = new Set();
+  for (let index = 0; index < rows.length; index += 1) {
+    const row = rows[index] && typeof rows[index] === 'object' ? rows[index] : {};
+    const trade = advertisementTradeMethodFromOwnerProfile(row);
+    const payId = positiveNum(trade?.payId || row.id || row.payId || 0);
+    if (!trade || !(payId > 0)) continue;
+    const dedupeKey = `${payId}:${advertisementPaymentToken(trade.identifier || trade.payType || trade.tradeMethodName)}`;
+    if (seen.has(dedupeKey)) continue;
+    seen.add(dedupeKey);
+    let localIds = advertisementMethodIdsFromTradeMethods([trade], id);
+    if (!localIds.length) localIds = ensureAdvertisementPaymentMethods([trade], id);
+    const localMethod = (db.paymentMethods || []).find(method => localIds.includes(Number(method.id)) && method.enabled !== false) || null;
+    const base = localMethod ? advertisementPaymentMethodView(localMethod, user, id) : null;
+    const fields = ownerProfileFieldList(row);
+    const payAccount = cleanStr(trade.payAccount || row.payAccount || ownerProfileFieldValue(fields, ['pay_account'], /(account|wallet|number|mobile|phone)/i), 220);
+    const payBank = cleanStr(trade.payBank || row.payBank || ownerProfileFieldValue(fields, ['bank'], /bank/i), 220);
+    const paySubBank = cleanStr(trade.paySubBank || row.paySubBank || ownerProfileFieldValue(fields, ['sub_bank'], /(branch|sub.?bank)/i), 220);
+    const name = cleanStr(row.tradeMethodName || row.tradeMethodShortName || trade.tradeMethodName || row.payType || row.identifier || base?.name || 'Payment Method', 160);
+    out.push({
+      ...(base || {}),
+      id: Number(base?.id || localMethod?.id || 0) || null,
+      code: cleanStr(base?.code || trade.identifier || trade.payType || '', 80),
+      name,
+      enabled: true,
+      credentialId: id,
+      availableForCredential: true,
+      binanceIdentifier: cleanStr(trade.identifier || row.identifier || base?.binanceIdentifier || '', 120),
+      binancePayType: cleanStr(trade.payType || row.payType || base?.binancePayType || '', 120),
+      binancePayId: payId,
+      selectionKey: String(payId),
+      tradeMethodName: name,
+      tradeMethodShortName: cleanStr(row.tradeMethodShortName || '', 120),
+      payAccount,
+      payBank,
+      paySubBank,
+      payee: cleanStr(row.payee || ownerProfileFieldValue(fields, ['payee'], /(payee|name)/i), 220),
+      currency: cleanStr(row.currency || row.fiatUnit || '', 20).toUpperCase(),
+      fieldList: fields,
+      sourceKey: ownerProfilePaymentMethodKey(row, index),
+      source: 'binance_p2p_profile'
+    });
+  }
+  return out.slice(0, 100);
+}
+
 function normalizeAdvertisementRegions(value) {
   const raw = Array.isArray(value) ? value : String(value || '').split(',');
   const list = Array.from(new Set(raw.map(item => cleanStr(item, 8).toUpperCase()).filter(Boolean))).slice(0, 80);
@@ -13229,6 +13280,7 @@ function advertisementView(item) {
     apiTradePermissionRequired: false,
     tradeMethods,
     paymentMethodIds,
+    paymentPayIds: Array.from(new Set(tradeMethods.map(method => positiveNum(method.payId || 0)).filter(value => value > 0))).slice(0, 5),
     regions,
     region: regions.includes('ALL') ? 'ALL' : regions.join(','),
     status: advertisementStatusFromValue(item.status || item.advStatus),
@@ -13454,6 +13506,11 @@ function normalizeAdvertisementInput(body = {}, existing = {}, options = {}) {
   const paymentMethodIds = Array.isArray(body.paymentMethodIds)
     ? body.paymentMethodIds.map(Number).filter(Number.isFinite).slice(0, 5)
     : (Array.isArray(existing.paymentMethodIds) ? existing.paymentMethodIds.map(Number).filter(Number.isFinite).slice(0, 5) : []);
+  const paymentPayIds = Array.isArray(body.paymentPayIds)
+    ? Array.from(new Set(body.paymentPayIds.map(Number).filter(value => Number.isFinite(value) && value > 0))).slice(0, 5)
+    : (Array.isArray(existing.paymentPayIds) && existing.paymentPayIds.length
+      ? Array.from(new Set(existing.paymentPayIds.map(Number).filter(value => Number.isFinite(value) && value > 0))).slice(0, 5)
+      : Array.from(new Set(normalizeAdvertisementTradeMethods(existing.tradeMethods || []).map(method => positiveNum(method.payId || 0)).filter(value => value > 0))).slice(0, 5));
   const requestedGenericKeys = Array.isArray(body.paymentMethodKeys)
     ? body.paymentMethodKeys.map(advertisementGenericPaymentKey).filter(Boolean).slice(0, 5)
     : (Array.isArray(existing.paymentMethodKeys) && existing.paymentMethodKeys.length
@@ -13466,9 +13523,14 @@ function normalizeAdvertisementInput(body = {}, existing = {}, options = {}) {
   const genericTradeMethods = tradeType === 'BUY'
     ? advertisementGenericTradeMethodsFromKeys(requestedGenericKeys, credentialId, fiatUnit, preferredTradeMethods)
     : [];
+  const profileSellTradeMethods = tradeType === 'SELL' && paymentPayIds.length
+    ? advertisementOwnerProfileTradeMethods(credentialId).filter(method => paymentPayIds.includes(positiveNum(method.payId || 0))).slice(0, 5)
+    : [];
   const tradeMethods = tradeType === 'BUY' && requestedGenericKeys.length
     ? genericTradeMethods
-    : advertisementMethodsFromIds(paymentMethodIds, credentialId, preferredTradeMethods, { allowGlobalFallback: !credentialId });
+    : (tradeType === 'SELL' && paymentPayIds.length
+      ? profileSellTradeMethods
+      : advertisementMethodsFromIds(paymentMethodIds, credentialId, preferredTradeMethods, { allowGlobalFallback: !credentialId }));
   const rawRegions = Array.isArray(body.regions) ? body.regions : (body.region !== undefined ? body.region : (existing.regions || existing.region || 'ALL'));
   const regions = normalizeAdvertisementRegions(rawRegions);
   const termsTags = Array.isArray(body.termsTags) ? body.termsTags.map(value => cleanStr(value, 60)).filter(Boolean).slice(0, 3) : (existing.termsTags || []);
@@ -13503,6 +13565,7 @@ function normalizeAdvertisementInput(body = {}, existing = {}, options = {}) {
     status,
     advStatus: advertisementStatusCode(status),
     paymentMethodIds: tradeType === 'SELL' ? paymentMethodIds : [],
+    paymentPayIds: tradeType === 'SELL' ? paymentPayIds : [],
     paymentMethodKeys: tradeType === 'BUY' ? requestedGenericKeys : [],
     tradeMethods
   };
@@ -13511,7 +13574,7 @@ function normalizeAdvertisementInput(body = {}, existing = {}, options = {}) {
   if (item.initAmount <= 0) throw Object.assign(new Error('Total advertisement amount must be greater than zero.'), { statusCode: 422 });
   if (item.minSingleTransAmount <= 0 || item.maxSingleTransAmount <= 0 || item.maxSingleTransAmount < item.minSingleTransAmount) throw Object.assign(new Error('Order limits are invalid. Maximum limit must be greater than or equal to minimum limit.'), { statusCode: 422 });
   if (tradeType === 'SELL') {
-    if (!item.paymentMethodIds.length) throw Object.assign(new Error('Select at least one saved Binance payment account.'), { statusCode: 422 });
+    if (!item.paymentPayIds.length && !item.paymentMethodIds.length) throw Object.assign(new Error('Select at least one saved Binance P2P payment method from this account.'), { statusCode: 422 });
   } else {
     if (!item.paymentMethodKeys.length || !item.tradeMethods.length) throw Object.assign(new Error('Select at least one Binance payment method.'), { statusCode: 422 });
     if (item.tradeMethods.length !== item.paymentMethodKeys.length) throw Object.assign(new Error('One or more selected Binance payment methods are not available for this account/fiat pair. Refresh the P2P Profile and try again.'), { statusCode: 422 });
@@ -13687,8 +13750,8 @@ async function fetchAdvertisementAccountPaymentMethods(credential, options = {})
   }
   const warnings = [];
   const response = await callOwnerProfileSapi(credential, 'P2P payment methods for advertisement', [
-    { endpointName: 'getPaymentMethodByUserId', query: {}, timeoutMs: 7000 },
-    { endpointName: 'agentGetPaymentMethodByUserId', query: {}, timeoutMs: 7000 }
+    { endpointName: 'getPaymentMethodByUserId', query: {}, timeoutMs: 15000 },
+    { endpointName: 'agentGetPaymentMethodByUserId', query: {}, timeoutMs: 15000 }
   ], warnings);
   // Editing only needs the current account's saved method list. Per-method
   // detail enrichment can make one click fan out into dozens of SAPI calls, so
@@ -13754,6 +13817,39 @@ async function prepareAdvertisementTradeMethodsForCredential(item = {}, credenti
     return { ...item, credentialId, paymentMethodIds:[], paymentMethodKeys:(item.paymentMethodKeys || advertisementGenericKeysFromTradeMethods(generic)).slice(0,5), tradeMethods:generic };
   }
 
+  const requestedPayIds = Array.from(new Set((Array.isArray(item.paymentPayIds) ? item.paymentPayIds : [])
+    .map(Number).filter(value => Number.isFinite(value) && value > 0))).slice(0, 5);
+  if (requestedPayIds.length) {
+    let accountMethods = advertisementOwnerProfileTradeMethods(credentialId);
+    let selected = accountMethods.filter(method => requestedPayIds.includes(positiveNum(method.payId || 0)));
+    const selectedIds = new Set(selected.map(method => positiveNum(method.payId || 0)).filter(value => value > 0));
+    if (requestedPayIds.some(payId => !selectedIds.has(payId)) && options.refresh !== false) {
+      await fetchAdvertisementAccountPaymentMethods(credential, { enrich:false });
+      accountMethods = advertisementOwnerProfileTradeMethods(credentialId);
+      selected = accountMethods.filter(method => requestedPayIds.includes(positiveNum(method.payId || 0)));
+    }
+    const resolvedPayIds = new Set(selected.map(method => positiveNum(method.payId || 0)).filter(value => value > 0));
+    const missingPayIds = requestedPayIds.filter(payId => !resolvedPayIds.has(payId));
+    if (missingPayIds.length || selected.length !== requestedPayIds.length) {
+      const error = advertisementPaymentMethodScopeError(credentialId, []);
+      error.missingPaymentPayIds = missingPayIds;
+      error.message = `One or more selected Binance P2P payment methods are not saved on this exact account. Sync this account's P2P Profile and try again.`;
+      throw error;
+    }
+    const localIds = advertisementMethodIdsFromTradeMethods(selected, credentialId);
+    return {
+      ...item,
+      credentialId,
+      paymentPayIds: requestedPayIds,
+      paymentMethodIds: localIds,
+      paymentMethodKeys: [],
+      tradeMethods: selected.map(method => ({ ...method, paymentMethodId: localIds.find(id => {
+        const local = (db.paymentMethods || []).find(candidate => Number(candidate.id) === Number(id));
+        return local && advertisementPaymentMethodMatchScore(local, method) > 0;
+      }) || 0 }))
+    };
+  }
+
   const liveMethods = normalizeAdvertisementTradeMethods(
     options.liveDetail?.tradeMethods || options.liveDetail?.payMethodDtos || options.liveDetail?.tradeMethodList || []
   );
@@ -13782,6 +13878,7 @@ async function prepareAdvertisementTradeMethodsForCredential(item = {}, credenti
     ...item,
     credentialId,
     paymentMethodIds: resolution.paymentMethodIds,
+    paymentPayIds: Array.from(new Set(resolution.tradeMethods.map(method => positiveNum(method.payId || 0)).filter(value => value > 0))).slice(0, 5),
     paymentMethodKeys: [],
     tradeMethods: resolution.tradeMethods
   };
@@ -15685,6 +15782,34 @@ function advertisementGenericPaymentCatalogForCredential(credentialId = 0, fiat 
     .slice(0, 1000);
 }
 
+async function refreshAdvertisementGenericPaymentCatalog(credential, fiat = '', force = false) {
+  if (!credential || !credential.apiKey || !credential.secretKey || credential.disabled) {
+    throw Object.assign(new Error('The selected Binance API credential is disabled or incomplete.'), { statusCode: 422 });
+  }
+  const credentialId = Number(credential.id || 0);
+  const profile = ownerP2pProfileBase(credentialId);
+  const last = Date.parse(profile?.paymentCatalog?.syncedAt || '') || 0;
+  const cached = advertisementGenericPaymentCatalogForCredential(credentialId, fiat);
+  if (!force && cached.length && last && Date.now() - last < 10 * 60 * 1000) return cached;
+  const warnings = [];
+  const valid = await callOwnerProfileSapi(credential, 'valid P2P payment methods for advertisement', [
+    { endpointName:'listAllPaymentMethods', body:{}, timeoutMs:15000 },
+    { endpointName:'agentListAllPaymentMethods', body:{}, timeoutMs:15000 }
+  ], warnings);
+  const catalog = normalizeOwnerPaymentCatalog([], valid, profile.paymentMethods || []);
+  if (catalog.methods.length) {
+    profile.paymentCatalog = {
+      ...(profile.paymentCatalog || {}),
+      methods: catalog.methods,
+      currencies: Array.isArray(profile.paymentCatalog?.currencies) ? profile.paymentCatalog.currencies : [],
+      syncedAt: nowIso()
+    };
+    if (warnings.length) profile.warnings = Array.from(new Set([...(profile.warnings || []), ...warnings])).slice(0, 30);
+    saveOwnerP2pProfileForCredential(credential, profile);
+  }
+  return advertisementGenericPaymentCatalogForCredential(credentialId, fiat);
+}
+
 function advertisementGenericPaymentKey(value = '') {
   return cleanStr(value || '', 160).trim().toLowerCase();
 }
@@ -15780,27 +15905,52 @@ async function advertisementReferencePriceGuide(credential, requested = {}, forc
   const fiat = cleanStr(requested.fiat || 'BDT', 20).toUpperCase();
   const tradeType = normalizeAdvertisementTradeType(requested.tradeType || 'BUY');
   const payType = cleanStr(requested.payType || '', 80);
-  const cacheKey = `${advertisementCredentialKey(credential)}:${asset}:${fiat}:${tradeType}:${payType}`;
-  const cached = advertisementReferencePriceCache.get(cacheKey);
-  if (!force && cached && Date.now() - cached.ts < 4000) return { ...cached.data, cached:true };
-  const body = { assets:[asset], fiatCurrency:fiat, fromUserRole:'ADVERTISER', tradeType };
-  if (payType) body.payType = payType;
-  const response = await callSignedSapi({
-    apiKey: credential.apiKey,
-    secretKey: credential.secretKey,
-    endpointName: 'getAdReferencePrice',
-    body,
-    clientType: credential.clientType || 'web',
-    dryRun: false,
-    timeoutMs: 7000
-  });
-  assertSuccessfulSapiResponse(response, 'getAdReferencePrice');
-  const guide = normalizeAdvertisementReferencePriceResponse(response, { asset, fiat, tradeType });
-  // Do not block the editor on the public marketplace search. Binance's signed
-  // reference-price response is the authoritative input for this control; a
-  // second public search only added latency and never supplied documented limits.
-  advertisementReferencePriceCache.set(cacheKey, { ts:Date.now(), data:guide });
-  return guide;
+  const exactKey = `${advertisementCredentialKey(credential)}:${asset}:${fiat}:${tradeType}:${payType}`;
+  const genericKey = `${advertisementCredentialKey(credential)}:${asset}:${fiat}:${tradeType}:`;
+  const cached = advertisementReferencePriceCache.get(exactKey) || advertisementReferencePriceCache.get(genericKey);
+  if (!force && cached && Date.now() - cached.ts < 12000) return { ...cached.data, cached:true };
+
+  const attempts = payType ? [payType, ''] : [''];
+  let lastError = null;
+  for (const attemptPayType of attempts) {
+    const body = { assets:[asset], fiatCurrency:fiat, fromUserRole:'ADVERTISER', tradeType };
+    if (attemptPayType) body.payType = attemptPayType;
+    try {
+      const response = await callSignedSapi({
+        apiKey: credential.apiKey,
+        secretKey: credential.secretKey,
+        endpointName: 'getAdReferencePrice',
+        body,
+        clientType: credential.clientType || 'web',
+        dryRun: false,
+        timeoutMs: 15000
+      });
+      assertSuccessfulSapiResponse(response, 'getAdReferencePrice');
+      const guide = {
+        ...normalizeAdvertisementReferencePriceResponse(response, { asset, fiat, tradeType }),
+        requestedPayType: payType,
+        appliedPayType: attemptPayType,
+        fallbackWithoutPayType: Boolean(payType && !attemptPayType),
+        stale: false
+      };
+      advertisementReferencePriceCache.set(exactKey, { ts:Date.now(), data:guide });
+      if (!attemptPayType) advertisementReferencePriceCache.set(genericKey, { ts:Date.now(), data:guide });
+      return guide;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  const stale = advertisementReferencePriceCache.get(exactKey) || advertisementReferencePriceCache.get(genericKey);
+  if (stale && Date.now() - stale.ts < 5 * 60 * 1000) {
+    return {
+      ...stale.data,
+      cached:true,
+      stale:true,
+      warning:'Live Binance reference refresh failed; showing the last known reference price. Binance will validate the submitted advertisement price.'
+    };
+  }
+  throw lastError || Object.assign(new Error('Binance reference price is temporarily unavailable.'), { statusCode:502, code:'ADS_REFERENCE_PRICE_UNAVAILABLE' });
 }
 
 function advertisementReferencePayType(item = {}) {
@@ -15852,17 +16002,24 @@ async function assertAdvertisementFixedPriceWithinLiveRange(credential, item = {
   if (Number(item.priceType || 1) !== 1) return null;
   const price = positiveNum(item.price || 0);
   if (!(price > 0)) throw Object.assign(new Error('Enter a valid advertisement price.'), { statusCode:422, code:'ADS_INVALID_PRICE' });
-  const guide = await advertisementReferencePriceGuide(credential, {
-    asset:item.asset || 'USDT',
-    fiat:item.fiatUnit || 'BDT',
-    tradeType:item.tradeType || 'BUY',
-    payType:advertisementReferencePayType(item)
-  }, force);
-  // Validate locally only when Binance actually returned both bounds. If the
-  // reference endpoint returned referencePrice only, the authoritative guard is
-  // Binance's ad create/update endpoint; rejecting against a guessed CRM band is
-  // worse than allowing Binance to validate the live rule.
-  if (guide.explicitBounds === true && Number(guide.minPrice) > 0 && Number(guide.maxPrice) >= Number(guide.minPrice)) {
+
+  // Never put the reference-price endpoint in the mutation critical path. The
+  // editor refreshes it independently in the background. Here we only use a
+  // recent cached Binance quote for an instant local bounds check; otherwise the
+  // actual Binance post/update endpoint is the final authority.
+  const asset = cleanStr(item.asset || 'USDT', 20).toUpperCase();
+  const fiat = cleanStr(item.fiatUnit || 'BDT', 20).toUpperCase();
+  const tradeType = normalizeAdvertisementTradeType(item.tradeType || 'BUY');
+  const payType = advertisementReferencePayType(item);
+  const exactKey = `${advertisementCredentialKey(credential)}:${asset}:${fiat}:${tradeType}:${payType}`;
+  const genericKey = `${advertisementCredentialKey(credential)}:${asset}:${fiat}:${tradeType}:`;
+  const cached = advertisementReferencePriceCache.get(exactKey) || advertisementReferencePriceCache.get(genericKey) || null;
+  if (!cached || Date.now() - cached.ts > 60 * 1000) {
+    return { referenceUnavailable:true, explicitBounds:false, live:false, source:'binance_reference_cache_miss' };
+  }
+  const ageMs = Date.now() - cached.ts;
+  const guide = { ...cached.data, cached:true, stale:Boolean(cached.data?.stale) || ageMs > 30000 };
+  if (guide.stale !== true && guide.explicitBounds === true && Number(guide.minPrice) > 0 && Number(guide.maxPrice) >= Number(guide.minPrice)) {
     const scale = Math.max(0, Math.min(8, Number(guide.priceScale || 0)));
     const factor = 10 ** scale;
     const priceUnits = Math.round(price * factor);
@@ -15961,6 +16118,73 @@ async function handleAdvertisementReferencePrice(req, res, url) {
   }
 }
 
+async function handleAdvertisementPaymentOptions(req, res, url) {
+  const user = requirePermission(req, res, 'ads.view');
+  if (!user) return;
+  if (req.method !== 'GET') return sendJson(res, 405, { error:'Method not allowed' }, {}, req);
+  const credentialId = Number(url.searchParams.get('credentialId') || 0);
+  const credential = requireLiveBinanceCredentialForUser(req, res, user, credentialId, 'ads.view', { requireExplicitWhenMultiple:true });
+  if (!credential) return;
+  const tradeType = normalizeAdvertisementTradeType(url.searchParams.get('tradeType') || 'BUY');
+  const fiat = cleanStr(url.searchParams.get('fiat') || 'BDT', 20).toUpperCase();
+  const force = url.searchParams.get('force') === '1';
+  try {
+    if (tradeType === 'SELL') {
+      const profile = ownerP2pProfileRecord(credential.id) || ownerP2pProfileBase(credential.id);
+      const last = Date.parse(profile?.paymentMethodsSyncedAt || profile?.syncedAt || '') || 0;
+      let paymentMethods = advertisementSavedPaymentOptionsForCredential(user, credential.id);
+      if (force || !paymentMethods.length || !last || Date.now() - last > 5 * 60 * 1000) {
+        await fetchAdvertisementAccountPaymentMethods(credential, { enrich:false });
+        paymentMethods = advertisementSavedPaymentOptionsForCredential(user, credential.id);
+        saveDb({ broadcast:false });
+      }
+      return sendJson(res, 200, {
+        credentialId:Number(credential.id),
+        tradeType,
+        fiat,
+        mode:'saved',
+        source:'binance_p2p_profile',
+        paymentMethods
+      }, {}, req);
+    }
+    let paymentMethods = advertisementGenericPaymentCatalogForCredential(credential.id, fiat);
+    const profile = ownerP2pProfileRecord(credential.id) || ownerP2pProfileBase(credential.id);
+    const last = Date.parse(profile?.paymentCatalog?.syncedAt || '') || 0;
+    if (force || !paymentMethods.length || !last || Date.now() - last > 10 * 60 * 1000) {
+      paymentMethods = await refreshAdvertisementGenericPaymentCatalog(credential, fiat, force);
+      saveDb({ broadcast:false });
+    }
+    return sendJson(res, 200, {
+      credentialId:Number(credential.id),
+      tradeType,
+      fiat,
+      mode:'generic',
+      source:'binance_valid_payment_methods',
+      paymentMethods
+    }, {}, req);
+  } catch (error) {
+    const fallback = tradeType === 'SELL'
+      ? advertisementSavedPaymentOptionsForCredential(user, credential.id)
+      : advertisementGenericPaymentCatalogForCredential(credential.id, fiat);
+    if (fallback.length) {
+      return sendJson(res, 200, {
+        credentialId:Number(credential.id), tradeType, fiat,
+        mode:tradeType === 'SELL' ? 'saved' : 'generic',
+        source:tradeType === 'SELL' ? 'binance_p2p_profile_cache' : 'binance_valid_payment_methods_cache',
+        stale:true,
+        warning:cleanStr(error.message || error, 300),
+        paymentMethods:fallback
+      }, {}, req);
+    }
+    return sendJson(res, Number(error.statusCode || 502), {
+      error:cleanStr(error.message || error, 500),
+      code:error.code || null,
+      credentialId:Number(credential.id),
+      tradeType
+    }, {}, req);
+  }
+}
+
 async function handleAdvertisements(req, res, url) {
   const user = requirePermission(req, res, 'ads.view');
   if (!user) return;
@@ -16048,12 +16272,9 @@ async function handleAdvertisements(req, res, url) {
         apiCreateReadiness: advertisementCreateReadinessView(option.id)
       };
     });
-    const enabledPaymentMethods = (db.paymentMethods || []).filter(method => method.enabled !== false);
     const paymentMethodsByCredential = Object.fromEntries(credentialOptions.map(option => [
       String(Number(option.id)),
-      enabledPaymentMethods
-        .map(method => advertisementPaymentMethodView(method, user, option.id))
-        .filter(method => method.availableForCredential === true)
+      advertisementSavedPaymentOptionsForCredential(user, option.id)
     ]));
     const genericPaymentMethodsByCredential = Object.fromEntries(credentialOptions.map(option => [
       String(Number(option.id)),
@@ -16549,10 +16770,7 @@ async function handleAdvertisementById(req, res, parts) {
       }
       saveDb({ broadcast:false });
     }
-    const enabledPaymentMethods = (db.paymentMethods || []).filter(method => method.enabled !== false);
-    const paymentMethods = enabledPaymentMethods
-      .map(method => advertisementPaymentMethodView(method, user, credentialId))
-      .filter(method => method.availableForCredential === true);
+    const paymentMethods = advertisementSavedPaymentOptionsForCredential(user, credentialId);
     const genericPaymentMethods = advertisementGenericPaymentCatalogForCredential(credentialId, item.fiatUnit || '');
     return sendJson(res, 200, {
       item: advertisementView(item),
@@ -17790,6 +18008,7 @@ async function handleApi(req, res) {
     if (url.pathname === '/api/ads/merchant-control') return await handleAdvertisementMerchantControl(req, res);
     if (url.pathname === '/api/ads/merchant-online') return await handleAdvertisementMerchantOnline(req, res);
     if (url.pathname === '/api/ads/reference-price') return await handleAdvertisementReferencePrice(req, res, url);
+    if (url.pathname === '/api/ads/payment-options') return await handleAdvertisementPaymentOptions(req, res, url);
     if (url.pathname === '/api/ads') return await handleAdvertisements(req, res, url);
     if (url.pathname.startsWith('/api/ads/')) return await handleAdvertisementById(req, res, parts);
     if (url.pathname === '/api/orders') return handleOrders(req, res, url);

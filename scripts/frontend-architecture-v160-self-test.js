@@ -20,7 +20,7 @@ const sw = read('public/sw.js');
 const security = read('public/js/pages/security.js');
 const pkg = JSON.parse(read('package.json'));
 
-assert(pkg.version === '1.7.1', `expected v1.7.1, got ${pkg.version}`);
+assert(pkg.version === '1.7.2', `expected v1.7.2, got ${pkg.version}`);
 assert(index.includes('class="p2pflow-app-root"') && index.includes('class="p2pflow-app-shell"'), 'fixed shell root/body classes are missing');
 assert(index.includes('id="routeViewport"') && index.includes('class="route-page-host"'), 'isolated route viewport/host is missing');
 assert(index.includes('/js/core/history-router.js') && index.includes('/js/core/route-host.js'), 'routing/route-host cores are not loaded before the app');
