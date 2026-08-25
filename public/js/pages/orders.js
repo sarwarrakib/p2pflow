@@ -1,4 +1,4 @@
-// P2PFlow v1.6.4
+// P2PFlow v1.6.5
 // Page module: orders. Edit this file for the orders page UI.
 
 function orderAccountOptions(data = {}) {
@@ -254,6 +254,53 @@ function maybePromptOrderAcceptance(status = {}) {
   };
 }
 
+async function applyOrderRealtimeChanges(changes=[]) {
+  if (state.page !== 'orders' || state.currentOrderId || !Array.isArray(changes) || !changes.length) return false;
+  const data = state.ordersListData;
+  if (!data || !Array.isArray(data.items)) {
+    renderOrders({ background:true }).catch(()=>{});
+    return false;
+  }
+  const byId = new Map(data.items.map(item => [Number(item.id), item]));
+  const hydrateIds = [];
+  for (const change of changes) {
+    const id = Number(change.orderId || change.id || 0);
+    if (!id) continue;
+    const current = byId.get(id);
+    if (!current || change.created) {
+      hydrateIds.push(id);
+      continue;
+    }
+    if (change.status) current.status = change.status;
+    if (change.externalStatus) current.externalStatus = change.externalStatus;
+    if (change.type) current.type = change.type;
+    if (change.amount !== undefined) current.amount = Number(change.amount || current.amount || 0);
+    if (change.credentialId) current.credentialId = Number(change.credentialId);
+    if (change.credentialName) current.credentialName = change.credentialName;
+    if (change.methodName) {
+      current.method = { ...(current.method || {}), name:change.methodName };
+      current.payMethodSnapshot = { ...(current.payMethodSnapshot || {}), name:change.methodName };
+    }
+    current.updatedAt = change.at || new Date().toISOString();
+  }
+  if (hydrateIds.length) {
+    const fresh = await Promise.all([...new Set(hydrateIds)].map(id => api(`/api/orders/${id}/list-view`, { silent:true, noAutoReload:true, navigationScoped:false }).catch(()=>null)));
+    for (const result of fresh) {
+      const item = result?.item;
+      if (!item?.id) continue;
+      const existingIndex = data.items.findIndex(row => Number(row.id) === Number(item.id));
+      if (existingIndex >= 0) data.items[existingIndex] = item;
+      else data.items.unshift(item);
+      if (result.unreadCount) data.unreadCounts = { ...(data.unreadCounts || {}), [String(item.id)]:Number(result.unreadCount) };
+      if (result.latestUnread) data.unreadLatestByOrder = { ...(data.unreadLatestByOrder || {}), [String(item.id)]:result.latestUnread };
+    }
+  }
+  data.items.sort((a,b) => (Date.parse(b.createdAt || b.updatedAt || '') || 0) - (Date.parse(a.createdAt || a.updatedAt || '') || 0));
+  state.ordersListData = data;
+  await renderOrders({ prefetchedData:data, background:true });
+  return true;
+}
+
 async function renderOrders(opts={}) {
   if (state.page !== 'orders') return;
   setTitle('Orders');
@@ -275,6 +322,7 @@ async function renderOrders(opts={}) {
     throw error;
   }
   if (!pageRenderGuardCurrent(renderGuard) || state.page !== 'orders' || state.currentOrderId) return;
+  state.ordersListData = data;
 
   const unreadData = {
     counts:data.unreadCounts || {},

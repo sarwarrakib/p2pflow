@@ -27,33 +27,32 @@ Updater code এবং database আলাদা রাখে। Update install-�
 
 ## Version
 
-Internal SemVer: `1.6.4`
+Internal SemVer: `1.6.5`
 UI: `1.6`
-Database schema: `37`
+Database schema: `38`
 
 Normal next version: `SET_NEXT_VERSION.bat` -> `1.7.0`  
-Hotfix: `SET_HOTFIX_VERSION.bat` -> `1.6.5`
+Hotfix: `SET_HOTFIX_VERSION.bat` -> `1.6.6`
 
 ## Database history safety
 
 P2PFlow keeps authoritative business/application data in MariaDB/MySQL/PostgreSQL. State payloads are compressed with Brotli before AES-256-GCM encryption, proofs/chat media are stored as encrypted database objects, and identical newly uploaded proof/media bytes use content-addressed object IDs to avoid duplicate blobs. The default is 3 retained recovery checkpoints with a 6-hour archive interval and 5 retained automatic database backups. Older uncompressed state/history/backup payloads are upgraded incrementally after startup. Health Check reports each P2PFlow database table's allocated size/row count, current encrypted state payload size, compression saving percentage, and proof/chat object usage so database-MB growth can be inspected without terminal access. `shared/`, `.p2pflow`, `.env`, `releases/` and temporary restart/update markers are operational bootstrap/update metadata only; they are not an application/business-data store. The application runtime itself does not write proof, chat, audit, order, ledger, notification or recovery-code data to local files.
 
-## v1.6.4 Dedicated Frontend Architecture — Fixed AppShell & Clean History Routes
+## v1.6.5 Realtime Performance, Exact Ads Account Scope & Chat Account Controls
 
-- Authenticated browser document এখন `100dvh` fixed AppShell; `html/body/#app/main` আর application page-এর সঙ্গে scroll করে না। Desktop sidebar ও top header স্থায়ী, শুধু active route viewport page scroll করে।
-- Canonical navigation clean History API URL ব্যবহার করে: `/orders/123`, `/p2p/market`, `/accounting`, `/system/update`। পুরোনো `/#/...` bookmark readable এবং clean URL-এ migrate হয়।
-- Node server known SPA route-এ History fallback দিয়ে `index.html` serve করে, তাই nested route সরাসরি refresh করলেও application খুলতে পারে।
-- প্রতিটি route-এর persistent detached DOM host আছে। Inactive route live DOM থেকে detach হয়, কিন্তু form/DOM/scroll state bounded cache-এ preserve হয়; target route নিজের shell সঙ্গে সঙ্গে mount/restore হয়।
-- Navigation **Latest Navigation Wins**: নতুন route পুরোনো navigation request abort করে; stale response guard mismatch হলে current page DOM-এ commit করতে পারে না। Browser Back/Forward একই authority ব্যবহার করে।
-- Explicit `PAGE_RUNTIME` lifecycle registry page leave-এর সঙ্গে Market observer/timer, Order/Chat sync, Ads polling এবং Accounting timer deactivate করে। Existing feature pageগুলো `public/js/pages/*.js` আলাদা file-এই থাকে।
-- Realtime/API refresh active route host destroy করে না। Stable DOM morph existing nodes/data patch করে; Orders/Chat/Market/Ads dedicated incremental updater বহাল।
-- Page modules document/window scrolling ব্যবহার করে না; active route scroller API ব্যবহার করে। Settings/Order sticky controls fixed header-এর বাইরে নতুন viewport অনুযায়ী adjust করা হয়েছে।
-- Global route progress fixed clipped overlay; browser width পরিবর্তন বা প্রতি cycle horizontal scrollbar তৈরি করতে পারে না। Table/chip-এর প্রয়োজনীয় local horizontal scroll আলাদা wrapper-এ সীমাবদ্ধ।
-- PWA start URL, login return, push notification links এবং Security redirect clean routes ব্যবহার করে।
-- v1.5.38 Ads UI, v1.5.37 secret vault/one-click verification, v1.5.36 Binance FUND_PWD RSA flow এবং permission/accounting/realtime backend behavior preserved।
-- Database schema `37`; নতুন migration নেই।
+- Database writes no longer run Brotli compression synchronously on the Node HTTP event loop. MySQL/PostgreSQL state checkpoints and legacy payload compaction use asynchronous compression so background durability work cannot monopolize requests/SSE handling.
+- Fast Binance order discovery defaults to about 2 seconds, runs enabled API accounts in parallel and broadcasts material order changes before the queued database checkpoint. The full reconciliation path now fetches details only for changed/open orders.
+- Orders list responses use a compact view instead of shipping raw Binance payload/history/chat/proof structures for every row. Realtime SSE changes patch the cached list locally and hydrate only a newly discovered row when needed.
+- Returning to an already-mounted route shows the retained page immediately and revalidates data in the background instead of waiting for a fresh network request before navigation completes.
+- Payment Split OFF + Mark as Paid uses the direct paid action without reopening the split popup. Payment copy buttons use delegated event handling so DOM morph/realtime updates do not detach the handler.
+- Advertisement Edit opens immediately from the exact account-scoped synchronized snapshot and refreshes Binance detail/payment methods in the background. SELL payment methods are strictly filtered to the advertisement's credential; live refresh updates the open editor without cross-account fallback.
+- Fixed-price UI no longer invents percentage-based min/max limits from `referencePrice`. Explicit Binance-returned bounds are used when available; otherwise the live reference is shown and exact limits from a Binance create/update validation error are surfaced.
+- Mobile Ads bottom sheets temporarily hide the fixed bottom navigation and respect dynamic viewport/safe-area height, preventing lower actions such as Delete from being covered.
+- Chat now has an **All Accounts** selector. Each connected account can expose per-account **Orders**, **Notifications** and **Advertisement** feature toggles; existing user permissions remain authoritative. The Chat notification master switch still overrides all per-account notification settings.
+- Background Ads/merchant loops avoid repeated whole-state saves for unchanged results or identical errors; checkpoints are bounded to material changes/error changes or a five-minute durability checkpoint.
+- Database schema `38`; migration only adds/normalizes Binance credential feature controls and is additive.
 
-বিস্তারিত: `P2PFlow_v1.6.4_RELEASE_NOTES_BN.md`, `P2PFlow_v1.6.4_MANUAL_UPDATE_BN.md` এবং `P2PFlow_v1.6.4_LAUNCH_CHECKLIST_BN.md`.
+বিস্তারিত: `P2PFlow_v1.6.5_RELEASE_NOTES_BN.md`, `P2PFlow_v1.6.5_MANUAL_UPDATE_BN.md` এবং `P2PFlow_v1.6.5_LAUNCH_CHECKLIST_BN.md`.
 
 ## v1.5.38 Reference UI, Minimal Verification & Binance Ad Flow (historical)
 

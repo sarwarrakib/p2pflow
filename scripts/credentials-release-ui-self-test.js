@@ -11,7 +11,7 @@ const app = read('public/app.js');
 const css = read('public/style.css');
 const fail = message => { throw new Error(`Credentials / Release Verification UI self-test failed: ${message}`); };
 const assert = (value, message) => { if (!value) fail(message); };
-assert(pkg.version === '1.6.4', `expected v1.6.4, got ${pkg.version}`);
+assert(pkg.version === '1.6.5', `expected v1.6.5, got ${pkg.version}`);
 assert(page.includes('ownerP2pNickname || c.displayName') && server.includes('if (credential.ownerP2pNickname) credential.name = credential.ownerP2pNickname;'), 'P2P username is not the credential display identity.');
 assert(!page.includes('data-test-cred') && !page.includes('data-live-test-cred'), 'Manual Validate/Live Check row buttons still exist.');
 assert(page.includes('credential-icon-btn') && page.includes('data-release-settings-cred') && css.includes('.credential-icon-btn'), 'Compact credential icon actions are missing.');

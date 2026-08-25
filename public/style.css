@@ -5897,3 +5897,51 @@ body.p2pflow-app-shell .modal-backdrop{overscroll-behavior:contain}
   body.order-detail-active .order-hero-pills b{color:#111827!important}
   body.order-detail-active .order-asset-breakdown{background:#f8fafc!important;color:#0f172a!important;border-color:#e5e7eb!important}
 }
+
+/* v1.6.5: mobile bottom sheets must own the bottom safe area. The fixed app
+   navigation is hidden while an Ads sheet is open so destructive actions such
+   as Delete can never sit underneath it. */
+@media(max-width:900px){
+  body.ads-sheet-open #mobileBottomNav.mobile-bottom-nav{display:none!important}
+  body.ads-sheet-open{overflow:hidden}
+  body.ads-sheet-open .ads-sheet-backdrop{padding-bottom:0;align-items:flex-end}
+  body.ads-sheet-open .ads-bottom-sheet{max-height:calc(100dvh - env(safe-area-inset-top) - 8px);padding-bottom:env(safe-area-inset-bottom)}
+  body.ads-sheet-open .ads-sheet-body{padding-bottom:calc(22px + env(safe-area-inset-bottom));overscroll-behavior:contain}
+  body.ads-sheet-open .ads-ad-action-menu{padding-bottom:8px}
+}
+
+/* v1.6.5 Chat account selector + per-account realtime module controls */
+.chat-page-controls{position:relative;z-index:8;justify-content:space-between}
+.chat-account-picker{position:relative;min-width:210px;max-width:min(430px,60vw)}
+.chat-account-picker-trigger{display:flex;align-items:center;justify-content:space-between;gap:10px;width:100%;min-height:40px;padding:8px 12px;border:1px solid #e3e6ea;border-radius:11px;background:#fff;color:#111827;font-size:13px;font-weight:800;box-shadow:0 3px 12px rgba(15,23,42,.05)}
+.chat-account-picker-trigger svg{width:17px;height:17px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;flex:0 0 auto}
+.chat-account-picker-label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.chat-account-picker-menu{position:absolute;left:0;top:calc(100% + 7px);z-index:45;width:min(390px,calc(100vw - 34px));max-height:min(440px,65dvh);overflow:auto;padding:7px;border:1px solid #e3e6ea;border-radius:14px;background:#fff;box-shadow:0 18px 45px rgba(15,23,42,.18)}
+.chat-account-picker-row-wrap{display:grid;grid-template-columns:minmax(0,1fr) 40px;align-items:center;border-radius:10px}
+.chat-account-picker-row-wrap.active,.chat-account-picker-row.active{background:#f3f7ff}
+.chat-account-picker-row{display:flex;align-items:center;width:100%;min-width:0;min-height:52px;padding:8px 10px;border:0;border-radius:10px;background:transparent;color:#111827;text-align:left;box-shadow:none;transform:none}
+.chat-account-picker-row:hover,.chat-account-picker-row:focus-visible{background:#f7f8fa;color:#111827;transform:none}
+.chat-account-picker-row span{display:grid;min-width:0;gap:2px}
+.chat-account-picker-row b{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}
+.chat-account-picker-row small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#7c8594;font-size:10.5px;font-weight:600}
+.chat-account-settings-btn{display:grid;place-items:center;width:34px;height:34px;min-width:34px;padding:0;border:0;border-radius:9px;background:#f4f6f8;color:#445065;box-shadow:none;transform:none}
+.chat-account-settings-btn:hover,.chat-account-settings-btn:focus-visible{background:#e9edf3;color:#111827;transform:none}
+.chat-account-settings-btn svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.chat-account-settings-form{display:grid;gap:10px}
+.chat-account-setting-row{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:13px 14px;border:1px solid #e7e9ed;border-radius:13px;background:#fafbfc}
+.chat-account-setting-row>span{display:grid;gap:3px;min-width:0}
+.chat-account-setting-row b{font-size:14px;color:#111827}
+.chat-account-setting-row small{font-size:11px;line-height:1.4;color:#737d8d}
+.chat-account-setting-row input[type="checkbox"]{width:20px;height:20px;flex:0 0 auto}
+@media(max-width:900px){
+  .chat-page-controls{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:7px}
+  .chat-account-picker{min-width:0;max-width:none}
+  .chat-account-picker-trigger{min-height:38px;padding:7px 10px;font-size:12px}
+  .chat-page-controls .background-notification-toggle{flex:initial;width:auto;min-width:0;white-space:nowrap}
+  .chat-account-picker-menu{max-height:58dvh}
+}
+@media(max-width:560px){
+  .chat-page-controls{grid-template-columns:minmax(0,1fr) auto}
+  .chat-page-controls .background-notification-toggle .background-notification-copy{display:none}
+  .chat-page-controls .background-notification-toggle{width:42px;min-width:42px;padding:6px;justify-content:center}
+}

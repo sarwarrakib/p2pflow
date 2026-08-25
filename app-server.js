@@ -44,7 +44,7 @@ loadEnv();
 applyP2PFlowEnvAliases(process.env);
 
 const APP_VERSION = String(packageInfo.version || '0.0.0');
-const APP_SCHEMA_VERSION = 37;
+const APP_SCHEMA_VERSION = 38;
 const APP_DATA_COMPATIBILITY_EPOCH = 1;
 const PORT = Number(process.env.PORT || 3000);
 const BIND_HOST = cleanEnv(process.env.P2PFLOW_BIND_HOST || process.env.CRM_BIND_HOST || '', '');
@@ -505,6 +505,40 @@ function binanceCredentialP2pIdentity(credential = {}, target = db) {
   };
 }
 
+function normalizeBinanceCredentialFeatureControls(value = {}) {
+  const source = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  return {
+    orders: source.orders !== false,
+    notifications: source.notifications !== false,
+    advertisements: source.advertisements !== false
+  };
+}
+
+function binanceCredentialFeatureControls(credentialOrId, target = db) {
+  const credential = typeof credentialOrId === 'object' && credentialOrId
+    ? credentialOrId
+    : (target?.apiCredentials || []).find(item => Number(item.id) === Number(credentialOrId || 0));
+  return normalizeBinanceCredentialFeatureControls(credential?.featureControls || {});
+}
+
+function binanceCredentialFeatureEnabled(credentialOrId, feature, target = db) {
+  const controls = binanceCredentialFeatureControls(credentialOrId, target);
+  const key = feature === 'ads' ? 'advertisements' : String(feature || '');
+  return Object.prototype.hasOwnProperty.call(controls, key) ? controls[key] !== false : true;
+}
+
+function setBinanceCredentialFeatureControls(credential, patch = {}) {
+  if (!credential) return normalizeBinanceCredentialFeatureControls({});
+  const current = binanceCredentialFeatureControls(credential);
+  const next = { ...current };
+  for (const key of ['orders','notifications','advertisements']) {
+    if (typeof patch[key] === 'boolean') next[key] = patch[key];
+  }
+  credential.featureControls = normalizeBinanceCredentialFeatureControls(next);
+  credential.updatedAt = nowIso();
+  return credential.featureControls;
+}
+
 function binanceCredentialOptionsForUser(user = {}, permission = null, options = {}) {
   const target = options.target || db;
   const includeDisabled = options.includeDisabled !== false;
@@ -533,7 +567,8 @@ function binanceCredentialOptionsForUser(user = {}, permission = null, options =
         status: item.disabled ? 'disabled' : cleanStr(item.status || 'saved', 40),
         disabled: Boolean(item.disabled),
         createdAt: item.createdAt || null,
-        permissions: grants.get(Number(item.id)) || []
+        permissions: grants.get(Number(item.id)) || [],
+        featureControls: binanceCredentialFeatureControls(item, target)
       };
     });
 }
@@ -1408,6 +1443,13 @@ function migrateDb(target) {
   for (const key of ['users','userRoles','apiCredentials','agents','paymentMethods','paymentAccounts','routing','orders','orderAgentAssignments','paymentSplits','ledgers','proofFiles','auditLogs','locks','notifications','offlineTransactions','chats','chatReadStates','coAgentRequests','approvalRequests','advertisements','securityRevertTokens','sessions','p2pExtensionTasks','p2pExtensionCache','userActivitySessions','businessEntries','businessDailyCloses','binanceBalanceSnapshots','chatMedia','systemUpdates','systemUpdateEvents']) {
     if (!Array.isArray(target[key])) target[key] = [];
   }
+  // Schema 38: each Binance account can independently enable order ingestion,
+  // notifications and advertisement operations. Existing installations keep
+  // all three enabled so upgrades are non-destructive.
+  target.apiCredentials.forEach(credential => {
+    credential.featureControls = normalizeBinanceCredentialFeatureControls(credential.featureControls || {});
+  });
+
   // Schema 37: Fund Transfer Password becomes a field-level AES-256-GCM vault secret.
   // The complete database state is already AES-256-GCM encrypted; this second envelope
   // keeps the reversible Binance password sealed even in decrypted state diagnostics.
@@ -2872,7 +2914,18 @@ function calcAccountBalance(accountId, target = db) {
 }
 
 function recalculateAccountBalances(target = db) {
-  target.paymentAccounts.forEach(a => { a.currentBalance = calcAccountBalance(a.id, target); });
+  // One ledger pass instead of filtering the full ledger once per payment
+  // account. This function is part of every durable state checkpoint and many
+  // account views, so O(accounts * ledgers) becomes noticeably expensive as
+  // production history grows.
+  const accounts = Array.isArray(target?.paymentAccounts) ? target.paymentAccounts : [];
+  const totals = new Map(accounts.map(account => [Number(account.id), 0]));
+  for (const ledger of (Array.isArray(target?.ledgers) ? target.ledgers : [])) {
+    const accountId = Number(ledger?.paymentAccountId || 0);
+    if (!totals.has(accountId)) continue;
+    totals.set(accountId, Number(totals.get(accountId) || 0) + Number(ledgerEffect(ledger) || 0));
+  }
+  accounts.forEach(account => { account.currentBalance = Number(totals.get(Number(account.id)) || 0); });
 }
 
 function isSpendOrReceiveLedger(l) {
@@ -5835,7 +5888,13 @@ function userCanManageApprovals(user) {
   return !!user && userHasPermission(user, 'approvals.manage');
 }
 
+function notificationAllowedByBinanceAccount(item = {}) {
+  const credentialId = notificationCredentialId(item);
+  return !credentialId || binanceCredentialFeatureEnabled(credentialId, 'notifications');
+}
+
 function notificationEmailRecipients(item = {}) {
+  if (!notificationAllowedByBinanceAccount(item)) return [];
   const recipients = new Map();
   const excludeUserId = Number(item.excludeUserId || 0);
   const category = notificationCategoryForType(item.type, item);
@@ -5909,6 +5968,7 @@ function activePushSubscriptionsForUser(user) {
 }
 
 function notificationPushRecipients(item = {}) {
+  if (!notificationAllowedByBinanceAccount(item)) return [];
   const recipients = new Map();
   const excludeUserId = Number(item.excludeUserId || 0);
   const category = notificationCategoryForType(item.type, item);
@@ -6188,10 +6248,14 @@ function addNotification(type, message, severity = 'info', extra = {}) {
   const item = { id: nextId(), type, category, message, severity, status: 'unread', read: false, createdAt: nowIso(), ...extra };
   if (!Number(item.credentialId || 0) && item.orderId) item.credentialId = Number(orderById(item.orderId)?.credentialId || 0) || null;
   item.category = notificationCategoryForType(type, item);
+  const accountNotificationsEnabled = notificationAllowedByBinanceAccount(item);
+  item.accountNotificationMuted = !accountNotificationsEnabled;
   db.notifications.push(item);
-  broadcast({ type: 'notification.created', notification: item, at: nowIso() });
-  dispatchNotificationEmail(item);
-  dispatchNotificationPush(item);
+  if (accountNotificationsEnabled) {
+    broadcast({ type: 'notification.created', notification: item, at: nowIso() });
+    dispatchNotificationEmail(item);
+    dispatchNotificationPush(item);
+  }
   return item;
 }
 
@@ -6205,6 +6269,7 @@ function notificationsForUser(user) {
     .map(n => ({ ...n, category: notificationCategoryForType(n.type, n) }));
   if (!user) return [];
   const accessible = list.filter(n => {
+    if (!notificationAllowedByBinanceAccount(n)) return false;
     if (n.userId && Number(n.userId) === Number(user.id)) return true;
     if (n.agentId && Number(n.agentId) === Number(user.agentId)) return true;
     if (n.audience === 'all') return true;
@@ -8847,7 +8912,7 @@ async function syncBinanceOrdersWithCredential(user, credential, opts = {}) {
   if (opts.endDate) payload.endDate = Number(opts.endDate);
   if (opts.asset) payload.asset = cleanStr(opts.asset, 30).toUpperCase();
 
-  const result = await callSignedSapi({ apiKey: credential.apiKey, secretKey: credential.secretKey, endpointName: 'listOrders', body: payload, clientType: credential.clientType || 'web', dryRun: false });
+  const result = await callSignedSapi({ apiKey: credential.apiKey, secretKey: credential.secretKey, endpointName: 'listOrders', body: payload, clientType: credential.clientType || 'web', dryRun: false, timeoutMs: Math.max(3500, Number(opts.timeoutMs || 7000)) });
   const rows = extractBinanceList(result);
   const changes = [];
   let detailSynced = 0;
@@ -8857,10 +8922,15 @@ async function syncBinanceOrdersWithCredential(user, credential, opts = {}) {
     let change = upsertBinanceOrder(row, user, credential);
     const orderNo = (change.order && (change.order.externalOrderNo || change.order.orderNo)) || binanceOrderFields(row).orderNo;
     const detailMode = opts.detailMode || 'smart';
-    const shouldDetail = orderNo && opts.skipDetailSync !== true && (detailMode === 'all' || binanceOrderDetailStale(change.order, change, opts.detailMaxAgeMs || 30000));
+    const missingDetail = binanceOrderDetailStale(change.order, change, Number.POSITIVE_INFINITY);
+    const materialChange = Boolean(change.created || change.statusChanged || change.paymentMethodChanged);
+    const shouldDetail = orderNo && opts.skipDetailSync !== true && (
+      detailMode === 'all'
+      || (detailMode === 'changes' ? (materialChange || missingDetail) : binanceOrderDetailStale(change.order, change, opts.detailMaxAgeMs || 30000))
+    );
     if (shouldDetail) {
       try {
-        const detailResp = await callSignedSapi({ apiKey: credential.apiKey, secretKey: credential.secretKey, endpointName: 'getUserOrderDetail', body: { adOrderNo: orderNo }, clientType: credential.clientType || 'web', dryRun: false });
+        const detailResp = await callSignedSapi({ apiKey: credential.apiKey, secretKey: credential.secretKey, endpointName: 'getUserOrderDetail', body: { adOrderNo: orderNo }, clientType: credential.clientType || 'web', dryRun: false, timeoutMs: Math.max(3500, Number(opts.detailTimeoutMs || 7000)) });
         const detail = unwrapBinanceData(detailResp);
         const detailChange = upsertBinanceOrder(detail, user, credential);
         const combined = [];
@@ -8894,7 +8964,7 @@ async function syncBinanceOrdersWithCredential(user, credential, opts = {}) {
     for (const localOrder of openOrders) {
       const orderNo = cleanStr(localOrder.externalOrderNo || localOrder.orderNo || '', 120);
       try {
-        const detailResp = await callSignedSapi({ apiKey: credential.apiKey, secretKey: credential.secretKey, endpointName: 'getUserOrderDetail', body: { adOrderNo: orderNo }, clientType: credential.clientType || 'web', dryRun: false });
+        const detailResp = await callSignedSapi({ apiKey: credential.apiKey, secretKey: credential.secretKey, endpointName: 'getUserOrderDetail', body: { adOrderNo: orderNo }, clientType: credential.clientType || 'web', dryRun: false, timeoutMs: Math.max(3500, Number(opts.detailTimeoutMs || 7000)) });
         const detail = unwrapBinanceData(detailResp);
         const change = upsertBinanceOrder(detail, user, credential);
         if (change.order) {
@@ -8931,7 +9001,7 @@ async function syncBinanceOrdersWithCredential(user, credential, opts = {}) {
     changedOrders,
     credentialId: Number(credential.id),
     credentialName: binanceCredentialLabel(credential),
-    items: db.orders.filter(order => Number(order.credentialId || 0) === Number(credential.id)).map(order => orderListView(order, user)),
+    items: opts.includeItems === false ? [] : db.orders.filter(order => Number(order.credentialId || 0) === Number(credential.id)).map(order => orderListView(order, user)),
     request: payload,
     result: sanitizedBinanceResult(result)
   };
@@ -10611,7 +10681,8 @@ async function connectBinanceRealtimeChat(credential, previousFailures = 0) {
       }
     });
     if (changed) {
-      saveDb({ broadcast:false, reason:'binance_chat_realtime' }).then(() => broadcasts.forEach(broadcast)).catch(() => {});
+      broadcasts.forEach(broadcast);
+      saveDb({ broadcast:false, reason:'binance_chat_realtime' });
     }
   });
   ws.on('error', error => { entry.error = cleanStr(error.message || error, 220); });
@@ -12833,12 +12904,14 @@ function adsManagerPresence() {
 function advertisementCapability(user, credentialId = 0) {
   const presence = adsManagerPresence();
   const accountId = Number(credentialId || 0);
-  const viewAccountIds = accountId
+  const viewAccountIds = (accountId
     ? (userHasBinanceCredentialPermission(user, accountId, 'ads.view') ? [accountId] : [])
-    : binanceCredentialIdsForUserPermission(user, 'ads.view', { includeDisabled: true });
-  const manageAccountIds = accountId
+    : binanceCredentialIdsForUserPermission(user, 'ads.view', { includeDisabled: true }))
+    .filter(id => binanceCredentialFeatureEnabled(id, 'advertisements'));
+  const manageAccountIds = (accountId
     ? (userHasBinanceCredentialPermission(user, accountId, 'ads.manage') ? [accountId] : [])
-    : binanceCredentialIdsForUserPermission(user, 'ads.manage', { includeDisabled: false });
+    : binanceCredentialIdsForUserPermission(user, 'ads.manage', { includeDisabled: false }))
+    .filter(id => binanceCredentialFeatureEnabled(id, 'advertisements'));
   const canView = userHasPermission(user, 'ads.view') && viewAccountIds.length > 0;
   const hasManagePermission = userHasPermission(user, 'ads.manage') && manageAccountIds.length > 0;
   const blockedByManager = false;
@@ -12872,7 +12945,8 @@ function requireAdvertisementManage(req, res, credentialId = 0) {
 function canAccessAdvertisement(user, item, permission = 'ads.view') {
   if (!user || !item || !userHasPermission(user, permission)) return false;
   const credentialId = Number(item.credentialId || 0);
-  return Boolean(credentialId && userHasBinanceCredentialPermission(user, credentialId, permission));
+  if (!credentialId || !binanceCredentialFeatureEnabled(credentialId, 'advertisements')) return false;
+  return Boolean(userHasBinanceCredentialPermission(user, credentialId, permission));
 }
 
 function normalizeAdvertisementTradeType(value) {
@@ -13561,24 +13635,32 @@ async function fetchLiveAdvertisementDetail(credential, advNo) {
     endpointName: 'getAdDetail',
     query: { adsNo: String(advNo) },
     clientType: credential.clientType || 'web',
-    dryRun: false
+    dryRun: false,
+    timeoutMs: 7000
   });
   assertSuccessfulSapiResponse(result, 'getAdDetail');
   return unwrapBinanceData(result) || {};
 }
 
-async function fetchAdvertisementAccountPaymentMethods(credential) {
+async function fetchAdvertisementAccountPaymentMethods(credential, options = {}) {
   if (!credential || !credential.apiKey || !credential.secretKey || credential.disabled) {
     throw Object.assign(new Error('The selected Binance API credential is disabled or incomplete.'), { statusCode: 422 });
   }
   const warnings = [];
   const response = await callOwnerProfileSapi(credential, 'P2P payment methods for advertisement', [
-    { endpointName: 'getPaymentMethodByUserId', query: {}, timeoutMs: 15000 },
-    { endpointName: 'agentGetPaymentMethodByUserId', query: {}, timeoutMs: 15000 }
+    { endpointName: 'getPaymentMethodByUserId', query: {}, timeoutMs: 7000 },
+    { endpointName: 'agentGetPaymentMethodByUserId', query: {}, timeoutMs: 7000 }
   ], warnings);
-  const detailed = await enrichOwnerPaymentMethodsById(credential, response, warnings);
+  // Editing only needs the current account's saved method list. Per-method
+  // detail enrichment can make one click fan out into dozens of SAPI calls, so
+  // keep it opt-in for workflows that truly need every field.
+  const detailed = options.enrich === true ? await enrichOwnerPaymentMethodsById(credential, response, warnings) : response;
   const rows = ownerProfilePaymentMethods(detailed);
   const methods = rows.map(advertisementTradeMethodFromOwnerProfile).filter(Boolean);
+  // Ensure every trade-method type returned for this exact credential exists in
+  // the local catalog. The account-specific payId/account data remains scoped in
+  // ownerP2pProfiles; only the display/type definition is shared globally.
+  ensureAdvertisementPaymentMethods(methods, credential.id);
   if (rows.length) {
     const profile = ownerP2pProfileBase(credential.id);
     profile.paymentMethods = rows;
@@ -13643,7 +13725,7 @@ async function prepareAdvertisementTradeMethodsForCredential(item = {}, credenti
   let resolution = advertisementTradeMethodResolution(item, credentialId, preferred, { allowGlobalFallback: false });
 
   if (resolution.missingPaymentMethodIds.length && options.refresh !== false) {
-    const refreshed = await fetchAdvertisementAccountPaymentMethods(credential);
+    const refreshed = await fetchAdvertisementAccountPaymentMethods(credential, { enrich:true });
     preferred = [...liveMethods, ...refreshed.methods, ...normalizeAdvertisementTradeMethods(options.preferredTradeMethods || [])];
     resolution = advertisementTradeMethodResolution(item, credentialId, preferred, { allowGlobalFallback: false });
   }
@@ -15609,9 +15691,11 @@ function normalizeAdvertisementReferencePriceResponse(response = {}, requested =
   const priceScale = Math.max(0, Math.min(8, Number.isFinite(parsedPriceScale) ? parsedPriceScale : 2));
   const tradeType = normalizeAdvertisementTradeType(requested.tradeType || 'BUY');
 
-  // Binance SAPI v7.4 documents referencePrice. Some live responses also carry
-  // explicit limit fields (sometimes nested), so consume every known alias
-  // before applying the live-reference rule used by the Binance ad form.
+  // Do not invent a fixed-price band. C2C SAPI v7.4 formally documents the
+  // live referencePrice/priceScale response, while some deployments may also
+  // return explicit live bounds. Only explicit Binance-returned min/max values
+  // are authoritative. Older builds synthesized 8%/10% ranges; that could show
+  // a plausible but wrong limit and then reject a valid edit.
   const minKeys = [
     'minPrice','minimumPrice','priceMin','minAdPrice','lowerPrice','floorPrice',
     'minReferencePrice','priceFloor','fixedPriceMin','minFixedPrice','lowestPrice',
@@ -15625,21 +15709,9 @@ function normalizeAdvertisementReferencePriceResponse(response = {}, requested =
   const explicitMin = firstNumberByKey(row, minKeys, 0) || firstNumberByKey(response, minKeys, 0);
   const explicitMax = firstNumberByKey(row, maxKeys, 0) || firstNumberByKey(response, maxKeys, 0);
   const hasExplicitBounds = explicitMin > 0 && explicitMax >= explicitMin;
-
-  // When Binance returns only referencePrice, the limit still changes with the
-  // live quote. SELL uses the 8% upper band shown by Binance; BUY retains the
-  // existing 10% reference band. Both values are recalculated on every forced
-  // validation rather than stored as a static CRM setting.
-  const upperMultiplier = tradeType === 'SELL' ? 1.08 : 1.10;
-  const minPrice = hasExplicitBounds ? explicitMin : referencePrice;
-  const maxPrice = hasExplicitBounds ? explicitMax : referencePrice * upperMultiplier;
-  const normalizedMin = decimalScale(minPrice, priceScale);
-  // Binance's displayed upper limit is truncated to the allowed price tick.
-  // Example: 122.48 x 1.08 = 132.2784 is displayed/accepted as 132.27.
-  const normalizedMax = hasExplicitBounds
-    ? decimalScale(maxPrice, priceScale)
-    : decimalFloorScale(maxPrice, priceScale);
-  const rangeText = `${normalizedMin.toFixed(priceScale)}~${normalizedMax.toFixed(priceScale)}`;
+  const normalizedMin = hasExplicitBounds ? decimalScale(explicitMin, priceScale) : null;
+  const normalizedMax = hasExplicitBounds ? decimalScale(explicitMax, priceScale) : null;
+  const rangeText = hasExplicitBounds ? `${normalizedMin.toFixed(priceScale)}~${normalizedMax.toFixed(priceScale)}` : '';
   return {
     asset: cleanStr(row.asset || asset, 20).toUpperCase(),
     fiat: cleanStr(row.currency || fiat, 20).toUpperCase(),
@@ -15649,11 +15721,14 @@ function normalizeAdvertisementReferencePriceResponse(response = {}, requested =
     minPrice: normalizedMin,
     maxPrice: normalizedMax,
     allowedRangeText: rangeText,
-    validationMessage: `Fixed price must fall within the limited range of: ${rangeText}`,
-    rangePercent: hasExplicitBounds ? null : Math.round((upperMultiplier - 1) * 100),
-    rangeMode: hasExplicitBounds ? 'binance_explicit_live_bounds' : 'binance_live_reference_rule',
-    boundsSource: hasExplicitBounds ? 'binance_api_bounds' : 'binance_api_reference_price',
+    validationMessage: hasExplicitBounds
+      ? `Fixed price must fall within the limited range of: ${rangeText}`
+      : `Binance live reference price: ${decimalScale(referencePrice, priceScale).toFixed(priceScale)}. Exact fixed-price bounds were not returned by this endpoint; Binance will validate the submitted price.`,
+    rangePercent: null,
+    rangeMode: hasExplicitBounds ? 'binance_explicit_live_bounds' : 'binance_reference_only',
+    boundsSource: hasExplicitBounds ? 'binance_api_bounds' : 'not_returned_by_reference_api',
     explicitBounds: hasExplicitBounds,
+    tradeType,
     live: true,
     source: 'binance_c2c_reference_price',
     fetchedAt: nowIso()
@@ -15678,18 +15753,13 @@ async function advertisementReferencePriceGuide(credential, requested = {}, forc
     body,
     clientType: credential.clientType || 'web',
     dryRun: false,
-    timeoutMs: 10000
+    timeoutMs: 7000
   });
   assertSuccessfulSapiResponse(response, 'getAdReferencePrice');
   const guide = normalizeAdvertisementReferencePriceResponse(response, { asset, fiat, tradeType });
-  try {
-    const publicResponse = await callBinancePublicAdvSearch({ page:1, rows:20, payTypes:payType ? [payType] : [], asset, tradeType, fiat }, 5000);
-    const prices = publicAdvRows(publicResponse).map(row => positiveNum(row?.adv?.price ?? row?.price ?? 0)).filter(value => value > 0);
-    if (prices.length) {
-      guide.marketPrice = decimalScale(tradeType === 'BUY' ? Math.max(...prices) : Math.min(...prices), guide.priceScale);
-      guide.marketPriceLabel = tradeType === 'BUY' ? 'Highest Order Price' : 'Lowest Ad Price';
-    }
-  } catch (_) {}
+  // Do not block the editor on the public marketplace search. Binance's signed
+  // reference-price response is the authoritative input for this control; a
+  // second public search only added latency and never supplied documented limits.
   advertisementReferencePriceCache.set(cacheKey, { ts:Date.now(), data:guide });
   return guide;
 }
@@ -15698,6 +15768,31 @@ function advertisementReferencePayType(item = {}) {
   const firstMethod = normalizeAdvertisementTradeMethods(item.tradeMethods || [])[0] || {};
   const genericKey = Array.isArray(item.paymentMethodKeys) ? item.paymentMethodKeys.find(Boolean) : '';
   return cleanStr(firstMethod.payType || firstMethod.identifier || genericKey || '', 80);
+}
+
+function advertisementFixedPriceRangeFromBinanceError(error, requestedPrice = 0) {
+  const info = advertisementUpdateErrorInfo(error);
+  const text = `${info.message || ''} ${error?.binanceMessage || ''} ${error?.message || ''}`;
+  const match = text.match(/(?:limited\s+range\s+of|range)\s*[:：]?\s*([0-9]+(?:\.[0-9]+)?)\s*[~～\-]\s*([0-9]+(?:\.[0-9]+)?)/i);
+  if (!match) return null;
+  const minPrice = positiveNum(match[1]);
+  const maxPrice = positiveNum(match[2]);
+  if (!(minPrice > 0) || !(maxPrice >= minPrice)) return null;
+  const scale = Math.max(String(match[1]).split('.')[1]?.length || 0, String(match[2]).split('.')[1]?.length || 0);
+  const guide = {
+    minPrice,
+    maxPrice,
+    referencePrice:0,
+    priceScale:Math.min(8, scale),
+    allowedRangeText:`${match[1]}~${match[2]}`,
+    validationMessage:`Fixed price must fall within the limited range of: ${match[1]}~${match[2]}`,
+    rangeMode:'binance_rejection_exact_bounds',
+    boundsSource:'binance_update_validation',
+    explicitBounds:true,
+    live:true,
+    fetchedAt:nowIso()
+  };
+  return advertisementFixedPriceRangeError(guide, requestedPrice);
 }
 
 function advertisementFixedPriceRangeError(guide = {}, price = 0) {
@@ -15724,12 +15819,18 @@ async function assertAdvertisementFixedPriceWithinLiveRange(credential, item = {
     tradeType:item.tradeType || 'BUY',
     payType:advertisementReferencePayType(item)
   }, force);
-  const scale = Math.max(0, Math.min(8, Number(guide.priceScale || 0)));
-  const factor = 10 ** scale;
-  const priceUnits = Math.round(price * factor);
-  const minUnits = Math.round(Number(guide.minPrice || 0) * factor);
-  const maxUnits = Math.round(Number(guide.maxPrice || 0) * factor);
-  if (priceUnits < minUnits || priceUnits > maxUnits) throw advertisementFixedPriceRangeError(guide, price);
+  // Validate locally only when Binance actually returned both bounds. If the
+  // reference endpoint returned referencePrice only, the authoritative guard is
+  // Binance's ad create/update endpoint; rejecting against a guessed CRM band is
+  // worse than allowing Binance to validate the live rule.
+  if (guide.explicitBounds === true && Number(guide.minPrice) > 0 && Number(guide.maxPrice) >= Number(guide.minPrice)) {
+    const scale = Math.max(0, Math.min(8, Number(guide.priceScale || 0)));
+    const factor = 10 ** scale;
+    const priceUnits = Math.round(price * factor);
+    const minUnits = Math.round(Number(guide.minPrice || 0) * factor);
+    const maxUnits = Math.round(Number(guide.maxPrice || 0) * factor);
+    if (priceUnits < minUnits || priceUnits > maxUnits) throw advertisementFixedPriceRangeError(guide, price);
+  }
   return guide;
 }
 
@@ -15824,12 +15925,14 @@ async function handleAdvertisementReferencePrice(req, res, url) {
 async function handleAdvertisements(req, res, url) {
   const user = requirePermission(req, res, 'ads.view');
   if (!user) return;
-  const credentialOptions = binanceCredentialOptionsForUser(user, 'ads.view', { includeDisabled: true });
+  const credentialOptions = binanceCredentialOptionsForUser(user, 'ads.view', { includeDisabled: true })
+    .filter(option => binanceCredentialFeatureEnabled(option.id, 'advertisements'));
   const requestedCredentialId = Number(url.searchParams.get('credentialId') || 0);
   let selectedCredential = null;
   if (requestedCredentialId) {
     selectedCredential = resolveBinanceCredentialForUser(user, requestedCredentialId, 'ads.view', { includeDisabled: true });
     if (!selectedCredential) return sendJson(res, 403, { error: 'No ads.view access to the selected Binance account.' }, {}, req);
+    if (!binanceCredentialFeatureEnabled(selectedCredential, 'advertisements')) return sendJson(res, 403, { error:'Advertisement is disabled for the selected Binance account.' }, {}, req);
   }
   const capability = advertisementCapability(user, selectedCredential?.id || 0);
   if (req.method === 'GET') {
@@ -15837,7 +15940,8 @@ async function handleAdvertisements(req, res, url) {
     const viewCredentials = credentialOptions
       .map(option => binanceCredentialById(option.id))
       .filter(configuredCredential);
-    const manageableOptions = binanceCredentialOptionsForUser(user, 'ads.manage', { includeDisabled: true });
+    const manageableOptions = binanceCredentialOptionsForUser(user, 'ads.manage', { includeDisabled: true })
+      .filter(option => binanceCredentialFeatureEnabled(option.id, 'advertisements'));
     const manageableIds = new Set(manageableOptions.map(option => Number(option.id)));
     const manageableCredentials = manageableOptions
       .map(option => binanceCredentialById(option.id))
@@ -16007,6 +16111,8 @@ async function handleAdvertisements(req, res, url) {
             }
           }
       } catch (err) {
+          const exactRangeError = advertisementFixedPriceRangeFromBinanceError(err, normalized.price);
+          if (exactRangeError) return sendJson(res, 422, advertisementPriceValidationErrorPayload(exactRangeError, credential), {}, req);
           createWarning = cleanStr(err.message || err, 500);
           merchantOnlinePreflight = err.merchantOnlinePreflight || merchantOnlinePreflight || null;
           item.lastPublishError = createWarning;
@@ -16392,7 +16498,7 @@ async function handleAdvertisementById(req, res, parts) {
         }
       }
       try {
-        if (normalizeAdvertisementTradeType(item.tradeType) === 'SELL') await fetchAdvertisementAccountPaymentMethods(credential);
+        if (normalizeAdvertisementTradeType(item.tradeType) === 'SELL') await fetchAdvertisementAccountPaymentMethods(credential, { enrich:false });
         else await syncAdvertisementCatalogWithCredential(credential, true);
       } catch (error) {
         return sendJson(res, 502, {
@@ -16497,6 +16603,8 @@ async function handleAdvertisementById(req, res, parts) {
       broadcast({ type: 'ads.published', advertisementId: item.id, ...advertisementCredentialMeta(item), advNo, status: item.status, at: nowIso() });
       return sendJson(res, 200, { ...advertisementView(item), merchantOnlinePreflight, merchantOnline: advertisementMerchantOnlineView(item.credentialId), merchantControls: advertisementMerchantControlsView(item.credentialId) }, {}, req);
     } catch (err) {
+      const exactRangeError = advertisementFixedPriceRangeFromBinanceError(err, item.price);
+      if (exactRangeError) return sendJson(res, 422, { ...advertisementPriceValidationErrorPayload(exactRangeError, credential), draftPreserved:true }, {}, req);
       if (err.code === 'ADS_FIXED_PRICE_OUT_OF_RANGE' || err.code === 'ADS_REFERENCE_PRICE_UNAVAILABLE' || err.code === 'ADS_INVALID_PRICE') {
         return sendJson(res, Number(err.statusCode || 502), { ...advertisementPriceValidationErrorPayload(err, credential), draftPreserved:true }, {}, req);
       }
@@ -16631,6 +16739,8 @@ async function handleAdvertisementById(req, res, parts) {
           }), 30000);
           assertSuccessfulSapiResponse(binanceResult, 'updateAd');
         } catch (error) {
+          const exactRangeError = advertisementFixedPriceRangeFromBinanceError(error, normalized.price);
+          if (exactRangeError) return sendJson(res, 422, advertisementPriceValidationErrorPayload(exactRangeError, credential), {}, req);
           if (isAdvertisementPrivilegeLagError(error)) {
             try {
               const retryPreflight = await forceAdvertisementMerchantOnlineSettlement(manager, credential, 'updateAd_retry_83749');
@@ -17635,6 +17745,7 @@ async function handleApi(req, res) {
     if (url.pathname === '/api/navigation-counts') return handleNavigationCounts(req, res);
     if (url.pathname === '/api/chat-unread') return handleChatUnread(req, res);
     if (url.pathname === '/api/chat-inbox') return handleChatInbox(req, res);
+    if (url.pathname === '/api/chat-account-controls') return await handleChatAccountControls(req, res);
     if (url.pathname === '/api/p2p-market') return await handleP2pMarket(req, res, url);
     if (url.pathname === '/api/ads/asset-balance') return await handleAdvertisementAssetBalance(req, res, url);
     if (url.pathname === '/api/ads/fee-rates') return await handleAdvertisementFeeRates(req, res, url);
@@ -18531,6 +18642,7 @@ async function handleCredentials(req, res) {
     ownerP2pMerchantNo: c.ownerP2pMerchantNo || '',
     ownerP2pNickname: c.ownerP2pNickname || '',
     ownerP2pProfileLastSyncAt: c.ownerP2pProfileLastSyncAt || null,
+    featureControls: binanceCredentialFeatureControls(c),
     releaseVerificationPolicy: releaseVerificationPolicyForCredential(c, user),
     createdAt: c.createdAt,
     updatedAt: c.updatedAt
@@ -18564,6 +18676,7 @@ async function handleCredentials(req, res) {
       lastTestMessage:'Automatic format/signature validation passed during save.',
       liveTestMessage:'Automatic Binance C2C live connection passed during save.',
       ownerP2pUserNo:'', ownerP2pMerchantNo:'', ownerP2pNickname:'', ownerP2pProfileLastSyncAt:null,
+      featureControls: normalizeBinanceCredentialFeatureControls({}),
       releaseVerificationMethod:'AUTO', releaseLocalVerificationEnabled:false, releaseLocalPrimary:'USER_PASSWORD', releaseLocalSecondary:'SECRET_CODE', releaseAutoFundPassword:false, releaseFundPassword:'', releaseFundPasswordVault:'',
       createdAt:checkedAt, updatedAt:checkedAt
     };
@@ -20381,6 +20494,49 @@ function chatInboxMessagePreview(chat) {
   return cleanStr(chat.message || '', 2000);
 }
 
+function chatAccountOptionsForUser(user = {}) {
+  const canConfigure = userHasPermission(user, 'credentials.manage');
+  return [...(db.apiCredentials || [])]
+    .filter(credential => {
+      if (canConfigure) return true;
+      return ['orders.view','binance.chat','ads.view'].some(permission => userHasBinanceCredentialPermission(user, credential.id, permission));
+    })
+    .sort((a, b) => {
+      const at = Date.parse(a.createdAt || '') || 0;
+      const bt = Date.parse(b.createdAt || '') || 0;
+      return at - bt || Number(a.id || 0) - Number(b.id || 0);
+    })
+    .map(credential => {
+      const identity = binanceCredentialP2pIdentity(credential);
+      return {
+        id: Number(credential.id),
+        name: identity.displayName || identity.accountName || `API ${credential.id}`,
+        accountName: identity.accountName,
+        p2pUsername: identity.p2pUsername,
+        disabled: Boolean(credential.disabled),
+        featureControls: binanceCredentialFeatureControls(credential),
+        canConfigure
+      };
+    });
+}
+
+async function handleChatAccountControls(req, res) {
+  const user = requireAuth(req, res); if (!user) return;
+  const items = chatAccountOptionsForUser(user);
+  if (req.method === 'GET') return sendJson(res, 200, { items }, {}, req);
+  if (req.method !== 'PATCH') return sendJson(res, 405, { error:'Method not allowed' }, {}, req);
+  if (!userHasPermission(user, 'credentials.manage')) return sendJson(res, 403, { error:'Permission denied: credentials.manage' }, {}, req);
+  const body = await readBody(req);
+  const credentialId = Number(body.credentialId || 0);
+  const credential = binanceCredentialById(credentialId);
+  if (!credential) return sendJson(res, 404, { error:'Binance account not found.' }, {}, req);
+  const controls = setBinanceCredentialFeatureControls(credential, body.featureControls || body.controls || body);
+  logAudit(user, 'binance_account_feature_controls_updated', 'apiCredential', credentialId, { controls });
+  await saveDb({ broadcast:false, reason:'binance_account_feature_controls_updated' });
+  broadcast({ type:'binance.account.features.updated', credentialId, featureControls:controls, at:nowIso() });
+  return sendJson(res, 200, { ok:true, credentialId, featureControls:controls, items:chatAccountOptionsForUser(user) }, {}, req);
+}
+
 async function handleChatInbox(req, res) {
   const user = requireAuth(req, res); if (!user) return;
   if (req.method !== 'GET') return sendJson(res, 405, { error: 'Method not allowed' }, {}, req);
@@ -20400,6 +20556,8 @@ async function handleChatInbox(req, res) {
     items.push({
       orderId: Number(order.id),
       orderNo: order.orderNo || order.externalOrderNo || '',
+      credentialId: Number(order.credentialId || 0) || null,
+      credentialName: binanceCredentialP2pIdentity(binanceCredentialById(order.credentialId) || {}).displayName || cleanStr(order.credentialName || '', 120),
       counterpartyName,
       counterpartyRealName: cleanStr(order.counterpartyRealName || '', 120),
       lastMessage: chatInboxMessagePreview(latest),
@@ -20415,7 +20573,11 @@ async function handleChatInbox(req, res) {
     });
   }
   items.sort((a, b) => (Date.parse(b.createdAt || '') || 0) - (Date.parse(a.createdAt || '') || 0));
-  return sendJson(res, 200, { items, totalUnread: items.reduce((sum, item) => sum + Number(item.unreadCount || 0), 0) }, {}, req);
+  return sendJson(res, 200, {
+    items,
+    totalUnread: items.reduce((sum, item) => sum + Number(item.unreadCount || 0), 0),
+    accountOptions: chatAccountOptionsForUser(user)
+  }, {}, req);
 }
 
 function handleNavigationCounts(req, res) {
@@ -20507,7 +20669,7 @@ async function handleOrders(req, res, url) {
     const context = buildOrderListContext(orders, user);
     const unread = chatUnreadSnapshotForOrders(user, orders);
     return sendJson(res, 200, {
-      items: orders.map(order => orderListView(order, user, context)),
+      items: orders.map(order => orderListCompactView(order, user, context)),
       unreadCounts: unread.counts,
       unreadTotal: unread.total,
       unreadLatestByOrder: unread.latestByOrder,
@@ -20591,6 +20753,69 @@ function orderListView(order, user = null, context = null) {
   };
 }
 
+
+// Keep the Orders list payload intentionally small. Full Binance payloads, chat
+// history, payment-detail blobs and assignment histories belong to the order
+// detail endpoint; shipping them for every fulfilled row made /api/orders grow
+// to many megabytes and turned every realtime refresh into a long JSON parse +
+// DOM wait on mobile browsers.
+function orderListCompactView(order, user = null, context = null) {
+  ensureOrderFinancials(order);
+  const rows = orderListContextRows(context, order.id);
+  const summary = rows.summary || orderSummary(order.id, rows.splits);
+  const viewerSummary = viewerOrderSummary(order, user, { ...rows, summary });
+  const assetSummary = deriveOrderAssetSummary(order);
+  const credential = order.orderSource === 'offline' ? null : (context?.credentialsById?.get(Number(order.credentialId)) || binanceCredentialById(order.credentialId));
+  const identity = credential ? binanceCredentialP2pIdentity(credential) : null;
+  const compact = {
+    ...order,
+    credentialName: credential ? binanceCredentialLabel(credential) : cleanStr(order.credentialName || '', 120),
+    credentialDisplayName: identity?.displayName || cleanStr(order.credentialName || '', 120),
+    p2pUsername: identity?.p2pUsername || '',
+    binanceAccount: credential ? {
+      id: Number(credential.id),
+      name: identity.displayName,
+      displayName: identity.displayName,
+      p2pUsername: identity.p2pUsername,
+      accountName: identity.accountName,
+      userNo: identity.userNo,
+      merchantNo: identity.merchantNo,
+      status: credential.disabled ? 'disabled' : cleanStr(credential.status || 'saved', 40),
+      disabled: Boolean(credential.disabled)
+    } : null,
+    method: context?.methodsById?.get(Number(order.paymentMethodId)) || methodById(order.paymentMethodId),
+    leadAgent: context?.agentsById?.get(Number(order.leadAgentId)) || agentById(order.leadAgentId),
+    summary,
+    viewerSummary,
+    assetSummary
+  };
+  [
+    'rawBinanceSummary','rawBinanceDetail','rawBinanceResult','rawBinanceMessage',
+    'rawCounterpartyStats','rawCounterpartyFeedback','customerPaymentDetails',
+    'paymentSplits','chats','chatMedia','proofFiles','approvalRequests','auditLogs',
+    'assignments'
+  ].forEach(key => delete compact[key]);
+  if (compact.counterpartyStats && typeof compact.counterpartyStats === 'object') {
+    const stats = compact.counterpartyStats;
+    compact.counterpartyStats = {
+      nickname: cleanStr(stats.nickname || stats.nickName || '', 120),
+      userNo: cleanStr(stats.userNo || stats.userId || '', 120),
+      totalOrderCount: positiveNum(stats.totalOrderCount || stats.orderCount || 0),
+      completedOrderCount: positiveNum(stats.completedOrderCount || stats.completeOrderCount || 0),
+      completionRate: positiveNum(stats.completionRate || stats.completeRate || 0)
+    };
+  }
+  if (compact.payMethodSnapshot && typeof compact.payMethodSnapshot === 'object') {
+    const snapshot = compact.payMethodSnapshot;
+    compact.payMethodSnapshot = {
+      name: cleanStr(snapshot.name || snapshot.tradeMethodName || '', 120),
+      identifier: cleanStr(snapshot.identifier || '', 120),
+      payType: cleanStr(snapshot.payType || '', 120),
+      payId: positiveNum(snapshot.payId || order.binancePayId || 0) || null
+    };
+  }
+  return compact;
+}
 
 async function autoSyncBinanceOrderBundle(req, res, user, order) {
   if (order.orderSource === 'offline') return sendJson(res, 422, { error: 'Offline orders do not have Binance live sync.' }, {}, req);
@@ -20724,6 +20949,15 @@ async function handleOrderById(req, res, parts) {
   if (!canAccessOrder(user, order)) return sendJson(res, 403, { error: 'No access to this order' }, {}, req);
 
   if (req.method === 'GET' && !action) return sendJson(res, 200, fullOrderView(order, user), {}, req);
+  if (req.method === 'GET' && action === 'list-view') {
+    const context = buildOrderListContext([order], user);
+    const unread = chatUnreadSnapshotForOrders(user, [order]);
+    return sendJson(res, 200, {
+      item: orderListCompactView(order, user, context),
+      unreadCount: Number(unread.counts?.[String(order.id)] || 0),
+      latestUnread: unread.latestByOrder?.[String(order.id)] || null
+    }, {}, req);
+  }
   if (req.method === 'GET' && action === 'chat-delta') {
     const requestUrl = new URL(req.url, 'http://localhost');
     const afterId = Math.max(0, Number(requestUrl.searchParams.get('afterId') || 0) || 0);
@@ -23661,14 +23895,16 @@ let binanceFastOrderDiscoveryBusy = false;
 let binanceFastOrderDiscoveryLastAt = 0;
 let binanceAutoSyncBusy = false;
 let binanceAutoSyncLastAt = 0;
+let binanceAutoSyncLastPersistAt = 0;
+let binanceAutoSyncLastError = '';
 let binanceAutoPaymentMethodSyncLastAt = 0;
 
 async function runBinanceFastOrderDiscovery(reason = 'fast_timer') {
   if (maintenanceMode.enabled || binanceFastOrderDiscoveryBusy) return { skipped:true };
   if (db.settings.apiMode !== 'live' || db.settings.binanceAutoOrderSync === false) return { skipped:true };
-  const credentials = (db.apiCredentials || []).filter(item => !item.disabled && item.apiKey && item.secretKey);
+  const credentials = (db.apiCredentials || []).filter(item => !item.disabled && item.apiKey && item.secretKey && binanceCredentialFeatureEnabled(item, 'orders'));
   if (!credentials.length) return { skipped:true };
-  const intervalMs = Math.max(2000, Number(process.env.CRM_FAST_ORDER_DISCOVERY_MS || 3000));
+  const intervalMs = Math.max(1500, Number(process.env.CRM_FAST_ORDER_DISCOVERY_MS || 2000));
   if (Date.now() - binanceFastOrderDiscoveryLastAt < intervalMs) return { skipped:true };
   binanceFastOrderDiscoveryBusy = true;
   binanceFastOrderDiscoveryLastAt = Date.now();
@@ -23679,7 +23915,9 @@ async function runBinanceFastOrderDiscovery(reason = 'fast_timer') {
           reason,
           rows: Math.min(30, positiveNum(db.settings.binanceAutoSyncRows || 30) || 30),
           skipDetailSync: true,
-          reconcileOpenOrders: false
+          reconcileOpenOrders: false,
+          includeItems: false,
+          timeoutMs: 4500
         });
       } catch (error) {
         return { credentialId:Number(credential.id), created:0, updated:0, totalRows:0, changedOrders:[], error:cleanStr(error.message || error, 240) };
@@ -23694,8 +23932,10 @@ async function runBinanceFastOrderDiscovery(reason = 'fast_timer') {
     // write/SSE storm. The slower detailed sync remains responsible for routine
     // reconciliation.
     if (created || changedOrders.length) {
-      await saveDb({ broadcast:false, reason:'binance_fast_order_discovery' });
+      // Realtime UI should not wait for a full encrypted database checkpoint.
+      // The durable save is queued immediately and observed by saveDb itself.
       broadcast({ type:'binance.orders.fast_synced', created, updated, changedOrders, at:nowIso() });
+      saveDb({ broadcast:false, reason:'binance_fast_order_discovery' });
     }
     return { created, updated, changedOrders };
   } finally {
@@ -23707,30 +23947,46 @@ async function runBinanceAutoOrderSync(reason = 'timer') {
   if (maintenanceMode.enabled) return { skipped: true, reason: 'maintenance' };
   if (binanceAutoSyncBusy) return { skipped: true, reason: 'busy' };
   if (db.settings.apiMode !== 'live') return { skipped: true, reason: 'live_mode_disabled' };
-  const credentials = (db.apiCredentials || []).filter(item => !item.disabled && item.apiKey && item.secretKey);
+  const credentials = (db.apiCredentials || []).filter(item => !item.disabled && item.apiKey && item.secretKey && binanceCredentialFeatureEnabled(item, 'orders'));
   if (!credentials.length) return { skipped: true, reason: 'credential_missing' };
-  const intervalMs = Math.max(15, positiveNum(db.settings.binanceAutoSyncSeconds || 30)) * 1000;
+  const intervalMs = Math.max(12, positiveNum(db.settings.binanceAutoSyncSeconds || 15)) * 1000;
   if (Date.now() - binanceAutoSyncLastAt < intervalMs) return { skipped: true, reason: 'interval' };
   binanceAutoSyncBusy = true;
   binanceAutoSyncLastAt = Date.now();
-  const aggregate = { created: 0, updated: 0, detailSynced: 0, openDetailSynced: 0, totalRows: 0, changedOrders: [], chatResults: [], credentials: [] };
+  const aggregate = { created:0, updated:0, detailSynced:0, openDetailSynced:0, totalRows:0, changedOrders:[], chatResults:[], credentials:[] };
   try {
-    const errors = [];
-    for (const credential of credentials) {
-      let out = { created: 0, updated: 0, detailSynced: 0, openDetailSynced: 0, totalRows: 0, changedOrders: [] };
+    const accountResults = await Promise.all(credentials.map(async credential => {
+      let out = { created:0, updated:0, detailSynced:0, openDetailSynced:0, totalRows:0, changedOrders:[] };
+      const errors = [];
       if (db.settings.binanceAutoOrderSync !== false) {
         try {
-          out = await syncBinanceOrdersWithCredential(systemBinanceSyncUser(), credential, { reason, rows: db.settings.binanceAutoSyncRows || 30, detailMode: 'smart', detailMaxAgeMs: 12000, reconcileOpenOrders: true, openDetailRows: db.settings.binanceOpenOrderDetailRows || 100 });
-        } catch (orderSyncError) {
-          errors.push(`${binanceCredentialLabel(credential)}: ${cleanStr(orderSyncError.message || orderSyncError, 240)}`);
+          out = await syncBinanceOrdersWithCredential(systemBinanceSyncUser(), credential, {
+            reason,
+            rows: db.settings.binanceAutoSyncRows || 30,
+            detailMode:'changes',
+            detailMaxAgeMs:60000,
+            reconcileOpenOrders:true,
+            openDetailRows:Math.min(12, Math.max(4, Number(db.settings.binanceOpenOrderDetailRows || 8))),
+            includeItems:false,
+            timeoutMs:7000,
+            detailTimeoutMs:7000
+          });
+        } catch (error) {
+          errors.push(`${binanceCredentialLabel(credential)}: ${cleanStr(error.message || error, 240)}`);
         }
       }
-      let chatOut = { results: [] };
-      try {
-        chatOut = await syncBinanceChatsRoundRobin(credential, 10);
-      } catch (chatError) {
-        errors.push(`${binanceCredentialLabel(credential)} chat: ${cleanStr(chatError.message || chatError, 220)}`);
-      }
+      // WebSocket is the realtime chat path. Keep only a small REST fallback
+      // batch so a slow chat endpoint cannot hold the entire order sync cycle.
+      let chatOut = { results:[] };
+      try { chatOut = await syncBinanceChatsRoundRobin(credential, 3); }
+      catch (error) { errors.push(`${binanceCredentialLabel(credential)} chat: ${cleanStr(error.message || error, 220)}`); }
+      return { credential, out, chatOut, errors };
+    }));
+
+    const errors = [];
+    for (const result of accountResults) {
+      const { credential, out, chatOut } = result;
+      errors.push(...result.errors);
       aggregate.created += Number(out.created || 0);
       aggregate.updated += Number(out.updated || 0);
       aggregate.detailSynced += Number(out.detailSynced || 0);
@@ -23738,48 +23994,50 @@ async function runBinanceAutoOrderSync(reason = 'timer') {
       aggregate.totalRows += Number(out.totalRows || 0);
       aggregate.changedOrders.push(...(out.changedOrders || []));
       aggregate.chatResults.push(...(chatOut.results || []));
-      aggregate.credentials.push({ credentialId: Number(credential.id), credentialName: binanceCredentialLabel(credential), created: out.created || 0, updated: out.updated || 0, totalRows: out.totalRows || 0 });
-      if (out.created) logAudit(null, 'binance_orders_auto_synced', 'binance', credential.id, { created: out.created, updated: out.updated, detailSynced: out.detailSynced, totalRows: out.totalRows });
+      aggregate.credentials.push({ credentialId:Number(credential.id), credentialName:binanceCredentialLabel(credential), created:out.created || 0, updated:out.updated || 0, totalRows:out.totalRows || 0 });
+      if (out.created) logAudit(null, 'binance_orders_auto_synced', 'binance', credential.id, { created:out.created, updated:out.updated, detailSynced:out.detailSynced, totalRows:out.totalRows });
     }
-    db.settings.lastBinanceAutoOrderSyncError = errors.join(' | ');
+
+    const errorText = errors.join(' | ');
+    db.settings.lastBinanceAutoOrderSyncError = errorText;
     db.settings.lastBinanceAutoOrderSyncAt = nowIso();
     db.settings.lastBinanceAutoChatSyncAt = nowIso();
-    saveDb({ broadcast: false });
-    if (aggregate.created || aggregate.detailSynced || aggregate.totalRows) {
-      broadcast({ type: 'binance.orders.auto_synced', created: aggregate.created, updated: aggregate.updated, detailSynced: aggregate.detailSynced, openDetailSynced: aggregate.openDetailSynced, totalRows: aggregate.totalRows, changedOrders: aggregate.changedOrders, credentials: aggregate.credentials, at: nowIso() });
+    const chatChanged = aggregate.chatResults.some(item => Number(item.imported || 0) > 0);
+    const materialChanged = aggregate.created > 0 || aggregate.changedOrders.length > 0 || chatChanged;
+    const errorChanged = errorText !== binanceAutoSyncLastError;
+    binanceAutoSyncLastError = errorText;
+    if (materialChanged || errorChanged || Date.now() - binanceAutoSyncLastPersistAt > 5 * 60 * 1000) {
+      saveDb({ broadcast:false, reason:'binance_auto_sync_checkpoint' });
+      binanceAutoSyncLastPersistAt = Date.now();
+    }
+    if (aggregate.created || aggregate.changedOrders.length) {
+      broadcast({ type:'binance.orders.auto_synced', created:aggregate.created, updated:aggregate.updated, detailSynced:aggregate.detailSynced, openDetailSynced:aggregate.openDetailSynced, totalRows:aggregate.totalRows, changedOrders:aggregate.changedOrders, credentials:aggregate.credentials, at:nowIso() });
     }
     for (const item of aggregate.chatResults) {
       if (Number(item.incomingImported || 0) <= 0) continue;
       notifyIncomingBinanceChat(item.order, item);
-      broadcast({ type: 'chat.message.received', orderId: item.order.id, orderNo: item.order.orderNo, externalOrderNo: item.order.externalOrderNo || item.order.orderNo, credentialId: item.order.credentialId || null, imported: item.imported, incomingImported: item.incomingImported, latestMessageId: item.latestIncomingChatId, status: item.order.status, externalStatus: item.order.externalStatus, at: nowIso() });
+      broadcast({ type:'chat.message.received', orderId:item.order.id, orderNo:item.order.orderNo, externalOrderNo:item.order.externalOrderNo || item.order.orderNo, credentialId:item.order.credentialId || null, imported:item.imported, incomingImported:item.incomingImported, latestMessageId:item.latestIncomingChatId, status:item.order.status, externalStatus:item.order.externalStatus, at:nowIso() });
     }
-    // Payment methods are shared CRM metadata; refresh with the first usable account periodically.
     if (Date.now() - binanceAutoPaymentMethodSyncLastAt > 5 * 60 * 1000) {
       binanceAutoPaymentMethodSyncLastAt = Date.now();
       try {
         const pm = await syncBinancePaymentMethodsWithCredential(null, credentials[0], 'auto_periodic');
         db.settings.lastBinancePaymentMethodAutoSyncAt = nowIso();
-        if (pm.created || pm.updated) { saveDb(); broadcast({ type: 'payment.methods.auto_synced', created: pm.created, updated: pm.updated, at: nowIso() }); }
-      } catch (err) {
-        db.settings.lastBinancePaymentMethodAutoSyncError = cleanStr(err.message || err, 300);
-      }
+        if (pm.created || pm.updated) { saveDb({ reason:'payment_methods_auto_synced' }); broadcast({ type:'payment.methods.auto_synced', created:pm.created, updated:pm.updated, at:nowIso() }); }
+      } catch (err) { db.settings.lastBinancePaymentMethodAutoSyncError = cleanStr(err.message || err, 300); }
     }
     return aggregate;
-  } catch (err) {
-    db.settings.lastBinanceAutoOrderSyncError = cleanStr(err.message || err, 300);
-    db.settings.lastBinanceAutoOrderSyncAt = nowIso();
-    return { ...aggregate, error: db.settings.lastBinanceAutoOrderSyncError };
   } finally {
     binanceAutoSyncBusy = false;
   }
 }
 
-let binanceAutoSyncLoopStarted = false;
-let binanceAdsAutoSyncLoopStarted = false;
 let binanceAdsAutoSyncBusy = false;
 let advertisementMerchantStatusLoopStarted = false;
 let advertisementMerchantStatusBusy = false;
 let adsLastPersistAt = 0;
+let advertisementMerchantStatusLastPersistAt = 0;
+let advertisementMerchantStatusLastErrorSignature = '';
 let p2pExtensionCacheCleanupLoopStarted = false;
 let presenceMonitorLoopStarted = false;
 let accountingAutoCloseLoopStarted = false;
@@ -23819,7 +24077,7 @@ async function runBinanceAdsAutoSync(reason = 'timer') {
   if (maintenanceMode.enabled) return { skipped: true, reason: 'maintenance' };
   if (binanceAdsAutoSyncBusy) return { skipped: true, reason: 'busy' };
   if (!db || db.settings.apiMode !== 'live') return { skipped: true, reason: 'live_mode_disabled' };
-  const credentials = (db.apiCredentials || []).filter(item => !item.disabled && item.apiKey && item.secretKey);
+  const credentials = (db.apiCredentials || []).filter(item => !item.disabled && item.apiKey && item.secretKey && binanceCredentialFeatureEnabled(item, 'advertisements'));
   if (!credentials.length) return { skipped: true, reason: 'credential_missing' };
   binanceAdsAutoSyncBusy = true;
   const aggregate = { created: 0, updated: 0, unchanged: 0, totalRows: 0, changed: 0, accounts: [], errors: [] };
@@ -23872,7 +24130,7 @@ async function runBinanceAdsAutoSync(reason = 'timer') {
     db.settings.adsLastAutoSyncAt = nowIso();
     db.settings.adsLastAutoSyncReason = cleanStr(reason, 40);
     const catalogChanged = beforeCatalog !== JSON.stringify([db.settings.adsAssetOptions || [], db.settings.adsFiatOptions || [], db.settings.adsCatalogLastSyncAt || '']);
-    const shouldPersist = aggregate.changed > 0 || merchantChanged || catalogChanged || beforeError !== cleanStr(db.settings.adsLastSyncError || '', 300) || Date.now() - adsLastPersistAt > 60000;
+    const shouldPersist = aggregate.changed > 0 || merchantChanged || catalogChanged || beforeError !== cleanStr(db.settings.adsLastSyncError || '', 300) || Date.now() - adsLastPersistAt > 5 * 60 * 1000;
     if (shouldPersist) {
       saveDb({ broadcast: false });
       adsLastPersistAt = Date.now();
@@ -23901,7 +24159,7 @@ async function runBinanceAdsAutoSync(reason = 'timer') {
     const errorChanged = nextError !== beforeError;
     db.settings.adsLastSyncError = nextError;
     db.settings.adsLastAutoSyncAt = nowIso();
-    if (errorChanged || Date.now() - adsLastPersistAt > 60000) {
+    if (errorChanged || Date.now() - adsLastPersistAt > 5 * 60 * 1000) {
       saveDb({ broadcast: false });
       adsLastPersistAt = Date.now();
     }
@@ -23916,7 +24174,7 @@ async function runAdvertisementMerchantStatusAutoSync(reason = 'timer') {
   if (maintenanceMode.enabled) return { skipped: true, reason: 'maintenance' };
   if (advertisementMerchantStatusBusy) return { skipped: true, reason: 'busy' };
   if (!db || db.settings.apiMode !== 'live') return { skipped: true, reason: 'live_mode_disabled' };
-  const credentials = (db.apiCredentials || []).filter(item => !item.disabled && item.apiKey && item.secretKey);
+  const credentials = (db.apiCredentials || []).filter(item => !item.disabled && item.apiKey && item.secretKey && binanceCredentialFeatureEnabled(item, 'advertisements'));
   if (!credentials.length) return { skipped: true, reason: 'credential_missing' };
   advertisementMerchantStatusBusy = true;
   const aggregate = { changed: false, profileBusinessChanged: false, accounts: [], errors: [] };
@@ -23975,7 +24233,13 @@ async function runAdvertisementMerchantStatusAutoSync(reason = 'timer') {
         });
       }
     }
-    if (aggregate.changed || aggregate.profileBusinessChanged || aggregate.errors.length) saveDb({ broadcast: false });
+    const errorSignature = aggregate.errors.join(' | ');
+    const errorChanged = errorSignature !== advertisementMerchantStatusLastErrorSignature;
+    advertisementMerchantStatusLastErrorSignature = errorSignature;
+    if (aggregate.changed || aggregate.profileBusinessChanged || errorChanged || Date.now() - advertisementMerchantStatusLastPersistAt > 5 * 60 * 1000) {
+      saveDb({ broadcast: false, reason:'ads_merchant_status_checkpoint' });
+      advertisementMerchantStatusLastPersistAt = Date.now();
+    }
     return aggregate;
   } finally {
     advertisementMerchantStatusBusy = false;
@@ -24018,7 +24282,7 @@ function startBinanceAutoSyncLoop() {
     runBinanceFastOrderDiscovery('startup_fast').catch(()=>{});
     const fastInterval = setInterval(() => {
       runBinanceFastOrderDiscovery('fast_timer').catch(err => console.warn('Binance fast order discovery failed:', err.message));
-    }, Math.max(2000, Number(process.env.CRM_FAST_ORDER_DISCOVERY_MS || 3000)));
+    }, Math.max(1500, Number(process.env.CRM_FAST_ORDER_DISCOVERY_MS || 2000)));
     if (typeof fastInterval.unref === 'function') fastInterval.unref();
   }, Math.max(500, Number(process.env.CRM_FAST_ORDER_DISCOVERY_START_DELAY_MS || 900)));
   if (typeof fastFirst.unref === 'function') fastFirst.unref();
@@ -24399,7 +24663,7 @@ function runAccountingSelfTest() {
     const migratedOwner = permissionMigrationTarget.users.find(user => user.id === 11);
     const migratedManager = permissionMigrationTarget.users.find(user => user.id === 12);
     const settingsWorker = permissionMigrationTarget.users.find(user => user.id === 13);
-    if (permissionMigrationTarget.meta.schemaVersion !== 37) throw new Error(`Permission/vault migration schema mismatch: ${permissionMigrationTarget.meta.schemaVersion}`);
+    if (permissionMigrationTarget.meta.schemaVersion !== 38) throw new Error(`Permission/vault migration schema mismatch: ${permissionMigrationTarget.meta.schemaVersion}`);
     const migratedSecretCredential = permissionMigrationTarget.apiCredentials.find(item => item.id === 71);
     if (!isCredentialSecretVaultValue(migratedSecretCredential.releaseFundPasswordVault) || migratedSecretCredential.releaseFundPassword || readCredentialFundPassword(migratedSecretCredential) !== 'Legacy-Fund-Secret') throw new Error('Schema 37 did not field-encrypt the legacy Fund Transfer Password.');
     if (binanceCredentialPermissionRowsForUser(migratedOwner, permissionMigrationTarget).length !== 2) throw new Error('Schema 36 did not materialize permission-based legacy owner account access.');

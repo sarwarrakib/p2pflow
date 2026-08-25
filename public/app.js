@@ -1,5 +1,5 @@
-// v1.6.4: fixed-viewport AppShell, clean History routes, persistent per-route hosts, lifecycle rendering, and data-only DOM patching.
-// v1.6.4: stable-shell navigation, stale-request cancellation, non-destructive order/chat updates, and latest-navigation-wins rendering.
+// v1.6.5: fixed-viewport AppShell, clean History routes, persistent per-route hosts, lifecycle rendering, and data-only DOM patching.
+// v1.6.5: stable-shell navigation, stale-request cancellation, non-destructive order/chat updates, and latest-navigation-wins rendering.
 // v1.5.23: Payment Account serial scope treats each normalized Label, including no Label, as an independent namespace.
 // v1.5.22: Header-only Work Status, chat-only notification master, and coupled sound/push controls.
 // v1.5.20: account-scoped Binance RBAC, visible security recovery setup and individual-only profit accounting.
@@ -69,6 +69,9 @@ const state = {
   mobileNavSyncBusy: false,
   chatInboxSearch: '',
   chatInboxRefreshTimer: null,
+  chatAccountCredentialId: Number(localStorage.getItem('crmChatAccountCredentialId') || 0),
+  chatAccountOptions: [],
+  chatAccountMenuOpen: false,
   p2pMarketFilters: { tradeType:'BUY', asset:'USDT', fiat:'BDT', amount:'', payType:'', payTypes:[], publisherType:'', tradableOnly:false, merchantOnly:false, verifiedMerchantOnly:false, noVerificationRequired:false, paymentTime:0, country:'ALL', sortBy:'price', saveFilter:false, page:1, rows:20 },
   p2pMarketData: null,
   p2pMarketLoading: false,
@@ -4704,6 +4707,11 @@ function notifyOrderChange(change = {}, sourceType = '') {
 
 function handleServerEvent(event = {}) {
   if (!event || typeof event !== 'object') return;
+  if (event.type === 'binance.account.features.updated') {
+    if (state.page === 'chat' && typeof renderChatInbox === 'function' && !modalOpen()) renderChatInbox({ preserveFocus:true }).catch(()=>{});
+    else if (state.page === 'ads' && typeof scheduleAdsRealtimeRefresh === 'function') scheduleAdsRealtimeRefresh(80);
+    else if (state.page === 'orders' && !state.currentOrderId && !modalOpen()) scheduleSmoothRefresh(80);
+  }
   if (event.type === 'system.update.available') {
     if (state.bootstrap?.settings) {
       state.bootstrap.settings.updateAvailable = true;
@@ -4767,8 +4775,11 @@ function handleServerEvent(event = {}) {
   if (Array.isArray(event.changedOrders)) {
     event.changedOrders.forEach(o => notifyOrderChange(o, event.type));
     const current = event.changedOrders.find(o => Number(o.orderId || o.id) === Number(state.currentOrderId));
-    if (current && state.page === 'orders' && state.currentOrderId) scheduleCurrentOrderReload(120);
-    else if (event.changedOrders.length && state.page === 'orders' && !state.currentOrderId && !modalOpen()) scheduleSmoothRefresh(80);
+    if (current && state.page === 'orders' && state.currentOrderId) scheduleCurrentOrderReload(80);
+    else if (event.changedOrders.length && state.page === 'orders' && !state.currentOrderId && !modalOpen()) {
+      if (typeof applyOrderRealtimeChanges === 'function') applyOrderRealtimeChanges(event.changedOrders).catch(() => scheduleSmoothRefresh(80));
+      else scheduleSmoothRefresh(80);
+    }
   }
   if (event.type === 'order.created' && notificationCredentialMatches(event.credentialId, 'orders')) {
     const orderNo = event.orderNo || event.externalOrderNo || ('#' + event.orderId);
@@ -5251,7 +5262,7 @@ function installStableContentArchitecture(content = document.getElementById('con
 }
 
 function cacheActiveRouteView() {
-  // v1.6.4 keeps the entire route host intact instead of moving/recreating page
+  // v1.6.5 keeps the entire route host intact instead of moving/recreating page
   // children. Capturing is therefore only a scroll-state operation.
   state.routeHostManager?.captureActive?.();
 }
@@ -5394,6 +5405,31 @@ async function routeFromLocation(showLoading=true) {
   scheduleActivityHeartbeat(200);
   renderNav();
 
+  // Returning to an already-mounted route must feel instant. The route-host
+  // retains its last usable DOM, event handlers and scroll position, so show it
+  // immediately and revalidate data in the background instead of putting the
+  // operator behind a network wait on every page switch.
+  const reusableRouteView = !activation.created
+    && Boolean(contentHost.children.length)
+    && !contentHost.querySelector('[data-route-shell], [data-stable-loading="1"], .stable-data-error');
+  if (reusableRouteView) {
+    finishNavigationScope(scope);
+    window.setTimeout(async () => {
+      if (!navigationScopeCurrent(scope)) return;
+      try {
+        if (state.page === 'orders' && state.currentOrderId) await loadOrderDetail(state.currentOrderId, false, true, scope);
+        else {
+          stopChatAutoSync();
+          stopOrderDetailAutoSync();
+          await renderPage(false, scope);
+        }
+      } catch (error) {
+        if (!isUiRequestCancelled(error) && navigationScopeCurrent(scope)) notify(error.message || 'Background data refresh failed.', 'warn', 3500);
+      }
+    }, 20);
+    return;
+  }
+
   try {
     if (state.page === 'orders' && state.currentOrderId) {
       await loadOrderDetail(state.currentOrderId, showLoading, true, scope);
@@ -5527,7 +5563,7 @@ function renderNav() {
   // legacy flat menu while this marker is absent, the browser/proxy is serving
   // stale frontend JavaScript rather than the active release.
   nav.dataset.navigationModel = 'grouped-control-center';
-  nav.dataset.uiRelease = '1.6.4';
+  nav.dataset.uiRelease = '1.6.5';
   nav.innerHTML = '';
   const visible = visiblePages();
   const visibleIds = new Set(visible.map(([id]) => id));
@@ -6011,9 +6047,50 @@ function finalActionSplitGateStateForOrder(order={}, finalAction='') {
   };
 }
 
+async function markOrderPaidWithoutSplitPopup(order) {
+  if (!order?.id) return;
+  const buttons = $$('[id$=FinalActionBtn]').filter(button => !button.disabled);
+  buttons.forEach(button => { button.disabled = true; button.dataset.directPaidBusy = '1'; });
+  try {
+    const updated = await api(`/api/orders/${order.id}/complete-action`, {
+      method:'POST',
+      body:JSON.stringify({
+        action:'paid_mark',
+        binanceOrderNumber:order.externalOrderNo || order.orderNo || '',
+        payId:Number(order.binancePayId || 0) || undefined
+      }),
+      silent:true
+    });
+    if (updated?.approvalRequired) {
+      notify('Manager approval is required before Mark as Paid.', 'warn', 5000);
+      return updated;
+    }
+    notify('Order marked as paid.', 'ok', 2600);
+    applyUpdatedCurrentOrder(updated, order.id);
+    return updated;
+  } catch (err) {
+    if (err?.data?.order && typeof err.data.order === 'object') {
+      Object.assign(order, err.data.order);
+      state.currentOrder = order;
+    }
+    notify(err.message || 'Mark as Paid failed.', 'danger', 6000);
+    return null;
+  } finally {
+    buttons.forEach(button => {
+      if (button.dataset.directPaidBusy === '1') {
+        delete button.dataset.directPaidBusy;
+        button.disabled = false;
+      }
+    });
+  }
+}
+
 function openOrderFinalActionFlow(order, finalAction) {
   const gate = finalActionSplitGateStateForOrder(order, finalAction);
   if (gate.enabled && !gate.satisfied) return openPaymentSplitActionModal(order, finalAction);
+  // When Payment Split is disabled, BUY orders should behave like Binance:
+  // Mark as Paid immediately. Do not make the operator confirm an empty modal.
+  if (finalAction === 'paid_mark' && !gate.enabled) return markOrderPaidWithoutSplitPopup(order);
   if (finalAction === 'release' || finalAction === 'quick_release') return startReleaseFinalActionFlow(order, finalAction);
   return openFinalActionModal(order, finalAction);
 }
@@ -6645,16 +6722,6 @@ async function loadOrderDetail(id, showLoading=true, fromRoute=false, navigation
   ['p2pInfoBtn','mobileP2pInfoBtn','chatP2pInfoBtn'].forEach(id => {
     const button = $('#' + id);
     if (button) button.onclick = () => openP2pInfoModal(o);
-  });
-  $$('[data-copy-payment-value]').forEach(btn => btn.onclick = async () => {
-    const value = String(btn.dataset.copyPaymentValue || '').trim();
-    if (!value) return;
-    try {
-      await navigator.clipboard.writeText(value);
-      notify('Copied.', 'ok');
-    } catch (_) {
-      notify('Could not copy this value.', 'warn');
-    }
   });
   if ($('#syncBinanceChatInlineBtn')) $('#syncBinanceChatInlineBtn').onclick = () => autoSyncBinanceChat(o, false);
   const chatForm = $('#chatForm');
@@ -9665,5 +9732,50 @@ function statusClass(s) { return ['completed','released','paid_marked','success'
 function escapeHtml(s) { return String(s ?? '').replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c])); }
 function escapeAttr(s) { return escapeHtml(s); }
 function sumLocal(arr) { return arr.reduce((a,b)=>a+Number(b||0),0); }
+
+
+async function copyTextFromUi(value) {
+  const text = String(value || '').trim();
+  if (!text) return false;
+  try {
+    if (navigator.clipboard?.writeText && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch {}
+  const textarea = document.createElement('textarea');
+  textarea.value = text;
+  textarea.setAttribute('readonly', '');
+  textarea.style.position = 'fixed';
+  textarea.style.opacity = '0';
+  textarea.style.pointerEvents = 'none';
+  textarea.style.left = '-9999px';
+  document.body.appendChild(textarea);
+  textarea.select();
+  textarea.setSelectionRange(0, textarea.value.length);
+  let copied = false;
+  try { copied = document.execCommand('copy') === true; } catch {}
+  textarea.remove();
+  return copied;
+}
+
+// Dynamic DOM morphing can replace order-detail buttons. Delegating from the
+// document keeps Copy reliable after realtime patches without requiring a page
+// reload or rebinding every replacement node.
+document.addEventListener('click', async event => {
+  const button = event.target?.closest?.('[data-copy-payment-value]');
+  if (!button) return;
+  event.preventDefault();
+  event.stopPropagation();
+  const value = String(button.dataset.copyPaymentValue || '').trim();
+  if (!value || button.dataset.copyBusy === '1') return;
+  button.dataset.copyBusy = '1';
+  try {
+    const copied = await copyTextFromUi(value);
+    notify(copied ? 'Copied.' : 'Could not copy this value.', copied ? 'ok' : 'warn');
+  } finally {
+    delete button.dataset.copyBusy;
+  }
+}, true);
 
 init();
