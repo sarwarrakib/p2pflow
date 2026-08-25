@@ -1,4 +1,4 @@
-// P2PFlow v1.6.5
+// P2PFlow v1.6.6
 // Page module: orders. Edit this file for the orders page UI.
 
 function orderAccountOptions(data = {}) {

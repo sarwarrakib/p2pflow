@@ -5898,7 +5898,7 @@ body.p2pflow-app-shell .modal-backdrop{overscroll-behavior:contain}
   body.order-detail-active .order-asset-breakdown{background:#f8fafc!important;color:#0f172a!important;border-color:#e5e7eb!important}
 }
 
-/* v1.6.5: mobile bottom sheets must own the bottom safe area. The fixed app
+/* v1.6.6: mobile bottom sheets must own the bottom safe area. The fixed app
    navigation is hidden while an Ads sheet is open so destructive actions such
    as Delete can never sit underneath it. */
 @media(max-width:900px){
@@ -5910,7 +5910,7 @@ body.p2pflow-app-shell .modal-backdrop{overscroll-behavior:contain}
   body.ads-sheet-open .ads-ad-action-menu{padding-bottom:8px}
 }
 
-/* v1.6.5 Chat account selector + per-account realtime module controls */
+/* v1.6.6 Chat account selector + per-account realtime module controls */
 .chat-page-controls{position:relative;z-index:8;justify-content:space-between}
 .chat-account-picker{position:relative;min-width:210px;max-width:min(430px,60vw)}
 .chat-account-picker-trigger{display:flex;align-items:center;justify-content:space-between;gap:10px;width:100%;min-height:40px;padding:8px 12px;border:1px solid #e3e6ea;border-radius:11px;background:#fff;color:#111827;font-size:13px;font-weight:800;box-shadow:0 3px 12px rgba(15,23,42,.05)}

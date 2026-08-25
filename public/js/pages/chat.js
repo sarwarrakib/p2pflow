@@ -1,5 +1,5 @@
-// P2PFlow v1.6.5
-// Binance-style P2P message inbox with fast account-scoped controls.
+// P2PFlow v1.6.6
+// Binance-style P2P message inbox with per-CRM-user account controls layered on existing permissions.
 
 function stopChatInboxAutoRefresh() {
   if (state.chatInboxRefreshTimer) clearTimeout(state.chatInboxRefreshTimer);
@@ -94,10 +94,10 @@ function chatAccountSelectorHtml(options=state.chatAccountOptions || []) {
 function chatAccountSettingsModal(account={}) {
   const controls = account.featureControls || {};
   modal(`${chatAccountDisplayName(account)} Settings`, `<form id="chatAccountSettingsForm" class="chat-account-settings-form">
-    <p class="sub">Choose which realtime modules can use this Binance API account. User permissions still apply inside every enabled module.</p>
-    <label class="chat-account-setting-row"><span><b>Orders</b><small>Receive and synchronize orders from this account.</small></span><input type="checkbox" name="orders" ${controls.orders !== false ? 'checked' : ''}/></label>
-    <label class="chat-account-setting-row"><span><b>Notifications</b><small>Allow this account to send enabled in-app, email and push notifications. The Chat notification master switch can still mute all notifications.</small></span><input type="checkbox" name="notifications" ${controls.notifications !== false ? 'checked' : ''}/></label>
-    <label class="chat-account-setting-row"><span><b>Advertisement</b><small>Show and manage this account in Ads, subject to the user's advertisement permissions.</small></span><input type="checkbox" name="advertisements" ${controls.advertisements !== false ? 'checked' : ''}/></label>
+    <p class="sub">These switches apply only to your CRM user for this Binance account. They do not stop the account's Binance synchronization for other users. Existing permissions always remain authoritative.</p>
+    <label class="chat-account-setting-row"><span><b>Orders</b><small>Show and receive this account's orders for your CRM user when your existing order permission allows them. Turning this off does not stop system-wide Binance order sync.</small></span><input type="checkbox" name="orders" ${controls.orders !== false ? 'checked' : ''}/></label>
+    <label class="chat-account-setting-row"><span><b>Notifications</b><small>Mute or allow only your CRM user's enabled in-app, email and push notifications from this account. Orders still work normally, and the Chat notification master switch can still mute everything.</small></span><input type="checkbox" name="notifications" ${controls.notifications !== false ? 'checked' : ''}/></label>
+    <label class="chat-account-setting-row"><span><b>Advertisement</b><small>Show and manage this account in Ads only for your CRM user, subject to your existing advertisement permissions. Background Binance Ads sync continues for the system.</small></span><input type="checkbox" name="advertisements" ${controls.advertisements !== false ? 'checked' : ''}/></label>
     <div id="chatAccountSettingsMessage" class="form-message"></div>
     <div class="actions end"><button type="button" class="secondary" id="chatAccountSettingsCancel">Cancel</button><button type="submit" id="chatAccountSettingsSave">Save</button></div>
   </form>`);

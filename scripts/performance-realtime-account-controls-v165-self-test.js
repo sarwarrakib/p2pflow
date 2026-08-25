@@ -24,7 +24,7 @@ function block(source, start, end) {
   return source.slice(a, b);
 }
 
-assert(server.includes('const APP_SCHEMA_VERSION = 38;'), 'Schema 38 account-feature migration is missing.');
+assert(server.includes('const APP_SCHEMA_VERSION = 39;'), 'Schema 39 per-user account-feature migration is missing.');
 assert(codec.includes('async function encodeStateObjectAsync') && codec.includes('zlib.brotliCompress('), 'Async Brotli state codec is missing.');
 for (const [name, source] of [['mysql', mysql], ['postgres', postgres]]) {
   const write = block(source, 'async writeState(', 'async ' + (name === 'mysql' ? 'pruneBackups' : 'pruneBackups'));
@@ -66,19 +66,31 @@ assert(server.includes("url.pathname === '/api/chat-account-controls'") && serve
 for (const feature of ['orders', 'notifications', 'advertisements']) {
   assert(chat.includes(`name="${feature}"`) || chat.includes(`name='${feature}'`), `Chat account ${feature} toggle is missing.`);
 }
-assert(server.includes("binanceCredentialFeatureEnabled(item, 'orders')"), 'Orders account feature is not enforced server-side.');
-assert(server.includes("binanceCredentialFeatureEnabled(item, 'advertisements')"), 'Advertisement account feature is not enforced server-side.');
-assert(server.includes(".filter(option => binanceCredentialFeatureEnabled(option.id, 'advertisements'))"), 'Advertisement-disabled accounts are still exposed by the Ads selector.');
-assert(server.includes("binanceCredentialFeatureEnabled(credentialId, 'notifications')"), 'Notifications account feature is not enforced server-side.');
+assert(server.includes('function normalizeUserBinanceCredentialFeatureControls') && server.includes('function userBinanceCredentialFeatureEnabled'), 'Per-CRM-user Binance account feature storage is missing.');
+assert(server.includes('setUserBinanceCredentialFeatureControls(user, credentialId') && server.includes("'user_binance_account_feature_controls_updated'"), 'Chat account settings are not stored on the current CRM user.');
+assert(server.includes('const respectFeatureControls = options.respectFeatureControls !== false') && server.includes("userBinanceCredentialFeatureEnabled(user, credentialId, 'orders')"), 'Orders account feature is not layered on the current user order view.');
+assert(server.includes('ordersAccessibleToUser(user, { respectFeatureControls:false })'), 'Chat no longer preserves the established order permission model independently of the Orders switch.');
+assert(server.includes("userBinanceCredentialFeatureEnabled(user, credentialId, 'notifications')"), 'Notifications account feature is not enforced per recipient.');
+assert(server.includes("userBinanceCredentialFeatureEnabled(user, id, 'advertisements')"), 'Advertisement account feature is not enforced per CRM user.');
+for (const [name, source] of [
+  ['fast order discovery', block(server, 'async function runBinanceFastOrderDiscovery(', 'async function runBinanceAutoOrderSync(')],
+  ['order auto sync', block(server, 'async function runBinanceAutoOrderSync(', 'let binanceAdsAutoSyncBusy')],
+  ['ads auto sync', block(server, 'async function runBinanceAdsAutoSync(', 'async function runAdvertisementMerchantStatusAutoSync(')],
+  ['merchant status sync', block(server, 'async function runAdvertisementMerchantStatusAutoSync(', 'function startAdvertisementMerchantStatusLoop(')]
+]) {
+  assert(!source.includes('userBinanceCredentialFeatureEnabled'), `${name} is incorrectly controlled by a CRM user's personal switch.`);
+  assert(source.includes("!item.disabled && item.apiKey && item.secretKey") || name === 'merchant status sync', `${name} no longer uses the established enabled-credential sync source.`);
+}
 assert(chat.includes('All Accounts') && chat.includes('data-chat-account-settings'), 'Chat All Accounts selector/settings affordance is missing.');
 assert(chat.includes("renderChatInbox({ preserveFocus:true, localOnly:true })"), 'Chat account selection still waits on a network round trip.');
-assert(server.includes('notificationAllowedByBinanceAccount') && server.includes("binanceCredentialFeatureEnabled(credentialId, 'notifications')"), 'Per-account notification switch is not enforced in notification delivery.');
+assert(chat.includes('These switches apply only to your CRM user'), 'Chat account settings do not explain their per-user scope.');
+assert(server.includes('notificationAllowedByBinanceAccount') && server.includes("userBinanceCredentialFeatureEnabled(user, credentialId, 'notifications')"), 'Per-user account notification switch is not enforced in notification delivery.');
 
-assert(pkg.version === '1.6.5', `expected v1.6.5 before release bump, got ${pkg.version}`);
+assert(pkg.version === '1.6.6', `expected v1.6.6 before release bump, got ${pkg.version}`);
 console.log(JSON.stringify({
   ok:true,
   version:pkg.version,
-  schema:38,
+  schema:39,
   asyncStatePersistence:true,
   compactOrdersPayload:true,
   realtimeOrderDelta:true,
@@ -90,5 +102,7 @@ console.log(JSON.stringify({
   sellPaymentScope:'exact-credential',
   priceBounds:'binance-only-no-guessed-percent',
   responsiveAdsSheet:true,
-  chatAccountControls:['orders','notifications','advertisements']
+  chatAccountControls:['orders','notifications','advertisements'],
+  accountControlScope:'per-crm-user-plus-existing-permissions',
+  globalCredentialSyncUnaffected:true
 }, null, 2));

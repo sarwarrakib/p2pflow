@@ -27,18 +27,18 @@ Updater code এবং database আলাদা রাখে। Update install-�
 
 ## Version
 
-Internal SemVer: `1.6.5`
+Internal SemVer: `1.6.6`
 UI: `1.6`
-Database schema: `38`
+Database schema: `39`
 
 Normal next version: `SET_NEXT_VERSION.bat` -> `1.7.0`  
-Hotfix: `SET_HOTFIX_VERSION.bat` -> `1.6.6`
+Hotfix: `SET_HOTFIX_VERSION.bat` -> `1.6.7`
 
 ## Database history safety
 
 P2PFlow keeps authoritative business/application data in MariaDB/MySQL/PostgreSQL. State payloads are compressed with Brotli before AES-256-GCM encryption, proofs/chat media are stored as encrypted database objects, and identical newly uploaded proof/media bytes use content-addressed object IDs to avoid duplicate blobs. The default is 3 retained recovery checkpoints with a 6-hour archive interval and 5 retained automatic database backups. Older uncompressed state/history/backup payloads are upgraded incrementally after startup. Health Check reports each P2PFlow database table's allocated size/row count, current encrypted state payload size, compression saving percentage, and proof/chat object usage so database-MB growth can be inspected without terminal access. `shared/`, `.p2pflow`, `.env`, `releases/` and temporary restart/update markers are operational bootstrap/update metadata only; they are not an application/business-data store. The application runtime itself does not write proof, chat, audit, order, ledger, notification or recovery-code data to local files.
 
-## v1.6.5 Realtime Performance, Exact Ads Account Scope & Chat Account Controls
+## v1.6.6 Per-User Binance Account Controls + Existing Permission Logic
 
 - Database writes no longer run Brotli compression synchronously on the Node HTTP event loop. MySQL/PostgreSQL state checkpoints and legacy payload compaction use asynchronous compression so background durability work cannot monopolize requests/SSE handling.
 - Fast Binance order discovery defaults to about 2 seconds, runs enabled API accounts in parallel and broadcasts material order changes before the queued database checkpoint. The full reconciliation path now fetches details only for changed/open orders.
@@ -48,11 +48,14 @@ P2PFlow keeps authoritative business/application data in MariaDB/MySQL/PostgreSQ
 - Advertisement Edit opens immediately from the exact account-scoped synchronized snapshot and refreshes Binance detail/payment methods in the background. SELL payment methods are strictly filtered to the advertisement's credential; live refresh updates the open editor without cross-account fallback.
 - Fixed-price UI no longer invents percentage-based min/max limits from `referencePrice`. Explicit Binance-returned bounds are used when available; otherwise the live reference is shown and exact limits from a Binance create/update validation error are surfaced.
 - Mobile Ads bottom sheets temporarily hide the fixed bottom navigation and respect dynamic viewport/safe-area height, preventing lower actions such as Delete from being covered.
-- Chat now has an **All Accounts** selector. Each connected account can expose per-account **Orders**, **Notifications** and **Advertisement** feature toggles; existing user permissions remain authoritative. The Chat notification master switch still overrides all per-account notification settings.
+- Chat **All Accounts** settings are now stored per **CRM user + Binance API account**. The switches only narrow that user's view/delivery; they never replace the existing global permission/account-permission rules and never stop Binance ingestion for other users.
+- **Orders OFF** hides only that API account's orders from that CRM user and excludes that user from new assignment for the account; other API accounts/users continue normally. Chat remains independent and still follows the established chat/order access model.
+- **Notifications OFF** mutes only that CRM user's in-app/email/push delivery for that API account. Orders and global synchronization continue. The Chat notification master switch remains the final global mute for that user.
+- **Advertisement OFF** hides/disables Ads operations only for that CRM user/account while background Binance Ads/merchant synchronization continues system-wide. Existing `ads.view` / `ads.manage` permissions are still required.
 - Background Ads/merchant loops avoid repeated whole-state saves for unchanged results or identical errors; checkpoints are bounded to material changes/error changes or a five-minute durability checkpoint.
-- Database schema `38`; migration only adds/normalizes Binance credential feature controls and is additive.
+- Database schema `39`; schema-38 credential-level feature switches are migrated to per-user preferences when the last editor can be identified, then legacy global switches are neutralized so system-wide Binance sync is never disabled by one CRM user.
 
-বিস্তারিত: `P2PFlow_v1.6.5_RELEASE_NOTES_BN.md`, `P2PFlow_v1.6.5_MANUAL_UPDATE_BN.md` এবং `P2PFlow_v1.6.5_LAUNCH_CHECKLIST_BN.md`.
+বিস্তারিত: `P2PFlow_v1.6.6_RELEASE_NOTES_BN.md`, `P2PFlow_v1.6.6_MANUAL_UPDATE_BN.md` এবং `P2PFlow_v1.6.6_LAUNCH_CHECKLIST_BN.md`.
 
 ## v1.5.38 Reference UI, Minimal Verification & Binance Ad Flow (historical)
 

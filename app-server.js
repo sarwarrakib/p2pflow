@@ -44,7 +44,7 @@ loadEnv();
 applyP2PFlowEnvAliases(process.env);
 
 const APP_VERSION = String(packageInfo.version || '0.0.0');
-const APP_SCHEMA_VERSION = 38;
+const APP_SCHEMA_VERSION = 39;
 const APP_DATA_COMPATIBILITY_EPOCH = 1;
 const PORT = Number(process.env.PORT || 3000);
 const BIND_HOST = cleanEnv(process.env.P2PFLOW_BIND_HOST || process.env.CRM_BIND_HOST || '', '');
@@ -514,29 +514,62 @@ function normalizeBinanceCredentialFeatureControls(value = {}) {
   };
 }
 
+// Schema 39: the Chat-page account switches are CRM-user preferences layered
+// on top of the existing permission model. They must never disable Binance
+// ingestion globally for every user. Credential-level controls are retained
+// only as a legacy migration source and are neutralized during schema upgrade.
+function normalizeUserBinanceCredentialFeatureControls(value = [], target = db) {
+  let rows = value;
+  if (!Array.isArray(rows) && rows && typeof rows === 'object') {
+    rows = Object.entries(rows).map(([credentialId, controls]) => ({ credentialId:Number(credentialId), ...(controls || {}) }));
+  }
+  if (!Array.isArray(rows)) rows = [];
+  const knownIds = new Set((target?.apiCredentials || []).map(item => Number(item.id || 0)).filter(Boolean));
+  const merged = new Map();
+  for (const row of rows) {
+    const credentialId = Number(row?.credentialId ?? row?.id ?? 0);
+    if (!credentialId || (knownIds.size && !knownIds.has(credentialId))) continue;
+    merged.set(credentialId, { credentialId, ...normalizeBinanceCredentialFeatureControls(row) });
+  }
+  return [...merged.values()].sort((a, b) => a.credentialId - b.credentialId);
+}
+
+function userBinanceCredentialFeatureControls(user = {}, credentialOrId, target = db) {
+  const credentialId = Number(typeof credentialOrId === 'object' && credentialOrId ? credentialOrId.id : credentialOrId || 0);
+  if (!credentialId) return normalizeBinanceCredentialFeatureControls({});
+  const row = normalizeUserBinanceCredentialFeatureControls(user?.binanceCredentialFeatureControls || [], target)
+    .find(item => Number(item.credentialId) === credentialId);
+  return normalizeBinanceCredentialFeatureControls(row || {});
+}
+
+function userBinanceCredentialFeatureEnabled(user = {}, credentialOrId, feature, target = db) {
+  const controls = userBinanceCredentialFeatureControls(user, credentialOrId, target);
+  const key = feature === 'ads' ? 'advertisements' : String(feature || '');
+  return Object.prototype.hasOwnProperty.call(controls, key) ? controls[key] !== false : true;
+}
+
+function setUserBinanceCredentialFeatureControls(user, credentialOrId, patch = {}, target = db) {
+  if (!user) return normalizeBinanceCredentialFeatureControls({});
+  const credentialId = Number(typeof credentialOrId === 'object' && credentialOrId ? credentialOrId.id : credentialOrId || 0);
+  if (!credentialId || !(target?.apiCredentials || []).some(item => Number(item.id) === credentialId)) return normalizeBinanceCredentialFeatureControls({});
+  const rows = normalizeUserBinanceCredentialFeatureControls(user.binanceCredentialFeatureControls || [], target);
+  const current = rows.find(item => Number(item.credentialId) === credentialId) || { credentialId, ...normalizeBinanceCredentialFeatureControls({}) };
+  const next = { ...current };
+  for (const key of ['orders','notifications','advertisements']) {
+    if (typeof patch[key] === 'boolean') next[key] = patch[key];
+  }
+  const normalized = { credentialId, ...normalizeBinanceCredentialFeatureControls(next) };
+  const without = rows.filter(item => Number(item.credentialId) !== credentialId);
+  user.binanceCredentialFeatureControls = [...without, normalized].sort((a, b) => a.credentialId - b.credentialId);
+  user.updatedAt = nowIso();
+  return normalizeBinanceCredentialFeatureControls(normalized);
+}
+
 function binanceCredentialFeatureControls(credentialOrId, target = db) {
   const credential = typeof credentialOrId === 'object' && credentialOrId
     ? credentialOrId
     : (target?.apiCredentials || []).find(item => Number(item.id) === Number(credentialOrId || 0));
   return normalizeBinanceCredentialFeatureControls(credential?.featureControls || {});
-}
-
-function binanceCredentialFeatureEnabled(credentialOrId, feature, target = db) {
-  const controls = binanceCredentialFeatureControls(credentialOrId, target);
-  const key = feature === 'ads' ? 'advertisements' : String(feature || '');
-  return Object.prototype.hasOwnProperty.call(controls, key) ? controls[key] !== false : true;
-}
-
-function setBinanceCredentialFeatureControls(credential, patch = {}) {
-  if (!credential) return normalizeBinanceCredentialFeatureControls({});
-  const current = binanceCredentialFeatureControls(credential);
-  const next = { ...current };
-  for (const key of ['orders','notifications','advertisements']) {
-    if (typeof patch[key] === 'boolean') next[key] = patch[key];
-  }
-  credential.featureControls = normalizeBinanceCredentialFeatureControls(next);
-  credential.updatedAt = nowIso();
-  return credential.featureControls;
 }
 
 function binanceCredentialOptionsForUser(user = {}, permission = null, options = {}) {
@@ -568,7 +601,7 @@ function binanceCredentialOptionsForUser(user = {}, permission = null, options =
         disabled: Boolean(item.disabled),
         createdAt: item.createdAt || null,
         permissions: grants.get(Number(item.id)) || [],
-        featureControls: binanceCredentialFeatureControls(item, target)
+        featureControls: userBinanceCredentialFeatureControls(user, item, target)
       };
     });
 }
@@ -1443,12 +1476,31 @@ function migrateDb(target) {
   for (const key of ['users','userRoles','apiCredentials','agents','paymentMethods','paymentAccounts','routing','orders','orderAgentAssignments','paymentSplits','ledgers','proofFiles','auditLogs','locks','notifications','offlineTransactions','chats','chatReadStates','coAgentRequests','approvalRequests','advertisements','securityRevertTokens','sessions','p2pExtensionTasks','p2pExtensionCache','userActivitySessions','businessEntries','businessDailyCloses','binanceBalanceSnapshots','chatMedia','systemUpdates','systemUpdateEvents']) {
     if (!Array.isArray(target[key])) target[key] = [];
   }
-  // Schema 38: each Binance account can independently enable order ingestion,
-  // notifications and advertisement operations. Existing installations keep
-  // all three enabled so upgrades are non-destructive.
-  target.apiCredentials.forEach(credential => {
-    credential.featureControls = normalizeBinanceCredentialFeatureControls(credential.featureControls || {});
+  // Schema 39: Binance account feature switches are per CRM user. Schema 38
+  // stored them on the credential, which accidentally disabled ingestion and
+  // notifications for every user. Preserve the last editor's preference when
+  // it can be attributed from the audit log, then neutralize the legacy global
+  // switches so the established synchronization system remains authoritative.
+  target.users.forEach(user => {
+    user.binanceCredentialFeatureControls = normalizeUserBinanceCredentialFeatureControls(user.binanceCredentialFeatureControls || [], target);
   });
+  if (previousSchemaVersion < 39) {
+    for (const credential of target.apiCredentials) {
+      const legacyControls = normalizeBinanceCredentialFeatureControls(credential.featureControls || {});
+      if (legacyControls.orders === false || legacyControls.notifications === false || legacyControls.advertisements === false) {
+        const latestAudit = [...(target.auditLogs || [])].reverse().find(log =>
+          log?.action === 'binance_account_feature_controls_updated' &&
+          Number(log?.entityId || 0) === Number(credential.id || 0) &&
+          Number(log?.userId || 0) > 0
+        );
+        const editor = latestAudit ? (target.users || []).find(user => Number(user.id) === Number(latestAudit.userId)) : null;
+        if (editor) setUserBinanceCredentialFeatureControls(editor, credential.id, legacyControls, target);
+      }
+      credential.featureControls = normalizeBinanceCredentialFeatureControls({});
+    }
+  } else {
+    target.apiCredentials.forEach(credential => { credential.featureControls = normalizeBinanceCredentialFeatureControls({}); });
+  }
 
   // Schema 37: Fund Transfer Password becomes a field-level AES-256-GCM vault secret.
   // The complete database state is already AES-256-GCM encrypted; this second envelope
@@ -5775,7 +5827,15 @@ function eligibleAgentRoutes(paymentMethodId, excludeAgentId = null, order = nul
     .filter(r => r.paymentMethodId === Number(paymentMethodId) && r.enabled)
     .map(r => ({ route: r, agent: agentById(r.agentId) }))
     .filter(x => x.agent && agentAvailableForAssignment(x.agent) && x.agent.id !== Number(excludeAgentId))
-    .filter(x => !order || order.orderSource === 'offline' || !Number(order.credentialId || 0) || userHasBinanceCredentialPermission(agentLoginUser(x.agent.id), order.credentialId, 'orders.view'))
+    .filter(x => {
+      if (!order || order.orderSource === 'offline' || !Number(order.credentialId || 0)) return true;
+      const agentUser = agentLoginUser(x.agent.id);
+      return Boolean(
+        agentUser &&
+        userHasBinanceCredentialPermission(agentUser, order.credentialId, 'orders.view') &&
+        userBinanceCredentialFeatureEnabled(agentUser, order.credentialId, 'orders')
+      );
+    })
     .filter(x => !order || !x.route.minOrderAmount || num(order.amount) >= num(x.route.minOrderAmount))
     .filter(x => !order || !x.route.maxOrderAmount || num(order.amount) <= num(x.route.maxOrderAmount))
     .filter(x => !x.route.maxActiveOrders || activeAssignmentCount(x.agent.id) < num(x.route.maxActiveOrders))
@@ -5827,8 +5887,15 @@ function canAccessOrder(user, order) {
   return order.orderSource !== 'offline' && Number(order.credentialId || 0) > 0 && userHasBinanceCredentialPermission(user, order.credentialId, 'binance.sync');
 }
 
-function ordersAccessibleToUser(user) {
+function orderFeatureEnabledForUser(user, order = {}) {
+  if (!order || order.orderSource === 'offline') return true;
+  const credentialId = Number(order.credentialId || 0);
+  return !credentialId || userBinanceCredentialFeatureEnabled(user, credentialId, 'orders');
+}
+
+function ordersAccessibleToUser(user, options = {}) {
   if (!user || !userHasPermission(user, 'orders.view')) return [];
+  const respectFeatureControls = options.respectFeatureControls !== false;
   const assignedOrderIds = userIsAssignmentScoped(user)
     ? new Set((db.orderAgentAssignments || []).filter(assignment => Number(assignment.agentId) === Number(user.agentId || 0) && assignment.status !== 'left').map(assignment => Number(assignment.orderId)))
     : null;
@@ -5840,6 +5907,7 @@ function ordersAccessibleToUser(user) {
     const credentialId = Number(order.credentialId || 0);
     if (!credentialId || !userHasBinanceCredentialPermission(user, credentialId, 'orders.view')) return false;
     if (assignedOrderIds && !assignedOrderIds.has(Number(order.id)) && !userHasBinanceCredentialPermission(user, credentialId, 'binance.sync')) return false;
+    if (respectFeatureControls && !userBinanceCredentialFeatureEnabled(user, credentialId, 'orders')) return false;
     return true;
   });
 }
@@ -5888,18 +5956,19 @@ function userCanManageApprovals(user) {
   return !!user && userHasPermission(user, 'approvals.manage');
 }
 
-function notificationAllowedByBinanceAccount(item = {}) {
+function notificationAllowedByBinanceAccount(item = {}, user = null) {
   const credentialId = notificationCredentialId(item);
-  return !credentialId || binanceCredentialFeatureEnabled(credentialId, 'notifications');
+  if (!credentialId || !user) return true;
+  return userBinanceCredentialFeatureEnabled(user, credentialId, 'notifications');
 }
 
 function notificationEmailRecipients(item = {}) {
-  if (!notificationAllowedByBinanceAccount(item)) return [];
   const recipients = new Map();
   const excludeUserId = Number(item.excludeUserId || 0);
   const category = notificationCategoryForType(item.type, item);
   const addUser = user => {
     if (!user || user.enabled === false || Number(user.id || 0) === excludeUserId) return;
+    if (!notificationAllowedByBinanceAccount(item, user)) return;
     if (!notificationEnabledForUser(user, 'email', category)) return;
     const email = validEmailAddress(user.email || '');
     if (!email) return;
@@ -5968,12 +6037,12 @@ function activePushSubscriptionsForUser(user) {
 }
 
 function notificationPushRecipients(item = {}) {
-  if (!notificationAllowedByBinanceAccount(item)) return [];
   const recipients = new Map();
   const excludeUserId = Number(item.excludeUserId || 0);
   const category = notificationCategoryForType(item.type, item);
   const addUser = user => {
     if (!user || user.enabled === false || Number(user.id || 0) === excludeUserId) return;
+    if (!notificationAllowedByBinanceAccount(item, user)) return;
     if (!notificationEnabledForUser(user, 'push', category)) return;
     const subscriptions = activePushSubscriptionsForUser(user);
     if (!subscriptions.length) return;
@@ -6248,14 +6317,13 @@ function addNotification(type, message, severity = 'info', extra = {}) {
   const item = { id: nextId(), type, category, message, severity, status: 'unread', read: false, createdAt: nowIso(), ...extra };
   if (!Number(item.credentialId || 0) && item.orderId) item.credentialId = Number(orderById(item.orderId)?.credentialId || 0) || null;
   item.category = notificationCategoryForType(type, item);
-  const accountNotificationsEnabled = notificationAllowedByBinanceAccount(item);
-  item.accountNotificationMuted = !accountNotificationsEnabled;
+  // Account notification switches are per-recipient CRM-user preferences.
+  // Always store and emit the event; recipient filters decide who can see or
+  // receive it through in-app, email and push channels.
   db.notifications.push(item);
-  if (accountNotificationsEnabled) {
-    broadcast({ type: 'notification.created', notification: item, at: nowIso() });
-    dispatchNotificationEmail(item);
-    dispatchNotificationPush(item);
-  }
+  broadcast({ type: 'notification.created', notification: item, at: nowIso() });
+  dispatchNotificationEmail(item);
+  dispatchNotificationPush(item);
   return item;
 }
 
@@ -6269,7 +6337,7 @@ function notificationsForUser(user) {
     .map(n => ({ ...n, category: notificationCategoryForType(n.type, n) }));
   if (!user) return [];
   const accessible = list.filter(n => {
-    if (!notificationAllowedByBinanceAccount(n)) return false;
+    if (!notificationAllowedByBinanceAccount(n, user)) return false;
     if (n.userId && Number(n.userId) === Number(user.id)) return true;
     if (n.agentId && Number(n.agentId) === Number(user.agentId)) return true;
     if (n.audience === 'all') return true;
@@ -7538,6 +7606,10 @@ function requireLiveBinanceCredentialForUser(req, res, user, requestedId, permis
     sendJson(res, 422, { error: `No enabled Binance account is assigned with ${permission} permission.` }, {}, req);
     return null;
   }
+  if ((permission === 'ads.view' || permission === 'ads.manage') && !userBinanceCredentialFeatureEnabled(user, option.id, 'advertisements')) {
+    sendJson(res, 403, { error:'Advertisement is turned off for this Binance account in your CRM settings.' }, {}, req);
+    return null;
+  }
   return binanceCredentialById(option.id);
 }
 
@@ -7563,6 +7635,10 @@ function requireAssignedBinanceCredentialForUser(req, res, user, requestedId, pe
   }
   if (!option) {
     sendJson(res, 422, { error: `No enabled Binance account is assigned with ${permission} permission.` }, {}, req);
+    return null;
+  }
+  if ((permission === 'ads.view' || permission === 'ads.manage') && !userBinanceCredentialFeatureEnabled(user, option.id, 'advertisements')) {
+    sendJson(res, 403, { error:'Advertisement is turned off for this Binance account in your CRM settings.' }, {}, req);
     return null;
   }
   return binanceCredentialById(option.id);
@@ -12371,10 +12447,12 @@ function realtimeAdvertisementCredentialId(event = {}) {
   return Number(advertisement?.credentialId || 0);
 }
 
-function realtimeFilteredAccounts(accounts, user, permission) {
+function realtimeFilteredAccounts(accounts, user, permission, feature = '') {
   return (Array.isArray(accounts) ? accounts : []).filter(item => {
     const credentialId = Number(item?.credentialId || item?.id || 0);
-    return credentialId && userHasBinanceCredentialPermission(user, credentialId, permission);
+    if (!credentialId || !userHasBinanceCredentialPermission(user, credentialId, permission)) return false;
+    if (feature && !userBinanceCredentialFeatureEnabled(user, credentialId, feature)) return false;
+    return true;
   });
 }
 
@@ -12385,6 +12463,10 @@ function realtimeEventForUser(event, user) {
   if (['connected', 'heartbeat', 'db_updated'].includes(type)) return { ...event, type };
 
   if (type === 'system.update.available') return user.isOwner === true ? { ...event, type } : null;
+
+  if (type === 'binance.account.features.updated') {
+    return Number(event.userId || 0) === Number(user.id || 0) ? { ...event, type } : null;
+  }
 
   if (type === 'notification.created') {
     const notificationId = Number(event.notification?.id || 0);
@@ -12413,9 +12495,10 @@ function realtimeEventForUser(event, user) {
     const credentialId = realtimeAdvertisementCredentialId(event);
     if (credentialId) {
       if (!userHasBinanceCredentialPermission(user, credentialId, 'ads.view')) return null;
+      if (!userBinanceCredentialFeatureEnabled(user, credentialId, 'advertisements')) return null;
       return { ...event, type };
     }
-    const accounts = realtimeFilteredAccounts(event.accounts, user, 'ads.view');
+    const accounts = realtimeFilteredAccounts(event.accounts, user, 'ads.view', 'advertisements');
     if (!accounts.length) return null;
     const output = { ...event, type, accounts };
     if (type === 'ads.auto_synced') {
@@ -12442,17 +12525,18 @@ function realtimeEventForUser(event, user) {
   }
 
   const order = realtimeOrderFromReference(event);
-  if (order) return canAccessOrder(user, order) ? { ...event, type } : null;
+  if (type.startsWith('chat.')) return order && canAccessOrder(user, order) ? { ...event, type } : null;
+  if (order) return canAccessOrder(user, order) && orderFeatureEnabledForUser(user, order) ? { ...event, type } : null;
   if (event.orderId || event.orderNo || event.externalOrderNo) return userHasPermission(user, 'orders.view') ? { ...event, type } : null;
 
   if (Array.isArray(event.changedOrders) || type.startsWith('binance.orders.')) {
     const changedOrders = (Array.isArray(event.changedOrders) ? event.changedOrders : []).filter(change => {
       const changedOrder = realtimeOrderFromReference(change);
-      return changedOrder && canAccessOrder(user, changedOrder);
+      return changedOrder && canAccessOrder(user, changedOrder) && orderFeatureEnabledForUser(user, changedOrder);
     });
-    const credentials = realtimeFilteredAccounts(event.credentials, user, 'orders.view');
+    const credentials = realtimeFilteredAccounts(event.credentials, user, 'orders.view', 'orders');
     const credentialId = Number(event.credentialId || 0);
-    if (credentialId && !userHasBinanceCredentialPermission(user, credentialId, 'orders.view')) return null;
+    if (credentialId && (!userHasBinanceCredentialPermission(user, credentialId, 'orders.view') || !userBinanceCredentialFeatureEnabled(user, credentialId, 'orders'))) return null;
     if (!credentialId && !changedOrders.length && !credentials.length) return null;
     const output = { ...event, type, changedOrders };
     if (Array.isArray(event.credentials)) {
@@ -12907,11 +12991,11 @@ function advertisementCapability(user, credentialId = 0) {
   const viewAccountIds = (accountId
     ? (userHasBinanceCredentialPermission(user, accountId, 'ads.view') ? [accountId] : [])
     : binanceCredentialIdsForUserPermission(user, 'ads.view', { includeDisabled: true }))
-    .filter(id => binanceCredentialFeatureEnabled(id, 'advertisements'));
+    .filter(id => userBinanceCredentialFeatureEnabled(user, id, 'advertisements'));
   const manageAccountIds = (accountId
     ? (userHasBinanceCredentialPermission(user, accountId, 'ads.manage') ? [accountId] : [])
     : binanceCredentialIdsForUserPermission(user, 'ads.manage', { includeDisabled: false }))
-    .filter(id => binanceCredentialFeatureEnabled(id, 'advertisements'));
+    .filter(id => userBinanceCredentialFeatureEnabled(user, id, 'advertisements'));
   const canView = userHasPermission(user, 'ads.view') && viewAccountIds.length > 0;
   const hasManagePermission = userHasPermission(user, 'ads.manage') && manageAccountIds.length > 0;
   const blockedByManager = false;
@@ -12945,7 +13029,7 @@ function requireAdvertisementManage(req, res, credentialId = 0) {
 function canAccessAdvertisement(user, item, permission = 'ads.view') {
   if (!user || !item || !userHasPermission(user, permission)) return false;
   const credentialId = Number(item.credentialId || 0);
-  if (!credentialId || !binanceCredentialFeatureEnabled(credentialId, 'advertisements')) return false;
+  if (!credentialId || !userBinanceCredentialFeatureEnabled(user, credentialId, 'advertisements')) return false;
   return Boolean(userHasBinanceCredentialPermission(user, credentialId, permission));
 }
 
@@ -15926,13 +16010,13 @@ async function handleAdvertisements(req, res, url) {
   const user = requirePermission(req, res, 'ads.view');
   if (!user) return;
   const credentialOptions = binanceCredentialOptionsForUser(user, 'ads.view', { includeDisabled: true })
-    .filter(option => binanceCredentialFeatureEnabled(option.id, 'advertisements'));
+    .filter(option => userBinanceCredentialFeatureEnabled(user, option.id, 'advertisements'));
   const requestedCredentialId = Number(url.searchParams.get('credentialId') || 0);
   let selectedCredential = null;
   if (requestedCredentialId) {
     selectedCredential = resolveBinanceCredentialForUser(user, requestedCredentialId, 'ads.view', { includeDisabled: true });
     if (!selectedCredential) return sendJson(res, 403, { error: 'No ads.view access to the selected Binance account.' }, {}, req);
-    if (!binanceCredentialFeatureEnabled(selectedCredential, 'advertisements')) return sendJson(res, 403, { error:'Advertisement is disabled for the selected Binance account.' }, {}, req);
+    if (!userBinanceCredentialFeatureEnabled(user, selectedCredential, 'advertisements')) return sendJson(res, 403, { error:'Advertisement is turned off for this Binance account in your CRM settings.' }, {}, req);
   }
   const capability = advertisementCapability(user, selectedCredential?.id || 0);
   if (req.method === 'GET') {
@@ -15941,7 +16025,7 @@ async function handleAdvertisements(req, res, url) {
       .map(option => binanceCredentialById(option.id))
       .filter(configuredCredential);
     const manageableOptions = binanceCredentialOptionsForUser(user, 'ads.manage', { includeDisabled: true })
-      .filter(option => binanceCredentialFeatureEnabled(option.id, 'advertisements'));
+      .filter(option => userBinanceCredentialFeatureEnabled(user, option.id, 'advertisements'));
     const manageableIds = new Set(manageableOptions.map(option => Number(option.id)));
     const manageableCredentials = manageableOptions
       .map(option => binanceCredentialById(option.id))
@@ -16312,7 +16396,8 @@ async function handleAdvertisementMerchantControl(req, res) {
 
   const applyToAll = body.applyToAll === true || body.applyToAll === 1 || body.applyToAll === '1' || String(body.applyToAll || '').toLowerCase() === 'true';
   if (applyToAll) {
-    const permittedOptions = binanceCredentialOptionsForUser(manager, 'ads.manage', { includeDisabled: true });
+    const permittedOptions = binanceCredentialOptionsForUser(manager, 'ads.manage', { includeDisabled: true })
+      .filter(option => userBinanceCredentialFeatureEnabled(manager, option.id, 'advertisements'));
     if (!permittedOptions.length) return sendJson(res, 403, { error: 'No Binance account is assigned with ads.manage permission.' }, {}, req);
     const skipped = [];
     const targetOptions = permittedOptions.filter(option => {
@@ -20495,10 +20580,10 @@ function chatInboxMessagePreview(chat) {
 }
 
 function chatAccountOptionsForUser(user = {}) {
-  const canConfigure = userHasPermission(user, 'credentials.manage');
+  const canSeeAll = userHasPermission(user, 'credentials.manage');
   return [...(db.apiCredentials || [])]
     .filter(credential => {
-      if (canConfigure) return true;
+      if (canSeeAll) return true;
       return ['orders.view','binance.chat','ads.view'].some(permission => userHasBinanceCredentialPermission(user, credential.id, permission));
     })
     .sort((a, b) => {
@@ -20514,8 +20599,10 @@ function chatAccountOptionsForUser(user = {}) {
         accountName: identity.accountName,
         p2pUsername: identity.p2pUsername,
         disabled: Boolean(credential.disabled),
-        featureControls: binanceCredentialFeatureControls(credential),
-        canConfigure
+        featureControls: userBinanceCredentialFeatureControls(user, credential),
+        // These switches are personal CRM-user preferences, not API credential
+        // administration. Any user who can see the account can configure them.
+        canConfigure: true
       };
     });
 }
@@ -20525,22 +20612,22 @@ async function handleChatAccountControls(req, res) {
   const items = chatAccountOptionsForUser(user);
   if (req.method === 'GET') return sendJson(res, 200, { items }, {}, req);
   if (req.method !== 'PATCH') return sendJson(res, 405, { error:'Method not allowed' }, {}, req);
-  if (!userHasPermission(user, 'credentials.manage')) return sendJson(res, 403, { error:'Permission denied: credentials.manage' }, {}, req);
   const body = await readBody(req);
   const credentialId = Number(body.credentialId || 0);
   const credential = binanceCredentialById(credentialId);
   if (!credential) return sendJson(res, 404, { error:'Binance account not found.' }, {}, req);
-  const controls = setBinanceCredentialFeatureControls(credential, body.featureControls || body.controls || body);
-  logAudit(user, 'binance_account_feature_controls_updated', 'apiCredential', credentialId, { controls });
-  await saveDb({ broadcast:false, reason:'binance_account_feature_controls_updated' });
-  broadcast({ type:'binance.account.features.updated', credentialId, featureControls:controls, at:nowIso() });
+  if (!items.some(item => Number(item.id) === credentialId)) return sendJson(res, 403, { error:'You do not have access to this Binance account.' }, {}, req);
+  const controls = setUserBinanceCredentialFeatureControls(user, credentialId, body.featureControls || body.controls || body);
+  logAudit(user, 'user_binance_account_feature_controls_updated', 'user', user.id, { credentialId, controls });
+  saveDb({ broadcast:false, reason:'user_binance_account_feature_controls_updated' });
+  broadcast({ type:'binance.account.features.updated', userId:Number(user.id), credentialId, featureControls:controls, at:nowIso() });
   return sendJson(res, 200, { ok:true, credentialId, featureControls:controls, items:chatAccountOptionsForUser(user) }, {}, req);
 }
 
 async function handleChatInbox(req, res) {
   const user = requireAuth(req, res); if (!user) return;
   if (req.method !== 'GET') return sendJson(res, 405, { error: 'Method not allowed' }, {}, req);
-  const orders = userHasPermission(user, 'orders.view') ? ordersAccessibleToUser(user) : [];
+  const orders = userHasPermission(user, 'orders.view') ? ordersAccessibleToUser(user, { respectFeatureControls:false }) : [];
   const latestByOrder = latestC2cChatsForOrders(orders);
   const unreadSnapshot = chatUnreadSnapshotForOrders(user, orders);
   const items = [];
@@ -20584,7 +20671,8 @@ function handleNavigationCounts(req, res) {
   const user = requireAuth(req, res); if (!user) return;
   if (req.method !== 'GET') return sendJson(res, 405, { error: 'Method not allowed' }, {}, req);
   const orders = userHasPermission(user, 'orders.view') ? ordersAccessibleToUser(user) : [];
-  const unread = orders.length ? chatUnreadSnapshotForOrders(user, orders) : { total: 0 };
+  const chatOrders = userHasPermission(user, 'orders.view') ? ordersAccessibleToUser(user, { respectFeatureControls:false }) : [];
+  const unread = chatOrders.length ? chatUnreadSnapshotForOrders(user, chatOrders) : { total: 0 };
   const approvals = userHasPermission(user, 'approvals.manage')
     ? (db.approvalRequests || []).filter(item => item.status === 'pending').length
     : 0;
@@ -20599,7 +20687,7 @@ function handleNavigationCounts(req, res) {
 async function handleChatUnread(req, res) {
   const user = requirePermission(req, res, 'orders.view'); if (!user) return;
   if (req.method === 'GET') {
-    const orders = ordersAccessibleToUser(user);
+    const orders = ordersAccessibleToUser(user, { respectFeatureControls:false });
     return sendJson(res, 200, chatUnreadSnapshotForOrders(user, orders), {}, req);
   }
   if (req.method === 'POST') {
@@ -21125,8 +21213,12 @@ async function managerAssign(req, res, user, order) {
   const agent = agentById(agentId);
   if (!agent) return sendJson(res, 404, { error: 'Agent not found' }, {}, req);
   if (!agentAvailableForAssignment(agent)) return sendJson(res, 422, { error: 'That user is not accepting new orders or does not have Orders View permission.' }, {}, req);
-  if (order.orderSource !== 'offline' && !userHasBinanceCredentialPermission(agentLoginUser(agentId), order.credentialId, 'orders.view')) {
+  const targetAgentUser = agentLoginUser(agentId);
+  if (order.orderSource !== 'offline' && !userHasBinanceCredentialPermission(targetAgentUser, order.credentialId, 'orders.view')) {
     return sendJson(res, 422, { error: 'That user is not assigned orders.view permission for this Binance account.' }, {}, req);
+  }
+  if (order.orderSource !== 'offline' && !userBinanceCredentialFeatureEnabled(targetAgentUser, order.credentialId, 'orders')) {
+    return sendJson(res, 422, { error: 'That user has Orders turned off for this Binance account.' }, {}, req);
   }
   const lock = activeLock(order.id);
   if (lock && body.forceLeaveCurrent && lock.agentId !== agentId) {
@@ -23902,7 +23994,7 @@ let binanceAutoPaymentMethodSyncLastAt = 0;
 async function runBinanceFastOrderDiscovery(reason = 'fast_timer') {
   if (maintenanceMode.enabled || binanceFastOrderDiscoveryBusy) return { skipped:true };
   if (db.settings.apiMode !== 'live' || db.settings.binanceAutoOrderSync === false) return { skipped:true };
-  const credentials = (db.apiCredentials || []).filter(item => !item.disabled && item.apiKey && item.secretKey && binanceCredentialFeatureEnabled(item, 'orders'));
+  const credentials = (db.apiCredentials || []).filter(item => !item.disabled && item.apiKey && item.secretKey);
   if (!credentials.length) return { skipped:true };
   const intervalMs = Math.max(1500, Number(process.env.CRM_FAST_ORDER_DISCOVERY_MS || 2000));
   if (Date.now() - binanceFastOrderDiscoveryLastAt < intervalMs) return { skipped:true };
@@ -23947,7 +24039,7 @@ async function runBinanceAutoOrderSync(reason = 'timer') {
   if (maintenanceMode.enabled) return { skipped: true, reason: 'maintenance' };
   if (binanceAutoSyncBusy) return { skipped: true, reason: 'busy' };
   if (db.settings.apiMode !== 'live') return { skipped: true, reason: 'live_mode_disabled' };
-  const credentials = (db.apiCredentials || []).filter(item => !item.disabled && item.apiKey && item.secretKey && binanceCredentialFeatureEnabled(item, 'orders'));
+  const credentials = (db.apiCredentials || []).filter(item => !item.disabled && item.apiKey && item.secretKey);
   if (!credentials.length) return { skipped: true, reason: 'credential_missing' };
   const intervalMs = Math.max(12, positiveNum(db.settings.binanceAutoSyncSeconds || 15)) * 1000;
   if (Date.now() - binanceAutoSyncLastAt < intervalMs) return { skipped: true, reason: 'interval' };
@@ -24077,7 +24169,7 @@ async function runBinanceAdsAutoSync(reason = 'timer') {
   if (maintenanceMode.enabled) return { skipped: true, reason: 'maintenance' };
   if (binanceAdsAutoSyncBusy) return { skipped: true, reason: 'busy' };
   if (!db || db.settings.apiMode !== 'live') return { skipped: true, reason: 'live_mode_disabled' };
-  const credentials = (db.apiCredentials || []).filter(item => !item.disabled && item.apiKey && item.secretKey && binanceCredentialFeatureEnabled(item, 'advertisements'));
+  const credentials = (db.apiCredentials || []).filter(item => !item.disabled && item.apiKey && item.secretKey);
   if (!credentials.length) return { skipped: true, reason: 'credential_missing' };
   binanceAdsAutoSyncBusy = true;
   const aggregate = { created: 0, updated: 0, unchanged: 0, totalRows: 0, changed: 0, accounts: [], errors: [] };
@@ -24174,7 +24266,7 @@ async function runAdvertisementMerchantStatusAutoSync(reason = 'timer') {
   if (maintenanceMode.enabled) return { skipped: true, reason: 'maintenance' };
   if (advertisementMerchantStatusBusy) return { skipped: true, reason: 'busy' };
   if (!db || db.settings.apiMode !== 'live') return { skipped: true, reason: 'live_mode_disabled' };
-  const credentials = (db.apiCredentials || []).filter(item => !item.disabled && item.apiKey && item.secretKey && binanceCredentialFeatureEnabled(item, 'advertisements'));
+  const credentials = (db.apiCredentials || []).filter(item => !item.disabled && item.apiKey && item.secretKey);
   if (!credentials.length) return { skipped: true, reason: 'credential_missing' };
   advertisementMerchantStatusBusy = true;
   const aggregate = { changed: false, profileBusinessChanged: false, accounts: [], errors: [] };
@@ -24663,7 +24755,7 @@ function runAccountingSelfTest() {
     const migratedOwner = permissionMigrationTarget.users.find(user => user.id === 11);
     const migratedManager = permissionMigrationTarget.users.find(user => user.id === 12);
     const settingsWorker = permissionMigrationTarget.users.find(user => user.id === 13);
-    if (permissionMigrationTarget.meta.schemaVersion !== 38) throw new Error(`Permission/vault migration schema mismatch: ${permissionMigrationTarget.meta.schemaVersion}`);
+    if (permissionMigrationTarget.meta.schemaVersion !== 39) throw new Error(`Permission/vault migration schema mismatch: ${permissionMigrationTarget.meta.schemaVersion}`);
     const migratedSecretCredential = permissionMigrationTarget.apiCredentials.find(item => item.id === 71);
     if (!isCredentialSecretVaultValue(migratedSecretCredential.releaseFundPasswordVault) || migratedSecretCredential.releaseFundPassword || readCredentialFundPassword(migratedSecretCredential) !== 'Legacy-Fund-Secret') throw new Error('Schema 37 did not field-encrypt the legacy Fund Transfer Password.');
     if (binanceCredentialPermissionRowsForUser(migratedOwner, permissionMigrationTarget).length !== 2) throw new Error('Schema 36 did not materialize permission-based legacy owner account access.');
@@ -25573,6 +25665,118 @@ function runPaymentAccountBulkManualTransactionSelfTest() {
   }
 }
 
+
+function runPerUserBinanceFeatureControlsSelfTest() {
+  const previousDb = db;
+  const assert = (condition, message) => { if (!condition) throw new Error(message); };
+  try {
+    const at = '2026-08-25T00:00:00.000Z';
+    const accountPermissions = ['orders.view','binance.sync','binance.chat','ads.view','ads.manage'];
+    const grantRows = [101, 202].map(credentialId => ({ credentialId, permissions:accountPermissions.slice() }));
+    const userA = {
+      id:1, username:'user-a', name:'User A', role:'manager', enabled:true,
+      permissions:accountPermissions.slice(),
+      binanceCredentialPermissions:grantRows.map(row => ({ ...row, permissions:row.permissions.slice() })),
+      binanceCredentialFeatureControls:[
+        { credentialId:101, orders:false, notifications:true, advertisements:false },
+        { credentialId:202, orders:true, notifications:false, advertisements:true }
+      ],
+      notificationPreferences:defaultNotificationPreferences()
+    };
+    const userB = {
+      id:2, username:'user-b', name:'User B', role:'manager', enabled:true,
+      permissions:accountPermissions.slice(),
+      binanceCredentialPermissions:grantRows.map(row => ({ ...row, permissions:row.permissions.slice() })),
+      binanceCredentialFeatureControls:[],
+      notificationPreferences:defaultNotificationPreferences()
+    };
+    db = {
+      meta:{ nextId:9000, schemaVersion:APP_SCHEMA_VERSION, dataCompatibilityEpoch:APP_DATA_COMPATIBILITY_EPOCH },
+      settings:defaultSettings(),
+      userRoles:[], users:[userA,userB], agents:[],
+      apiCredentials:[
+        // Legacy credential-level switches are deliberately false. Runtime
+        // behavior must ignore them after schema 39 and remain per CRM user.
+        { id:101, name:'API A', apiKey:'a', secretKey:'a', disabled:false, featureControls:{ orders:false, notifications:false, advertisements:false }, createdAt:at },
+        { id:202, name:'API B', apiKey:'b', secretKey:'b', disabled:false, featureControls:{ orders:true, notifications:true, advertisements:true }, createdAt:at }
+      ],
+      orders:[
+        { id:1001, credentialId:101, orderSource:'binance', orderNo:'A-ORDER', status:'assigned', type:'BUY', createdAt:at },
+        { id:1002, credentialId:202, orderSource:'binance', orderNo:'B-ORDER', status:'assigned', type:'SELL', createdAt:at }
+      ],
+      orderAgentAssignments:[], advertisements:[
+        { id:3001, credentialId:101, advNo:'A-AD', archived:false },
+        { id:3002, credentialId:202, advNo:'B-AD', archived:false }
+      ],
+      notifications:[
+        { id:4001, credentialId:101, type:'order_created', category:'orders', audience:'all', message:'A notification', status:'unread', read:false, createdAt:at },
+        { id:4002, credentialId:202, type:'order_created', category:'orders', audience:'all', message:'B notification', status:'unread', read:false, createdAt:at }
+      ],
+      paymentMethods:[], paymentAccounts:[], routing:[], paymentSplits:[], ledgers:[], proofFiles:[], auditLogs:[], locks:[],
+      offlineTransactions:[], chats:[], chatReadStates:[], coAgentRequests:[], approvalRequests:[], securityRevertTokens:[], sessions:[],
+      p2pExtensionTasks:[], p2pExtensionCache:[], userActivitySessions:[], businessEntries:[], businessDailyCloses:[], binanceBalanceSnapshots:[],
+      chatMedia:[], systemUpdates:[], systemUpdateEvents:[], ownerP2pProfiles:[]
+    };
+
+    const visibleA = ordersAccessibleToUser(userA).map(order => Number(order.credentialId));
+    const baseA = ordersAccessibleToUser(userA, { respectFeatureControls:false }).map(order => Number(order.credentialId));
+    const visibleB = ordersAccessibleToUser(userB).map(order => Number(order.credentialId));
+    assert(JSON.stringify(visibleA) === JSON.stringify([202]), `User A Orders switch leaked across accounts: ${JSON.stringify(visibleA)}`);
+    assert(JSON.stringify(baseA) === JSON.stringify([101,202]), `Established permission model was replaced instead of layered: ${JSON.stringify(baseA)}`);
+    assert(JSON.stringify(visibleB) === JSON.stringify([101,202]), `User A personal Orders switch affected User B: ${JSON.stringify(visibleB)}`);
+    assert(canAccessOrder(userA, db.orders[0]) === true, 'Base order permission was revoked by the personal Orders switch.');
+
+    assert(notificationAllowedByBinanceAccount(db.notifications[0], userA) === true, 'API A notification should remain enabled for User A.');
+    assert(notificationAllowedByBinanceAccount(db.notifications[1], userA) === false, 'API B notification switch did not mute only User A.');
+    assert(notificationAllowedByBinanceAccount(db.notifications[0], userB) === true && notificationAllowedByBinanceAccount(db.notifications[1], userB) === true, 'User A notification preference affected User B.');
+    assert(notificationsForUser(userA).map(item => Number(item.credentialId)).join(',') === '101', 'In-app notification filtering is not per CRM user/account.');
+
+    assert(canAccessAdvertisement(userA, db.advertisements[0], 'ads.view') === false, 'User A API A Advertisement OFF was ignored.');
+    assert(canAccessAdvertisement(userA, db.advertisements[1], 'ads.view') === true, 'User A API B Advertisement ON was blocked.');
+    assert(canAccessAdvertisement(userB, db.advertisements[0], 'ads.view') === true && canAccessAdvertisement(userB, db.advertisements[1], 'ads.view') === true, 'User A Advertisement preference affected User B.');
+
+    const optionsA = chatAccountOptionsForUser(userA);
+    assert(optionsA.length === 2 && optionsA.every(item => item.canConfigure === true), 'Visible Chat accounts are not personally configurable.');
+    assert(optionsA.find(item => item.id === 101)?.featureControls.orders === false, 'Chat settings did not return User A API A preference.');
+    assert(optionsA.find(item => item.id === 202)?.featureControls.notifications === false, 'Chat settings did not return User A API B notification preference.');
+
+    setUserBinanceCredentialFeatureControls(userA, 101, { orders:true });
+    assert(userBinanceCredentialFeatureEnabled(userA, 101, 'orders') === true, 'Updating User A preference failed.');
+    assert(userBinanceCredentialFeatureEnabled(userB, 101, 'orders') === true, 'Updating User A preference changed User B.');
+    assert(db.apiCredentials[0].featureControls.orders === false, 'Personal preference write mutated the credential-level legacy field.');
+    setUserBinanceCredentialFeatureControls(userA, 101, { orders:false });
+
+    const migrationArrays = ['users','userRoles','apiCredentials','agents','paymentMethods','paymentAccounts','routing','orders','orderAgentAssignments','paymentSplits','ledgers','proofFiles','auditLogs','locks','notifications','offlineTransactions','chats','chatReadStates','coAgentRequests','approvalRequests','advertisements','securityRevertTokens','sessions','p2pExtensionTasks','p2pExtensionCache','userActivitySessions','businessEntries','businessDailyCloses','binanceBalanceSnapshots','chatMedia','systemUpdates','systemUpdateEvents'];
+    const migrationTarget = { meta:{ nextId:9900, schemaVersion:38, dataCompatibilityEpoch:APP_DATA_COMPATIBILITY_EPOCH }, settings:{} };
+    migrationArrays.forEach(key => { migrationTarget[key] = []; });
+    migrationTarget.apiCredentials = [{ id:501, name:'Legacy API', apiKey:'legacy', secretKey:'legacy-secret', disabled:false, featureControls:{ orders:false, notifications:true, advertisements:false }, createdAt:at }];
+    migrationTarget.users = [{ id:77, username:'legacy-editor', name:'Legacy Editor', role:'manager', enabled:true, permissions:accountPermissions.slice(), binanceCredentialPermissions:[{ credentialId:501, permissions:accountPermissions.slice() }] }];
+    migrationTarget.auditLogs = [{ id:8801, action:'binance_account_feature_controls_updated', entityType:'apiCredential', entityId:501, userId:77, createdAt:at }];
+    migrateDb(migrationTarget);
+    const migratedUser = migrationTarget.users.find(item => Number(item.id) === 77);
+    const migratedCredential = migrationTarget.apiCredentials.find(item => Number(item.id) === 501);
+    assert(migrationTarget.meta.schemaVersion === 39, `Schema-38 account controls did not migrate to schema 39: ${migrationTarget.meta.schemaVersion}`);
+    assert(userBinanceCredentialFeatureEnabled(migratedUser, 501, 'orders', migrationTarget) === false, 'Legacy Orders OFF was not preserved for the identifiable CRM user.');
+    assert(userBinanceCredentialFeatureEnabled(migratedUser, 501, 'advertisements', migrationTarget) === false, 'Legacy Advertisement OFF was not preserved for the identifiable CRM user.');
+    assert(binanceCredentialFeatureControls(migratedCredential, migrationTarget).orders === true && binanceCredentialFeatureControls(migratedCredential, migrationTarget).advertisements === true, 'Legacy credential-level switches were not neutralized after migration.');
+
+    console.log(JSON.stringify({
+      ok:true,
+      version:APP_VERSION,
+      schemaVersion:APP_SCHEMA_VERSION,
+      scope:'per-crm-user-per-binance-account',
+      existingPermissionModelPreserved:true,
+      globalOrderSyncPreferenceIndependent:true,
+      example:{ apiA:{ orders:false, notifications:true }, apiB:{ orders:true, notifications:false } },
+      userIsolation:true,
+      chatIndependentFromOrdersSwitch:true,
+      schema38MigrationToPerUser:true
+    }, null, 2));
+  } finally {
+    db = previousDb;
+  }
+}
+
 async function runMailCommandMode() {
   if (!db) db = await initDb();
   if (process.argv.includes('--mail-probe')) {
@@ -25618,6 +25822,9 @@ if (process.argv.includes('--accounting-self-test')) {
 } else if (process.argv.includes('--payment-account-bulk-manual-transaction-self-test')) {
   try { runPaymentAccountBulkManualTransactionSelfTest(); process.exit(0); }
   catch (err) { console.error(`Payment-account bulk/manual transaction self-test failed: ${err.message}`); process.exit(1); }
+} else if (process.argv.includes('--per-user-account-controls-self-test')) {
+  try { runPerUserBinanceFeatureControlsSelfTest(); process.exit(0); }
+  catch (err) { console.error(`Per-user Binance feature-controls self-test failed: ${err.message}`); process.exit(1); }
 } else if (process.argv.includes('--mail-test') || process.argv.includes('--mail-probe')) {
   runMailCommandMode().catch(err => {
     console.error(`Mail command failed: ${err.message}`);
