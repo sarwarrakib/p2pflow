@@ -4,8 +4,10 @@
 async function renderUsers() {
   if (state.page !== 'agents') return;
   setTitle('Users & Permissions');
-  const agents = await api('/api/agents');
-  const accounts = await api('/api/payment-accounts');
+  const [agents, accounts] = await Promise.all([
+    api('/api/agents'),
+    api('/api/payment-accounts')
+  ]);
   state.bootstrap.agents = agents.items;
   state.binanceCredentialOptions = Array.isArray(agents.binanceCredentialOptions) ? agents.binanceCredentialOptions : (Array.isArray(agents.p2pCredentialOptions) ? agents.p2pCredentialOptions : []);
   state.p2pCredentialOptions = state.binanceCredentialOptions;

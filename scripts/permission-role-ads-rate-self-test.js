@@ -24,7 +24,7 @@ assert(/previousSchemaVersion < 36/.test(server) && /Role labels are\n    \/\/ i
 assert(/previousSchemaVersion < 37/.test(server) && /releaseFundPasswordVault/.test(server) && /storeCredentialFundPassword/.test(server), 'Schema-37 Fund Password field-vault migration is missing.');
 assert(/'binance\.sync': Object\.freeze\(\['orders\.view'\]\)/.test(app), 'Client binance.sync implication to orders.view is missing.');
 assert(!/name="minRate"/.test(ads) && !/name="maxRate"/.test(ads), 'Legacy editable Minimum/Maximum Rate fields are still present.');
-assert(/\/api\/ads\/reference-price/.test(ads) && /Fixed price limit/.test(ads), 'Live Binance reference-price guide is missing from the Ads editor.');
+assert(/\/api\/ads\/reference-price/.test(ads) && /Reference Price/.test(ads) && /display only/i.test(ads), 'Display-only Binance Reference Price is missing from the Ads editor.');
 const normalized = block(server, 'function normalizeAdvertisementInput(', 'function advertisementCreateClassifyForCredential(');
 assert(/minRate:\s*0/.test(normalized) && /maxRate:\s*0/.test(normalized), 'Legacy Minimum/Maximum Rate values are not neutralized.');
 const payload = block(server, 'function advertisementBinancePayload(', 'const ADVERTISEMENT_UPDATE_ALLOWED_KEYS');

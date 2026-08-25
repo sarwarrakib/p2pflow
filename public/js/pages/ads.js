@@ -1,4 +1,4 @@
-// P2PFlow v1.7.2
+// P2PFlow v1.7.3
 // Restored FULL advertisement update payload with no-updateMode compatibility retry.
 
 const ADS_COUNTRY_CODES = ["BD","US","GB","IN","PK","AE","SA","TR","NG","KE","GH","ZA","MY","SG","ID","PH","TH","VN","AU","CA","DE","FR","IT","ES","NL","BE","PT","JP","KR","CN","HK","TW","BR","MX","AR","CO","PE","CL","EG","MA","DZ","TN","QA","KW","BH","OM","LK","NP","AW","AF","AO","AI","AX","AL","AD","AM","AS","AQ","TF","AG","AT","AZ","BI","BJ","BQ","BF","BG","BS","BA","BL","BY","BZ","BM","BO","BB","BN","BT","BV","BW","CF","CC","CH","CI","CM","CD","CG","CK","KM","CV","CR","CU","CW","CX","KY","CY","CZ","DJ","DM","DK","DO","EC","ER","EH","EE","ET","FI","FJ","FK","FO","FM","GA","GE","GG","GI","GN","GP","GM","GW","GQ","GR","GD","GL","GT","GF","GU","GY","HM","HN","HR","HT","HU","IM","IO","IE","IR","IQ","IS","IL","JM","JE","JO","KZ","KG","KH","KI","KN","LA","LB","LR","LY","LC","LI","LS","LT","LU","LV","MO","MF","MC","MD","MG","MV","MH","MK","ML","MT","MM","ME","MN","MP","MZ","MR","MS","MQ","MU","MW","YT","NA","NC","NE","NF","NI","NU","NO","NR","NZ","PA","PN","PW","PG","PL","PR","KP","PY","PS","PF","RE","RO","RU","RW","SD","SN","GS","SH","SJ","SB","SL","SV","SM","SO","PM","RS","SS","ST","SR","SK","SI","SE","SZ","SX","SC","SY","TC","TD","TG","TJ","TK","TM","TL","TO","TT","TV","TZ","UG","UA","UM","UY","UZ","VA","VC","VE","VG","VI","VU","WF","WS","YE","ZM","ZW"];
@@ -1057,9 +1057,9 @@ function openAdvertisementEditor(ad = null, data = {}) {
         <div class="ads-unit-input"><input name="priceFloatingRatio" type="number" step="0.01" value="${escapeAttr(ad?.priceFloatingRatio || 0)}"><span>%</span></div>
       </div>
       <div class="ads-live-price-guide" id="adLivePriceGuide">
-        <div class="ads-live-price-range"><span>Fixed price limit</span><b id="adLivePriceRange">Loading live range...</b></div>
-        <div class="ads-live-price-lines"><span>Your Price <b id="adYourPrice">${escapeHtml(ad?.fiatUnit === 'BDT' ? 'Tk.' : ad?.fiatUnit || '')}${adNumber(ad?.price || 0, 2)}</b></span><span id="adMarketPriceLine" hidden><u id="adMarketPriceLabel">Market Price</u> <b id="adMarketPrice"></b></span></div>
-        <small id="adReferencePriceMeta">Binance live reference</small>
+        <div class="ads-live-price-range"><span>Reference Price</span><b id="adLivePriceRange">Loading reference...</b></div>
+        <div class="ads-live-price-lines"><span>Your Price <b id="adYourPrice">${escapeHtml(ad?.fiatUnit === 'BDT' ? 'Tk.' : ad?.fiatUnit || '')}${adNumber(ad?.price || 0, 2)}</b></span></div>
+        <small id="adReferencePriceMeta">Display only · never blocks Save/Update</small>
       </div>
     </section>
 
@@ -1357,33 +1357,15 @@ function openAdvertisementEditor(ad = null, data = {}) {
   let latestReferenceGuide = null;
   const currentPriceType = () => Number(form.elements.priceType?.value || 1) === 2 ? 2 : 1;
   const pricePrefixForEditor = () => String(form.elements.fiatUnit?.value || 'BDT').toUpperCase() === 'BDT' ? 'Tk.' : `${String(form.elements.fiatUnit?.value || '').toUpperCase()} `;
-  const fixedPriceRangeMessage = guide => {
-    if (!guide) return '';
-    if (guide.validationMessage) return String(guide.validationMessage);
-    if (guide.explicitBounds !== true || !(Number(guide.minPrice) > 0) || !(Number(guide.maxPrice) >= Number(guide.minPrice))) {
-      const scale = Number(guide.priceScale ?? 2);
-      return Number(guide.referencePrice || 0) > 0 ? `Binance live reference: ${adNumber(guide.referencePrice, scale)}` : '';
-    }
-    const scale = Number(guide.priceScale ?? 2);
-    return `Fixed price must fall within the limited range of: ${adNumber(guide.minPrice, scale)}~${adNumber(guide.maxPrice, scale)}`;
-  };
-  const fixedPriceWithinGuide = guide => {
-    if (currentPriceType() !== 1 || !guide || guide.stale === true || guide.explicitBounds !== true) return true;
-    if (!(Number(guide.minPrice) > 0) || !(Number(guide.maxPrice) >= Number(guide.minPrice))) return true;
-    const price = Number(form.elements.price?.value || 0);
-    const scale = Math.max(0, Math.min(8, Number(guide.priceScale ?? 2)));
-    const factor = 10 ** scale;
-    return Math.round(price * factor) >= Math.round(Number(guide.minPrice) * factor)
-      && Math.round(price * factor) <= Math.round(Number(guide.maxPrice) * factor);
-  };
+  // Reference Price is display-only for Fixed ads. It must never create a
+  // client-side min/max rule or block Next/Preview/Save. Binance's actual ad
+  // mutation response is the only authoritative validation for a submitted price.
   const renderFixedPriceValidity = () => {
     const priceInput = form.elements.price;
-    const guideBox = $('#adLivePriceGuide');
-    const invalid = currentPriceType() === 1 && Boolean(latestReferenceGuide) && !fixedPriceWithinGuide(latestReferenceGuide);
-    priceInput?.classList.toggle('is-invalid', invalid);
-    guideBox?.classList.toggle('is-invalid', invalid);
-    if (priceInput) priceInput.setAttribute('aria-invalid', invalid ? 'true' : 'false');
-    return !invalid;
+    priceInput?.classList.remove('is-invalid');
+    $('#adLivePriceGuide')?.classList.remove('is-invalid');
+    if (priceInput) priceInput.setAttribute('aria-invalid', 'false');
+    return true;
   };
   const floatingPriceFromGuide = () => {
     const reference = Number(latestReferenceGuide?.referencePrice || 0);
@@ -1430,27 +1412,14 @@ function openAdvertisementEditor(ad = null, data = {}) {
       const priceInput = form.elements.price;
       if (priceInput) {
         priceInput.step = String(10 ** -Math.max(0, Math.min(8, scale)));
-        if (currentPriceType() === 1 && guide.stale !== true && guide.explicitBounds === true && Number(guide.minPrice) > 0 && Number(guide.maxPrice) >= Number(guide.minPrice)) {
-          priceInput.min = String(guide.minPrice);
-          priceInput.max = String(guide.maxPrice);
-        } else {
-          priceInput.min = '0';
-          priceInput.removeAttribute('max');
-        }
+        priceInput.min = '0';
+        priceInput.removeAttribute('max');
       }
-      const hasBounds = guide.stale !== true && guide.explicitBounds === true && Number(guide.minPrice) > 0 && Number(guide.maxPrice) >= Number(guide.minPrice);
-      if (range) range.textContent = hasBounds
-        ? `${prefix}${adNumber(guide.minPrice, scale)}~${prefix}${adNumber(guide.maxPrice, scale)}`
-        : `Reference ${prefix}${adNumber(guide.referencePrice, scale)}`;
+      const referenceValue = Number(guide.referencePrice || 0);
+      if (range) range.textContent = referenceValue > 0 ? `${prefix}${adNumber(referenceValue, scale)}` : 'Unavailable';
       if (meta) meta.textContent = guide.stale
-        ? `${fixedPriceRangeMessage(guide)} · Last known quote; Binance will validate on submit.`
-        : (currentPriceType() === 1
-          ? fixedPriceRangeMessage(guide)
-          : `Binance live reference: ${prefix}${adNumber(guide.referencePrice, scale)}`);
-      const marketLine = $('#adMarketPriceLine');
-      if (marketLine) marketLine.hidden = !(Number(guide.marketPrice || 0) > 0);
-      if ($('#adMarketPriceLabel')) $('#adMarketPriceLabel').textContent = guide.marketPriceLabel || (side === 'BUY' ? 'Highest Order Price' : 'Lowest Ad Price');
-      if ($('#adMarketPrice')) $('#adMarketPrice').textContent = Number(guide.marketPrice || 0) > 0 ? `${prefix}${adNumber(guide.marketPrice, Number(guide.priceScale ?? 2))}` : '';
+        ? 'Last known Binance reference price · display only'
+        : 'Binance reference price · display only';
       renderFixedPriceValidity();
       return guide;
     } catch (error) {
@@ -1459,7 +1428,7 @@ function openAdvertisementEditor(ad = null, data = {}) {
       if (range) range.textContent = latestReferenceGuide?.referencePrice
         ? `Last reference ${pricePrefixForEditor()}${adNumber(latestReferenceGuide.referencePrice, Number(latestReferenceGuide.priceScale ?? 2))}`
         : 'Reference temporarily unavailable';
-      if (meta) meta.textContent = `${error.message || 'Could not load Binance reference price.'} You can still submit; Binance will validate the current price.`;
+      if (meta) meta.textContent = `${error.message || 'Could not load Binance reference price.'} Reference is display-only; price entry and submit remain available.`;
       renderFixedPriceValidity();
       return latestReferenceGuide;
     }
@@ -1467,8 +1436,8 @@ function openAdvertisementEditor(ad = null, data = {}) {
   const scheduleReferenceRefresh = () => { clearTimeout(referenceTimer); referenceTimer = setTimeout(() => refreshReferencePrice(false), 120); };
   form.elements.asset.onchange = () => { updatePairLabels(); renderMethods(); scheduleFeeRefresh(); scheduleReferenceRefresh(); refreshAvailableSellBalance(true); };
   form.elements.fiatUnit.onchange = () => { updatePairLabels(); renderMethods(); scheduleFeeRefresh(); scheduleReferenceRefresh(); };
-  form.elements.price.oninput = () => { updateYourPrice(); renderFixedPriceValidity(); };
-  if (form.elements.priceType) form.elements.priceType.onchange = () => { syncPriceTypeUi(); updateYourPrice(); renderFixedPriceValidity(); scheduleReferenceRefresh(); };
+  form.elements.price.oninput = updateYourPrice;
+  if (form.elements.priceType) form.elements.priceType.onchange = () => { syncPriceTypeUi(); updateYourPrice(); scheduleReferenceRefresh(); };
   if (form.elements.priceFloatingRatio) form.elements.priceFloatingRatio.oninput = () => { if (currentPriceType() === 2) updateYourPrice(); };
   form.elements.initAmount.oninput = updateEstimatedFee;
   form.querySelectorAll('input[name="tradeType"]').forEach(input => input.onchange = () => { updatePairLabels(); renderMethods(); scheduleFeeRefresh(); scheduleReferenceRefresh(); refreshAvailableSellBalance(true); });
@@ -1494,7 +1463,7 @@ function openAdvertisementEditor(ad = null, data = {}) {
     openFeeRateSheet(feeOverview || { source: 'configured', rates: [] }, currentTradeType(), Number(form.elements.initAmount.value || 0), form.elements.asset.value);
   };
   syncPriceTypeUi(); updatePairLabels(); updateYourPrice(); updateEstimatedFee(); scheduleFeeRefresh(); scheduleReferenceRefresh(); refreshAvailableSellBalance(true);
-  const referenceInterval = setInterval(() => { if (!document.contains(form)) return clearInterval(referenceInterval); refreshReferencePrice(false); }, 15000);
+  const referenceInterval = setInterval(() => { if (!document.contains(form)) return clearInterval(referenceInterval); if (document.visibilityState === 'visible') refreshReferencePrice(false); }, 60000);
   const priceButtons = form.querySelectorAll('.ads-price-box button');
   if (priceButtons[0]) priceButtons[0].onclick = () => { const input = form.elements.price; const step = Number(input.step || 0.01) || 0.01; input.value = Math.max(0, Number(input.value || 0) - step).toFixed(8).replace(/\.?0+$/, ''); input.dispatchEvent(new Event('input', { bubbles:true })); };
   if (priceButtons[1]) priceButtons[1].onclick = () => { const input = form.elements.price; const step = Number(input.step || 0.01) || 0.01; input.value = (Number(input.value || 0) + step).toFixed(8).replace(/\.?0+$/, ''); input.dispatchEvent(new Event('input', { bubbles:true })); };
@@ -1505,11 +1474,6 @@ function openAdvertisementEditor(ad = null, data = {}) {
     if (step === 1) {
       if (!currentCredentialId()) { setFormMessage('#advertisementFormMessage', 'Select a Binance account.', 'danger'); return false; }
       if (!(Number(form.elements.price?.value || 0) > 0)) { setFormMessage('#advertisementFormMessage', 'Enter a valid advertisement price.', 'danger'); form.elements.price?.focus(); return false; }
-      if (!fixedPriceWithinGuide(latestReferenceGuide)) {
-        setFormMessage('#advertisementFormMessage', fixedPriceRangeMessage(latestReferenceGuide), 'danger');
-        form.elements.price?.focus();
-        return false;
-      }
       return true;
     }
     if (step === 2) {
@@ -1525,10 +1489,7 @@ function openAdvertisementEditor(ad = null, data = {}) {
     }
     return true;
   };
-  const refreshAndValidateFixedPrice = async () => {
-    if (data.liveMode && currentPriceType() === 1) refreshReferencePrice(true).catch(() => {});
-    return validateWizardStep(1);
-  };
+  const refreshAndValidateFixedPrice = async () => validateWizardStep(1);
   const currentPaymentMethodLabels = () => {
     const paymentData = currentPaymentData();
     const generic = paymentData.paymentSelectionMode === 'generic';

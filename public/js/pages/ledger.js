@@ -5,8 +5,10 @@ async function renderLedger() {
   if (state.page !== 'ledger') return;
   const q = state.ledgerAccountId ? ('?accountId=' + state.ledgerAccountId) : '';
   setTitle('Account Statement');
-  const data = await api('/api/ledgers' + q);
-  const accounts = await api('/api/payment-accounts').catch(() => ({items:[]}));
+  const [data, accounts] = await Promise.all([
+    api('/api/ledgers' + q),
+    api('/api/payment-accounts').catch(() => ({items:[]}))
+  ]);
   const selected = accounts.items.find(a => Number(a.id) === Number(state.ledgerAccountId));
   const totalIn = data.items.filter(l => ['receive','topup'].includes(l.direction) || ['opening','topup','offline_receive','settlement_in','refund_in','agent_transaction_commission'].includes(l.type)).reduce((a,l)=>a+Math.abs(Number(l.amount||0)),0);
   const totalOut = data.items.filter(l => ['send','cashout'].includes(l.direction) || ['cashout','offline_purchase','expense','settlement_out','refund_out','business_transfer_charge','agent_transaction_commission_reversal'].includes(l.type)).reduce((a,l)=>a+Math.abs(Number(l.amount||0)),0);

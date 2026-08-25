@@ -5948,7 +5948,7 @@ body.p2pflow-app-shell .modal-backdrop{overscroll-behavior:contain}
 }
 
 
-/* v1.7.2 Ads payment-method search: explicit override so filtered rows stay hidden. */
+/* v1.7.3 Ads payment-method search: explicit override so filtered rows stay hidden. */
 .ads-sheet-option.is-search-hidden,
 .ads-sheet-option[hidden],
 .ads-payment-search-empty[hidden]{display:none!important}

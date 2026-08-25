@@ -33,8 +33,8 @@ function block(source, start, end) {
 }
 function sha(value) { return crypto.createHash('sha256').update(value).digest('hex'); }
 
-assert(pkg.version === '1.7.2', `expected package 1.7.2, got ${pkg.version}`);
-assert(server.includes('const APP_SCHEMA_VERSION = 37;'), 'v1.7.2 unexpectedly changed the v1.6.4-compatible schema target');
+assert(pkg.version === '1.7.3', `expected package 1.7.3, got ${pkg.version}`);
+assert(server.includes('const APP_SCHEMA_VERSION = 37;'), 'v1.7.3 unexpectedly changed the v1.6.4-compatible schema target');
 
 // The production-proven v1.6.4 order engine is a hard baseline. These exact
 // byte hashes prevent a future performance patch from silently coupling user
@@ -97,9 +97,10 @@ assert(editOpen.includes('p2pflow:ads-editor-live-refresh') && ads.includes("win
 const paymentScope = block(ads, 'function adsPaymentMethodsForCredential(', 'function adsPaymentDataForCredential(');
 assert(/Number\(method\.credentialId(?: \|\| 0)?\) === id/.test(paymentScope) && !paymentScope.includes('!Number(method.credentialId)'), 'SELL payment methods can leak across Binance accounts');
 assert(server.includes('ensureAdvertisementPaymentMethods(methods, credential.id)'), 'exact-account payment methods are not catalogued safely');
-const priceGuide = block(server, 'async function advertisementReferencePriceGuide(', 'function advertisementReferencePayType(');
+const priceGuide = block(server, 'async function advertisementReferencePriceGuide(', 'function advertisementFixedPriceRangeFromBinanceError(');
 assert(!priceGuide.includes('callBinancePublicAdvSearch'), 'Ads price editor still waits on public market search');
-assert(server.includes("rangeMode: hasExplicitBounds ? 'binance_explicit_live_bounds' : 'binance_reference_only'"), 'reference-only and explicit price bounds are not distinguished');
+assert(!server.includes('assertAdvertisementFixedPriceWithinLiveRange'), 'Reference Price is still coupled to mutation validation');
+assert(ads.includes('Reference Price') && /display only/i.test(ads), 'fixed-price Reference Price is not display-only');
 assert(!/referencePrice\s*\*\s*1\.(?:08|10)/.test(server), 'undocumented guessed percentage price range remains');
 assert(server.includes('advertisementFixedPriceRangeFromBinanceError') && server.includes('binance_rejection_exact_bounds'), 'exact Binance rejection bounds are not parsed');
 assert(css.includes('body.ads-sheet-open #mobileBottomNav.mobile-bottom-nav{display:none!important}') && css.includes('100dvh'), 'mobile Ads sheet can still be covered by fixed navigation');

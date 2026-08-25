@@ -11137,8 +11137,22 @@ function shouldFlushBeforeResponse(req, status) {
 }
 function writeJsonResponse(res, status, payload, extraHeaders = {}, req = null) {
   if (res.writableEnded || res.destroyed) return;
-  res.writeHead(status, secureHeaders({ 'Content-Type': 'application/json; charset=utf-8', ...withSessionRefresh(extraHeaders, req) }, req));
-  res.end(JSON.stringify(payload));
+  const body = Buffer.from(JSON.stringify(payload));
+  const baseHeaders = { 'Content-Type': 'application/json; charset=utf-8', ...withSessionRefresh(extraHeaders, req) };
+  const acceptsGzip = Boolean(req && /\bgzip\b/i.test(String(req.headers?.['accept-encoding'] || '')));
+  if (acceptsGzip && body.length >= 8192) {
+    return zlib.gzip(body, { level: 1 }, (error, compressed) => {
+      if (res.writableEnded || res.destroyed) return;
+      if (error) {
+        res.writeHead(status, secureHeaders({ ...baseHeaders, 'Content-Length': String(body.length), 'Vary': 'Accept-Encoding' }, req));
+        return res.end(body);
+      }
+      res.writeHead(status, secureHeaders({ ...baseHeaders, 'Content-Encoding': 'gzip', 'Content-Length': String(compressed.length), 'Vary': 'Accept-Encoding' }, req));
+      res.end(compressed);
+    });
+  }
+  res.writeHead(status, secureHeaders({ ...baseHeaders, 'Content-Length': String(body.length) }, req));
+  res.end(body);
 }
 function writeTextResponse(res, status, text, type = 'text/plain; charset=utf-8', req = null) {
   if (res.writableEnded || res.destroyed) return;
@@ -13691,6 +13705,19 @@ function advertisementCumulativeInitAmount(desiredSurplusAmount, snapshot = {}) 
   return roundAsset(positiveNum(snapshot.consumedAmount || 0) + positiveNum(desiredSurplusAmount || 0));
 }
 
+function advertisementCachedDetailForUpdate(item = {}) {
+  const rawStored = item?.rawBinanceAd && typeof item.rawBinanceAd === 'object' ? item.rawBinanceAd : {};
+  const raw = unwrapBinanceData(rawStored) || rawStored || {};
+  return {
+    ...raw,
+    ...item,
+    initAmount: item.initAmount ?? raw.initAmount ?? 0,
+    surplusAmount: item.surplusAmount ?? raw.surplusAmount ?? raw.tradableQuantity ?? item.initAmount ?? 0,
+    priceScale: Number.isFinite(Number(item.priceScale)) ? Number(item.priceScale) : (Number.isFinite(Number(raw.priceScale)) ? Number(raw.priceScale) : 8),
+    tradeMethods: normalizeAdvertisementTradeMethods((item.tradeMethods && item.tradeMethods.length) ? item.tradeMethods : (raw.tradeMethods || raw.payMethodDtos || raw.tradeMethodList || []))
+  };
+}
+
 function advertisementUpdateErrorInfo(error) {
   const parsed = error?.binanceResult && typeof error.binanceResult === 'object'
     ? error.binanceResult
@@ -15953,12 +15980,6 @@ async function advertisementReferencePriceGuide(credential, requested = {}, forc
   throw lastError || Object.assign(new Error('Binance reference price is temporarily unavailable.'), { statusCode:502, code:'ADS_REFERENCE_PRICE_UNAVAILABLE' });
 }
 
-function advertisementReferencePayType(item = {}) {
-  const firstMethod = normalizeAdvertisementTradeMethods(item.tradeMethods || [])[0] || {};
-  const genericKey = Array.isArray(item.paymentMethodKeys) ? item.paymentMethodKeys.find(Boolean) : '';
-  return cleanStr(firstMethod.payType || firstMethod.identifier || genericKey || '', 80);
-}
-
 function advertisementFixedPriceRangeFromBinanceError(error, requestedPrice = 0) {
   const info = advertisementUpdateErrorInfo(error);
   const text = `${info.message || ''} ${error?.binanceMessage || ''} ${error?.message || ''}`;
@@ -15996,38 +16017,6 @@ function advertisementFixedPriceRangeError(guide = {}, price = 0) {
   error.rangeMode = cleanStr(guide.rangeMode || '', 80);
   error.referencePriceGuide = guide;
   return error;
-}
-
-async function assertAdvertisementFixedPriceWithinLiveRange(credential, item = {}, force = true) {
-  if (Number(item.priceType || 1) !== 1) return null;
-  const price = positiveNum(item.price || 0);
-  if (!(price > 0)) throw Object.assign(new Error('Enter a valid advertisement price.'), { statusCode:422, code:'ADS_INVALID_PRICE' });
-
-  // Never put the reference-price endpoint in the mutation critical path. The
-  // editor refreshes it independently in the background. Here we only use a
-  // recent cached Binance quote for an instant local bounds check; otherwise the
-  // actual Binance post/update endpoint is the final authority.
-  const asset = cleanStr(item.asset || 'USDT', 20).toUpperCase();
-  const fiat = cleanStr(item.fiatUnit || 'BDT', 20).toUpperCase();
-  const tradeType = normalizeAdvertisementTradeType(item.tradeType || 'BUY');
-  const payType = advertisementReferencePayType(item);
-  const exactKey = `${advertisementCredentialKey(credential)}:${asset}:${fiat}:${tradeType}:${payType}`;
-  const genericKey = `${advertisementCredentialKey(credential)}:${asset}:${fiat}:${tradeType}:`;
-  const cached = advertisementReferencePriceCache.get(exactKey) || advertisementReferencePriceCache.get(genericKey) || null;
-  if (!cached || Date.now() - cached.ts > 60 * 1000) {
-    return { referenceUnavailable:true, explicitBounds:false, live:false, source:'binance_reference_cache_miss' };
-  }
-  const ageMs = Date.now() - cached.ts;
-  const guide = { ...cached.data, cached:true, stale:Boolean(cached.data?.stale) || ageMs > 30000 };
-  if (guide.stale !== true && guide.explicitBounds === true && Number(guide.minPrice) > 0 && Number(guide.maxPrice) >= Number(guide.minPrice)) {
-    const scale = Math.max(0, Math.min(8, Number(guide.priceScale || 0)));
-    const factor = 10 ** scale;
-    const priceUnits = Math.round(price * factor);
-    const minUnits = Math.round(Number(guide.minPrice || 0) * factor);
-    const maxUnits = Math.round(Number(guide.maxPrice || 0) * factor);
-    if (priceUnits < minUnits || priceUnits > maxUnits) throw advertisementFixedPriceRangeError(guide, price);
-  }
-  return guide;
 }
 
 function advertisementPriceValidationErrorPayload(error, credential = null) {
@@ -16112,7 +16101,18 @@ async function handleAdvertisementReferencePrice(req, res, url) {
       tradeType:url.searchParams.get('tradeType') || 'BUY',
       payType:url.searchParams.get('payType') || ''
     }, url.searchParams.get('force') === '1');
-    return sendJson(res, 200, data, {}, req);
+    return sendJson(res, 200, {
+      credentialId:Number(credential.id),
+      asset:cleanStr(data.asset || url.searchParams.get('asset') || 'USDT', 20).toUpperCase(),
+      fiat:cleanStr(data.fiat || url.searchParams.get('fiat') || 'BDT', 20).toUpperCase(),
+      tradeType:normalizeAdvertisementTradeType(data.tradeType || url.searchParams.get('tradeType') || 'BUY'),
+      referencePrice:Number(data.referencePrice || 0),
+      priceScale:Number(data.priceScale ?? 2),
+      stale:data.stale === true,
+      cached:data.cached === true,
+      fetchedAt:data.fetchedAt || null,
+      displayOnly:true
+    }, {}, req);
   } catch (error) {
     return sendJson(res, Number(error.statusCode || 502), { error:cleanStr(error.message || error, 500) }, {}, req);
   }
@@ -16320,8 +16320,7 @@ async function handleAdvertisements(req, res, url) {
         // Resolve payment methods against this exact credential before validating
         // price or sending anything. This prevents Account A payIds from entering
         // an Account B create payload in multi-API installations.
-        normalized = await prepareAdvertisementTradeMethodsForCredential(normalized, credential);
-        await assertAdvertisementFixedPriceWithinLiveRange(credential, normalized, true);
+        normalized = await prepareAdvertisementTradeMethodsForCredential(normalized, credential, { refresh:false });
       } catch (error) {
         if (['ADS_FIXED_PRICE_OUT_OF_RANGE','ADS_REFERENCE_PRICE_UNAVAILABLE','ADS_INVALID_PRICE'].includes(String(error.code || ''))) {
           return sendJson(res, Number(error.statusCode || 502), advertisementPriceValidationErrorPayload(error, credential), {}, req);
@@ -16714,6 +16713,7 @@ async function handleAdvertisementById(req, res, parts) {
     const credentialId = Number(item.credentialId || 0);
     const credential = resolveBinanceCredentialForUser(user, credentialId, 'ads.view', { includeDisabled:false });
     const shouldRefresh = req.url && new URL(req.url, 'http://localhost').searchParams.get('refresh') === '1';
+    const refreshWarnings = [];
     if (shouldRefresh && db.settings.apiMode === 'live') {
       if (!credential || !credential.apiKey || !credential.secretKey || credential.disabled) {
         return sendJson(res, 422, {
@@ -16722,51 +16722,30 @@ async function handleAdvertisementById(req, res, parts) {
           credentialId
         }, {}, req);
       }
-      if (item.advNo) {
-        let liveDetail;
+      const warnings = refreshWarnings;
+      const liveDetailTask = item.advNo ? (async () => {
         try {
-          liveDetail = await fetchLiveAdvertisementDetail(credential, item.advNo);
+          const liveDetail = await fetchLiveAdvertisementDetail(credential, item.advNo);
+          const liveFields = advertisementFieldsFromBinance(liveDetail, credentialId);
+          if (liveFields.advNo && String(liveFields.advNo) !== String(item.advNo)) throw Object.assign(new Error('Binance returned a different advertisement number for this account.'), { code:'ADS_ACCOUNT_ADVERTISEMENT_MISMATCH' });
+          const refreshed = upsertBinanceAdvertisement(liveDetail, user, credential);
+          if (!refreshed.item || Number(refreshed.item.id) !== Number(item.id)) throw Object.assign(new Error('The advertisement could not be matched to its original account record.'), { code:'ADS_ACCOUNT_ADVERTISEMENT_MISMATCH' });
         } catch (error) {
-          return sendJson(res, 502, {
-            error: 'The latest advertisement could not be verified from its own Binance account. Edit was blocked; no stale or cross-account data was opened.',
-            code: 'ADS_LIVE_DETAIL_REQUIRED',
-            credentialId,
-            credentialName: binanceCredentialLabel(credential),
-            details: cleanStr(error.message || error, 400)
-          }, {}, req);
+          if (String(error.code || '') === 'ADS_ACCOUNT_ADVERTISEMENT_MISMATCH') throw error;
+          warnings.push(`Live advertisement refresh skipped: ${cleanStr(error.message || error, 220)}`);
         }
-        const liveFields = advertisementFieldsFromBinance(liveDetail, credentialId);
-        if (liveFields.advNo && String(liveFields.advNo) !== String(item.advNo)) {
-          return sendJson(res, 409, {
-            error: 'Binance returned a different advertisement number for this account. Edit was blocked for safety.',
-            code: 'ADS_ACCOUNT_ADVERTISEMENT_MISMATCH',
-            credentialId,
-            expectedAdvNo: String(item.advNo),
-            returnedAdvNo: String(liveFields.advNo)
-          }, {}, req);
+      })() : Promise.resolve();
+      const paymentTask = (async () => {
+        try {
+          if (normalizeAdvertisementTradeType(item.tradeType) === 'SELL') await fetchAdvertisementAccountPaymentMethods(credential, { enrich:false });
+          else await syncAdvertisementCatalogWithCredential(credential, true);
+        } catch (error) {
+          warnings.push(`Payment-method refresh skipped: ${cleanStr(error.message || error, 220)}`);
         }
-        const refreshed = upsertBinanceAdvertisement(liveDetail, user, credential);
-        if (!refreshed.item || Number(refreshed.item.id) !== Number(item.id)) {
-          return sendJson(res, 409, {
-            error: 'The advertisement could not be matched to its original account record. Edit was blocked for safety.',
-            code: 'ADS_ACCOUNT_ADVERTISEMENT_MISMATCH',
-            credentialId
-          }, {}, req);
-        }
-      }
-      try {
-        if (normalizeAdvertisementTradeType(item.tradeType) === 'SELL') await fetchAdvertisementAccountPaymentMethods(credential, { enrich:false });
-        else await syncAdvertisementCatalogWithCredential(credential, true);
-      } catch (error) {
-        return sendJson(res, 502, {
-          error: normalizeAdvertisementTradeType(item.tradeType) === 'SELL'
-            ? "This Binance account's payment accounts could not be verified. Edit was blocked to prevent “payment method not yours”."
-            : "This Binance account's payment-method catalog could not be verified. Edit was blocked to prevent cross-account method selection.",
-          code: 'ADS_ACCOUNT_PAYMENT_METHODS_REQUIRED',
-          credentialId,
-          credentialName: binanceCredentialLabel(credential),
-          details: cleanStr(error.message || error, 400)
-        }, {}, req);
+      })();
+      try { await Promise.all([liveDetailTask, paymentTask]); }
+      catch (error) {
+        return sendJson(res, 409, { error: cleanStr(error.message || error, 400), code:error.code || 'ADS_ACCOUNT_ADVERTISEMENT_MISMATCH', credentialId }, {}, req);
       }
       saveDb({ broadcast:false });
     }
@@ -16779,7 +16758,7 @@ async function handleAdvertisementById(req, res, parts) {
       credentialName: credential ? binanceCredentialLabel(credential) : cleanStr(item.credentialName || '', 120),
       paymentMethods,
       genericPaymentMethods,
-      warnings: []
+      warnings: refreshWarnings
     }, {}, req);
   }
   if (!action && req.method === 'DELETE') {
@@ -16820,8 +16799,7 @@ async function handleAdvertisementById(req, res, parts) {
         ...item,
         classify: advertisementCreateClassifyForCredential(credential.id, item.classify)
       };
-      publishItem = await prepareAdvertisementTradeMethodsForCredential(publishItem, credential);
-      await assertAdvertisementFixedPriceWithinLiveRange(credential, publishItem, true);
+      publishItem = await prepareAdvertisementTradeMethodsForCredential(publishItem, credential, { refresh:false });
       const payload = advertisementBinancePayload(publishItem);
       const posted = await postAdvertisementWithOnlineRetry(manager, credential, payload, 'postAd_publish_draft');
       if (posted.payloadUsed?.classify) publishItem.classify = cleanStr(posted.payloadUsed.classify, 40);
@@ -16924,8 +16902,7 @@ async function handleAdvertisementById(req, res, parts) {
       // cases payment-method ownership is resolved before the dynamic price check.
       if (!item.advNo) {
         try {
-          normalized = await prepareAdvertisementTradeMethodsForCredential(normalized, liveCredential, { preferredTradeMethods:item.tradeMethods });
-          await assertAdvertisementFixedPriceWithinLiveRange(liveCredential, normalized, true);
+          normalized = await prepareAdvertisementTradeMethodsForCredential(normalized, liveCredential, { preferredTradeMethods:item.tradeMethods, refresh:false });
         } catch (error) {
           if (['ADS_FIXED_PRICE_OUT_OF_RANGE','ADS_REFERENCE_PRICE_UNAVAILABLE','ADS_INVALID_PRICE'].includes(String(error.code || ''))) {
             return sendJson(res, Number(error.statusCode || 502), advertisementPriceValidationErrorPayload(error, liveCredential), {}, req);
@@ -16953,34 +16930,29 @@ async function handleAdvertisementById(req, res, parts) {
         // Editing an existing advertisement does not use the create-ad merchant
         // readiness gate. Status refresh is best-effort and never blocks update/edit.
         refreshAdvertisementMerchantControlVerification(credential, false).catch(() => {});
-        let liveDetail;
-        try {
-          liveDetail = await fetchLiveAdvertisementDetail(credential, item.advNo);
-        } catch (error) {
-          return sendJson(res, 502, {
-            error: 'The latest Binance advertisement amount could not be read, so no update was sent. Please try again.',
-            details: cleanStr(error.message || error, 400)
-          }, {}, req);
-        }
+        // Fast path: updating an already-synced advertisement must never wait for
+        // getDetailByNo or reference-price lookups. The local record is the latest
+        // reconciled Binance snapshot. Send the requested update immediately; only
+        // an amount-specific Binance rejection triggers one live-detail retry below.
+        let liveDetail = null;
+        const cachedDetail = advertisementCachedDetailForUpdate(item);
         try {
           normalized = await prepareAdvertisementTradeMethodsForCredential(normalized, credential, {
-            liveDetail,
-            preferredTradeMethods:item.tradeMethods
+            liveDetail:cachedDetail,
+            preferredTradeMethods:item.tradeMethods,
+            refresh:false
           });
-          await assertAdvertisementFixedPriceWithinLiveRange(credential, normalized, true);
         } catch (error) {
-          if (['ADS_FIXED_PRICE_OUT_OF_RANGE','ADS_REFERENCE_PRICE_UNAVAILABLE','ADS_INVALID_PRICE'].includes(String(error.code || ''))) {
-            return sendJson(res, Number(error.statusCode || 502), advertisementPriceValidationErrorPayload(error, credential), {}, req);
-          }
           return sendJson(res, Number(error.statusCode || 422), {
             error: cleanStr(error.message || error, 500),
             code: error.code || null,
             credentialId: Number(credential.id),
             credentialName: binanceCredentialLabel(credential),
-            missingPaymentMethodIds: Array.isArray(error.missingPaymentMethodIds) ? error.missingPaymentMethodIds : []
+            missingPaymentMethodIds: Array.isArray(error.missingPaymentMethodIds) ? error.missingPaymentMethodIds : [],
+            missingPaymentPayIds: Array.isArray(error.missingPaymentPayIds) ? error.missingPaymentPayIds : []
           }, {}, req);
         }
-        amountUpdate = advertisementUpdatePayload(normalized, liveDetail, item.advNo, { updateMode: 'FULL', credentialId: credential.id });
+        amountUpdate = advertisementUpdatePayload(normalized, cachedDetail, item.advNo, { updateMode: 'FULL', credentialId: credential.id });
         const mutationKey = `ad-update:${advertisementCredentialKey(credential)}:${String(item.advNo)}:${advertisementFingerprint({ ...normalized, initAmount: amountUpdate.cumulativeInitAmount, surplusAmount: amountUpdate.desiredSurplusAmount })}`;
         try {
           binanceResult = await runAdvertisementMutationOnce(mutationKey, () => callSignedSapi({
@@ -17001,9 +16973,7 @@ async function handleAdvertisementById(req, res, parts) {
               item.merchantOnlinePreflightAt = nowIso();
               item.merchantOnlineStrategy = retryPreflight.strategy || null;
               item.merchantOnlineVerified = Boolean(retryPreflight.verified);
-              await waitMs(500);
-              const retryDetail = await fetchLiveAdvertisementDetail(credential, item.advNo);
-              amountUpdate = advertisementUpdatePayload(normalized, retryDetail, item.advNo, { updateMode: 'FULL', credentialId: credential.id });
+              await waitMs(300);
               const retryKey = `ad-update-privilege-retry:${advertisementCredentialKey(credential)}:${String(item.advNo)}:${amountUpdate.cumulativeInitAmount}`;
               binanceResult = await runAdvertisementMutationOnce(retryKey, () => callSignedSapi({
                 apiKey: credential.apiKey,
@@ -17029,18 +16999,7 @@ async function handleAdvertisementById(req, res, parts) {
             // strict AdUpdateReq payload and no updateMode so Binance can apply its
             // server-side default. An illegal-parameter response means the first
             // request was rejected before any advertisement mutation.
-            await waitMs(BINANCE_AD_DETAIL_REFRESH_SETTLE_MS);
-            let compatibilityDetail = null;
-            try { compatibilityDetail = await fetchLiveAdvertisementDetail(credential, item.advNo); } catch (_) {}
-            if (!compatibilityDetail) {
-              const info = advertisementUpdateErrorInfo(error);
-              return sendJson(res, 422, {
-                error: 'Binance rejected an advertisement update parameter. The latest advertisement could not be reloaded, so no change was saved.',
-                binanceCode: info.code || null,
-                binanceMessage: info.message || null
-              }, {}, req);
-            }
-            amountUpdate = advertisementUpdatePayload(normalized, compatibilityDetail, item.advNo, { includeUpdateMode: false, credentialId: credential.id });
+            amountUpdate = advertisementUpdatePayload(normalized, cachedDetail, item.advNo, { includeUpdateMode: false, credentialId: credential.id });
             const compatibilityKey = `ad-update-compat:${advertisementCredentialKey(credential)}:${String(item.advNo)}:${advertisementFingerprint(amountUpdate.payload)}`;
             try {
               binanceResult = await runAdvertisementMutationOnce(compatibilityKey, () => callSignedSapi({
@@ -17061,13 +17020,13 @@ async function handleAdvertisementById(req, res, parts) {
                 binanceCode: info.code || null,
                 binanceMessage: info.message || null,
                 requestedPrice: amountUpdate.payload.price,
-                priceScale: Number(compatibilityDetail.priceScale ?? 8)
+                priceScale: Number(cachedDetail.priceScale ?? 8)
               }, {}, req);
             }
           } else if (isAdvertisementAmountValidationError(error)) {
             let refreshedDetail = null;
             await waitMs(BINANCE_AD_DETAIL_REFRESH_SETTLE_MS);
-            try { refreshedDetail = await fetchLiveAdvertisementDetail(credential, item.advNo); } catch (_) {}
+            try { refreshedDetail = await fetchLiveAdvertisementDetail(credential, item.advNo); liveDetail = refreshedDetail; } catch (_) {}
             const refreshed = refreshedDetail ? advertisementUpdatePayload(normalized, refreshedDetail, item.advNo, { updateMode: 'FULL', credentialId: credential.id }) : null;
             const stateChanged = Boolean(refreshed && (
               refreshed.snapshot.initAmount !== amountUpdate.snapshot.initAmount ||
@@ -17113,7 +17072,7 @@ async function handleAdvertisementById(req, res, parts) {
         }
         item.lastSyncedAt = nowIso();
         item.rawBinanceResult = sanitizedBinanceResult(binanceResult);
-        item.rawBinanceAd = sanitizedBinanceResult(liveDetail);
+        if (liveDetail) item.rawBinanceAd = sanitizedBinanceResult(liveDetail);
       } else if (normalized.status === 'online') {
         return sendJson(res, 422, { error: 'This draft cannot be activated until Binance live mode and an API credential are available.' }, {}, req);
       }
@@ -17518,7 +17477,6 @@ async function prepareReleaseSwitch(user, target, mode) {
     systemUpdateEvent('switch_requested', target.version, mode === 'rollback' ? 'Code rollback requested.' : 'Release installation requested.', { updateId: record.id, actorUserId: user.id, backupId: backup.id });
     logAudit(user, mode === 'rollback' ? 'system_release_rollback_requested' : 'system_release_update_requested', 'systemUpdate', record.id, { fromVersion: APP_VERSION, toVersion: target.version, backupId: backup.id });
     await saveDb({ reason: `system_${mode}_requested` });
-    await flushDatabaseSave();
     if (mode === 'rollback') {
       const rollbackMirror = syncManagedPublicMirrorFrom(target.directory);
       if (rollbackMirror.synced) console.log(`Rollback public UI mirror prepared for ${target.version} (${rollbackMirror.files} files).`);
@@ -17612,7 +17570,7 @@ async function testSystemUpdateConnection(configuration) {
 async function executePreparedSystemUpdate(user, action, targetVersion) {
   const target = updateManager.releaseByVersion(targetVersion);
   if (!target) throw Object.assign(new Error('The selected compatible release is not prepared on this server.'), { statusCode: 404 });
-  await updateManager.validateInstalledRelease(target);
+  await updateManager.validateInstalledRelease(target, { runtimeChecks:false });
   const comparison = compareSemver(target.version, APP_VERSION);
   if (action === 'apply' && comparison <= 0) throw Object.assign(new Error('Select a prepared release newer than the current version.'), { statusCode: 422 });
   if (action === 'rollback' && comparison >= 0) throw Object.assign(new Error('Select an older compatible release for rollback.'), { statusCode: 422 });
