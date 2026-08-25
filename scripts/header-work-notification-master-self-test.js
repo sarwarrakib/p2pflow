@@ -19,7 +19,7 @@ const fail = message => { throw new Error(`Header work / notification master sel
 const assert = (condition, message) => { if (!condition) fail(message); };
 const count = (source, value) => source.split(value).length - 1;
 
-assert(pkg.version === '1.6.8', `expected v1.6.8, got ${pkg.version}`);
+assert(pkg.version === '1.6.9', `expected v1.6.9, got ${pkg.version}`);
 assert(count(index, 'data-order-acceptance-toggle') === 1, 'the header must contain the only Work Status button');
 assert(index.includes('id="globalWorkAvailabilityToggle"'), 'global header Work Status control is missing');
 assert(!orders.includes('orderAcceptanceButtonHtml') && !orders.includes('class="order-acceptance-toggle'), 'Orders list still renders a duplicate Work Status button');
@@ -28,14 +28,14 @@ assert(!app.includes('chat-availability-bar'), 'order-detail chat still renders 
 assert(!css.includes('.chat-availability-bar'), 'obsolete order-detail chat control styles remain');
 
 assert(server.includes('function userHasLiveOrderAccess'), 'live-order access helper is missing');
-assert(server.includes('function userHasLiveOrderAccess') && server.includes('userBinanceOrderAccountAccess(user, item.id).effectiveLive'), 'effective account-scoped Live Order permission is not checked');
+assert(server.includes("binanceCredentialIdsForUserPermission(user, 'binance.sync', { includeDisabled: true })"), 'effective account-scoped Live Order permission is not checked');
 assert(server.includes('controlsAutoAssignment = Boolean(assignable && !liveOrderAccess)'), 'Work Status remains visible to Live Order users');
 assert(server.includes('function broadcastOrderAcceptanceState') && server.includes('liveOrderAccess: next.liveOrderAccess'), 'realtime work state does not carry Live Order visibility');
 assert(server.includes("reason: 'user_permissions_updated'") && server.includes("reason: 'role_permissions_updated'"), 'permission changes do not update the header Work Status immediately');
 
 assert(chat.includes('backgroundNotificationToggleHtml({ compact:true })'), 'P2P Message notification master button is missing');
 assert(app.includes("  chat: null,"), 'P2P Message page still requires Orders permission, so the sound/notification button is not available to every signed-in role');
-assert(server.includes("const user = requireAuth(req, res); if (!user) return;") && server.includes("const orders = userHasPermission(user, 'orders.view') ? ordersAccessibleToUser(user, { respectFeatureControls:false }) : [];"), 'chat inbox no longer preserves base order access independently from the Orders display switch');
+assert(server.includes("const user = requireAuth(req, res); if (!user) return;") && server.includes("const orders = userHasPermission(user, 'orders.view') ? ordersAccessibleToUser(user) : [];"), 'chat inbox does not safely allow notification-only access without exposing orders');
 assert(!notifications.includes('backgroundNotificationToggleHtml'), 'Notifications settings still duplicates the master button');
 assert(app.includes('function notificationMasterEnabled()'), 'notification master state helper is missing');
 assert(app.includes('function notificationCategoryEnabledOnDevice'), 'category-aware automatic sound gate is missing');

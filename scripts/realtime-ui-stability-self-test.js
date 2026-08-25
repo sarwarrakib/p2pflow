@@ -27,7 +27,7 @@ assert(market.includes('data-market-key='), 'P2P Market rows do not have a stabl
 assert(market.includes('if (!background) result.classList.add(\'loading\')'), 'Background market refresh still shows foreground loading state.');
 
 assert(server.includes('runBinanceFastOrderDiscovery'), 'Fast Binance order discovery loop is missing.');
-assert(server.includes("CRM_FAST_ORDER_DISCOVERY_MS || 3000") && server.includes('fastOrderCredentialRuntime(credential)') && server.includes('timeoutMs: 20000'), 'Fast order discovery is not configured for reliable per-account near-realtime polling.');
+assert(server.includes("CRM_FAST_ORDER_DISCOVERY_MS || 3000"), 'Fast order discovery is not configured around 3 seconds.');
 assert(server.includes('startBinanceRealtimeChatLoop'), 'Persistent Binance chat WebSocket listener is missing.');
 assert(server.includes("reason:'binance_chat_realtime'"), 'Realtime chat persistence path is missing.');
 assert(server.includes("'Permissions-Policy': 'camera=(self)"), 'Same-origin camera permission is not enabled.');

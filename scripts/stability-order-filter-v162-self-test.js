@@ -21,7 +21,7 @@ const assert = (value, message) => {
   if (!value) throw new Error(`v1.6.3 stability/order-filter/mobile-ui self-test failed: ${message}`);
 };
 
-assert(pkg.version === '1.6.8', `expected v1.6.8, got ${pkg.version}`);
+assert(pkg.version === '1.6.9', `expected v1.6.9, got ${pkg.version}`);
 
 for (const endpoint of [
   '/api/login',

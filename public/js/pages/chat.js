@@ -1,4 +1,4 @@
-// P2PFlow v1.6.8
+// P2PFlow v1.6.9
 // Binance-style P2P message inbox with per-CRM-user account controls layered on existing permissions.
 
 function stopChatInboxAutoRefresh() {
@@ -6,12 +6,12 @@ function stopChatInboxAutoRefresh() {
   state.chatInboxRefreshTimer = null;
 }
 
-function scheduleChatInboxAutoRefresh(delay=4000) {
+function scheduleChatInboxAutoRefresh(delay=12000) {
   stopChatInboxAutoRefresh();
   state.chatInboxRefreshTimer = setTimeout(() => {
     if (state.page !== 'chat' || modalOpen()) return;
     renderChatInbox({ preserveFocus:true }).catch(() => {});
-  }, Math.max(2500, Number(delay || 4000)));
+  }, Math.max(5000, Number(delay || 12000)));
 }
 
 function chatInboxTimeLabel(value) {
@@ -119,15 +119,13 @@ function chatAccountSettingsModal(account={}) {
       });
       state.chatAccountOptions = normalizeChatAccountOptions(result.items || state.chatAccountOptions);
       const changedFeatures = Array.isArray(result.changedFeatures) ? result.changedFeatures : [];
-      if ((changedFeatures.includes('orders') || result.forceOrdersReload === true) && typeof invalidateOrdersListCache === 'function') {
-        invalidateOrdersListCache({ disabledCredentialId:requestedControls.orders ? 0 : Number(account.id) });
+      if (changedFeatures.includes('orders')) {
+        state.orderSnapshot = null;
+        try { state.routeHostManager?.drop?.('orders'); } catch {}
+        if (state.page === 'orders' && !state.currentOrderId && typeof renderOrders === 'function') renderOrders().catch(()=>{});
       }
       closeModal();
-      const visibility = result.orderVisibility || {};
-      const orderStatusText = changedFeatures.includes('orders') && requestedControls.orders
-        ? ` Orders ON${Number.isFinite(Number(visibility.visibleCount)) ? ` · ${Number(visibility.visibleCount)} visible` : ''}.`
-        : '';
-      notify(`API account settings saved.${orderStatusText}`, 'ok');
+      notify('API account settings saved.', 'ok');
       renderChatInbox({ preserveFocus:true, force:true }).catch(()=>{});
     } catch (error) {
       save.disabled = false;

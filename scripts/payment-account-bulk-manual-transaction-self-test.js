@@ -26,8 +26,8 @@ const section = (source, start, end) => {
   return source.slice(a, b);
 };
 
-assert(pkg.version === '1.6.8', `expected v1.6.8, got ${pkg.version}`);
-assert(server.includes('const APP_SCHEMA_VERSION = 39;'), 'schema 34 is missing.');
+assert(pkg.version === '1.6.9', `expected v1.6.9, got ${pkg.version}`);
+assert(server.includes('const APP_SCHEMA_VERSION = 37;'), 'schema 34 is missing.');
 
 const accountHelpers = section(server, 'function paymentAccountIdsFromBody', 'async function handleBulkPaymentAccounts');
 assert(accountHelpers.includes('function paymentAccountDeletionBlocker') && accountHelpers.includes('Balance must be zero before deletion'), 'safe delete balance guard is missing.');
