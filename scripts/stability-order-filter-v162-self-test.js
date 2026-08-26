@@ -21,7 +21,7 @@ const assert = (value, message) => {
   if (!value) throw new Error(`v1.6.3 stability/order-filter/mobile-ui self-test failed: ${message}`);
 };
 
-assert(pkg.version === '1.7.5', `expected v1.7.5, got ${pkg.version}`);
+assert(pkg.version === '1.7.6', `expected v1.7.6, got ${pkg.version}`);
 
 for (const endpoint of [
   '/api/login',
@@ -80,9 +80,10 @@ assert(css.includes('body.p2pflow-app-shell .sidebar{') && css.includes('z-index
 assert(css.includes('.sidebar-backdrop{') && css.includes('z-index:1001!important') && css.includes('backdrop-filter:none!important'), 'Mobile sidebar backdrop can still blur the drawer');
 
 assert(orders.includes("${section(ongoingTabs, 'ongoing')}") && orders.includes("${section(fulfilledTabs, 'fulfilled')}"), 'Orders does not keep both Ongoing and Fulfilled groups available');
-assert(orders.includes('sectionNode.hidden = !active;'), 'Orders group switch is not a direct visibility toggle');
+assert(orders.includes('/api/orders?group=${encodeURIComponent(normalized)}') && orders.includes('scheduleInactiveOrderGroupHydration'), 'Orders does not use active-group first paint with background hydration');
+assert(orders.includes('sectionNode.hidden = !active;'), 'Hydrated Orders group switch is not a direct visibility toggle');
 const groupHandler = (orders.match(/\$\$\('\[data-order-group\]'\)\.forEach\(btn => btn\.onclick = \(\) => \{([\s\S]*?)\n  \}\);/) || [])[1] || '';
-assert(groupHandler && !groupHandler.includes('renderOrders('), 'Ongoing/Fulfilled click still re-renders the whole page');
+assert(groupHandler && groupHandler.includes('renderOrders({ group:nextGroup') && groupHandler.includes('sectionNode.hidden = !active;'), 'Orders hybrid lazy/fallback group switching is missing');
 
 assert(versioner.includes('if (v.patch >= 9) return nextMinor(v);'), 'version patch carry 1.x.9 -> next minor is missing');
 assert(versioner.includes('if (v.minor >= 9) return nextMajor(v);'), 'version minor carry 1.9.x -> next major is missing');
@@ -92,7 +93,7 @@ console.log(JSON.stringify({
   version:pkg.version,
   csrfLoginBootstrap:true,
   scrollStability:true,
-  orderGroupInstant:true,
+  orderGroupHybridHydration:true,
   orderFilterInstantClientData:true,
   orderProgressiveRenderBatch:120,
   orderFilterUsesP2pMarketSvg:true,

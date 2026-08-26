@@ -30,7 +30,7 @@ for (const file of files) {
 }
 
 const required = [
-  'server.js','app-server.js','package.json','package-lock.json','public/index.html','public/js/pages/system-update.js',
+  'server.js','app-server.js','package.json','package-lock.json','public/index.html','public/page-preload.js','public/js/pages/system-update.js',
   'lib/updateManager.js','lib/releaseIntegrity.js','lib/publicAssetMirror.js','lib/databaseProvider.js','lib/hostingSetup.js','lib/statePayloadCodec.js','lib/mysqlStateStore.js','lib/postgresStateStore.js',
   'scripts/build-release.js','scripts/build-unified-package.js','scripts/set-version.js','scripts/owner-email-recovery-code.js','scripts/public-asset-mirror-self-test.js','scripts/unified-supervisor-self-test.js',
   '.github/workflows/release.yml','.github/workflows/ci.yml','SET_NEXT_VERSION.bat','SET_HOTFIX_VERSION.bat'
@@ -86,8 +86,9 @@ for (const marker of ['nextMinor(', 'nextPatch(', "requested === 'minor'", 'pack
   if (!versionTool.includes(marker)) throw new Error(`Version tool is missing marker: ${marker}`);
 }
 const index = fs.readFileSync(path.join(root, 'public', 'index.html'), 'utf8');
-if (!index.includes('/js/pages/system-update.js?v=' + pkg.version)) throw new Error('System Update asset version does not match package version.');
+if (!index.includes('/page-preload.js?v=' + pkg.version)) throw new Error('Lazy page preload asset version does not match package version.');
 const browserApp = fs.readFileSync(path.join(root, 'public', 'app.js'), 'utf8');
+if (!browserApp.includes("'system-update':'system-update.js'") || !browserApp.includes('ensurePageModule(state.page)')) throw new Error('System Update lazy page module mapping is missing.');
 for (const marker of ["nav.dataset.navigationModel = 'grouped-control-center'", `nav.dataset.uiRelease = '${pkg.version}'`, "NAV_MENU_GROUPS"]) {
   if (!browserApp.includes(marker)) throw new Error(`Grouped navigation runtime marker is missing: ${marker}`);
 }

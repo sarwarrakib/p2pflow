@@ -8,7 +8,7 @@ const server = read('app-server.js');
 const login = read('public/login.js');
 const pkg = JSON.parse(read('package.json'));
 const assert = (ok, message) => { if (!ok) throw new Error(`OTP-disabled login self-test failed: ${message}`); };
-assert(pkg.version === '1.7.5', `expected v1.7.5, got ${pkg.version}`);
+assert(pkg.version === '1.7.6', `expected v1.7.6, got ${pkg.version}`);
 assert(server.includes('if (db.settings.requireEmailOtp === false)') && server.includes('secretRequired: true'), 'requireOtpContinue does not short-circuit mail when OTP is disabled');
 assert(!server.includes('Email OTP is disabled, so Owner Emergency Login is not required.'), 'old OTP-disabled emergency dead-end is still present');
 assert(server.includes("if (!needOtp && needSecret)"), 'explicit emergency start does not route OTP-disabled mode to PIN-only login');

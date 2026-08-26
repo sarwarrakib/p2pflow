@@ -1231,6 +1231,25 @@ async function databaseStateForPersistence() {
   return db;
 }
 
+// Generic state-change notifications can be produced by several durable writes in
+// one operator action (audit, notification, order/accounting side effects). Targeted
+// realtime events are still emitted immediately; only the broad db_updated fallback
+// is coalesced so browsers do not re-fetch the same page several times per burst.
+let dbUpdatedBroadcastTimer = null;
+let dbUpdatedBroadcastRevision = 0;
+const DB_UPDATED_COALESCE_MS = Math.max(250, Math.min(5000, Number(process.env.P2PFLOW_DB_UPDATED_COALESCE_MS || 1200) || 1200));
+function scheduleDbUpdatedBroadcast(revision = 0, delayMs = DB_UPDATED_COALESCE_MS) {
+  dbUpdatedBroadcastRevision = Math.max(dbUpdatedBroadcastRevision, Number(revision || 0));
+  if (dbUpdatedBroadcastTimer) return;
+  dbUpdatedBroadcastTimer = setTimeout(() => {
+    dbUpdatedBroadcastTimer = null;
+    const revisionNow = Math.max(dbUpdatedBroadcastRevision, Number(stateStore?.currentRevision || 0));
+    dbUpdatedBroadcastRevision = 0;
+    broadcast({ type: 'db_updated', revision: revisionNow, at: nowIso() });
+  }, Math.max(250, Number(delayMs || DB_UPDATED_COALESCE_MS)));
+  if (typeof dbUpdatedBroadcastTimer.unref === 'function') dbUpdatedBroadcastTimer.unref();
+}
+
 function saveDb(options = {}) {
   if (!db || !stateStore) return Promise.resolve();
   const requestPersistence = requestPersistenceContext.getStore();
@@ -1241,7 +1260,7 @@ function saveDb(options = {}) {
   }
   const promise = stateStore.scheduleSave(databaseStateForPersistence, options.reason || 'application_state_change');
   if (options.broadcast !== false) {
-    promise.then(() => broadcast({ type: 'db_updated', revision: stateStore.currentRevision, at: nowIso() })).catch(() => {});
+    promise.then(() => scheduleDbUpdatedBroadcast(stateStore.currentRevision)).catch(() => {});
   }
   // Every asynchronous writer is observed. A failed durable write puts the service
   // into maintenance and restarts from the last confirmed database revision.
@@ -3696,7 +3715,7 @@ function recordActivityHeartbeat(sessionInfo, body = {}, req = null) {
   session.lastHeartbeatAt = record.lastHeartbeatAt;
   session.activityLastPage = record.lastPage;
   session.activityLastPersistedAt = Number(session.activityLastPersistedAt || 0);
-  if (now - session.activityLastPersistedAt >= 30000) {
+  if (now - session.activityLastPersistedAt >= 60000) {
     session.activityLastPersistedAt = now;
     syncPersistentSessions();
     saveDb({ broadcast: false });
@@ -11228,6 +11247,9 @@ function secureHeaders(extra = {}, req = null) {
     ...(req && requestPersistenceContext.getStore()?.startedAt ? { 'Server-Timing': `app;dur=${Math.max(0, Date.now() - Number(requestPersistenceContext.getStore().startedAt || Date.now()))}` } : {}),
     ...extra
   };
+  if (req && requestPersistenceContext.getStore()?.startedAt) {
+    headers['X-P2PFlow-Response-Ms'] = String(Math.max(0, Date.now() - Number(requestPersistenceContext.getStore().startedAt || Date.now())));
+  }
   if (req && isHttps(req)) headers['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains';
   return headers;
 }
@@ -11245,8 +11267,19 @@ function withSessionRefresh(headers = {}, req = null) {
   if (req && req._sessionRefreshSid && !out['Set-Cookie']) out['Set-Cookie'] = sessionCookieHeader(req._sessionRefreshSid, req);
   return out;
 }
+const NON_DURABLE_MUTATION_PATHS = new Set([
+  '/api/activity/heartbeat'
+]);
+function mutationPathname(req) {
+  return String(req?.url || '').split('?')[0].replace(/\/+$/, '') || '/';
+}
+function mutationRequiresDurableFlush(req, status) {
+  if (!req || !['POST','PATCH','PUT','DELETE'].includes(String(req.method || '').toUpperCase())) return false;
+  if (Number(status) >= 500 || !stateStore || !db) return false;
+  return !NON_DURABLE_MUTATION_PATHS.has(mutationPathname(req));
+}
 function shouldFlushBeforeResponse(req, status) {
-  return Boolean(req && ['POST','PATCH','PUT','DELETE'].includes(String(req.method || '').toUpperCase()) && Number(status) < 500 && stateStore && db);
+  return mutationRequiresDurableFlush(req, status);
 }
 function writeJsonResponse(res, status, payload, extraHeaders = {}, req = null) {
   if (res.writableEnded || res.destroyed) return;
@@ -11275,6 +11308,7 @@ function writeTextResponse(res, status, text, type = 'text/plain; charset=utf-8'
 function ensureMutationScheduled(req, status) {
   if (!req || Number(status) < 200 || Number(status) >= 400) return;
   if (!['POST','PATCH','PUT','DELETE'].includes(String(req.method || '').toUpperCase())) return;
+  if (NON_DURABLE_MUTATION_PATHS.has(mutationPathname(req))) return;
   // Most mutating handlers already call saveDb() after their final in-memory
   // mutation. Scheduling another save here while that write is in-flight used
   // to force a second full encrypted-state serialization/compression before the
@@ -21064,7 +21098,20 @@ function orderListContextRows(context, orderId) {
 async function handleOrders(req, res, url) {
   const user = requirePermission(req, res, 'orders.view'); if (!user) return;
   if (req.method === 'GET') {
-    let orders = ordersAccessibleToUser(user);
+    const accessibleOrders = ordersAccessibleToUser(user);
+    const groupScope = cleanStr(url.searchParams.get('group') || 'all', 20).toLowerCase();
+    const cancelledOrder = order => /CANCEL/.test(String([order?.externalStatus, order?.rawStatus, order?.status].filter(Boolean).join(' ')).toUpperCase());
+    const fulfilledTotal = accessibleOrders.reduce((count, order) => count + (orderIsClosed(order) ? 1 : 0), 0);
+    const cancelledTotal = accessibleOrders.reduce((count, order) => count + (orderIsClosed(order) && cancelledOrder(order) ? 1 : 0), 0);
+    const groupCounts = {
+      ongoing: Math.max(0, accessibleOrders.length - fulfilledTotal),
+      fulfilled: fulfilledTotal,
+      completed: Math.max(0, fulfilledTotal - cancelledTotal),
+      cancelled: cancelledTotal
+    };
+    let orders = groupScope === 'ongoing'
+      ? accessibleOrders.filter(order => !orderIsClosed(order))
+      : (groupScope === 'fulfilled' ? accessibleOrders.filter(orderIsClosed) : accessibleOrders);
     const status = url.searchParams.get('status');
     const credentialId = Number(url.searchParams.get('credentialId') || 0);
     if (status) orders = orders.filter(o => o.status === status);
@@ -21074,6 +21121,8 @@ async function handleOrders(req, res, url) {
     const unread = chatUnreadSnapshotForOrders(user, orders);
     return sendJson(res, 200, {
       items: orders.map(order => orderListCompactView(order, user, context)),
+      groupScope,
+      groupCounts,
       unreadCounts: unread.counts,
       unreadTotal: unread.total,
       unreadLatestByOrder: unread.latestByOrder,

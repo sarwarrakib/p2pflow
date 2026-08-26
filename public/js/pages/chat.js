@@ -1,4 +1,4 @@
-// P2PFlow v1.7.5
+// P2PFlow v1.7.6
 // Binance-style P2P message inbox with per-CRM-user account controls layered on existing permissions.
 
 function stopChatInboxAutoRefresh() {
@@ -6,12 +6,13 @@ function stopChatInboxAutoRefresh() {
   state.chatInboxRefreshTimer = null;
 }
 
-function scheduleChatInboxAutoRefresh(delay=12000) {
+function scheduleChatInboxAutoRefresh(delay=0) {
   stopChatInboxAutoRefresh();
+  const fallbackDelay = state.realtimeConnected ? 30000 : 8000;
   state.chatInboxRefreshTimer = setTimeout(() => {
     if (state.page !== 'chat' || modalOpen()) return;
     renderChatInbox({ preserveFocus:true }).catch(() => {});
-  }, Math.max(5000, Number(delay || 12000)));
+  }, Math.max(5000, Number(delay || fallbackDelay)));
 }
 
 function chatInboxTimeLabel(value) {

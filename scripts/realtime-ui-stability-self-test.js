@@ -14,7 +14,7 @@ function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 
-assert(app.includes('backgroundPatchAllowed(state.page)') && app.includes("!['ads','settings','p2p-market','chat'].includes(state.page)"), 'Generic db_updated events are not constrained to approved non-destructive page patches.');
+assert(app.includes('backgroundPatchAllowed(state.page)') && app.includes("!['ads','settings','p2p-market','chat','orders','accounting'"), 'Generic db_updated events are not constrained away from realtime-heavy pages.');
 assert(app.includes('refreshCurrentOrderStateNonDestructive'), 'Open-order background refresh is not non-destructive.');
 assert(app.includes("mergeCurrentOrderChatItems(updated.chats || [], { forceScroll:false })"), 'Open-order chat delta is not merged without force scrolling.');
 assert(app.includes('state.currentOrderChatLastUserScrollAt = Date.now()'), 'Chat user scroll state is not tracked.');

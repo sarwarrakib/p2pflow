@@ -1,4 +1,4 @@
-// P2PFlow v1.7.5
+// P2PFlow v1.7.6
 // Page module: orders. Edit this file for the orders page UI.
 
 function orderAccountOptions(data = {}) {
@@ -254,6 +254,70 @@ function maybePromptOrderAcceptance(status = {}) {
   };
 }
 
+function orderGroupPayloadMarker(data={}, group='ongoing') {
+  if (!data || typeof data !== 'object') return data;
+  if (!Array.isArray(data._loadedGroups)) data._loadedGroups = [group === 'fulfilled' ? 'fulfilled' : 'ongoing'];
+  return data;
+}
+
+function mergeOrderGroupPayloads(primary={}, secondary={}) {
+  const byId = new Map();
+  let fallbackKey = 0;
+  for (const item of [...(primary.items || []), ...(secondary.items || [])]) {
+    const key = Number(item?.id || 0) || String(item?.externalOrderNo || item?.orderNo || `fallback-${fallbackKey++}`);
+    byId.set(key, item);
+  }
+  const items = [...byId.values()].sort((a,b) => (Date.parse(b.createdAt || b.updatedAt || '') || 0) - (Date.parse(a.createdAt || a.updatedAt || '') || 0));
+  return {
+    ...primary,
+    groupScope:'all',
+    groupCounts: secondary.groupCounts || primary.groupCounts || {},
+    items,
+    unreadCounts:{ ...(primary.unreadCounts || {}), ...(secondary.unreadCounts || {}) },
+    unreadLatestByOrder:{ ...(primary.unreadLatestByOrder || {}), ...(secondary.unreadLatestByOrder || {}) },
+    unreadTotal:Number(primary.unreadTotal || 0) + Number(secondary.unreadTotal || 0),
+    _loadedGroups:['ongoing','fulfilled']
+  };
+}
+
+function loadOrderGroupPayload(group='ongoing', options={}) {
+  const normalized = group === 'fulfilled' ? 'fulfilled' : 'ongoing';
+  if (!state.orderGroupLoadPromises || typeof state.orderGroupLoadPromises !== 'object') state.orderGroupLoadPromises = {};
+  if (!options.force && state.orderGroupLoadPromises[normalized]) return state.orderGroupLoadPromises[normalized];
+  const promise = api(`/api/orders?group=${encodeURIComponent(normalized)}`, {
+    autoReloadOnChallenge:false,
+    noAutoReload:true,
+    silent:options.silent === true,
+    signal:options.signal,
+    navigationScoped:false
+  }).then(data => orderGroupPayloadMarker(data, normalized)).finally(() => {
+    if (state.orderGroupLoadPromises?.[normalized] === promise) delete state.orderGroupLoadPromises[normalized];
+  });
+  state.orderGroupLoadPromises[normalized] = promise;
+  return promise;
+}
+
+function scheduleInactiveOrderGroupHydration(activeGroup='ongoing') {
+  clearTimeout(state.orderGroupHydrationTimer);
+  const otherGroup = activeGroup === 'fulfilled' ? 'ongoing' : 'fulfilled';
+  state.orderGroupHydrationTimer = setTimeout(async () => {
+    if (state.page !== 'orders' || state.currentOrderId) return;
+    try {
+      const otherData = await loadOrderGroupPayload(otherGroup, { silent:true });
+      if (state.page !== 'orders' || state.currentOrderId) return;
+      const current = state.ordersListData;
+      if (!current || !Array.isArray(current.items)) return;
+      const loaded = Array.isArray(current._loadedGroups) ? current._loadedGroups : [];
+      if (loaded.includes(otherGroup)) return;
+      const merged = mergeOrderGroupPayloads(current, otherData);
+      state.ordersListData = merged;
+      await renderOrders({ prefetchedData:merged, background:true, skipGroupPrefetch:true });
+    } catch (_) {
+      // Optimization only; selecting the tab still has a direct group fetch fallback.
+    }
+  }, 180);
+}
+
 async function applyOrderRealtimeChanges(changes=[]) {
   if (state.page !== 'orders' || state.currentOrderId || !Array.isArray(changes) || !changes.length) return false;
   const data = state.ordersListData;
@@ -306,17 +370,16 @@ async function renderOrders(opts={}) {
   setTitle('Orders');
   const renderGuard = beginPageRenderGuard('orders-list');
   const backgroundRefresh = opts.background === true;
+  const requestedGroup = opts.group === 'fulfilled' ? 'fulfilled' : (opts.group === 'ongoing' ? 'ongoing' : (state.orderGroup === 'fulfilled' ? 'fulfilled' : 'ongoing'));
   let data;
   try {
-    // The Orders page always loads the complete permission-scoped local list.
-    // API account is now a fast client-side filter instead of a page selector,
-    // so changing filters never waits on another network request.
-    data = opts.prefetchedData || await api('/api/orders', {
-      autoReloadOnChallenge:false,
-      noAutoReload:true,
-      signal:renderGuard.signal,
-      navigationScoped:false
+    // First paint loads only the active order group. The other group is hydrated
+    // after paint so large fulfilled history does not block the operator's screen.
+    data = opts.prefetchedData || await loadOrderGroupPayload(requestedGroup, {
+      force:opts.manual === true,
+      signal:renderGuard.signal
     });
+    orderGroupPayloadMarker(data, requestedGroup);
   } catch (error) {
     if (isUiRequestCancelled(error)) return;
     throw error;
@@ -422,8 +485,8 @@ async function renderOrders(opts={}) {
   const ordersPageHtml = `
     <div class="order-group-switch order-group-switch-with-menu">
       <div class="order-group-tabs">
-        <button class="order-group-btn ${group === 'ongoing' ? 'active' : ''}" data-order-group="ongoing" aria-selected="${group === 'ongoing' ? 'true' : 'false'}">Ongoing <b>${ongoingTabs[0][2].length}</b></button>
-        <button class="order-group-btn ${group === 'fulfilled' ? 'active' : ''}" data-order-group="fulfilled" aria-selected="${group === 'fulfilled' ? 'true' : 'false'}">Fulfilled <b>${fulfilledTabs[0][2].length}</b></button>
+        <button class="order-group-btn ${group === 'ongoing' ? 'active' : ''}" data-order-group="ongoing" aria-selected="${group === 'ongoing' ? 'true' : 'false'}">Ongoing <b>${Array.isArray(data._loadedGroups) && data._loadedGroups.includes('ongoing') ? ongoingTabs[0][2].length : Number(data.groupCounts?.ongoing || 0)}</b></button>
+        <button class="order-group-btn ${group === 'fulfilled' ? 'active' : ''}" data-order-group="fulfilled" aria-selected="${group === 'fulfilled' ? 'true' : 'false'}">Fulfilled <b>${Array.isArray(data._loadedGroups) && data._loadedGroups.includes('fulfilled') ? fulfilledTabs[0][2].length : Number(data.groupCounts?.fulfilled || 0)}</b></button>
       </div>
       <div class="order-page-tools">
         ${orderFilterMenuHtml(data, filters)}
@@ -485,11 +548,19 @@ async function renderOrders(opts={}) {
 
   $$('[data-order-group]').forEach(btn => btn.onclick = () => {
     const nextGroup = btn.dataset.orderGroup === 'fulfilled' ? 'fulfilled' : 'ongoing';
+    if (nextGroup === state.orderGroup) return;
+    const loadedGroups = Array.isArray(data._loadedGroups) ? data._loadedGroups : [];
+    const hasRowsToLoad = Number(data.groupCounts?.[nextGroup] || 0) > 0;
     state.orderGroup = nextGroup;
     localStorage.setItem('crmOrderGroup', nextGroup);
-    // Both groups are already in the DOM. Switching is a class/hidden toggle,
-    // not a complete Orders render, so Ongoing <-> Fulfilled is immediate even
-    // with a large order history.
+    if (!loadedGroups.includes(nextGroup) && hasRowsToLoad) {
+      renderOrders({ group:nextGroup, fastCommit:true, preserveScroll:false }).catch(error => {
+        if (!isUiRequestCancelled(error)) notify(error.message || 'Could not load order history.', 'danger');
+      });
+      return;
+    }
+    // Once post-paint hydration has loaded both groups, switching is a DOM-only
+    // visibility toggle just like the original all-history implementation.
     $$('[data-order-group]').forEach(button => {
       const active = button.dataset.orderGroup === nextGroup;
       button.classList.toggle('active', active);
@@ -560,6 +631,9 @@ async function renderOrders(opts={}) {
     loadMoreButtons.forEach(button => state.orderLoadMoreObserver.observe(button));
   }
   startCountdownTimers();
+  if (!opts.skipGroupPrefetch && (!Array.isArray(data._loadedGroups) || data._loadedGroups.length < 2)) {
+    scheduleInactiveOrderGroupHydration(group);
+  }
   window.setTimeout(() => maybePromptOrderAcceptance(state.orderAcceptance || {}), 80);
   if (state.orderListRefreshTimer) clearTimeout(state.orderListRefreshTimer);
   state.orderListRefreshTimer = setTimeout(() => {

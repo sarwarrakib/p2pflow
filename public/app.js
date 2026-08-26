@@ -1,6 +1,6 @@
-// v1.7.5: WebSocket/SSE-first realtime sync, bounded Binance SAPI concurrency, single durable mutation checkpoint, and cached static compression.
-// v1.7.5: fixed-viewport AppShell, clean History routes, persistent per-route hosts, lifecycle rendering, and data-only DOM patching.
-// v1.7.5: stable-shell navigation, stale-request cancellation, non-destructive order/chat updates, and latest-navigation-wins rendering.
+// v1.7.6: merged fast-path profile — lazy page bundles, SSE-targeted UI refresh, WS-first Binance chat, bounded SAPI concurrency, and single durable mutation checkpoints.
+// v1.7.6: fixed-viewport AppShell, clean History routes, persistent per-route hosts, lifecycle rendering, and data-only DOM patching.
+// v1.7.6: stable-shell navigation, stale-request cancellation, non-destructive order/chat updates, and latest-navigation-wins rendering.
 // v1.5.23: Payment Account serial scope treats each normalized Label, including no Label, as an independent namespace.
 // v1.5.22: Header-only Work Status, chat-only notification master, and coupled sound/push controls.
 // v1.5.20: account-scoped Binance RBAC, visible security recovery setup and individual-only profit accounting.
@@ -3417,7 +3417,7 @@ function setupHeaderNotificationCenter() {
   document.addEventListener('keydown', e => { if (e.key === 'Escape') closeHeaderNotificationCenter(); });
   refreshHeaderNotificationCenter();
   clearInterval(state.notificationPollTimer);
-  state.notificationPollTimer = setInterval(refreshHeaderNotificationCenter, 20000);
+  state.notificationPollTimer = setInterval(refreshHeaderNotificationCenter, 60000);
 }
 
 let notificationAudioContext = null;
@@ -4674,15 +4674,21 @@ function startEvents() {
     setConnectivityStatus(false);
     handleServerEvent(event);
     const type = String(event.type || '');
-    if (type === 'db_updated' && backgroundPatchAllowed(state.page) && !['ads','settings','p2p-market','chat'].includes(state.page) && !(state.page === 'orders' && state.currentOrderId)) {
+    if (type === 'db_updated' && backgroundPatchAllowed(state.page) && !['ads','settings','p2p-market','chat','orders','accounting','accounting-expenses','accounting-income','accounting-capital','accounting-closing'].includes(state.page)) {
       const active = document.activeElement;
       const editing = active && (['INPUT','TEXTAREA','SELECT'].includes(active.tagName) || active.isContentEditable);
-      if (!editing) scheduleSmoothRefresh(320);
+      if (!editing) scheduleSmoothRefresh(900);
     }
-    if (!type.startsWith('activity.')) {
-      scheduleHeaderNotificationRefresh();
-      scheduleMobileBottomNavRefresh(180);
-    }
+    // Only events that can change notification counters refresh the notification API.
+    // Generic durable checkpoints no longer trigger a second request in every browser.
+    const notificationRelevant = type === 'notification.created'
+      || type.startsWith('notification.')
+      || type === 'order.created'
+      || type === 'chat.message.received'
+      || type === 'order.assignment.updated'
+      || type === 'order.final_action';
+    if (notificationRelevant) scheduleHeaderNotificationRefresh(120);
+    if (!type.startsWith('activity.')) scheduleMobileBottomNavRefresh(350);
   };
   state.evt.onerror = () => { state.realtimeConnected = false; setConnectivityStatus(navigator.onLine === false); };
 }
@@ -5275,7 +5281,7 @@ function installStableContentArchitecture(content = document.getElementById('con
 }
 
 function cacheActiveRouteView() {
-  // v1.7.5 keeps the entire route host intact instead of moving/recreating page
+  // v1.7.6 keeps the entire route host intact instead of moving/recreating page
   // children. Capturing is therefore only a scroll-state operation.
   state.routeHostManager?.captureActive?.();
 }
@@ -5576,7 +5582,7 @@ function renderNav() {
   // legacy flat menu while this marker is absent, the browser/proxy is serving
   // stale frontend JavaScript rather than the active release.
   nav.dataset.navigationModel = 'grouped-control-center';
-  nav.dataset.uiRelease = '1.7.5';
+  nav.dataset.uiRelease = '1.7.6';
   nav.innerHTML = '';
   const visible = visiblePages();
   const visibleIds = new Set(visible.map(([id]) => id));
@@ -5703,6 +5709,63 @@ function setTitle(title, subtitle='') {
   applyLanguage(document.querySelector('.topbar') || document);
 }
 
+// Only the active page bundle is needed for first paint. page-preload.js starts
+// that bundle in parallel with app.js; every other page is fetched on first use.
+const PAGE_MODULE_PATHS = Object.freeze({
+  dashboard:'dashboard.js',
+  'p2p-market':'p2p-market.js',
+  'p2p-profile':'p2p-profile.js',
+  orders:'orders.js',
+  chat:'chat.js',
+  ads:'ads.js',
+  approvals:'approvals.js',
+  accounts:'accounts.js',
+  'offline-transactions':'offline-transactions.js',
+  ledger:'ledger.js',
+  agents:'users.js',
+  'user-roles':'user-roles.js',
+  routing:'routing.js',
+  reports:'reports.js',
+  accounting:'accounting.js',
+  'accounting-expenses':'accounting.js',
+  'accounting-income':'accounting.js',
+  'accounting-capital':'accounting.js',
+  'accounting-closing':'accounting.js',
+  activity:'activity.js',
+  credentials:'credentials.js',
+  health:'health.js',
+  'system-update':'system-update.js',
+  settings:'settings.js',
+  'p2p-extension':'p2p-extension.js',
+  security:'security.js',
+  notifications:'notifications.js',
+  audit:'audit.js'
+});
+const pageModulePromises = window.P2PFlowPageModulePromises || (window.P2PFlowPageModulePromises = new Map());
+function pageModuleUrl(page) {
+  const filename = PAGE_MODULE_PATHS[page];
+  return filename ? `/js/pages/${filename}?v=${encodeURIComponent(String(state.bootstrap?.settings?.applicationVersion || '1.7.6'))}` : '';
+}
+function ensurePageModule(page) {
+  const url = pageModuleUrl(page);
+  if (!url) return Promise.resolve();
+  if (pageModulePromises.has(url)) return pageModulePromises.get(url);
+  const existing = [...document.querySelectorAll('script[data-p2pflow-page-module]')]
+    .find(script => script.dataset.p2pflowPageModule === url);
+  if (existing?.dataset.loaded === '1') return Promise.resolve();
+  const promise = new Promise((resolve, reject) => {
+    const script = existing || document.createElement('script');
+    script.src = url;
+    script.async = true;
+    script.dataset.p2pflowPageModule = url;
+    script.onload = () => { script.dataset.loaded = '1'; resolve(); };
+    script.onerror = () => { pageModulePromises.delete(url); reject(new Error(`Page module could not be loaded: ${page}`)); };
+    if (!existing) document.head.appendChild(script);
+  });
+  pageModulePromises.set(url, promise);
+  return promise;
+}
+
 const PAGE_RUNTIME = Object.freeze({
   dashboard: { render:() => renderDashboard() },
   'p2p-market': { render:() => renderP2pMarket(), deactivate:() => { if (state.p2pMarketRefreshTimer) clearInterval(state.p2pMarketRefreshTimer); state.p2pMarketRefreshTimer = null; try { state.p2pMarketInfiniteObserver?.disconnect?.(); } catch (_) {} } },
@@ -5756,6 +5819,8 @@ async function renderPage(showLoading=true, navigationScope=null) {
   const content = $('#content');
   if (showLoading && content && !content.children.length) content.innerHTML = stableLoadingShell(state.page === 'orders' ? 'Orders' : (pages.find(p => p[0] === state.page)?.[1] || 'Loading'));
   try {
+    await ensurePageModule(state.page);
+    if (navigationScope && !navigationScopeCurrent(navigationScope)) return;
     const pageRuntime = PAGE_RUNTIME[state.page];
     if (!pageRuntime?.render) throw new Error(`Page module is unavailable: ${state.page}`);
     await pageRuntime.render();
