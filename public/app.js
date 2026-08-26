@@ -1,6 +1,6 @@
-// v1.7.7: merged fast-path profile — lazy page bundles, SSE-targeted UI refresh, WS-first Binance chat, bounded SAPI concurrency, and single durable mutation checkpoints.
-// v1.7.7: fixed-viewport AppShell, clean History routes, persistent per-route hosts, lifecycle rendering, and data-only DOM patching.
-// v1.7.7: stable-shell navigation, stale-request cancellation, non-destructive order/chat updates, and latest-navigation-wins rendering.
+// v1.7.8: merged fast-path profile — lazy page bundles, SSE-targeted UI refresh, WS-first Binance chat, bounded SAPI concurrency, and single durable mutation checkpoints.
+// v1.7.8: interactive-fast render path keeps the fixed AppShell/navigation safety while avoiding heavy full-page DOM morph work.
+// v1.7.8: stable-shell navigation, stale-request cancellation, non-destructive order/chat updates, and latest-navigation-wins rendering.
 // v1.5.23: Payment Account serial scope treats each normalized Label, including no Label, as an independent namespace.
 // v1.5.22: Header-only Work Status, chat-only notification master, and coupled sound/push controls.
 // v1.5.20: account-scoped Binance RBAC, visible security recovery setup and individual-only profit accounting.
@@ -3148,12 +3148,23 @@ function translateBnPhrase(text) {
   return text;
 }
 
+const bnTranslationCache = new Map();
+const BN_TRANSLATION_CACHE_LIMIT = 2500;
+function cachedBnTranslation(text='') {
+  const key = String(text || '');
+  if (bnTranslationCache.has(key)) return bnTranslationCache.get(key);
+  const translated = translateBnPhrase(key);
+  if (bnTranslationCache.size >= BN_TRANSLATION_CACHE_LIMIT) bnTranslationCache.delete(bnTranslationCache.keys().next().value);
+  bnTranslationCache.set(key, translated);
+  return translated;
+}
+
 function trText(text) {
   const compacted = compactUiText(text);
   const raw = String(compacted ?? '');
   const trimmed = raw.trim();
   if (!trimmed || state.lang !== 'bn') return raw;
-  const translated = translateBnPhrase(trimmed);
+  const translated = cachedBnTranslation(trimmed);
   return translated === trimmed ? raw : raw.replace(trimmed, translated);
 }
 
@@ -3188,6 +3199,18 @@ function applyLanguage(root=document) {
     });
 
     const base = languageRoot(root);
+    // v1.7.8: freshly rendered UI is already authored in English. Avoid walking
+    // thousands of table/card text nodes unless Bengali translation is active or
+    // this exact root previously held translated Bengali nodes that must be restored.
+    const previousAppliedLang = base?.dataset?.p2pflowAppliedLang || '';
+    if (state.lang !== 'bn' && previousAppliedLang !== 'bn') {
+      if (base?.dataset) base.dataset.p2pflowAppliedLang = 'en';
+      const originalTitle = document.documentElement.dataset.i18nTitleOriginal || document.title;
+      document.documentElement.dataset.i18nTitleOriginal = originalTitle;
+      document.title = 'P2PFlow | Operations Panel';
+      syncLoginLanguage();
+      return;
+    }
     const walker = document.createTreeWalker(base, NodeFilter.SHOW_TEXT, {
       acceptNode(node) {
         const parent = node.parentElement;
@@ -3229,6 +3252,7 @@ function applyLanguage(root=document) {
       if (current !== next) el.value = next;
     });
 
+    if (base?.dataset) base.dataset.p2pflowAppliedLang = state.lang === 'bn' ? 'bn' : 'en';
     const originalTitle = document.documentElement.dataset.i18nTitleOriginal || document.title;
     document.documentElement.dataset.i18nTitleOriginal = originalTitle;
     document.title = state.lang === 'bn' ? 'P2PFlow | অপারেশন প্যানেল' : 'P2PFlow | Operations Panel';
@@ -4524,6 +4548,10 @@ async function bootApp(options={}) {
     const firstPage = canPage(state.page) ? state.page : (visiblePages()[0]?.[0] || 'dashboard');
     history.replaceState({ p2pflow:true }, '', routePath(firstPage));
   }
+  // Start warming the rest of the operator's allowed page bundles shortly
+  // after boot. The active route still gets network/CPU priority, while the old
+  // v1.5.x benefit (next page code already available) returns in the background.
+  setTimeout(() => scheduleVisiblePageModuleWarmup(), 180);
   await routeFromLocation();
 }
 
@@ -5098,7 +5126,7 @@ function setupApplicationShellArchitecture() {
   if (state.routeHostManager) return state.routeHostManager;
   const viewport = document.getElementById('routeViewport');
   if (!viewport || !window.P2PFlowRouteHosts?.create) throw new Error('P2PFlow route-host runtime is unavailable.');
-  state.routeHostManager = window.P2PFlowRouteHosts.create(viewport, { activeId:'content', maxHosts:12 });
+  state.routeHostManager = window.P2PFlowRouteHosts.create(viewport, { activeId:'content', maxHosts:6 });
   return state.routeHostManager;
 }
 
@@ -5265,6 +5293,23 @@ function stableMorphContent(container, html) {
   restoreStableViewport(container, viewport);
 }
 
+const FAST_NATIVE_CONTENT_PAGES = new Set([
+  'orders','chat','ads','p2p-market','p2p-profile','accounts','offline-transactions','ledger',
+  'reports','accounting','accounting-expenses','accounting-income','accounting-capital','accounting-closing',
+  'settings','credentials','notifications','activity','agents','user-roles','routing','approvals','security','audit','health','p2p-extension'
+]);
+function shouldUseNativeContentCommit(content, html='') {
+  const page = String(content?.dataset?.page || state.page || '');
+  if (FAST_NATIVE_CONTENT_PAGES.has(page)) return true;
+  if (String(html || '').length > 24000) return true;
+  return false;
+}
+function nativeReplaceContentPreservingViewport(content, html, descriptor) {
+  const viewport = captureStableViewport(content);
+  descriptor.set.call(content, String(html ?? ''));
+  restoreStableViewport(content, viewport);
+}
+
 function installStableContentArchitecture(content = document.getElementById('content')) {
   const descriptor = nativeContentInnerHtmlDescriptor();
   if (!content || content.dataset.stableCommitInstalled === '1' || !descriptor?.get || !descriptor?.set) return;
@@ -5274,6 +5319,7 @@ function installStableContentArchitecture(content = document.getElementById('con
     set(value) {
       const html = String(value ?? '');
       if (!html || !this.children.length || this.querySelector('[data-route-shell]')) descriptor.set.call(this, html);
+      else if (shouldUseNativeContentCommit(this, html)) nativeReplaceContentPreservingViewport(this, html, descriptor);
       else stableMorphContent(this, html);
     }
   });
@@ -5281,7 +5327,7 @@ function installStableContentArchitecture(content = document.getElementById('con
 }
 
 function cacheActiveRouteView() {
-  // v1.7.7 keeps the entire route host intact instead of moving/recreating page
+  // v1.7.8 keeps the entire route host intact instead of moving/recreating page
   // children. Capturing is therefore only a scroll-state operation.
   state.routeHostManager?.captureActive?.();
 }
@@ -5422,7 +5468,7 @@ async function routeFromLocation(showLoading=true) {
   state.activityViewTimer = null;
   markActivityInteraction('navigation', true);
   scheduleActivityHeartbeat(200);
-  renderNav();
+  syncNavigationActiveState();
 
   // Returning to an already-mounted route must feel instant. The route-host
   // retains its last usable DOM, event handlers and scroll position, so show it
@@ -5582,7 +5628,7 @@ function renderNav() {
   // legacy flat menu while this marker is absent, the browser/proxy is serving
   // stale frontend JavaScript rather than the active release.
   nav.dataset.navigationModel = 'grouped-control-center';
-  nav.dataset.uiRelease = '1.7.7';
+  nav.dataset.uiRelease = '1.7.8';
   nav.innerHTML = '';
   const visible = visiblePages();
   const visibleIds = new Set(visible.map(([id]) => id));
@@ -5598,6 +5644,10 @@ function renderNav() {
     button.dataset.navPage = id;
     if (id === state.page) button.setAttribute('aria-current', 'page');
     button.innerHTML = `${navIcon(iconName)}<span class="nav-item-label">${escapeHtml(label || pageLabels.get(id) || id)}</span><span class="nav-item-badge-slot">${navPageBadge(id)}</span>`;
+    const warmPageModule = () => ensurePageModule(id).catch(() => {});
+    button.addEventListener('pointerenter', warmPageModule, { once:true, passive:true });
+    button.addEventListener('focus', warmPageModule, { once:true, passive:true });
+    button.addEventListener('touchstart', warmPageModule, { once:true, passive:true });
     button.onclick = () => {
       setMobileNavigation(false, { restoreFocus:false });
       if (usesMobileNavigation()) appScrollTo({ top:0, left:0, behavior:'auto' });
@@ -5701,6 +5751,39 @@ function renderNav() {
   }
 }
 
+function syncNavigationActiveState() {
+  const nav = $('#nav');
+  if (!nav || !nav.children.length) return renderNav();
+  nav.querySelectorAll('[data-nav-page]').forEach(button => {
+    const active = String(button.dataset.navPage || '') === String(state.page || '');
+    button.classList.toggle('active', active);
+    if (active) button.setAttribute('aria-current', 'page');
+    else button.removeAttribute('aria-current');
+  });
+  nav.querySelectorAll('.nav-group').forEach(group => {
+    const active = Boolean(group.querySelector('.nav-page-button.active'));
+    group.classList.toggle('active', active);
+    if (active && !group.classList.contains('open')) {
+      nav.querySelectorAll('.nav-group.open').forEach(other => {
+        if (other === group) return;
+        other.classList.remove('open');
+        other.querySelector('.nav-group-toggle')?.setAttribute('aria-expanded', 'false');
+        other.querySelector('.nav-submenu')?.setAttribute('aria-hidden', 'true');
+      });
+      group.classList.add('open');
+      group.querySelector('.nav-group-toggle')?.setAttribute('aria-expanded', 'true');
+      group.querySelector('.nav-submenu')?.setAttribute('aria-hidden', 'false');
+      if (group.dataset.navGroup) localStorage.setItem('crmOpenNavGroup', group.dataset.navGroup);
+    }
+  });
+  refreshNavBadges();
+  renderMobileBottomNav();
+  window.requestAnimationFrame(() => {
+    const activeItem = nav.querySelector('.nav-page-button.active');
+    if (activeItem) revealSidebarNavElement(activeItem, 'auto');
+  });
+}
+
 function setTitle(title, subtitle='') {
   $('#pageTitle').textContent = title;
   const subtitleEl = $('#pageSubtitle');
@@ -5744,7 +5827,7 @@ const PAGE_MODULE_PATHS = Object.freeze({
 const pageModulePromises = window.P2PFlowPageModulePromises || (window.P2PFlowPageModulePromises = new Map());
 function pageModuleUrl(page) {
   const filename = PAGE_MODULE_PATHS[page];
-  return filename ? `/js/pages/${filename}?v=${encodeURIComponent(String(state.bootstrap?.settings?.applicationVersion || '1.7.7'))}` : '';
+  return filename ? `/js/pages/${filename}?v=${encodeURIComponent(String(state.bootstrap?.settings?.applicationVersion || '1.7.8'))}` : '';
 }
 function ensurePageModule(page) {
   const url = pageModuleUrl(page);
@@ -5764,6 +5847,34 @@ function ensurePageModule(page) {
   });
   pageModulePromises.set(url, promise);
   return promise;
+}
+
+let visiblePageWarmupStarted = false;
+function scheduleVisiblePageModuleWarmup() {
+  if (visiblePageWarmupStarted || !state.user) return;
+  visiblePageWarmupStarted = true;
+  const priority = ['orders','chat','ads','p2p-market','p2p-profile','dashboard','accounts','notifications','settings','accounting'];
+  const visible = visiblePages().map(item => item[0]);
+  const allowed = new Set(visible);
+  const queue = [...new Set([...priority, ...visible])]
+    .filter(page => allowed.has(page) && page !== state.page && PAGE_MODULE_PATHS[page]);
+  const runOne = deadline => {
+    if (!queue.length || !state.user) return;
+    if (deadline && deadline.timeRemaining && deadline.timeRemaining() < 4 && !deadline.didTimeout) {
+      return requestIdleCallback(runOne, { timeout:900 });
+    }
+    const page = queue.shift();
+    ensurePageModule(page).catch(() => {}).finally(() => {
+      const next = () => {
+        if (!queue.length) return;
+        if ('requestIdleCallback' in window) requestIdleCallback(runOne, { timeout:900 });
+        else setTimeout(() => runOne(null), 35);
+      };
+      setTimeout(next, 10);
+    });
+  };
+  if ('requestIdleCallback' in window) requestIdleCallback(runOne, { timeout:700 });
+  else setTimeout(() => runOne(null), 120);
 }
 
 const PAGE_RUNTIME = Object.freeze({

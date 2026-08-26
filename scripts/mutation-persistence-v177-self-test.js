@@ -67,7 +67,7 @@ async function runTicketScenario(Store, label) {
   const pkg = JSON.parse(read('package.json'));
   const server = read('app-server.js');
   const chat = read('public/js/pages/chat.js');
-  assert(pkg.version === '1.7.7', `expected 1.7.7, got ${pkg.version}`);
+  assert(pkg.version === '1.7.8', `expected 1.7.8, got ${pkg.version}`);
   assert(server.includes('requestPersistence.lastSavePromise = promise'), 'request-scoped durability promise is not recorded');
   assert(server.includes('function requestMutationDurabilityPromise(req, status)'), 'request-specific mutation durability barrier is missing');
   const sendJsonSection = server.slice(server.indexOf('function sendJson('), server.indexOf('function readBody('));

@@ -47,7 +47,7 @@ assert(/obj\.paymentMethodKeys = selectedGenericKeys/.test(ads), 'BUY form no lo
 assert(/data-payment-search/.test(ads) && /addEventListener\('input', applySearch\)/.test(ads) && /addEventListener\('search', applySearch\)/.test(ads) && /is-search-hidden/.test(ads), 'payment method search is not wired to live filtering');
 assert(/\.ads-sheet-option\.is-search-hidden/.test(css), 'payment search hidden-row CSS override is missing');
 assert(/P2P Payment Method/.test(ads), 'SELL UI no longer identifies the profile P2P Payment Method source');
-assert(pkg.version === '1.7.7', `expected v1.7.7, got ${pkg.version}`);
+assert(pkg.version === '1.7.8', `expected v1.7.8, got ${pkg.version}`);
 
 console.log(JSON.stringify({
   ok:true,
