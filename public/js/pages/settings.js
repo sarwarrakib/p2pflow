@@ -144,13 +144,13 @@ async function renderSettings() {
     </div>`);
 
   const binancePanel = p2pflowSettingsPanel('binance', 'Binance & Sync', 'Balances, automatic order import and server-side reconciliation.', `
-    <div class="settings-callout ok"><b>Server-side reconciliation is always working</b><span>Open Binance order details keep refreshing even when nobody is logged in.</span></div>
+    <div class="settings-callout ok"><b>Realtime-first reconciliation</b><span>New/status changes are discovered on the fast path; heavier order-detail reconciliation is budgeted in the background to avoid Binance/API timeout storms.</span></div>
     <div class="settings-field-grid">
       <div><label>Binance USDT Available</label><input name="binanceUsdtAvailable" type="number" step="0.00000001" value="${s.binanceUsdtAvailable || 0}" /></div>
       <div><label>Default USDT Rate</label><input name="defaultUsdtRate" type="number" step="0.01" value="${s.defaultUsdtRate || 0}" /></div>
-      <div><label>Auto-sync Seconds</label><input name="binanceAutoSyncSeconds" type="number" min="15" max="300" value="${s.binanceAutoSyncSeconds || 15}" /></div>
+      <div><label>Auto-sync Seconds</label><input name="binanceAutoSyncSeconds" type="number" min="15" max="300" value="${s.binanceAutoSyncSeconds || 30}" /></div>
       <div><label>Auto-sync Rows</label><input name="binanceAutoSyncRows" type="number" min="5" max="100" value="${s.binanceAutoSyncRows || 30}" /></div>
-      <div><label>Open-order Detail Rows</label><input name="binanceOpenOrderDetailRows" type="number" min="5" max="100" value="${s.binanceOpenOrderDetailRows || 100}" /></div>
+      <div><label>Open-order Detail Rows</label><input name="binanceOpenOrderDetailRows" type="number" min="5" max="100" value="${s.binanceOpenOrderDetailRows || 12}" /></div>
     </div>
     <div class="settings-option-list">
       <label class="settings-option-row"><span><b>Auto import Binance orders</b><small>Periodically imports the latest orders in the background.</small></span><input type="checkbox" name="binanceAutoOrderSync" ${s.binanceAutoOrderSync!==false?'checked':''}/></label>

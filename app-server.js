@@ -11,6 +11,7 @@ const zlib = require('zlib');
 const { URL } = require('url');
 const { spawn } = require('child_process');
 const { AsyncLocalStorage } = require('async_hooks');
+const requestPersistenceContext = new AsyncLocalStorage();
 const { isMainThread, parentPort, workerData } = require('worker_threads');
 const packageInfo = require('./package.json');
 const { createStateStore, normalizeDatabaseProvider, databaseProviderLabel } = require('./lib/databaseProvider');
@@ -18,7 +19,7 @@ const { UpdateManager, compareSemver } = require('./lib/updateManager');
 const { syncPublicMirror } = require('./lib/publicAssetMirror');
 const { classifyStartupError } = require('./lib/productionPreflight');
 const { applyP2PFlowEnvAliases, resolveEnvFile, setupPaths, isSetupComplete, setupRequired, startHostingSetupServer, markSetupComplete, sanitizeFreshOwnerSecrets, beginBootstrapClaim, finishBootstrapClaim, restoreBootstrapClaim } = require('./lib/hostingSetup');
-const { callSignedSapi, callSignedSapiPath, ENDPOINTS } = require('./lib/binanceAdapter');
+const { callSignedSapi, callSignedSapiPath, ENDPOINTS, schedulerStats: binanceSchedulerStats } = require('./lib/binanceAdapter');
 const { generateVapidKeys, validateVapidKeys, normalizeSubscription, sendWebPush } = require('./lib/webPush');
 const net = require('net');
 const tls = require('tls');
@@ -84,6 +85,7 @@ const SESSION_COOKIE_SAMESITE = cleanEnv(process.env.CRM_SESSION_COOKIE_SAMESITE
 const SESSION_COOKIE_NAME_RAW = cleanEnv(process.env.CRM_SESSION_COOKIE_NAME || 'sid', 'sid');
 const SESSION_COOKIE_NAME = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(SESSION_COOKIE_NAME_RAW) ? SESSION_COOKIE_NAME_RAW : 'sid';
 const MAX_BODY_BYTES = Math.max(8, Number(process.env.CRM_MAX_BODY_MB || 12) || 12) * 1024 * 1024;
+const SLOW_REQUEST_MS = Math.max(500, Number(process.env.P2PFLOW_SLOW_REQUEST_MS || 2500) || 2500);
 const LOGIN_WINDOW_MS = Math.max(60_000, Number(process.env.P2PFLOW_LOGIN_WINDOW_MS || process.env.CRM_LOGIN_WINDOW_MS || 15 * 60 * 1000) || 15 * 60 * 1000);
 const LOGIN_MAX_ATTEMPTS = Math.max(4, Math.min(100, Number(process.env.P2PFLOW_LOGIN_MAX_ATTEMPTS || process.env.CRM_LOGIN_MAX_ATTEMPTS || 12) || 12));
 const AUTH_RATE_LIMIT_MAX_KEYS = Math.max(500, Math.min(50_000, Number(process.env.P2PFLOW_AUTH_RATE_LIMIT_MAX_KEYS || 5000) || 5000));
@@ -975,9 +977,10 @@ function defaultSettings() {
     binanceUsdtAvailable: 0,
     defaultUsdtRate: 0,
     binanceAutoOrderSync: true,
-    binanceAutoSyncSeconds: 15,
+    binanceAutoSyncSeconds: 30,
     binanceAutoSyncRows: 30,
-    binanceOpenOrderDetailRows: 100,
+    binanceOpenOrderDetailRows: 12,
+    performanceTuningV175Initialized: true,
     activityHeartbeatSeconds: 15,
     activityIdleAfterSeconds: 60,
     activityOfflineAfterSeconds: 45,
@@ -1230,6 +1233,12 @@ async function databaseStateForPersistence() {
 
 function saveDb(options = {}) {
   if (!db || !stateStore) return Promise.resolve();
+  const requestPersistence = requestPersistenceContext.getStore();
+  if (requestPersistence) {
+    requestPersistence.saveScheduled = true;
+    requestPersistence.saveCount = Number(requestPersistence.saveCount || 0) + 1;
+    requestPersistence.lastSaveReason = cleanStr(options.reason || 'application_state_change', 120);
+  }
   const promise = stateStore.scheduleSave(databaseStateForPersistence, options.reason || 'application_state_change');
   if (options.broadcast !== false) {
     promise.then(() => broadcast({ type: 'db_updated', revision: stateStore.currentRevision, at: nowIso() })).catch(() => {});
@@ -1237,6 +1246,33 @@ function saveDb(options = {}) {
   // Every asynchronous writer is observed. A failed durable write puts the service
   // into maintenance and restarts from the last confirmed database revision.
   promise.catch(handleDurabilityFailure);
+  return promise;
+}
+
+// High-frequency realtime events can arrive in bursts. Coalesce only those
+// background checkpoints into a tiny window; user-triggered mutations still
+// use saveDb() directly and are durably flushed before the HTTP response.
+const coalescedDbSaveBatches = new Map();
+function saveDbCoalesced(key = 'realtime', options = {}) {
+  const batchKey = cleanStr(key || 'realtime', 80) || 'realtime';
+  const reason = cleanStr(options.reason || batchKey, 120) || batchKey;
+  const delayMs = Math.max(25, Math.min(1000, Number(options.delayMs || 125) || 125));
+  const current = coalescedDbSaveBatches.get(batchKey);
+  if (current) {
+    current.reasons.add(reason);
+    return current.promise;
+  }
+  let resolveBatch;
+  let rejectBatch;
+  const promise = new Promise((resolve, reject) => { resolveBatch = resolve; rejectBatch = reject; });
+  const batch = { promise, reasons:new Set([reason]), timer:null };
+  batch.timer = setTimeout(() => {
+    coalescedDbSaveBatches.delete(batchKey);
+    const combinedReason = Array.from(batch.reasons).join(',').slice(0, 120) || batchKey;
+    saveDb({ broadcast:options.broadcast !== false, reason:combinedReason }).then(resolveBatch, rejectBatch);
+  }, delayMs);
+  if (typeof batch.timer.unref === 'function') batch.timer.unref();
+  coalescedDbSaveBatches.set(batchKey, batch);
   return promise;
 }
 
@@ -1434,6 +1470,15 @@ function migrateDb(target) {
   const hadAccountingOpeningCapitalUsd = Boolean(target.settings && Object.prototype.hasOwnProperty.call(target.settings, 'accountingOpeningCapitalUsd'));
   target.meta.schemaVersion = Math.max(previousSchemaVersion, APP_SCHEMA_VERSION);
   target.settings = { ...defaultSettings(), ...(target.settings || {}) };
+  // v1.7.5 performance profile: preserve the 3s fast order-discovery path, but
+  // stop the legacy defaults from running a large sequential detail sweep every
+  // 15 seconds. Only exact old defaults are migrated; owner-customized values stay.
+  if (existingSettingsBeforeDefaults.performanceTuningV175Initialized !== true) {
+    if (Number(existingSettingsBeforeDefaults.binanceAutoSyncSeconds || 15) === 15) target.settings.binanceAutoSyncSeconds = 30;
+    if (Number(existingSettingsBeforeDefaults.binanceOpenOrderDetailRows || 100) === 100) target.settings.binanceOpenOrderDetailRows = 12;
+    target.settings.performanceTuningV175Initialized = true;
+    target.settings.performanceTuningV175AppliedAt = nowIso();
+  }
   if (!hadPaymentSplitProofRequired) target.settings.paymentSplitProofRequired = legacyProofRequirement;
   target.settings.requireProofForFinalAction = target.settings.paymentSplitProofRequired !== false;
   target.settings.requirePaymentSplitForFinalAction = target.settings.requirePaymentSplitForFinalAction !== false;
@@ -1444,7 +1489,8 @@ function migrateDb(target) {
   if (previousSchemaVersion <= 24 && ['RNEED P2P','Manual P2P Desk CRM','Desk CRM','P2PFlow'].includes(String(target.settings.appName || '').trim())) target.settings.appName = 'P2PFlow';
   if (previousSchemaVersion <= 24 && ['RNEED P2P','Manual P2P Desk CRM','Desk CRM','P2PFlow'].includes(String(target.settings.mailFromName || '').trim())) target.settings.mailFromName = 'P2PFlow';
   if (!target.meta.chatUnreadBaselineAt) target.meta.chatUnreadBaselineAt = nowIso();
-  if (previousSchemaVersion < 8) target.settings.binanceAutoSyncSeconds = 15;
+  // v1.7.5 supersedes the legacy schema<8 15-second auto-sync default; new and
+  // uncustomized databases now stay on the bounded 30-second detail cycle.
   if (!target.settings.mailDriver) target.settings.mailDriver = MAIL_DRIVER || 'local';
   if (!target.settings.mailSendingSystem) target.settings.mailSendingSystem = legacyMailDriverToSystem(target.settings.mailDriver || MAIL_DRIVER || 'local');
   target.settings.mailSendingSystem = normalizeMailSendingSystem(target.settings.mailSendingSystem);
@@ -8926,14 +8972,37 @@ function mergeBinanceOrderChange(changes, incoming) {
 }
 
 
+const binanceRoutineDetailBudgetWindows = new Map();
+function consumeBinanceRoutineDetailBudget(credentialId, limit = 8, windowMs = 25000) {
+  const key = Number(credentialId || 0);
+  const now = Date.now();
+  let budget = binanceRoutineDetailBudgetWindows.get(key);
+  if (!budget || now - Number(budget.startedAt || 0) >= windowMs) budget = { startedAt:now, used:0 };
+  if (Number(budget.used || 0) >= limit) { binanceRoutineDetailBudgetWindows.set(key, budget); return false; }
+  budget.used = Number(budget.used || 0) + 1;
+  binanceRoutineDetailBudgetWindows.set(key, budget);
+  return true;
+}
+
 function binanceOrderDetailStale(order, change, maxAgeMs = 30000) {
   if (!order) return false;
+  // Critical/new rows bypass the routine budget so payment details are still
+  // enriched immediately when an operator actually needs them.
   if (change && change.created) return true;
   if (orderNeedsBuyPaymentDetails(order)) return true;
   if (!order.binancePayId || !order.payMethodSnapshot || !order.payMethodSnapshot.name || isGenericPaymentName(order.payMethodSnapshot.name)) return true;
   if (!order.rawBinanceDetail) return true;
   const last = new Date(order.lastBinanceDetailSyncedAt || 0).getTime();
-  return !Number.isFinite(last) || (Date.now() - last) > maxAgeMs;
+  const stale = !Number.isFinite(last) || (Date.now() - last) > Math.max(1000, Number(maxAgeMs || 30000));
+  if (!stale) return false;
+  // The protected auto engine identifies its rapid smart pass with a 12s max
+  // age. Bound only that routine pass; manual/explicit syncs keep their original
+  // behavior. The open-order reconciliation below then fills the configured
+  // detail budget (12 by the v1.7.5 default), avoiding 30-100 sequential calls.
+  if (Number(maxAgeMs || 0) > 0 && Number(maxAgeMs) <= 15000) {
+    return consumeBinanceRoutineDetailBudget(order.credentialId, Math.max(1, Math.min(20, Number(process.env.P2PFLOW_BINANCE_ROUTINE_DETAIL_BUDGET || 8) || 8)));
+  }
+  return true;
 }
 
 // v1.7.0 ORDER CORE LOCK: this Binance ingestion function is intentionally preserved from v1.6.4.
@@ -9064,7 +9133,7 @@ async function handleBinanceOrderSync(req, res, url) {
     skipDetailSync: body.skipDetailSync === true,
     detailMode: body.detailMode || 'smart',
     reconcileOpenOrders: body.reconcileOpenOrders !== false,
-    openDetailRows: body.openDetailRows || db.settings.binanceOpenOrderDetailRows || 100
+    openDetailRows: body.openDetailRows || db.settings.binanceOpenOrderDetailRows || 12
   });
   logAudit(user, 'binance_orders_synced', 'binance', credential.id, { request: out.request, created: out.created, updated: out.updated, skipped: out.skipped, detailSynced: out.detailSynced, totalRows: out.totalRows, result: out.result });
   saveDb();
@@ -10619,6 +10688,11 @@ async function sendBinanceChatWs(wsUrl, payload, timeoutMs = 15000) {
 const binanceChatRealtimeConnections = new Map();
 let binanceChatRealtimeLoopStarted = false;
 
+function binanceRealtimeChatHealthy(credentialId) {
+  const entry = binanceChatRealtimeConnections.get(Number(credentialId || 0));
+  return Boolean(entry && entry.ws && Number(entry.ws.readyState) === 1 && !entry.connecting && !entry.closedBySystem);
+}
+
 function realtimeChatMessageCandidates(value, out = [], depth = 0) {
   if (depth > 5 || out.length >= 20 || value === null || value === undefined) return out;
   if (typeof value === 'string') {
@@ -10689,15 +10763,25 @@ async function connectBinanceRealtimeChat(credential, previousFailures = 0) {
   }
   const WebSocket = loadWsModule();
   const ws = new WebSocket(chatCredential.wsUrl, { handshakeTimeout:12000 });
-  const entry = { ws, connecting:true, failures:previousFailures, connectedAt:null, lastMessageAt:null, closedBySystem:false, reconnectTimer:null };
+  const entry = { ws, connecting:true, failures:previousFailures, connectedAt:null, lastMessageAt:null, lastPingAt:0, lastPongAt:0, awaitingPong:false, closedBySystem:false, reconnectTimer:null };
   binanceChatRealtimeConnections.set(credentialId, entry);
   ws.on('open', () => {
     entry.connecting = false;
     entry.failures = 0;
     entry.connectedAt = nowIso();
+    entry.awaitingPong = false;
+    entry.lastPongAt = Date.now();
+  });
+  ws.on('pong', () => {
+    entry.awaitingPong = false;
+    entry.lastPongAt = Date.now();
   });
   ws.on('message', data => {
     entry.lastMessageAt = nowIso();
+    // Any inbound frame proves the transport is alive even if a pong callback
+    // was delayed by the remote endpoint.
+    entry.awaitingPong = false;
+    entry.lastPongAt = Date.now();
     let parsed = null;
     try { parsed = JSON.parse(String(data)); } catch { return; }
     const rows = realtimeChatMessageCandidates(parsed);
@@ -10717,7 +10801,9 @@ async function connectBinanceRealtimeChat(credential, previousFailures = 0) {
       }
     });
     if (changed) {
-      saveDb({ broadcast:false, reason:'binance_chat_realtime' }).then(() => broadcasts.forEach(broadcast)).catch(() => {});
+      saveDbCoalesced(`binance_chat_realtime_${credentialId}`, { broadcast:false, reason:'binance_chat_realtime', delayMs:125 })
+        .then(() => broadcasts.forEach(broadcast))
+        .catch(() => {});
     }
   });
   ws.on('error', error => { entry.error = cleanStr(error.message || error, 220); });
@@ -10741,7 +10827,27 @@ function reconcileBinanceRealtimeChatConnections() {
   for (const credentialId of [...binanceChatRealtimeConnections.keys()]) {
     if (!enabledIds.has(Number(credentialId))) closeBinanceRealtimeChatConnection(credentialId, 'credential_removed');
   }
-  credentials.forEach(credential => connectBinanceRealtimeChat(credential).catch(() => {}));
+  credentials.forEach(credential => {
+    const credentialId = Number(credential.id || 0);
+    const entry = binanceChatRealtimeConnections.get(credentialId);
+    if (entry?.ws && Number(entry.ws.readyState) === 1) {
+      const now = Date.now();
+      if (entry.awaitingPong && now - Number(entry.lastPingAt || 0) > 24000) {
+        // Detect half-open sockets instead of silently leaving the UI without
+        // realtime chat. A fresh credential/socket is established immediately.
+        try { entry.ws.terminate(); } catch {}
+        binanceChatRealtimeConnections.delete(credentialId);
+      } else {
+        entry.awaitingPong = true;
+        entry.lastPingAt = now;
+        try { entry.ws.ping(); } catch {
+          try { entry.ws.terminate(); } catch {}
+          binanceChatRealtimeConnections.delete(credentialId);
+        }
+      }
+    }
+    connectBinanceRealtimeChat(credential).catch(() => {});
+  });
 }
 
 function startBinanceRealtimeChatLoop() {
@@ -11050,7 +11156,13 @@ function importBinanceChatRows(order, rows = []) {
   return { imported, incomingImported, latestIncomingChatId };
 }
 
-async function syncBinanceChatsRoundRobin(credential, batchSize = 10) {
+async function syncBinanceChatsRoundRobin(credential, batchSize = 10, options = {}) {
+  // Binance exposes a dedicated chat WebSocket; REST pagination is now a
+  // catch-up/fallback path only. This removes the old 10-order polling sweep
+  // every auto-sync cycle while a healthy realtime socket is already active.
+  if (!options.force && binanceRealtimeChatHealthy(credential?.id)) {
+    return { checked:0, imported:0, incomingImported:0, results:[], skipped:'websocket_healthy' };
+  }
   const candidates = (db.orders || [])
     .filter(order => Number(order.credentialId || 0) === Number(credential?.id || 0) && order.orderSource === 'binance' && cleanStr(order.externalOrderNo || order.orderNo || '', 120))
     .sort((a, b) => (Date.parse(a.lastBinanceChatSyncAttemptAt || '') || 0) - (Date.parse(b.lastBinanceChatSyncAttemptAt || '') || 0))
@@ -11060,7 +11172,7 @@ async function syncBinanceChatsRoundRobin(credential, batchSize = 10) {
     const orderNo = binanceOrderNumberFor(order, {});
     order.lastBinanceChatSyncAttemptAt = nowIso();
     try {
-      const result = await callSignedSapi({ apiKey: credential.apiKey, secretKey: credential.secretKey, endpointName: 'retrieveChatMessages', query: { orderNo, page: 1, rows: 50, sort: 'desc' }, clientType: credential.clientType || 'web', dryRun: false });
+      const result = await callSignedSapi({ apiKey: credential.apiKey, secretKey: credential.secretKey, endpointName: 'retrieveChatMessages', query: { orderNo, page: 1, rows: 20, sort: 'desc' }, clientType: credential.clientType || 'web', dryRun: false });
       const rows = extractBinanceList(result);
       const imported = importBinanceChatRows(order, rows);
       order.lastBinanceChatSyncedAt = nowIso();
@@ -11113,6 +11225,7 @@ function secureHeaders(extra = {}, req = null) {
     'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; media-src 'self' data: blob: https:; connect-src 'self'; worker-src 'self' blob:; manifest-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'",
     'Cache-Control': 'no-store',
     ...(req ? { 'X-Request-Id': requestIdFor(req) } : {}),
+    ...(req && requestPersistenceContext.getStore()?.startedAt ? { 'Server-Timing': `app;dur=${Math.max(0, Date.now() - Number(requestPersistenceContext.getStore().startedAt || Date.now()))}` } : {}),
     ...extra
   };
   if (req && isHttps(req)) headers['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains';
@@ -11162,6 +11275,13 @@ function writeTextResponse(res, status, text, type = 'text/plain; charset=utf-8'
 function ensureMutationScheduled(req, status) {
   if (!req || Number(status) < 200 || Number(status) >= 400) return;
   if (!['POST','PATCH','PUT','DELETE'].includes(String(req.method || '').toUpperCase())) return;
+  // Most mutating handlers already call saveDb() after their final in-memory
+  // mutation. Scheduling another save here while that write is in-flight used
+  // to force a second full encrypted-state serialization/compression before the
+  // response could finish. Keep the fail-safe for handlers that forgot saveDb(),
+  // but never enqueue the duplicate checkpoint.
+  const persistence = requestPersistenceContext.getStore();
+  if (persistence && persistence.saveScheduled) return;
   saveDb({ broadcast: false, reason: `confirmed_${String(req.method || 'write').toLowerCase()}_${String(req.url || '').split('?')[0].slice(0, 120)}` });
 }
 function handleDurabilityFailure(error) {
@@ -12295,6 +12415,75 @@ function isSpaApplicationRoute(pathname='') {
   return SPA_APPLICATION_ROUTE_PATTERNS.some(pattern => pattern.test(value));
 }
 
+// Hot application assets are served repeatedly by every logged-in browser. Keep
+// a small process-local LRU of their raw + compressed bytes so route changes do
+// not repeatedly hit disk and re-run zlib for the 600KB+ application bundle.
+const STATIC_ASSET_MEMORY_CACHE_LIMIT = Math.max(8, Number(process.env.P2PFLOW_STATIC_CACHE_MB || 32) || 32) * 1024 * 1024;
+const STATIC_ASSET_MEMORY_ENTRY_LIMIT = Math.max(256, Number(process.env.P2PFLOW_STATIC_CACHE_ENTRY_KB || 2048) || 2048) * 1024;
+const staticAssetMemoryCache = new Map();
+let staticAssetMemoryCacheBytes = 0;
+
+function staticAssetCacheKey(filePath, stat) {
+  return `${filePath}:${Number(stat?.size || 0)}:${Math.floor(Number(stat?.mtimeMs || 0))}`;
+}
+function touchStaticAssetEntry(key, entry) {
+  if (!entry) return;
+  staticAssetMemoryCache.delete(key);
+  staticAssetMemoryCache.set(key, entry);
+}
+function pruneStaticAssetMemoryCache() {
+  while (staticAssetMemoryCacheBytes > STATIC_ASSET_MEMORY_CACHE_LIMIT && staticAssetMemoryCache.size > 1) {
+    const oldestKey = staticAssetMemoryCache.keys().next().value;
+    const oldest = staticAssetMemoryCache.get(oldestKey);
+    staticAssetMemoryCache.delete(oldestKey);
+    staticAssetMemoryCacheBytes -= Number(oldest?.bytes || 0);
+  }
+}
+function readStaticAssetCached(filePath, stat, callback) {
+  const key = staticAssetCacheKey(filePath, stat);
+  const existing = staticAssetMemoryCache.get(key);
+  if (existing?.data) {
+    touchStaticAssetEntry(key, existing);
+    return queueMicrotask(() => callback(null, existing.data, existing));
+  }
+  fs.readFile(filePath, (error, data) => {
+    if (error) return callback(error);
+    if (data.length > STATIC_ASSET_MEMORY_ENTRY_LIMIT) return callback(null, data, null);
+    const entry = { key, data, gzip:null, brotli:null, gzipPromise:null, brotliPromise:null, bytes:data.length };
+    staticAssetMemoryCache.set(key, entry);
+    staticAssetMemoryCacheBytes += data.length;
+    pruneStaticAssetMemoryCache();
+    callback(null, data, entry);
+  });
+}
+function compressedStaticAsset(entry, data, encoding) {
+  if (!entry) {
+    return new Promise((resolve, reject) => {
+      if (encoding === 'br') {
+        zlib.brotliCompress(data, { params:{ [zlib.constants.BROTLI_PARAM_QUALITY]:5 } }, (error, compressed) => error ? reject(error) : resolve(compressed));
+      } else zlib.gzip(data, { level:6 }, (error, compressed) => error ? reject(error) : resolve(compressed));
+    });
+  }
+  const valueKey = encoding === 'br' ? 'brotli' : 'gzip';
+  const promiseKey = encoding === 'br' ? 'brotliPromise' : 'gzipPromise';
+  if (entry[valueKey]) return Promise.resolve(entry[valueKey]);
+  if (entry[promiseKey]) return entry[promiseKey];
+  entry[promiseKey] = new Promise((resolve, reject) => {
+    const done = (error, compressed) => {
+      entry[promiseKey] = null;
+      if (error) return reject(error);
+      entry[valueKey] = compressed;
+      entry.bytes += compressed.length;
+      staticAssetMemoryCacheBytes += compressed.length;
+      pruneStaticAssetMemoryCache();
+      resolve(compressed);
+    };
+    if (encoding === 'br') zlib.brotliCompress(data, { params:{ [zlib.constants.BROTLI_PARAM_QUALITY]:5 } }, done);
+    else zlib.gzip(data, { level:6 }, done);
+  });
+  return entry[promiseKey];
+}
+
 function serveStatic(req, res) {
   if (!['GET', 'HEAD'].includes(String(req.method || '').toUpperCase())) {
     return sendText(res, 405, 'Method not allowed', 'text/plain; charset=utf-8', req);
@@ -12370,7 +12559,7 @@ function serveStatic(req, res) {
       if (req.method === 'HEAD') return res.end();
       return fs.createReadStream(filePath, { start, end }).pipe(res);
     }
-    fs.readFile(filePath, (err, data) => {
+    readStaticAssetCached(filePath, stat, (err, data, cacheEntry) => {
       if (err) return sendText(res, 404, 'Not found', 'text/plain; charset=utf-8', req);
       const baseHeaders = { 'Content-Type': type, 'Cache-Control': cache, 'ETag': etag, 'X-P2PFlow-Version': APP_VERSION, ...(isCompressible ? { 'Vary': 'Accept-Encoding' } : {}), ...(pathname === '/sw.js' ? { 'Service-Worker-Allowed': '/' } : {}) };
       if (isVideo) baseHeaders['Accept-Ranges'] = 'bytes';
@@ -12379,17 +12568,19 @@ function serveStatic(req, res) {
         res.writeHead(200, secureHeaders(baseHeaders, req));
         return res.end();
       }
-      const acceptsGzip = /\bgzip\b/i.test(String(req.headers['accept-encoding'] || ''));
-      if (isCompressible && acceptsGzip && data.length > 1024) {
-        return zlib.gzip(data, { level: 6 }, (gzipError, compressed) => {
-          if (gzipError) {
-            const headers = { ...baseHeaders, 'Content-Length': String(data.length) };
-            res.writeHead(200, secureHeaders(headers, req));
-            return res.end(data);
-          }
-          const headers = { ...baseHeaders, 'Content-Encoding': 'gzip', 'Content-Length': String(compressed.length) };
+      const acceptEncoding = String(req.headers['accept-encoding'] || '');
+      const encoding = /\bbr\b/i.test(acceptEncoding) ? 'br' : (/\bgzip\b/i.test(acceptEncoding) ? 'gzip' : '');
+      if (isCompressible && encoding && data.length > 1024) {
+        return compressedStaticAsset(cacheEntry, data, encoding).then(compressed => {
+          if (res.writableEnded || res.destroyed) return;
+          const headers = { ...baseHeaders, 'Content-Encoding': encoding, 'Content-Length': String(compressed.length) };
           res.writeHead(200, secureHeaders(headers, req));
           res.end(compressed);
+        }).catch(() => {
+          if (res.writableEnded || res.destroyed) return;
+          const headers = { ...baseHeaders, 'Content-Length': String(data.length) };
+          res.writeHead(200, secureHeaders(headers, req));
+          res.end(data);
         });
       }
       const headers = { ...baseHeaders, 'Content-Length': String(data.length) };
@@ -12666,7 +12857,13 @@ async function binanceNetworkHealth() {
   if (dnsStep.ok && tcpStep.ok && httpsStep.ok && fetchStep.ok && (!chatDnsStep.ok || !chatTcpStep.ok)) diagnosis = 'Binance REST API is reachable, but C2C chat WebSocket host im.binance.com:443 is not reachable. Hosting must allow outbound WSS/HTTPS to im.binance.com:443.';
   const drift = fetchStep.serverTimeDriftMs ?? httpsStep.serverTimeDriftMs;
   if (typeof drift === 'number' && drift > 3000) diagnosis += ` Server time drift is about ${drift}ms; Binance signed requests may fail if drift is high.`;
-  return { ok: steps.every(s => s.ok), host, chatHost, diagnosis, steps };
+  const scheduler = typeof binanceSchedulerStats === 'function' ? binanceSchedulerStats() : {};
+  const realtimeChat = {
+    configured: (db?.apiCredentials || []).filter(item => !item.disabled && item.apiKey && item.secretKey).length,
+    connected: [...binanceChatRealtimeConnections.keys()].filter(binanceRealtimeChatHealthy).length,
+    tracked: binanceChatRealtimeConnections.size
+  };
+  return { ok: steps.every(s => s.ok), host, chatHost, diagnosis, steps, scheduler, realtimeChat };
 }
 async function storageHealth() {
   const items = [healthStep('storage.provider', true, { provider: DATABASE_PROVIDER })];
@@ -24503,6 +24700,14 @@ function handlePublicHealth(req, res, pathname = '/ready') {
 }
 
 const server = http.createServer({ maxHeaderSize: 16 * 1024 }, (req, res) => {
+  requestPersistenceContext.run({ req, saveScheduled:false, saveCount:0, startedAt:Date.now() }, () => {
+  const requestContext = requestPersistenceContext.getStore();
+  res.once('finish', () => {
+    const durationMs = Math.max(0, Date.now() - Number(requestContext?.startedAt || Date.now()));
+    if (durationMs >= SLOW_REQUEST_MS) {
+      console.warn(`[slow-request] ${String(req.method || 'GET').toUpperCase()} ${String(req.url || '').split('?')[0].slice(0, 180)} -> ${Number(res.statusCode || 0)} in ${durationMs}ms (saveCalls=${Number(requestContext?.saveCount || 0)})`);
+    }
+  });
   requestIdFor(req);
   if (!requestHostAllowed(req)) {
     console.warn(`[request:${requestIdFor(req)}] Rejected unrecognized Host header from ${proxyPeerIp(req) || 'unknown peer'}.`);
@@ -24532,6 +24737,7 @@ const server = http.createServer({ maxHeaderSize: 16 * 1024 }, (req, res) => {
   }
   if (req.url.startsWith('/api/')) return handleApi(req, res);
   return serveStatic(req, res);
+  });
 });
 
 server.requestTimeout = 30_000;

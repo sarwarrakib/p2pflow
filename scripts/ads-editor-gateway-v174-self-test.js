@@ -14,7 +14,7 @@ function block(source, start, end) {
   assert(a >= 0 && b > a, `Block not found: ${start}`);
   return source.slice(a, b);
 }
-assert(pkg.version === '1.7.4', `expected 1.7.4, got ${pkg.version}`);
+assert(pkg.version === '1.7.5', `expected 1.7.5, got ${pkg.version}`);
 const editor = block(ads, 'async function openAdvertisementEditorFromAction(', 'async function deleteAdvertisementFromAction(');
 assert(!editor.includes('?refresh=1'), 'Edit click still triggers live /api/ads/:id refresh');
 assert(!editor.includes("api(`/api/ads/"), 'Edit click still makes a per-ad network request');

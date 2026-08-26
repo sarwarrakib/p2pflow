@@ -1,5 +1,6 @@
-// v1.7.4: fixed-viewport AppShell, clean History routes, persistent per-route hosts, lifecycle rendering, and data-only DOM patching.
-// v1.7.4: stable-shell navigation, stale-request cancellation, non-destructive order/chat updates, and latest-navigation-wins rendering.
+// v1.7.5: WebSocket/SSE-first realtime sync, bounded Binance SAPI concurrency, single durable mutation checkpoint, and cached static compression.
+// v1.7.5: fixed-viewport AppShell, clean History routes, persistent per-route hosts, lifecycle rendering, and data-only DOM patching.
+// v1.7.5: stable-shell navigation, stale-request cancellation, non-destructive order/chat updates, and latest-navigation-wins rendering.
 // v1.5.23: Payment Account serial scope treats each normalized Label, including no Label, as an independent namespace.
 // v1.5.22: Header-only Work Status, chat-only notification master, and coupled sound/push controls.
 // v1.5.20: account-scoped Binance RBAC, visible security recovery setup and individual-only profit accounting.
@@ -24,6 +25,8 @@ const state = {
   currentOrder: null,
   ledgerAccountId: null,
   evt: null,
+  realtimeConnected: false,
+  realtimeLastEventAt: 0,
   refreshTimer: null,
   chatSyncTimer: null,
   chatSyncBusy: false,
@@ -1076,7 +1079,7 @@ async function autoSyncBinanceChat(order, updateOnly=true) {
   state.chatSyncBusy = true;
   setChatSyncStatus('Live', 'live');
   try {
-    const updated = await api(`/api/orders/${order.id}/binance-chat-sync`, { method:'POST', silent:true, body: JSON.stringify({ binanceOrderNumber: order.externalOrderNo || order.orderNo, page: 1, rows: 50, sort: 'desc' }) });
+    const updated = await api(`/api/orders/${order.id}/binance-chat-sync`, { method:'POST', silent:true, body: JSON.stringify({ binanceOrderNumber: order.externalOrderNo || order.orderNo, page: 1, rows: 20, sort: 'desc' }) });
     if (state.currentOrderId !== order.id) return false;
     if (updated && typeof updated === 'object') state.currentOrder = { ...(state.currentOrder || {}), ...updated };
     mergeCurrentOrderChatItems(updated.chats || [], { forceScroll:false });
@@ -1095,7 +1098,9 @@ async function autoSyncBinanceChat(order, updateOnly=true) {
 }
 function scheduleNextChatSync(order) {
   if (state.currentOrderId !== order.id || !isRealBinanceOrder(order) || !hasPerm('binance.chat')) return;
-  const delay = state.chatSyncFailCount ? Math.min(30000, 5000 * Math.pow(2, Math.min(3, state.chatSyncFailCount - 1))) : 1500;
+  const delay = state.chatSyncFailCount
+    ? Math.min(30000, 5000 * Math.pow(2, Math.min(3, state.chatSyncFailCount - 1)))
+    : (state.realtimeConnected ? 20000 : 3000);
   state.chatSyncTimer = setTimeout(async () => {
     await autoSyncBinanceChat(order, true);
     scheduleNextChatSync(order);
@@ -4659,10 +4664,13 @@ window.addEventListener('unhandledrejection', event => {
 function startEvents() {
   if (state.evt) state.evt.close();
   state.evt = new EventSource('/api/events', { withCredentials: true });
-  state.evt.onopen = () => setConnectivityStatus(false);
+  state.realtimeConnected = false;
+  state.evt.onopen = () => { state.realtimeConnected = true; state.realtimeLastEventAt = Date.now(); setConnectivityStatus(false); };
   state.evt.onmessage = ev => {
     let event = {};
     try { event = JSON.parse(ev.data || '{}'); } catch {}
+    state.realtimeConnected = true;
+    state.realtimeLastEventAt = Date.now();
     setConnectivityStatus(false);
     handleServerEvent(event);
     const type = String(event.type || '');
@@ -4676,7 +4684,7 @@ function startEvents() {
       scheduleMobileBottomNavRefresh(180);
     }
   };
-  state.evt.onerror = () => setConnectivityStatus(navigator.onLine === false);
+  state.evt.onerror = () => { state.realtimeConnected = false; setConnectivityStatus(navigator.onLine === false); };
 }
 
 function eventOnceKey(key) {
@@ -5267,7 +5275,7 @@ function installStableContentArchitecture(content = document.getElementById('con
 }
 
 function cacheActiveRouteView() {
-  // v1.7.4 keeps the entire route host intact instead of moving/recreating page
+  // v1.7.5 keeps the entire route host intact instead of moving/recreating page
   // children. Capturing is therefore only a scroll-state operation.
   state.routeHostManager?.captureActive?.();
 }
@@ -5568,7 +5576,7 @@ function renderNav() {
   // legacy flat menu while this marker is absent, the browser/proxy is serving
   // stale frontend JavaScript rather than the active release.
   nav.dataset.navigationModel = 'grouped-control-center';
-  nav.dataset.uiRelease = '1.7.4';
+  nav.dataset.uiRelease = '1.7.5';
   nav.innerHTML = '';
   const visible = visiblePages();
   const visibleIds = new Set(visible.map(([id]) => id));

@@ -18,7 +18,7 @@ assert(app.includes('backgroundPatchAllowed(state.page)') && app.includes("!['ad
 assert(app.includes('refreshCurrentOrderStateNonDestructive'), 'Open-order background refresh is not non-destructive.');
 assert(app.includes("mergeCurrentOrderChatItems(updated.chats || [], { forceScroll:false })"), 'Open-order chat delta is not merged without force scrolling.');
 assert(app.includes('state.currentOrderChatLastUserScrollAt = Date.now()'), 'Chat user scroll state is not tracked.');
-assert(app.includes(') : 1500;'), 'Active chat fallback polling is not near-realtime.');
+assert(app.includes(": (state.realtimeConnected ? 20000 : 3000);"), 'Active chat fallback is not SSE/WebSocket aware.');
 assert(app.includes('id="chatCameraPicker"') && app.includes('id="chatCameraInput"') && app.includes('capture="environment"'), 'Direct camera capture is missing from chat.');
 assert(css.includes('.chat-attachment-tray.is-open{display:grid;gap:8px}'), 'Camera/album attachment layout is not compact.');
 
@@ -44,7 +44,7 @@ console.log(JSON.stringify({
   noGenericInteractiveRerender: true,
   nonDestructiveOpenOrderRefresh: true,
   chatScrollStable: true,
-  activeChatFallbackMs: 1500,
+  activeChatFallbackMs: { realtime:20000, disconnected:3000 },
   realtimeChatWebSocket: true,
   cameraCapture: true,
   imageFreshPresignRetry: true,
