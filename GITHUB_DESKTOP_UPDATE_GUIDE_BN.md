@@ -1,6 +1,6 @@
 # GitHub Desktop - P2PFlow Unified Update
 
-P2PFlow 1.6-এও **GitHub-এর জন্য আলাদা ZIP নেই**। Hosting এবং GitHub দু জায়গাতেই একই `P2PFlow_v1.7.6_UNIFIED.zip` ব্যবহার করবেন।
+P2PFlow 1.6-এও **GitHub-এর জন্য আলাদা ZIP নেই**। Hosting এবং GitHub দু জায়গাতেই একই `P2PFlow_v1.7.7_UNIFIED.zip` ব্যবহার করবেন।
 
 ## প্রথম upload
 
@@ -9,7 +9,7 @@ P2PFlow 1.6-এও **GitHub-এর জন্য আলাদা ZIP নেই**�
 3. Repository -> Show in Explorer.
 4. ZIP-এর extracted সব content repository root-এ copy করুন। `.git` folder অক্ষত রাখুন।
 5. নিশ্চিত করুন repository root-এ আছে: `package.json`, `server.js`, `app-server.js`, `.github/`, `lib/`, `public/`, `scripts/`।
-6. Summary: `P2PFlow 1.7.6`
+6. Summary: `P2PFlow 1.7.7`
 7. Commit to main.
 8. Push origin.
 

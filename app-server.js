@@ -1253,12 +1253,17 @@ function scheduleDbUpdatedBroadcast(revision = 0, delayMs = DB_UPDATED_COALESCE_
 function saveDb(options = {}) {
   if (!db || !stateStore) return Promise.resolve();
   const requestPersistence = requestPersistenceContext.getStore();
+  const promise = stateStore.scheduleSave(databaseStateForPersistence, options.reason || 'application_state_change');
   if (requestPersistence) {
     requestPersistence.saveScheduled = true;
     requestPersistence.saveCount = Number(requestPersistence.saveCount || 0) + 1;
     requestPersistence.lastSaveReason = cleanStr(options.reason || 'application_state_change', 120);
+    // v1.7.7: state stores return a ticket-scoped promise. Keeping the latest
+    // promise in AsyncLocalStorage lets the response wait for this mutation only,
+    // not every unrelated background Binance/chat checkpoint queued behind it.
+    requestPersistence.lastSavePromise = promise;
+    requestPersistence.lastSaveScheduledAt = Date.now();
   }
-  const promise = stateStore.scheduleSave(databaseStateForPersistence, options.reason || 'application_state_change');
   if (options.broadcast !== false) {
     promise.then(() => scheduleDbUpdatedBroadcast(stateStore.currentRevision)).catch(() => {});
   }
@@ -11232,6 +11237,9 @@ function logAudit(user, action, entityType, entityId, details = {}) {
 }
 
 function secureHeaders(extra = {}, req = null) {
+  const persistence = req ? requestPersistenceContext.getStore() : null;
+  const responseMs = persistence?.startedAt ? Math.max(0, Date.now() - Number(persistence.startedAt || Date.now())) : 0;
+  const persistenceMs = Math.max(0, Number(persistence?.persistenceWaitMs || 0));
   const headers = {
     'X-Content-Type-Options': 'nosniff',
     'X-Frame-Options': 'DENY',
@@ -11244,11 +11252,12 @@ function secureHeaders(extra = {}, req = null) {
     'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; media-src 'self' data: blob: https:; connect-src 'self'; worker-src 'self' blob:; manifest-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'",
     'Cache-Control': 'no-store',
     ...(req ? { 'X-Request-Id': requestIdFor(req) } : {}),
-    ...(req && requestPersistenceContext.getStore()?.startedAt ? { 'Server-Timing': `app;dur=${Math.max(0, Date.now() - Number(requestPersistenceContext.getStore().startedAt || Date.now()))}` } : {}),
+    ...(persistence?.startedAt ? { 'Server-Timing': `app;dur=${responseMs}, persist;dur=${persistenceMs}` } : {}),
     ...extra
   };
-  if (req && requestPersistenceContext.getStore()?.startedAt) {
-    headers['X-P2PFlow-Response-Ms'] = String(Math.max(0, Date.now() - Number(requestPersistenceContext.getStore().startedAt || Date.now())));
+  if (persistence?.startedAt) {
+    headers['X-P2PFlow-Response-Ms'] = String(responseMs);
+    headers['X-P2PFlow-Persist-Ms'] = String(persistenceMs);
   }
   if (req && isHttps(req)) headers['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains';
   return headers;
@@ -11325,10 +11334,22 @@ function handleDurabilityFailure(error) {
   const timer = setTimeout(() => gracefulShutdown('database_durability_failure', 1), 250);
   if (typeof timer.unref === 'function') timer.unref();
 }
-function sendJson(res, status, payload, extraHeaders = {}, req = null) {
-  if (!shouldFlushBeforeResponse(req, status)) return writeJsonResponse(res, status, payload, extraHeaders, req);
+function requestMutationDurabilityPromise(req, status) {
+  if (!shouldFlushBeforeResponse(req, status)) return null;
   ensureMutationScheduled(req, status);
-  flushDatabaseSave()
+  const persistence = requestPersistenceContext.getStore();
+  const promise = persistence?.lastSavePromise;
+  if (!promise || typeof promise.then !== 'function') return Promise.resolve();
+  const started = Date.now();
+  return promise.then(result => {
+    if (persistence) persistence.persistenceWaitMs = Math.max(0, Date.now() - started);
+    return result;
+  });
+}
+function sendJson(res, status, payload, extraHeaders = {}, req = null) {
+  const durability = requestMutationDurabilityPromise(req, status);
+  if (!durability) return writeJsonResponse(res, status, payload, extraHeaders, req);
+  durability
     .then(() => writeJsonResponse(res, status, payload, extraHeaders, req))
     .catch(error => {
       writeJsonResponse(res, 503, { error: 'Database save failed. The operation was not confirmed; the service is restarting from the last durable revision.' }, {}, req);
@@ -11336,9 +11357,9 @@ function sendJson(res, status, payload, extraHeaders = {}, req = null) {
     });
 }
 function sendText(res, status, text, type = 'text/plain; charset=utf-8', req = null) {
-  if (!shouldFlushBeforeResponse(req, status)) return writeTextResponse(res, status, text, type, req);
-  ensureMutationScheduled(req, status);
-  flushDatabaseSave()
+  const durability = requestMutationDurabilityPromise(req, status);
+  if (!durability) return writeTextResponse(res, status, text, type, req);
+  durability
     .then(() => writeTextResponse(res, status, text, type, req))
     .catch(error => {
       writeTextResponse(res, 503, 'Database save failed. The service is restarting from the last durable revision.', 'text/plain; charset=utf-8', req);
@@ -12516,6 +12537,35 @@ function compressedStaticAsset(entry, data, encoding) {
     else zlib.gzip(data, { level:6 }, done);
   });
   return entry[promiseKey];
+}
+
+const STATIC_PREWARM_RELATIVE_PATHS = Object.freeze([
+  'index.html', 'style.css', 'app.js', 'page-preload.js', 'device-auth.js',
+  'js/core/history-router.js', 'js/core/route-host.js',
+  'js/pages/dashboard.js', 'js/pages/orders.js', 'js/pages/chat.js',
+  'js/pages/ads.js', 'js/pages/settings.js', 'js/pages/accounting.js'
+]);
+
+function prewarmStaticAsset(relativePath) {
+  const filePath = path.resolve(PUBLIC_DIR, relativePath);
+  if (!filePath.startsWith(PUBLIC_DIR + path.sep)) return Promise.resolve(false);
+  return new Promise(resolve => {
+    fs.stat(filePath, (statError, stat) => {
+      if (statError || !stat?.isFile?.()) return resolve(false);
+      readStaticAssetCached(filePath, stat, (readError, data, entry) => {
+        if (readError || !data) return resolve(false);
+        if (!entry || data.length <= 1024) return resolve(true);
+        Promise.allSettled([compressedStaticAsset(entry, data, 'br'), compressedStaticAsset(entry, data, 'gzip')])
+          .then(() => resolve(true));
+      });
+    });
+  });
+}
+
+async function prewarmHotStaticAssets() {
+  const started = Date.now();
+  const results = await Promise.all(STATIC_PREWARM_RELATIVE_PATHS.map(prewarmStaticAsset));
+  return { warmed:results.filter(Boolean).length, ms:Date.now() - started, bytes:staticAssetMemoryCacheBytes };
 }
 
 function serveStatic(req, res) {
@@ -24749,12 +24799,12 @@ function handlePublicHealth(req, res, pathname = '/ready') {
 }
 
 const server = http.createServer({ maxHeaderSize: 16 * 1024 }, (req, res) => {
-  requestPersistenceContext.run({ req, saveScheduled:false, saveCount:0, startedAt:Date.now() }, () => {
+  requestPersistenceContext.run({ req, saveScheduled:false, saveCount:0, lastSavePromise:null, persistenceWaitMs:0, startedAt:Date.now() }, () => {
   const requestContext = requestPersistenceContext.getStore();
   res.once('finish', () => {
     const durationMs = Math.max(0, Date.now() - Number(requestContext?.startedAt || Date.now()));
     if (durationMs >= SLOW_REQUEST_MS) {
-      console.warn(`[slow-request] ${String(req.method || 'GET').toUpperCase()} ${String(req.url || '').split('?')[0].slice(0, 180)} -> ${Number(res.statusCode || 0)} in ${durationMs}ms (saveCalls=${Number(requestContext?.saveCount || 0)})`);
+      console.warn(`[slow-request] ${String(req.method || 'GET').toUpperCase()} ${String(req.url || '').split('?')[0].slice(0, 180)} -> ${Number(res.statusCode || 0)} in ${durationMs}ms (saveCalls=${Number(requestContext?.saveCount || 0)}, persistWait=${Number(requestContext?.persistenceWaitMs || 0)}ms)`);
     }
   });
   requestIdFor(req);
@@ -24821,6 +24871,12 @@ async function startServer() {
   restorePersistentSessions();
   const publicMirror = syncManagedPublicMirrorFrom(__dirname);
   if (publicMirror.synced) console.log(`P2PFlow ${APP_VERSION} public UI mirror synchronized (${publicMirror.files} files).`);
+  try {
+    const warmed = await prewarmHotStaticAssets();
+    console.log(`Static hot cache prewarmed (${warmed.warmed}/${STATIC_PREWARM_RELATIVE_PATHS.length} assets, ${warmed.ms}ms).`);
+  } catch (error) {
+    console.warn(`Static cache prewarm skipped: ${cleanStr(error?.message || error, 240)}`);
+  }
   server.listen(PORT, BIND_HOST || undefined, () => {
     console.log(`P2PFlow ${APP_VERSION} running on http://${BIND_HOST || '0.0.0.0'}:${PORT}`);
     console.log(`Storage provider: ${databaseProviderLabel(DATABASE_PROVIDER)} / table ${DATABASE_TABLE}`);

@@ -1,6 +1,6 @@
 'use strict';
 
-// P2PFlow v1.7.6 frontend routing core.
+// P2PFlow v1.7.7 frontend routing core.
 // Clean History API URLs are canonical. Legacy #/ URLs remain readable and are
 // migrated in-place so old bookmarks and notification links keep working.
 (function installP2PFlowHistoryRouter(global) {

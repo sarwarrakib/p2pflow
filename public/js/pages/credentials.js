@@ -1,4 +1,4 @@
-// P2PFlow v1.7.6
+// P2PFlow v1.7.7
 // API credentials: automatic connect validation, P2P username identity, compact actions and per-account Release Verification settings.
 
 const P2PFLOW_BINANCE_RELEASE_VERIFICATION_METHODS = [

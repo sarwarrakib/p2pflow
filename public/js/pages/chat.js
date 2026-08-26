@@ -1,4 +1,4 @@
-// P2PFlow v1.7.6
+// P2PFlow v1.7.7
 // Binance-style P2P message inbox with per-CRM-user account controls layered on existing permissions.
 
 function stopChatInboxAutoRefresh() {
@@ -107,7 +107,13 @@ function chatAccountSettingsModal(account={}) {
     event.preventDefault();
     const form = event.currentTarget;
     const save = $('#chatAccountSettingsSave');
-    save.disabled = true;
+    const originalLabel = save?.textContent || 'Save';
+    if (save) {
+      save.disabled = true;
+      save.setAttribute('aria-busy', 'true');
+      save.textContent = 'Saving…';
+    }
+    setFormMessage('#chatAccountSettingsMessage', 'Saving account settings…', 'info');
     try {
       const requestedControls = {
         orders:form.elements.orders.checked,
@@ -129,7 +135,11 @@ function chatAccountSettingsModal(account={}) {
       notify('API account settings saved.', 'ok');
       renderChatInbox({ preserveFocus:true, force:true }).catch(()=>{});
     } catch (error) {
-      save.disabled = false;
+      if (save) {
+        save.disabled = false;
+        save.removeAttribute('aria-busy');
+        save.textContent = originalLabel;
+      }
       setFormMessage('#chatAccountSettingsMessage', error.message || 'Could not save account settings.', 'danger');
     }
   };

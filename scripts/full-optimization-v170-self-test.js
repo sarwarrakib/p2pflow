@@ -33,7 +33,7 @@ function block(source, start, end) {
 }
 function sha(value) { return crypto.createHash('sha256').update(value).digest('hex'); }
 
-assert(pkg.version === '1.7.6', `expected package 1.7.3, got ${pkg.version}`);
+assert(pkg.version === '1.7.7', `expected package 1.7.3, got ${pkg.version}`);
 assert(server.includes('const APP_SCHEMA_VERSION = 37;'), 'v1.7.3 unexpectedly changed the v1.6.4-compatible schema target');
 
 // The production-proven v1.6.4 order engine is a hard baseline. These exact

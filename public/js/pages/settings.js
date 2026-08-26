@@ -292,6 +292,14 @@ async function renderSettings() {
 
   $('#settingsForm').onsubmit = async e => {
     e.preventDefault();
+    const submit = e.submitter || e.target.querySelector('button[type="submit"]');
+    if (submit?.disabled) return;
+    const originalLabel = submit?.textContent || 'Save Settings';
+    if (submit) {
+      submit.disabled = true;
+      submit.setAttribute('aria-busy', 'true');
+      submit.textContent = 'Saving…';
+    }
     const obj = formObj(e.target);
     obj.requirePaymentSplitForFinalAction = e.target.requirePaymentSplitForFinalAction.checked;
     obj.requirePaymentAccountCapacityForAutoAssignment = e.target.requirePaymentAccountCapacityForAutoAssignment.checked;
@@ -333,9 +341,19 @@ async function renderSettings() {
     });
     delete obj.smtpSecurity;
     delete obj.mailTestRecipient;
-    await api('/api/settings', { method:'PATCH', body: JSON.stringify(obj) });
-    notify('Settings saved securely.', 'ok');
-    renderSettings();
+    try {
+      await api('/api/settings', { method:'PATCH', body: JSON.stringify(obj) });
+      notify('Settings saved securely.', 'ok');
+      await renderSettings();
+    } catch (error) {
+      if (isUiRequestCancelled(error)) return;
+      if (submit) {
+        submit.disabled = false;
+        submit.removeAttribute('aria-busy');
+        submit.textContent = originalLabel;
+      }
+      notify(error?.message || 'Settings could not be saved.', 'danger');
+    }
   };
 
   const runMailTest = async (driver, label) => {

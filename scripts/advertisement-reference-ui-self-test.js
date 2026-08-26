@@ -73,7 +73,7 @@ assert(/slice\(0,\s*5\)/.test(ads) && /maximum of 5 payment methods/.test(ads), 
 const releasePage = block(app, 'function openReleaseVerificationPage(', 'function openFinalActionModal(');
 assert(/release-verify-minimal/.test(releasePage) && /release-verify-submit/.test(releasePage), 'Minimal Release verification shell/button is missing.');
 assert(/\.release-verify-minimal/.test(css) && /\.ads-wizard-progress/.test(css) && /\.ads-ad-action-menu/.test(css), 'Responsive ads workflow CSS is missing.');
-assert(pkg.version === '1.7.6', `expected v1.7.6, got ${pkg.version}`);
+assert(pkg.version === '1.7.7', `expected v1.7.7, got ${pkg.version}`);
 console.log(JSON.stringify({
   ok:true,
   createFlow:'three-step',
