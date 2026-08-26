@@ -33,7 +33,7 @@ function block(source, start, end) {
 }
 function sha(value) { return crypto.createHash('sha256').update(value).digest('hex'); }
 
-assert(pkg.version === '1.7.3', `expected package 1.7.3, got ${pkg.version}`);
+assert(pkg.version === '1.7.4', `expected package 1.7.3, got ${pkg.version}`);
 assert(server.includes('const APP_SCHEMA_VERSION = 37;'), 'v1.7.3 unexpectedly changed the v1.6.4-compatible schema target');
 
 // The production-proven v1.6.4 order engine is a hard baseline. These exact
@@ -92,8 +92,8 @@ assert(app.includes("closest?.('[data-copy-payment-value]')") && app.includes('a
 // Ads: immediate cached editor, exact-account SELL payment methods, no guessed
 // price bands, exact Binance rejection bounds, and responsive bottom sheet.
 const editOpen = block(ads, 'async function openAdvertisementEditorFromAction(', 'async function deleteAdvertisementFromAction(');
-assert(editOpen.indexOf('openAdvertisementEditor(ad, scopedData)') >= 0 && editOpen.indexOf('openAdvertisementEditor(ad, scopedData)') < editOpen.indexOf("api(`/api/ads/${encodeURIComponent(ad.id)}?refresh=1`"), 'Ads editor waits for live network I/O before opening');
-assert(editOpen.includes('p2pflow:ads-editor-live-refresh') && ads.includes("window.addEventListener('p2pflow:ads-editor-live-refresh'"), 'background live Ads refresh is not merged into the open editor');
+assert(editOpen.includes('openAdvertisementEditor(ad, scopedData)'), 'Ads editor does not open from the synchronized local snapshot');
+assert(!editOpen.includes('?refresh=1') && !editOpen.includes('p2pflow:ads-editor-live-refresh'), 'Ads editor still starts live network refresh work from the Edit click path');
 const paymentScope = block(ads, 'function adsPaymentMethodsForCredential(', 'function adsPaymentDataForCredential(');
 assert(/Number\(method\.credentialId(?: \|\| 0)?\) === id/.test(paymentScope) && !paymentScope.includes('!Number(method.credentialId)'), 'SELL payment methods can leak across Binance accounts');
 assert(server.includes('ensureAdvertisementPaymentMethods(methods, credential.id)'), 'exact-account payment methods are not catalogued safely');

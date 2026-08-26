@@ -1,4 +1,4 @@
-// P2PFlow v1.7.3
+// P2PFlow v1.7.4
 // Restored FULL advertisement update payload with no-updateMode compatibility retry.
 
 const ADS_COUNTRY_CODES = ["BD","US","GB","IN","PK","AE","SA","TR","NG","KE","GH","ZA","MY","SG","ID","PH","TH","VN","AU","CA","DE","FR","IT","ES","NL","BE","PT","JP","KR","CN","HK","TW","BR","MX","AR","CO","PE","CL","EG","MA","DZ","TN","QA","KW","BH","OM","LK","NP","AW","AF","AO","AI","AX","AL","AD","AM","AS","AQ","TF","AG","AT","AZ","BI","BJ","BQ","BF","BG","BS","BA","BL","BY","BZ","BM","BO","BB","BN","BT","BV","BW","CF","CC","CH","CI","CM","CD","CG","CK","KM","CV","CR","CU","CW","CX","KY","CY","CZ","DJ","DM","DK","DO","EC","ER","EH","EE","ET","FI","FJ","FK","FO","FM","GA","GE","GG","GI","GN","GP","GM","GW","GQ","GR","GD","GL","GT","GF","GU","GY","HM","HN","HR","HT","HU","IM","IO","IE","IR","IQ","IS","IL","JM","JE","JO","KZ","KG","KH","KI","KN","LA","LB","LR","LY","LC","LI","LS","LT","LU","LV","MO","MF","MC","MD","MG","MV","MH","MK","ML","MT","MM","ME","MN","MP","MZ","MR","MS","MQ","MU","MW","YT","NA","NC","NE","NF","NI","NU","NO","NR","NZ","PA","PN","PW","PG","PL","PR","KP","PY","PS","PF","RE","RO","RU","RW","SD","SN","GS","SH","SJ","SB","SL","SV","SM","SO","PM","RS","SS","ST","SR","SK","SI","SE","SZ","SX","SC","SY","TC","TD","TG","TJ","TK","TM","TL","TO","TT","TV","TZ","UG","UA","UM","UY","UZ","VA","VC","VE","VG","VI","VU","WF","WS","YE","ZM","ZW"];
@@ -707,30 +707,19 @@ async function openAdvertisementEditorFromAction(ad = {}, data = {}, button = nu
   const expectedCredentialId = Number(ad.credentialId || 0);
   if (!expectedCredentialId) return notify('This advertisement is not linked to a Binance account.', 'danger', 6000);
 
-  // Open instantly from the already-synchronized account-scoped snapshot. A
-  // live Binance refresh continues in the background, so a slow SAPI response
-  // can never make the operator wait 20-30 seconds just to enter the editor.
+  // Open instantly from the already-synchronized account-scoped snapshot.
+  // Edit navigation is intentionally local-only; freshness is handled by the
+  // normal Ads/Profile synchronization flows outside this click request.
   const scopedData = adsPaymentDataForCredential(data, expectedCredentialId);
   closeAdsSheet();
   openAdvertisementEditor(ad, scopedData);
 
-  api(`/api/ads/${encodeURIComponent(ad.id)}?refresh=1`, { silent:true, noAutoReload:true })
-    .then(response => {
-      const freshAd = response?.item;
-      if (!freshAd || Number(freshAd.credentialId || 0) !== expectedCredentialId) return;
-      const merged = advertisementEditorDataFromResponse(scopedData, response, expectedCredentialId);
-      Object.assign(scopedData, merged);
-      const current = (state.adsLastData?.items || []).find(item => Number(item.id) === Number(ad.id));
-      if (current) Object.assign(current, freshAd);
-      window.dispatchEvent(new CustomEvent('p2pflow:ads-editor-live-refresh', { detail:{
-        advertisementId:Number(ad.id || 0), credentialId:expectedCredentialId, item:freshAd, data:merged
-      } }));
-      if (Array.isArray(response.warnings) && response.warnings.length) notify(response.warnings[0], 'warn', 6500);
-    })
-    .catch(error => {
-      if (isUiRequestCancelled(error)) return;
-      notify(error.message || 'Live Binance refresh is temporarily unavailable. The saved account-scoped advertisement is still open.', 'warn', 6500);
-    });
+  // The editor intentionally uses the already-synchronized CRM snapshot.
+  // Never start a live Binance/Profile request from the Edit click path: owner
+  // payment-method fallbacks can take longer than a shared-hosting gateway
+  // timeout and must not turn an otherwise local editor open into HTTP 504.
+  // Account/profile synchronization continues through the normal background
+  // sync flows and explicit Profile/Ads sync actions.
 }
 
 async function deleteAdvertisementFromAction(ad = {}, data = {}) {
@@ -1228,25 +1217,10 @@ function openAdvertisementEditor(ad = null, data = {}) {
     if (tagPreview) tagPreview.innerHTML = selectedTags.map(tag => `<span>${escapeHtml(tag)}</span>`).join('');
   };
   renderMethods(); renderTags();
-  refreshPaymentOptions(false).then(() => { if (document.body.contains(form)) renderMethods(); }).catch(() => {});
-
-  // The editor opens from cached account-scoped data for zero perceived wait.
-  // When the exact credential's live Binance snapshot arrives, merge only that
-  // account and refresh the visible payment selection without reopening the form.
-  if (isEdit) {
-    window.addEventListener('p2pflow:ads-editor-live-refresh', event => {
-      if (!document.body.contains(form)) return;
-      const detail = event?.detail || {};
-      if (Number(detail.advertisementId || 0) !== Number(ad?.id || 0)) return;
-      if (Number(detail.credentialId || 0) !== Number(editorCredentialId || 0)) return;
-      if (detail.data && typeof detail.data === 'object') Object.assign(data, detail.data);
-      if (detail.item && typeof detail.item === 'object') Object.assign(ad, detail.item);
-      selectedPayIds = resolvedAdPaymentPayIds(ad || {}, data);
-      selectedGenericKeys = resolvedAdGenericKeys(ad || {}, data);
-      renderMethods();
-      scheduleReferenceRefresh();
-    }, { once:true });
-  }
+  // Do not auto-refresh payment methods while opening the editor. The exact
+  // account's Profile/Ads synchronized cache is the zero-latency source. A live
+  // refresh is performed only when the operator explicitly asks for methods and
+  // the cache is empty.
 
   $('#addAdPaymentMethod').onclick = async () => {
     const button = $('#addAdPaymentMethod');
@@ -1254,11 +1228,9 @@ function openAdvertisementEditor(ad = null, data = {}) {
     const hasCached = Array.isArray(cached.paymentMethods) && cached.paymentMethods.length > 0;
     if (!hasCached) {
       if (button) button.disabled = true;
-      try { await refreshPaymentOptions(false); }
+      try { await refreshPaymentOptions(true); }
       catch (error) { if (!isUiRequestCancelled(error)) notify(error.message || 'Binance payment methods could not be refreshed.', 'warn', 6500); }
       finally { if (button) button.disabled = false; }
-    } else {
-      refreshPaymentOptions(false).then(() => { if (document.body.contains(form)) renderMethods(); }).catch(() => {});
     }
     openPaymentMethodSheet(currentPaymentData(), currentSelectedPayments(), values => { setCurrentSelectedPayments(values); renderMethods(); scheduleReferenceRefresh(); });
   };

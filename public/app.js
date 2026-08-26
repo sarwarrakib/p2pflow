@@ -1,5 +1,5 @@
-// v1.7.3: fixed-viewport AppShell, clean History routes, persistent per-route hosts, lifecycle rendering, and data-only DOM patching.
-// v1.7.3: stable-shell navigation, stale-request cancellation, non-destructive order/chat updates, and latest-navigation-wins rendering.
+// v1.7.4: fixed-viewport AppShell, clean History routes, persistent per-route hosts, lifecycle rendering, and data-only DOM patching.
+// v1.7.4: stable-shell navigation, stale-request cancellation, non-destructive order/chat updates, and latest-navigation-wins rendering.
 // v1.5.23: Payment Account serial scope treats each normalized Label, including no Label, as an independent namespace.
 // v1.5.22: Header-only Work Status, chat-only notification master, and coupled sound/push controls.
 // v1.5.20: account-scoped Binance RBAC, visible security recovery setup and individual-only profit accounting.
@@ -4155,7 +4155,10 @@ async function api(path, opts={}, attempt=0) {
   const data = type.includes('application/json') ? await res.json().catch(() => ({})) : await res.text().catch(() => '');
   const htmlResponse = !type.includes('application/json') && looksLikeHtml(data);
   const hostingChallenge = htmlResponse && isHostingChallengeHtml(data);
-  const shouldRetryHtml = htmlResponse && (hostingChallenge || [0, 403, 429, 500, 502, 503, 504].includes(res.status));
+  // A gateway 504 is already the result of a long upstream wait. Retrying it
+  // automatically can multiply a 60-second proxy timeout into several minutes
+  // and add more load while the upstream is unhealthy.
+  const shouldRetryHtml = htmlResponse && (hostingChallenge || [0, 403, 429, 500, 502, 503].includes(res.status));
   if ((!res.ok || htmlResponse) && attempt < 2 && shouldRetryHtml) {
     await new Promise(r => setTimeout(r, hostingChallenge ? 1300 + attempt * 1400 : 700 + attempt * 800));
     if (fetchOpts.signal?.aborted) { const cancelled = new Error('UI request cancelled'); cancelled.name='AbortError'; cancelled.code='UI_REQUEST_CANCELLED'; cancelled.cancelled=true; throw cancelled; }
@@ -5264,7 +5267,7 @@ function installStableContentArchitecture(content = document.getElementById('con
 }
 
 function cacheActiveRouteView() {
-  // v1.7.3 keeps the entire route host intact instead of moving/recreating page
+  // v1.7.4 keeps the entire route host intact instead of moving/recreating page
   // children. Capturing is therefore only a scroll-state operation.
   state.routeHostManager?.captureActive?.();
 }
@@ -5565,7 +5568,7 @@ function renderNav() {
   // legacy flat menu while this marker is absent, the browser/proxy is serving
   // stale frontend JavaScript rather than the active release.
   nav.dataset.navigationModel = 'grouped-control-center';
-  nav.dataset.uiRelease = '1.7.3';
+  nav.dataset.uiRelease = '1.7.4';
   nav.innerHTML = '';
   const visible = visiblePages();
   const visibleIds = new Set(visible.map(([id]) => id));

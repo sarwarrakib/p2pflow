@@ -1,4 +1,4 @@
-// P2PFlow v1.7.3
+// P2PFlow v1.7.4
 // Live Binance-style P2P market advertisement browser.
 
 function p2pMarketFmt(value, decimals = 2) {

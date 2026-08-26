@@ -13771,15 +13771,41 @@ async function fetchLiveAdvertisementDetail(credential, advNo) {
   return unwrapBinanceData(result) || {};
 }
 
+async function callAdvertisementSapiFastFallback(credential, label, attempts = []) {
+  let lastError = null;
+  for (const attempt of attempts) {
+    try {
+      const response = await callSignedSapi({
+        apiKey: credential.apiKey,
+        secretKey: credential.secretKey,
+        endpointName: attempt.endpointName,
+        query: attempt.query || {},
+        body: attempt.body === undefined ? null : attempt.body,
+        clientType: credential.clientType || 'web',
+        dryRun: false,
+        timeoutMs: Math.max(1000, Math.min(6000, Number(attempt.timeoutMs || 6000)))
+      });
+      assertSuccessfulSapiResponse(response, label);
+      return response;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError || Object.assign(new Error(`${label} is temporarily unavailable.`), { statusCode:502 });
+}
+
 async function fetchAdvertisementAccountPaymentMethods(credential, options = {}) {
   if (!credential || !credential.apiKey || !credential.secretKey || credential.disabled) {
     throw Object.assign(new Error('The selected Binance API credential is disabled or incomplete.'), { statusCode: 422 });
   }
   const warnings = [];
-  const response = await callOwnerProfileSapi(credential, 'P2P payment methods for advertisement', [
-    { endpointName: 'getPaymentMethodByUserId', query: {}, timeoutMs: 15000 },
-    { endpointName: 'agentGetPaymentMethodByUserId', query: {}, timeoutMs: 15000 }
-  ], warnings);
+  const paymentAttempts = [
+    { endpointName: 'getPaymentMethodByUserId', query: {}, timeoutMs: options.fast === true ? 6000 : 15000 },
+    { endpointName: 'agentGetPaymentMethodByUserId', query: {}, timeoutMs: options.fast === true ? 6000 : 15000 }
+  ];
+  const response = options.fast === true
+    ? await callAdvertisementSapiFastFallback(credential, 'P2P payment methods for advertisement', paymentAttempts)
+    : await callOwnerProfileSapi(credential, 'P2P payment methods for advertisement', paymentAttempts, warnings);
   // Editing only needs the current account's saved method list. Per-method
   // detail enrichment can make one click fan out into dozens of SAPI calls, so
   // keep it opt-in for workflows that truly need every field.
@@ -15809,7 +15835,7 @@ function advertisementGenericPaymentCatalogForCredential(credentialId = 0, fiat 
     .slice(0, 1000);
 }
 
-async function refreshAdvertisementGenericPaymentCatalog(credential, fiat = '', force = false) {
+async function refreshAdvertisementGenericPaymentCatalog(credential, fiat = '', force = false, options = {}) {
   if (!credential || !credential.apiKey || !credential.secretKey || credential.disabled) {
     throw Object.assign(new Error('The selected Binance API credential is disabled or incomplete.'), { statusCode: 422 });
   }
@@ -15819,10 +15845,13 @@ async function refreshAdvertisementGenericPaymentCatalog(credential, fiat = '', 
   const cached = advertisementGenericPaymentCatalogForCredential(credentialId, fiat);
   if (!force && cached.length && last && Date.now() - last < 10 * 60 * 1000) return cached;
   const warnings = [];
-  const valid = await callOwnerProfileSapi(credential, 'valid P2P payment methods for advertisement', [
-    { endpointName:'listAllPaymentMethods', body:{}, timeoutMs:15000 },
-    { endpointName:'agentListAllPaymentMethods', body:{}, timeoutMs:15000 }
-  ], warnings);
+  const catalogAttempts = [
+    { endpointName:'listAllPaymentMethods', body:{}, timeoutMs:options.fast === true ? 6000 : 15000 },
+    { endpointName:'agentListAllPaymentMethods', body:{}, timeoutMs:options.fast === true ? 6000 : 15000 }
+  ];
+  const valid = options.fast === true
+    ? await callAdvertisementSapiFastFallback(credential, 'valid P2P payment methods for advertisement', catalogAttempts)
+    : await callOwnerProfileSapi(credential, 'valid P2P payment methods for advertisement', catalogAttempts, warnings);
   const catalog = normalizeOwnerPaymentCatalog([], valid, profile.paymentMethods || []);
   if (catalog.methods.length) {
     profile.paymentCatalog = {
@@ -16133,8 +16162,8 @@ async function handleAdvertisementPaymentOptions(req, res, url) {
       const profile = ownerP2pProfileRecord(credential.id) || ownerP2pProfileBase(credential.id);
       const last = Date.parse(profile?.paymentMethodsSyncedAt || profile?.syncedAt || '') || 0;
       let paymentMethods = advertisementSavedPaymentOptionsForCredential(user, credential.id);
-      if (force || !paymentMethods.length || !last || Date.now() - last > 5 * 60 * 1000) {
-        await fetchAdvertisementAccountPaymentMethods(credential, { enrich:false });
+      if (force) {
+        await fetchAdvertisementAccountPaymentMethods(credential, { enrich:false, fast:true });
         paymentMethods = advertisementSavedPaymentOptionsForCredential(user, credential.id);
         saveDb({ broadcast:false });
       }
@@ -16150,8 +16179,8 @@ async function handleAdvertisementPaymentOptions(req, res, url) {
     let paymentMethods = advertisementGenericPaymentCatalogForCredential(credential.id, fiat);
     const profile = ownerP2pProfileRecord(credential.id) || ownerP2pProfileBase(credential.id);
     const last = Date.parse(profile?.paymentCatalog?.syncedAt || '') || 0;
-    if (force || !paymentMethods.length || !last || Date.now() - last > 10 * 60 * 1000) {
-      paymentMethods = await refreshAdvertisementGenericPaymentCatalog(credential, fiat, force);
+    if (force) {
+      paymentMethods = await refreshAdvertisementGenericPaymentCatalog(credential, fiat, true, { fast:true });
       saveDb({ broadcast:false });
     }
     return sendJson(res, 200, {
@@ -16713,42 +16742,14 @@ async function handleAdvertisementById(req, res, parts) {
     const credentialId = Number(item.credentialId || 0);
     const credential = resolveBinanceCredentialForUser(user, credentialId, 'ads.view', { includeDisabled:false });
     const shouldRefresh = req.url && new URL(req.url, 'http://localhost').searchParams.get('refresh') === '1';
-    const refreshWarnings = [];
-    if (shouldRefresh && db.settings.apiMode === 'live') {
-      if (!credential || !credential.apiKey || !credential.secretKey || credential.disabled) {
-        return sendJson(res, 422, {
-          error: 'The exact Binance account for this advertisement is unavailable. Edit was blocked to prevent cross-account payment-method use.',
-          code: 'ADS_CREDENTIAL_SCOPE_UNAVAILABLE',
-          credentialId
-        }, {}, req);
-      }
-      const warnings = refreshWarnings;
-      const liveDetailTask = item.advNo ? (async () => {
-        try {
-          const liveDetail = await fetchLiveAdvertisementDetail(credential, item.advNo);
-          const liveFields = advertisementFieldsFromBinance(liveDetail, credentialId);
-          if (liveFields.advNo && String(liveFields.advNo) !== String(item.advNo)) throw Object.assign(new Error('Binance returned a different advertisement number for this account.'), { code:'ADS_ACCOUNT_ADVERTISEMENT_MISMATCH' });
-          const refreshed = upsertBinanceAdvertisement(liveDetail, user, credential);
-          if (!refreshed.item || Number(refreshed.item.id) !== Number(item.id)) throw Object.assign(new Error('The advertisement could not be matched to its original account record.'), { code:'ADS_ACCOUNT_ADVERTISEMENT_MISMATCH' });
-        } catch (error) {
-          if (String(error.code || '') === 'ADS_ACCOUNT_ADVERTISEMENT_MISMATCH') throw error;
-          warnings.push(`Live advertisement refresh skipped: ${cleanStr(error.message || error, 220)}`);
-        }
-      })() : Promise.resolve();
-      const paymentTask = (async () => {
-        try {
-          if (normalizeAdvertisementTradeType(item.tradeType) === 'SELL') await fetchAdvertisementAccountPaymentMethods(credential, { enrich:false });
-          else await syncAdvertisementCatalogWithCredential(credential, true);
-        } catch (error) {
-          warnings.push(`Payment-method refresh skipped: ${cleanStr(error.message || error, 220)}`);
-        }
-      })();
-      try { await Promise.all([liveDetailTask, paymentTask]); }
-      catch (error) {
-        return sendJson(res, 409, { error: cleanStr(error.message || error, 400), code:error.code || 'ADS_ACCOUNT_ADVERTISEMENT_MISMATCH', credentialId }, {}, req);
-      }
-      saveDb({ broadcast:false });
-    }
+    // v1.7.4: this GET must remain local-only. Live Binance detail/profile
+    // refreshes can fan out across endpoint/clientType fallbacks and exceed the
+    // reverse-proxy timeout. Normal background synchronization owns freshness;
+    // the editor/read endpoint returns the last synchronized account-scoped
+    // snapshot immediately.
+    const refreshWarnings = shouldRefresh
+      ? ['Live editor refresh is handled by background synchronization; the saved account-scoped snapshot was returned immediately.']
+      : [];
     const paymentMethods = advertisementSavedPaymentOptionsForCredential(user, credentialId);
     const genericPaymentMethods = advertisementGenericPaymentCatalogForCredential(credentialId, item.fiatUnit || '');
     return sendJson(res, 200, {
