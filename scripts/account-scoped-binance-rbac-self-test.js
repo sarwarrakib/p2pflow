@@ -18,7 +18,7 @@ const css = read('public/style.css');
 const fail = message => { throw new Error(`Account-scoped Binance RBAC self-test failed: ${message}`); };
 const assert = (condition, message) => { if (!condition) fail(message); };
 
-assert(pkg.version === '1.7.8', `expected v1.7.8, got ${pkg.version}`);
+assert(pkg.version === '1.7.9', `expected v1.7.9, got ${pkg.version}`);
 assert(server.includes('const APP_SCHEMA_VERSION = 37;'), 'schema migration version 33 is missing');
 
 for (const marker of [
@@ -32,6 +32,8 @@ for (const marker of [
 ]) assert(server.includes(marker), `server marker missing: ${marker}`);
 
 assert(!server.includes("if (String(user.role || '').toLowerCase() === 'admin') return true;"), 'Role-name Admin all-account override still exists.');
+assert(server.includes('if (user.isOwner === true) return PERMISSION_CATALOG.includes(permission);'), 'Durable Owner global authority is missing.');
+assert(server.includes('if (user?.isOwner === true) {'), 'Durable Owner exact-account authority is missing.');
 assert(!server.includes("user.role === 'manager' && PRIVILEGED_ORDER_PERMISSIONS"), 'Manager still has an implicit global permission bypass');
 assert(server.includes("if (!userHasPermission(user, permission)) return false;"), 'global permission gate is missing');
 assert(server.includes('You cannot grant permissions you do not have'), 'permission delegation guard is missing');

@@ -1,4 +1,4 @@
-// P2PFlow v1.7.8
+// P2PFlow v1.7.9
 // API credentials: automatic connect validation, P2P username identity, compact actions and per-account Release Verification settings.
 
 const P2PFLOW_BINANCE_RELEASE_VERIFICATION_METHODS = [
@@ -158,8 +158,29 @@ async function renderCredentials() {
   </div>`;
   $('#addCredBtn').onclick = () => openCredentialModal();
   $('#openHealthBtn').onclick = () => setRoute('health');
-  if ($('#syncBinancePaymentMethodsBtn')) $('#syncBinancePaymentMethodsBtn').onclick = async () => { try { const r = await api('/api/binance/sync/payment-methods', { method:'POST', body:'{}' }); notify(`Payment methods synced. Created ${r.created}, updated ${r.updated}.`, 'ok'); await refreshBootstrap(); renderCredentials(); } catch (err) {
-    if (isUiRequestCancelled(err)) return; notify(err.message || 'Payment method sync failed', 'danger'); } };
+  if ($('#syncBinancePaymentMethodsBtn')) $('#syncBinancePaymentMethodsBtn').onclick = async event => {
+    const button = event.currentTarget;
+    const originalText = button.textContent;
+    button.disabled = true;
+    button.setAttribute('aria-busy', 'true');
+    button.textContent = 'Syncing…';
+    try {
+      const r = await api('/api/binance/sync/payment-methods', { method:'POST', body:'{}' });
+      const accountText = `${Number(r.accountsSynced || 0)} account${Number(r.accountsSynced || 0) === 1 ? '' : 's'}`;
+      const failedText = Number(r.accountsFailed || 0) > 0 ? ` ${r.accountsFailed} account(s) failed; check the account connection.` : '';
+      notify(`Payment methods synced from ${accountText}. Created ${r.created}, updated ${r.updated}.${failedText}`, Number(r.accountsFailed || 0) > 0 ? 'warning' : 'ok');
+      await refreshBootstrap();
+      renderCredentials();
+    } catch (err) {
+      if (!isUiRequestCancelled(err)) notify(err.message || 'Payment method sync failed', 'danger');
+    } finally {
+      if (button?.isConnected) {
+        button.disabled = false;
+        button.removeAttribute('aria-busy');
+        button.textContent = originalText;
+      }
+    }
+  };
   $$('[data-release-settings-cred]').forEach(button => button.onclick = () => {
     const credential = items.find(item => Number(item.id) === Number(button.dataset.releaseSettingsCred));
     if (credential) openCredentialReleaseVerificationModal(credential);

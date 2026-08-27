@@ -27,18 +27,18 @@ Updater code এবং database আলাদা রাখে। Update install-�
 
 ## Version
 
-Internal SemVer: `1.7.8`
+Internal SemVer: `1.7.9`
 UI: `1.6`
 Database schema: `37`
 
 Normal next version: `SET_NEXT_VERSION.bat` -> `1.8.0`  
-Hotfix: `SET_HOTFIX_VERSION.bat` -> `1.7.9`
+Hotfix: `SET_HOTFIX_VERSION.bat` -> `1.8.0`
 
 ## Database history safety
 
 P2PFlow keeps authoritative business/application data in MariaDB/MySQL/PostgreSQL. State payloads are compressed with Brotli before AES-256-GCM encryption, proofs/chat media are stored as encrypted database objects, and identical newly uploaded proof/media bytes use content-addressed object IDs to avoid duplicate blobs. The default is 3 retained recovery checkpoints with a 6-hour archive interval and 5 retained automatic database backups. Older uncompressed state/history/backup payloads are upgraded incrementally after startup. Health Check reports each P2PFlow database table's allocated size/row count, current encrypted state payload size, compression saving percentage, and proof/chat object usage so database-MB growth can be inspected without terminal access. `shared/`, `.p2pflow`, `.env`, `releases/` and temporary restart/update markers are operational bootstrap/update metadata only; they are not an application/business-data store. The application runtime itself does not write proof, chat, audit, order, ledger, notification or recovery-code data to local files.
 
-## v1.7.8 Dedicated Frontend Architecture — Fixed AppShell & Clean History Routes
+## v1.7.9 Dedicated Frontend Architecture — Fixed AppShell & Clean History Routes
 
 - Authenticated browser document এখন `100dvh` fixed AppShell; `html/body/#app/main` আর application page-এর সঙ্গে scroll করে না। Desktop sidebar ও top header স্থায়ী, শুধু active route viewport page scroll করে।
 - Canonical navigation clean History API URL ব্যবহার করে: `/orders/123`, `/p2p/market`, `/accounting`, `/system/update`। পুরোনো `/#/...` bookmark readable এবং clean URL-এ migrate হয়।
@@ -53,7 +53,7 @@ P2PFlow keeps authoritative business/application data in MariaDB/MySQL/PostgreSQ
 - v1.5.38 Ads UI, v1.5.37 secret vault/one-click verification, v1.5.36 Binance FUND_PWD RSA flow এবং permission/accounting/realtime backend behavior preserved।
 - Database schema `37`; নতুন migration নেই।
 
-বিস্তারিত: `P2PFlow_v1.7.8_RELEASE_NOTES_BN.md`, `P2PFlow_v1.7.8_MANUAL_UPDATE_BN.md` এবং `P2PFlow_v1.7.8_LAUNCH_CHECKLIST_BN.md`.
+বিস্তারিত: `P2PFlow_v1.7.9_RELEASE_NOTES_BN.md`, `P2PFlow_v1.7.9_MANUAL_UPDATE_BN.md` এবং `P2PFlow_v1.7.9_LAUNCH_CHECKLIST_BN.md`.
 
 ## v1.5.38 Reference UI, Minimal Verification & Binance Ad Flow (historical)
 
@@ -68,7 +68,7 @@ P2PFlow keeps authoritative business/application data in MariaDB/MySQL/PostgreSQ
 - Selecting a User Role still copies that role template's permissions into the user form and auto-ticks matching permissions for enabled Binance accounts; every checkbox can then be reviewed before Save.
 - Page visibility, Live Orders, assignment, Payment Accounts, split actions, approvals, accounting scope and notification audiences no longer check Admin/Manager/Agent/Auditor names for authorization.
 - `binance.sync` still implies `orders.view` for the same exact Binance credential; it never grants another credential.
-- Schema 36 migration is permission-only too: legacy explicit account IDs are preserved, while broad legacy access is materialized across existing credentials only when the user actually has `credentials.manage` or `agents.manage`. Role names never create grants.
+- Schema 36+ keeps role labels non-authoritative: legacy explicit account IDs are preserved and non-owner users use explicit global + exact-account grants. The durable `isOwner` identity is the single intentional superuser exception and always receives the full permission catalog plus every current/future Binance account.
 - v1.5.35-এ local Minimum/Maximum Rate guard ছিল; **v1.5.38 থেকে এই editable fields আর current UI-তে নেই**। বর্তমান Ads editor Binance live reference-price guide দেখায় এবং Binance submit-time validation authoritative।
 - Existing Order-only assignment/payment-account capacity settings remain permission/routing driven and are not tied to an Agent role name.
 - Database schema `36`; additive migration runs automatically from schema 35.

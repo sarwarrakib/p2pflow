@@ -210,10 +210,10 @@ const BINANCE_ACCOUNT_PERMISSION_IMPLICATIONS = Object.freeze({
   'binance.sync': Object.freeze(['orders.view'])
 });
 
-// Binance operations are scoped twice: a user needs the normal permission and
-// an explicit grant for the exact Binance API account. Role names never grant
-// implicit account access; only the stored global permissions + exact account
-// grants are authoritative. This prevents a role label from bypassing RBAC.
+// Binance operations are scoped twice for non-owner users: a user needs the
+// normal permission and an explicit grant for the exact Binance API account.
+// Role names never grant implicit access. The durable isOwner identity is the
+// single deliberate superuser exception and dynamically covers every account.
 const NOTIFICATION_CATEGORY_CATALOG = Object.freeze([
   { id: 'orders', label: 'Orders', description: 'Order creation, status, completion and risk alerts.' },
   { id: 'assignments', label: 'Assignments', description: 'Order assignment, reassignment and acceptance alerts.' },
@@ -402,7 +402,7 @@ function normalizePermissions(value, role) {
 
 function defaultUserRoles() {
   return [
-    { id: 1, name: 'Super Admin', systemRole: 'admin', description: 'Full owner access', locked: true, permissions: PERMISSION_CATALOG.slice(), createdAt: nowIso() },
+    { id: 1, name: 'Super Admin', systemRole: 'admin', description: 'Full global permission template; only the durable P2PFlow Owner gets automatic all-account authority', locked: true, permissions: PERMISSION_CATALOG.slice(), createdAt: nowIso() },
     { id: 2, name: 'Manager', systemRole: 'manager', description: 'Operations manager access', locked: true, permissions: defaultPermissionsForRole('manager'), createdAt: nowIso() },
     { id: 3, name: 'P2P Employee / Agent', systemRole: 'agent', description: 'Order handling employee access', locked: true, permissions: defaultPermissionsForRole('agent'), createdAt: nowIso() },
     { id: 4, name: 'Auditor', systemRole: 'auditor', description: 'Read-only audit/report access', locked: true, permissions: defaultPermissionsForRole('auditor'), createdAt: nowIso() }
@@ -421,6 +421,9 @@ function permissionsFromRoleProfile(roleProfileId, fallbackRole, target = db) {
 
 function userHasPermission(user, permission) {
   if (!user) return false;
+  // The durable P2PFlow Owner is the one intentional superuser boundary.
+  // Role labels remain non-authoritative for every non-owner account.
+  if (user.isOwner === true) return PERMISSION_CATALOG.includes(permission);
   const permissions = normalizePermissions(Array.isArray(user.permissions) ? user.permissions : [], user.role);
   if (permissions.includes(permission)) return true;
   return Object.entries(PERMISSION_IMPLICATIONS).some(([granted, implied]) => permissions.includes(granted) && implied.includes(permission));
@@ -455,6 +458,15 @@ function normalizeBinanceCredentialPermissions(value = [], user = {}, target = d
 }
 
 function binanceCredentialPermissionRowsForUser(user = {}, target = db) {
+  // Owner authority follows every present/future Binance account dynamically so
+  // adding a credential can never strand the only Owner behind a grant matrix.
+  if (user?.isOwner === true) {
+    return [...(target?.apiCredentials || [])]
+      .map(item => Number(item?.id || 0))
+      .filter(Boolean)
+      .sort((a, b) => a - b)
+      .map(credentialId => ({ credentialId, permissions: BINANCE_ACCOUNT_PERMISSION_CATALOG.slice() }));
+  }
   return normalizeBinanceCredentialPermissions(user.binanceCredentialPermissions || [], user, target);
 }
 
@@ -1970,11 +1982,12 @@ function migrateDb(target) {
     if (!Array.isArray(u.allowedP2pCredentialIds)) u.allowedP2pCredentialIds = [];
     u.allowedP2pCredentialIds = Array.from(new Set(u.allowedP2pCredentialIds.map(Number).filter(id => target.apiCredentials.some(c => Number(c.id) === id))));
 
-    // Schema 36: authorization is permission-only, including migration.
+    // Schema 36: authorization is explicit-permission based for non-owners.
     // Preserve explicit legacy account IDs. For older broad operators that had
     // no per-account rows, materialize all existing credentials only when the
-    // user actually holds an account-administration permission. Role labels are
-    // intentionally ignored even during this one-time compatibility step.
+    // user actually holds account-administration authority. Role labels are
+    // intentionally ignored even during this one-time compatibility step; the
+    // durable isOwner flag remains the single superuser boundary.
     if (previousSchemaVersion < 36) {
       const allCredentialIds = (target.apiCredentials || []).map(c => Number(c.id)).filter(Boolean);
       const currentRows = Array.isArray(u.binanceCredentialPermissions) ? u.binanceCredentialPermissions : [];
@@ -2196,8 +2209,8 @@ function makeUser(id, username, password, name, role, agentId, opts = {}) {
     agentId,
     enabled: true,
     permissions: defaultPermissionsForRole(role),
-    // Explicit per-Binance-account grants. Admin receives implicit all-account
-    // access; every other role must have a row for the exact credential.
+    // Explicit per-Binance-account grants. The durable P2PFlow Owner receives
+    // dynamic all-account authority; every non-owner user needs an exact grant.
     binanceCredentialPermissions: [],
     allowedP2pCredentialIds: [],
     trustedDevices: [],
@@ -2408,6 +2421,9 @@ function normalizeAllowedAgentIds(value) {
 
 function canUsePaymentAccount(user, accountItem) {
   if (!user || !accountItem || paymentAccountDeleted(accountItem)) return false;
+  // The Owner must be able to operate every payment account even when that
+  // account belongs to/was assigned to another user or agent.
+  if (user.isOwner === true) return true;
   if (!userHasPermission(user, 'accounts.use')) return false;
   if (paymentAccountOwnedByUser(accountItem, user)) return true;
   return Number(user.agentId || 0) > 0 && accountAssignedToAgent(accountItem, user.agentId);
@@ -2416,6 +2432,10 @@ function canUsePaymentAccount(user, accountItem) {
 function userSafe(u) {
   if (!u) return null;
   const profile = roleProfileById(u.roleProfileId);
+  const effectiveBinancePermissions = binanceCredentialPermissionRowsForUser(u);
+  const effectiveAllowedP2pCredentialIds = u.isOwner === true
+    ? effectiveBinancePermissions.filter(row => row.permissions.includes('p2p.profile.view')).map(row => Number(row.credentialId))
+    : (Array.isArray(u.allowedP2pCredentialIds) ? u.allowedP2pCredentialIds.map(Number).filter(Boolean) : []);
   return {
     id: u.id,
     username: u.username,
@@ -2425,10 +2445,10 @@ function userSafe(u) {
     roleProfileId: u.roleProfileId || null,
     roleName: profile ? profile.name : u.role,
     agentId: u.agentId,
-    permissions: normalizePermissions(u.permissions, u.role),
+    permissions: u.isOwner === true ? PERMISSION_CATALOG.slice() : normalizePermissions(u.permissions, u.role),
     email: u.email || '',
-    binanceCredentialPermissions: binanceCredentialPermissionRowsForUser(u),
-    allowedP2pCredentialIds: Array.isArray(u.allowedP2pCredentialIds) ? u.allowedP2pCredentialIds.map(Number).filter(Boolean) : [],
+    binanceCredentialPermissions: effectiveBinancePermissions,
+    allowedP2pCredentialIds: effectiveAllowedP2pCredentialIds,
     securityQuestion: cleanStr(u.securityQuestion || '', 240),
     securityFallbackConfigured: securityQuestionFallbackConfigured(u),
     notificationPreferences: normalizeNotificationPreferences(u.notificationPreferences),
@@ -5957,7 +5977,9 @@ function canUseOrderCredential(user, order, permission) {
   if (!userHasPermission(user, permission)) return false;
   if (order.orderSource === 'offline') return true;
   const credentialId = Number(order.credentialId || 0);
-  return Boolean(credentialId && userHasBinanceCredentialPermission(user, credentialId, permission) && userBinanceCredentialFeatureEnabled(user, credentialId, 'advertisements'));
+  // Orders/Chat/Sync RBAC must not depend on the unrelated Advertisement UI
+  // switch. Orders visibility is separately controlled by the Orders overlay.
+  return Boolean(credentialId && userHasBinanceCredentialPermission(user, credentialId, permission));
 }
 function canAccessAccount(user, accountItem) {
   if (!user || !accountItem) return false;
@@ -9186,11 +9208,62 @@ async function handleBinancePaymentMethodSync(req, res) {
   if (req.method !== 'POST') return sendJson(res, 405, { error: 'Method not allowed' }, {}, req);
   const user = requireBinanceSyncPermission(req, res); if (!user) return;
   const body = await readBody(req);
-  const credential = requireLiveBinanceCredentialForUser(req, res, user, body.credentialId, 'binance.sync', { requireExplicitWhenMultiple: true });
-  if (!credential) return;
-  const out = await syncBinancePaymentMethodsWithCredential(user, credential, 'manual_button');
+  const requestedCredentialId = Number(body.credentialId || 0);
+
+  let credentials = [];
+  if (requestedCredentialId) {
+    const credential = requireLiveBinanceCredentialForUser(req, res, user, requestedCredentialId, 'binance.sync', { requireExplicitWhenMultiple: true });
+    if (!credential) return;
+    credentials = [credential];
+  } else {
+    if (db.settings.apiMode !== 'live') return sendJson(res, 422, { error: 'API Mode must be live before this Binance action can run.' }, {}, req);
+    credentials = usableBinanceCredentialOptionsForUser(user, 'binance.sync')
+      .map(option => binanceCredentialById(option.id))
+      .filter(Boolean);
+    if (!credentials.length) return sendJson(res, 422, { error: 'No enabled Binance account is assigned with binance.sync permission.' }, {}, req);
+  }
+
+  // The page-level Sync button intentionally means "all accounts I can sync".
+  // callSignedSapi already enforces the shared global/per-key concurrency limits.
+  const settled = await Promise.all(credentials.map(async credential => {
+    try {
+      const out = await syncBinancePaymentMethodsWithCredential(user, credential, requestedCredentialId ? 'manual_account_button' : 'manual_all_accounts_button');
+      return {
+        ok: true,
+        credentialId: Number(credential.id),
+        credentialName: binanceCredentialDisplayName(credential) || binanceCredentialLabel(credential),
+        created: Number(out.created || 0),
+        updated: Number(out.updated || 0),
+        totalRows: Number(out.totalRows || 0)
+      };
+    } catch (err) {
+      const error = cleanStr(friendlyBinanceError(err?.message || err) || 'Payment method sync failed.', 500);
+      logAudit(user, 'binance_payment_methods_sync_failed', 'binance', credential.id, { reason:'manual_button', error });
+      return {
+        ok: false,
+        credentialId: Number(credential.id),
+        credentialName: binanceCredentialDisplayName(credential) || binanceCredentialLabel(credential),
+        created: 0,
+        updated: 0,
+        totalRows: 0,
+        error
+      };
+    }
+  }));
+  const successful = settled.filter(item => item.ok);
+  const failed = settled.filter(item => !item.ok);
+  const out = {
+    created: successful.reduce((sum, item) => sum + item.created, 0),
+    updated: successful.reduce((sum, item) => sum + item.updated, 0),
+    totalRows: successful.reduce((sum, item) => sum + item.totalRows, 0),
+    accountsSynced: successful.length,
+    accountsFailed: failed.length,
+    perAccount: settled,
+    items: db.paymentMethods
+  };
+  if (!successful.length) return sendJson(res, 502, { ...out, error: failed[0]?.error || 'Payment method sync failed for every accessible Binance account.' }, {}, req);
   saveDb();
-  broadcast({ type: 'payment.methods.synced', created: out.created, updated: out.updated, at: nowIso() });
+  broadcast({ type: 'payment.methods.synced', created: out.created, updated: out.updated, accountsSynced: out.accountsSynced, accountsFailed: out.accountsFailed, at: nowIso() });
   return sendJson(res, 200, out, {}, req);
 }
 
@@ -25162,9 +25235,29 @@ function runAccountingSelfTest() {
     if (permissionMigrationTarget.meta.schemaVersion !== 37) throw new Error(`Permission/vault migration schema mismatch: ${permissionMigrationTarget.meta.schemaVersion}`);
     const migratedSecretCredential = permissionMigrationTarget.apiCredentials.find(item => item.id === 71);
     if (!isCredentialSecretVaultValue(migratedSecretCredential.releaseFundPasswordVault) || migratedSecretCredential.releaseFundPassword || readCredentialFundPassword(migratedSecretCredential) !== 'Legacy-Fund-Secret') throw new Error('Schema 37 did not field-encrypt the legacy Fund Transfer Password.');
-    if (binanceCredentialPermissionRowsForUser(migratedOwner, permissionMigrationTarget).length !== 2) throw new Error('Schema 36 did not materialize permission-based legacy owner account access.');
+    const migratedOwnerRows = binanceCredentialPermissionRowsForUser(migratedOwner, permissionMigrationTarget);
+    if (migratedOwnerRows.length !== 2 || migratedOwnerRows.some(row => row.permissions.length !== BINANCE_ACCOUNT_PERMISSION_CATALOG.length)) throw new Error('Durable Owner does not have full dynamic Binance-account authority.');
+    if (!PERMISSION_CATALOG.every(permission => userHasPermission(migratedOwner, permission))) throw new Error('Durable Owner is not an all-rounder across the global permission catalog.');
     if (binanceCredentialPermissionRowsForUser(migratedManager, permissionMigrationTarget).length !== 2) throw new Error('Schema 36 did not materialize permission-based legacy operator account access.');
     if (!userHasPermission(settingsWorker, 'settings.manage') || userHasPermission(settingsWorker, 'orders.view') || binanceCredentialPermissionRowsForUser(settingsWorker, permissionMigrationTarget).length) throw new Error('Role label still changes effective permissions or account grants after schema 36.');
+    migratedOwner.binanceCredentialFeatureControls = [{ credentialId:71, orders:true, notifications:true, advertisements:false }];
+    const ownerRuntimeChecks = (() => {
+      const previousDbForOwnerChecks = db;
+      try {
+        db = permissionMigrationTarget;
+        return {
+          chat: canUseOrderCredential(migratedOwner, { orderSource:'binance', credentialId:71 }, 'binance.chat'),
+          sync: canUseOrderCredential(migratedOwner, { orderSource:'binance', credentialId:71 }, 'binance.sync'),
+          paymentAccount: canUsePaymentAccount(migratedOwner, { id:8001, ownerUserId:9999, status:'active', currentBalance:0, allowedAgentIds:[] }),
+          safeView: userSafe(migratedOwner)
+        };
+      } finally { db = previousDbForOwnerChecks; }
+    })();
+    if (!ownerRuntimeChecks.chat) throw new Error('Unrelated Advertisement feature switch still blocks Owner chat authorization.');
+    if (!ownerRuntimeChecks.sync) throw new Error('Unrelated Advertisement feature switch still blocks Owner sync authorization.');
+    if (!ownerRuntimeChecks.paymentAccount) throw new Error('Durable Owner cannot use another user payment account.');
+    const ownerSafeView = ownerRuntimeChecks.safeView;
+    if (ownerSafeView.permissions.length !== PERMISSION_CATALOG.length || ownerSafeView.binanceCredentialPermissions.length !== 2 || ownerSafeView.allowedP2pCredentialIds.length !== 2) throw new Error('Owner bootstrap view does not expose full effective authority.');
 
     const legacyRateInput = { asset:'USDT', fiatUnit:'BDT', tradeType:'BUY', priceType:1, price:120, minRate:115, maxRate:125, initAmount:100, minSingleTransAmount:1000, maxSingleTransAmount:10000, payTimeLimit:15, paymentMethodKeys:['bkash'], status:'offline' };
     const savedProfileBeforeRateGuide = db.ownerP2pProfiles;

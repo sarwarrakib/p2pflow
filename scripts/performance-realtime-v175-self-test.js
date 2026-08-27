@@ -15,7 +15,7 @@ function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 
-assert(pkg.version === '1.7.8', `expected 1.7.8, got ${pkg.version}`);
+assert(pkg.version === '1.7.9', `expected 1.7.9, got ${pkg.version}`);
 assert(server.includes('requestPersistenceContext.getStore()') && server.includes('if (persistence && persistence.saveScheduled) return;'), 'Mutation responses can still enqueue a duplicate whole-state save.');
 assert(server.includes('saveDbCoalesced') && server.includes("reason:'binance_chat_realtime'"), 'Realtime chat checkpoint coalescing is missing.');
 assert(server.includes('binanceRealtimeChatHealthy') && server.includes("skipped:'websocket_healthy'"), 'REST chat polling is not suppressed when WebSocket is healthy.');

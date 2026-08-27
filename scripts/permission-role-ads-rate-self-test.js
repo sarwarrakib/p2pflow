@@ -15,8 +15,10 @@ function block(source, start, end) {
 assert(/const APP_SCHEMA_VERSION = 37;/.test(server), 'Schema 37 is required for credential-secret vault migration.');
 const userPerm = block(server, 'function userHasPermission(', 'function binanceAccountGlobalPermissionSet(');
 assert(!/role\s*===|role\s*!==|admin|manager|agent|auditor/i.test(userPerm), 'userHasPermission still depends on a role name.');
+assert(/isOwner/.test(userPerm), 'Durable Owner superuser boundary is missing from userHasPermission.');
 const clientPerm = block(app, 'function hasPerm(', 'function canOverrideOrderAssignmentClient(');
 assert(!/state\.user\.role|admin|manager|agent|auditor/i.test(clientPerm), 'Client hasPerm still depends on a role name.');
+assert(/state\.user\.isOwner/.test(clientPerm), 'Client hasPerm does not recognize the durable Owner.');
 const visible = block(app, 'function visiblePages()', 'function canPage(');
 assert(!/state\.user\.role|p\[2\]/.test(visible), 'Page visibility still depends on a role label.');
 assert(!/linkedUser\.role\s*!==\s*['"]agent['"]/.test(server), 'Agent linkage still disables work by role name.');
@@ -31,4 +33,4 @@ const payload = block(server, 'function advertisementBinancePayload(', 'const AD
 assert(!/\bminRate\b|\bmaxRate\b/.test(payload), 'Legacy Minimum/Maximum Rate leaked into Binance payload.');
 const allowlist = block(server, 'const ADVERTISEMENT_UPDATE_ALLOWED_KEYS', 'function advertisementUpdatePayload');
 assert(!/'minRate'|'maxRate'/.test(allowlist), 'Legacy Minimum/Maximum Rate leaked into Binance update allowlist.');
-console.log(JSON.stringify({ ok:true, permissionAuthority:'explicit-permissions-only', schema:37, adPriceGuide:'live-binance-reference-display', editableRateGuard:false, binancePayloadLeak:false }));
+console.log(JSON.stringify({ ok:true, permissionAuthority:'owner-superuser-plus-explicit-non-owner-permissions', schema:37, adPriceGuide:'live-binance-reference-display', editableRateGuard:false, binancePayloadLeak:false }));

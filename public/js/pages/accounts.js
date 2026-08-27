@@ -1,4 +1,4 @@
-// P2PFlow v1.7.8
+// P2PFlow v1.7.9
 // Fast filtered payment accounts with transaction-specific charges/commissions and compact actions.
 
 function paymentAccountRuleSummary(rule={}, fallback='None') {

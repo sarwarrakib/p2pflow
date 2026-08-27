@@ -1,6 +1,6 @@
-// v1.7.8: merged fast-path profile — lazy page bundles, SSE-targeted UI refresh, WS-first Binance chat, bounded SAPI concurrency, and single durable mutation checkpoints.
-// v1.7.8: interactive-fast render path keeps the fixed AppShell/navigation safety while avoiding heavy full-page DOM morph work.
-// v1.7.8: stable-shell navigation, stale-request cancellation, non-destructive order/chat updates, and latest-navigation-wins rendering.
+// v1.7.9: merged fast-path profile — lazy page bundles, SSE-targeted UI refresh, WS-first Binance chat, bounded SAPI concurrency, and single durable mutation checkpoints.
+// v1.7.9: interactive-fast render path keeps the fixed AppShell/navigation safety while avoiding heavy full-page DOM morph work.
+// v1.7.9: stable-shell navigation, stale-request cancellation, non-destructive order/chat updates, and latest-navigation-wins rendering.
 // v1.5.23: Payment Account serial scope treats each normalized Label, including no Label, as an independent namespace.
 // v1.5.22: Header-only Work Status, chat-only notification master, and coupled sound/push controls.
 // v1.5.20: account-scoped Binance RBAC, visible security recovery setup and individual-only profit accounting.
@@ -277,6 +277,8 @@ const FRONTEND_PERMISSION_IMPLICATIONS = Object.freeze({
 function hasPerm(permission) {
   if (!permission) return true;
   if (!state.user) return false;
+  // The Owner is intentionally all-rounder; role labels never create this bypass.
+  if (state.user.isOwner === true) return true;
   const permissions = state.user.permissions || [];
   if (permissions.includes(permission)) return true;
   return Object.entries(FRONTEND_PERMISSION_IMPLICATIONS).some(([granted, implied]) => permissions.includes(granted) && implied.includes(permission));
@@ -3199,7 +3201,7 @@ function applyLanguage(root=document) {
     });
 
     const base = languageRoot(root);
-    // v1.7.8: freshly rendered UI is already authored in English. Avoid walking
+    // v1.7.9: freshly rendered UI is already authored in English. Avoid walking
     // thousands of table/card text nodes unless Bengali translation is active or
     // this exact root previously held translated Bengali nodes that must be restored.
     const previousAppliedLang = base?.dataset?.p2pflowAppliedLang || '';
@@ -3992,7 +3994,7 @@ const PERMISSION_DESCRIPTIONS = Object.freeze({
   'accounts.view': { en: 'Open Payment Accounts and view only accounts the user owns or has been assigned. Admin and Manager can view every payment account.', bn: 'Payment Accounts পেজ খুলে user নিজের অথবা তাকে assigned করা account-গুলো দেখতে পারবে। Admin ও Manager সব payment account দেখতে পারবে।' },
   'accounts.use': { en: 'Use owned or assigned active payment accounts in permitted order payment splits. It does not allow account creation, editing, access changes or balance adjustment.', bn: 'অনুমোদিত order payment split-এ নিজের বা assigned active payment account ব্যবহার করা যাবে। Account create/edit, access change বা balance adjustment করা যাবে না।' },
   'accounts.manage': { en: 'Create payment accounts under the logged-in user and manage only accounts owned by that user. Agents cannot use this permission to edit another user’s account. It does not grant payment-split use or statement adjustment.', bn: 'লগইন করা user-এর নামে payment account তৈরি এবং শুধু নিজের account manage করা যাবে। Agent এই permission দিয়ে অন্য user-এর account edit করতে পারবে না। Payment split use বা statement adjustment আলাদা permission।' },
-  'accounts.manage_all': { en: 'Manage every payment account, change Account User and assign or remove Agent access. Admin and Manager always have this scope. Agents remain limited to their own accounts even if this permission is accidentally selected.', bn: 'সব payment account manage, Account User পরিবর্তন এবং Agent access assign/remove করা যাবে। Admin ও Manager সবসময় এই scope পাবে। ভুল করে permission selected হলেও Agent শুধু নিজের account-এ সীমাবদ্ধ থাকবে।' },
+  'accounts.manage_all': { en: 'Manage every payment account, change Account User and assign or remove Agent access. The P2PFlow Owner always has full scope. Every non-owner user receives this scope only through explicit permissions.', bn: 'সব payment account manage, Account User পরিবর্তন এবং Agent access assign/remove করা যাবে। P2PFlow Owner সবসময় full scope পাবে। Owner ছাড়া অন্য প্রত্যেক user কেবল explicit permission পেলে এই scope পাবে।' },
   'ledger.adjust': { en: 'Add top-up, cash-out, correction, expense, settlement and refund statement entries. Without Manage All Payment Accounts, adjustments are limited to the logged-in user’s own accounts.', bn: 'Top-up, cash-out, correction, expense, settlement ও refund statement entry করা যাবে। Manage All Payment Accounts না থাকলে শুধু লগইন user-এর নিজের account-এ adjustment করা যাবে।' },
   'offline.transactions.manage': { en: 'Create offline receipt sessions, reserve eligible payment numbers, mark full or partial amounts received, and finalize full or partial offline orders. Only payment accounts inside the user’s allowed scope are available.', bn: 'Offline receipt session তৈরি, eligible payment number reserve, full/partial received mark এবং full/partial offline order finalize করা যাবে। User-এর allowed scope-এর payment account-ই পাওয়া যাবে।' },
   'routing.manage': { en: 'Create and edit payment-method routing, priority, amount ranges and capacity rules used by automatic assignment. It does not bypass Work Status or account permissions.', bn: 'Auto assignment-এর payment-method routing, priority, amount range ও capacity rule create/edit করা যাবে। Work Status বা account permission bypass হবে না।' },
@@ -5327,7 +5329,7 @@ function installStableContentArchitecture(content = document.getElementById('con
 }
 
 function cacheActiveRouteView() {
-  // v1.7.8 keeps the entire route host intact instead of moving/recreating page
+  // v1.7.9 keeps the entire route host intact instead of moving/recreating page
   // children. Capturing is therefore only a scroll-state operation.
   state.routeHostManager?.captureActive?.();
 }
@@ -5628,7 +5630,7 @@ function renderNav() {
   // legacy flat menu while this marker is absent, the browser/proxy is serving
   // stale frontend JavaScript rather than the active release.
   nav.dataset.navigationModel = 'grouped-control-center';
-  nav.dataset.uiRelease = '1.7.8';
+  nav.dataset.uiRelease = '1.7.9';
   nav.innerHTML = '';
   const visible = visiblePages();
   const visibleIds = new Set(visible.map(([id]) => id));
@@ -5827,7 +5829,7 @@ const PAGE_MODULE_PATHS = Object.freeze({
 const pageModulePromises = window.P2PFlowPageModulePromises || (window.P2PFlowPageModulePromises = new Map());
 function pageModuleUrl(page) {
   const filename = PAGE_MODULE_PATHS[page];
-  return filename ? `/js/pages/${filename}?v=${encodeURIComponent(String(state.bootstrap?.settings?.applicationVersion || '1.7.8'))}` : '';
+  return filename ? `/js/pages/${filename}?v=${encodeURIComponent(String(state.bootstrap?.settings?.applicationVersion || '1.7.9'))}` : '';
 }
 function ensurePageModule(page) {
   const url = pageModuleUrl(page);
