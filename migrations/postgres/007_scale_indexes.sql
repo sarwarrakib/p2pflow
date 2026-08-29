@@ -1,0 +1,22 @@
+BEGIN;
+-- High-volume SaaS indexes. Keep common tenant/status/time lookups index-backed.
+CREATE INDEX IF NOT EXISTS sessions_tenant_user_exp_idx ON sessions(tenant_id,user_id,expires_at);
+CREATE INDEX IF NOT EXISTS users_tenant_status_created_idx ON users(tenant_id,status,created_at DESC);
+CREATE INDEX IF NOT EXISTS exchange_permissions_tenant_user_idx ON exchange_account_permissions(tenant_id,user_id,exchange_account_id,permission_code);
+CREATE INDEX IF NOT EXISTS chats_tenant_account_time_idx ON chats(tenant_id,exchange_account_id,sent_at DESC,id DESC);
+CREATE INDEX IF NOT EXISTS payment_accounts_tenant_user_status_idx ON payment_accounts(tenant_id,user_id,status,id);
+CREATE INDEX IF NOT EXISTS payment_splits_assignee_status_idx ON payment_splits(tenant_id,assigned_user_id,status,updated_at DESC,id DESC);
+CREATE INDEX IF NOT EXISTS payment_ledger_tenant_time_idx ON payment_account_ledger(tenant_id,created_at DESC,id DESC);
+CREATE INDEX IF NOT EXISTS payment_ledger_account_time_idx ON payment_account_ledger(payment_account_id,created_at DESC,id DESC);
+CREATE INDEX IF NOT EXISTS subscriptions_period_idx ON subscriptions(tenant_id,status,current_period_end,id);
+CREATE INDEX IF NOT EXISTS invoices_tenant_status_due_idx ON invoices(tenant_id,status,due_at,id);
+CREATE INDEX IF NOT EXISTS payments_tenant_status_time_idx ON payments(tenant_id,status,created_at DESC,id DESC);
+CREATE INDEX IF NOT EXISTS approvals_tenant_status_time_idx ON approvals(tenant_id,status,created_at DESC,id DESC);
+CREATE INDEX IF NOT EXISTS activity_sessions_presence_idx ON activity_sessions(tenant_id,user_id,status,last_heartbeat_at DESC,id DESC);
+CREATE INDEX IF NOT EXISTS extension_tasks_pending_idx ON extension_tasks(status,created_at,id);
+CREATE INDEX IF NOT EXISTS outbox_claim_idx ON outbox_events(status,available_at,claimed_at,id);
+CREATE INDEX IF NOT EXISTS exchange_payment_methods_lookup_idx ON exchange_payment_methods(tenant_id,exchange_account_id,identifier,active,id);
+CREATE INDEX IF NOT EXISTS offline_alloc_tenant_user_idx ON offline_transaction_allocations(tenant_id,offline_transaction_id,status,created_at DESC,id DESC);
+CREATE INDEX IF NOT EXISTS business_entries_tenant_type_time_idx ON business_entries(tenant_id,entry_type,created_at DESC,id DESC);
+CREATE INDEX IF NOT EXISTS notifications_tenant_created_idx ON notifications(tenant_id,created_at DESC,id DESC);
+COMMIT;

@@ -1,0 +1,38 @@
+{
+  "name": "p2pflow",
+  "version": "1.7.7",
+  "description": "P2PFlow unified package for fresh install, manual update, GitHub release publishing, and in-panel signed automatic updates.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js",
+    "build": "node scripts/check-all-js.js && node scripts/ads-editor-gateway-v174-self-test.js && node scripts/ads-direct-update-performance-v173-self-test.js && node scripts/ads-price-payment-v172-self-test.js && node scripts/system-update-transport-v171-self-test.js && node scripts/full-optimization-v170-self-test.js && node scripts/performance-merged-v176-self-test.js && node scripts/mutation-persistence-v177-self-test.js && node scripts/account-feature-overlay-v169-self-test.js && node scripts/frontend-architecture-v160-self-test.js && node scripts/permission-role-ads-rate-self-test.js && node scripts/advertisement-reference-ui-self-test.js && node scripts/realtime-ui-stability-self-test.js && node scripts/stability-order-filter-v162-self-test.js && node scripts/stable-shell-navigation-self-test.js && node scripts/header-work-notification-master-self-test.js && node scripts/session-push-chat-performance-self-test.js && node scripts/order-acceptance-payment-permission-self-test.js && node scripts/agent-live-order-order-only-self-test.js && node scripts/payment-account-notification-offline-self-test.js && node scripts/payment-account-serial-scope-self-test.js && node scripts/payment-split-final-action-self-test.js && node scripts/fund-password-rsa-release-self-test.js && node scripts/release-verification-one-click-security-self-test.js && node scripts/credentials-release-ui-self-test.js && node scripts/payment-account-bulk-manual-transaction-self-test.js && node scripts/payment-rules-notification-scope-self-test.js && node scripts/multi-account-ui-self-test.js && node scripts/production-hardening-self-test.js && node scripts/ads-multi-account-payload-self-test.js",
+    "test": "node scripts/check-all-js.js && node scripts/ads-editor-gateway-v174-self-test.js && node scripts/ads-direct-update-performance-v173-self-test.js && node scripts/ads-price-payment-v172-self-test.js && node scripts/system-update-transport-v171-self-test.js && node scripts/full-optimization-v170-self-test.js && node scripts/performance-merged-v176-self-test.js && node scripts/mutation-persistence-v177-self-test.js && node scripts/account-feature-overlay-v169-self-test.js && node scripts/frontend-architecture-v160-self-test.js && node scripts/permission-role-ads-rate-self-test.js && node scripts/advertisement-reference-ui-self-test.js && node scripts/realtime-ui-stability-self-test.js && node scripts/stability-order-filter-v162-self-test.js && node scripts/stable-shell-navigation-self-test.js && node scripts/header-work-notification-master-self-test.js && node scripts/session-push-chat-performance-self-test.js && node scripts/order-acceptance-payment-permission-self-test.js && node scripts/agent-live-order-order-only-self-test.js && node scripts/payment-account-notification-offline-self-test.js && node scripts/payment-account-serial-scope-self-test.js && node scripts/payment-split-final-action-self-test.js && node scripts/fund-password-rsa-release-self-test.js && node scripts/release-verification-one-click-security-self-test.js && node scripts/credentials-release-ui-self-test.js && node scripts/payment-account-bulk-manual-transaction-self-test.js && node scripts/payment-rules-notification-scope-self-test.js && node scripts/multi-account-ui-self-test.js && node scripts/production-hardening-self-test.js && node scripts/ads-multi-account-payload-self-test.js && node scripts/ads-merchant-account-isolation-self-test.js && node scripts/merchant-break-sync-self-test.js && node scripts/mail-delivery-self-test.js && node scripts/mail-routing-self-test.js && node scripts/mail-failover-self-test.js && node scripts/security-question-fallback-self-test.js && node scripts/account-scoped-binance-rbac-self-test.js && node scripts/owner-mail-outage-login-self-test.js && node scripts/login-otp-disabled-self-test.js && node scripts/release-self-test.js && node scripts/login-route-self-test.js && node scripts/trusted-device-auth-self-test.js && node scripts/settings-ui-self-test.js && node scripts/ui-localization-self-test.js && node scripts/ui-color-system-self-test.js && node scripts/hosting-setup-self-test.js && node scripts/production-preflight-self-test.js && node scripts/postgres-state-crypto-self-test.js && node scripts/mysql-state-crypto-self-test.js && node scripts/database-only-persistence-self-test.js && node scripts/system-update-waf-transport-self-test.js && node scripts/update-manager-self-test.js && node scripts/public-asset-mirror-self-test.js && node scripts/unified-supervisor-self-test.js && node scripts/main-thread-supervisor-integration-self-test.js && node app-server.js --accounting-self-test",
+    "check": "node scripts/release-self-test.js",
+    "migrate:postgres": "node scripts/migrate-file-to-postgres.js",
+    "preflight:production": "node scripts/production-doctor.js",
+    "setup:owner": "node scripts/setup-owner.js",
+    "release:package": "node scripts/build-release.js",
+    "version:set": "node scripts/set-version.js",
+    "version:minor": "node scripts/set-version.js minor",
+    "version:hotfix": "node scripts/set-version.js patch",
+    "version:next": "node scripts/set-version.js minor",
+    "package:unified": "node scripts/build-unified-package.js",
+    "clean:obsolete": "node scripts/cleanup-obsolete-assets.js",
+    "prebuild": "npm run clean:obsolete",
+    "pretest": "npm run clean:obsolete"
+  },
+  "license": "UNLICENSED",
+  "dependencies": {
+    "mysql2": "^3.23.2",
+    "pg": "^8.13.1",
+    "ws": "^8.21.1"
+  },
+  "private": true,
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "overrides": {
+    "postgres-interval": "1.2.0"
+  }
+}

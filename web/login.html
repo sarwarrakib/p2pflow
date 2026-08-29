@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="bn">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="robots" content="noindex,nofollow" />
+  <title>P2PFlow | লগইন</title>
+  <link rel="stylesheet" href="/style.css?v=2.0.8" />
+</head>
+<body class="login-page">
+  <div id="login" class="login-wrap">
+    <div class="login-ambient login-ambient-left" aria-hidden="true"></div>
+    <div class="login-ambient login-ambient-right" aria-hidden="true"></div>
+    <div class="login-dot-field login-dot-field-left" aria-hidden="true"></div>
+    <div class="login-dot-field login-dot-field-right" aria-hidden="true"></div>
+
+    <section class="login-card" aria-labelledby="loginTitle">
+      <div class="login-card-glow" aria-hidden="true"></div>
+
+      <div class="language-switch login-lang" aria-label="Language selector">
+        <span>EN</span>
+        <button id="loginLangToggle" class="lang-toggle" type="button" role="switch" aria-checked="false" aria-label="Switch between English and Bangla"><span class="lang-toggle-thumb" aria-hidden="true"></span></button>
+        <span>BN</span>
+      </div>
+
+      <header class="login-brand">
+        <div class="login-brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 48 48" role="img">
+            <path d="M24 4 39 10v12c0 10-6.4 18.4-15 22-8.6-3.6-15-12-15-22V10L24 4Z" fill="none" stroke="currentColor" stroke-width="4" stroke-linejoin="round"/>
+            <rect x="18" y="21" width="12" height="11" rx="2.5" fill="none" stroke="currentColor" stroke-width="3"/>
+            <path d="M20.5 21v-3a3.5 3.5 0 0 1 7 0v3" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"/>
+            <path d="M24 25v3" stroke="currentColor" stroke-width="3" stroke-linecap="round"/>
+          </svg>
+        </div>
+        <div class="login-brand-copy">
+          <span class="login-eyebrow">Secure access</span>
+          <h1 id="loginTitle">P2PFlow</h1>
+          <p>P2P operations panel.</p>
+        </div>
+      </header>
+
+      <div class="login-step-line" aria-live="polite">
+        <div class="login-step login-step-active" id="credentialStepIndicator">
+          <span>1</span>
+          <b>Account</b>
+        </div>
+        <div class="login-step-connector" aria-hidden="true"></div>
+        <div class="login-step" id="verificationStepIndicator">
+          <span>2</span>
+          <b>Verify</b>
+        </div>
+      </div>
+
+      <form id="loginForm" class="login-form" novalidate>
+        <section id="trustedDevicePanel" class="login-trusted-panel hidden" aria-labelledby="trustedDeviceTitle">
+          <div class="login-alert login-alert-success">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 5 6v5c0 4.8 2.9 8.7 7 10 4.1-1.3 7-5.2 7-10V6l-7-3Z" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="m9.5 12 1.7 1.8 3.5-3.7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <span id="trustedDeviceStatus">Trusted browser recognized</span>
+          </div>
+          <div class="verification-heading">
+            <div><h2 id="trustedDeviceTitle">Secret code only</h2><p id="trustedDeviceAccountHint" class="muted"></p></div>
+            <span class="secure-chip">Device-bound</span>
+          </div>
+          <label for="trustedSecretCode">Security PIN</label>
+          <div class="login-input-shell login-secret-shell">
+            <span class="login-input-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3 5 6v5c0 4.8 2.9 8.7 7 10 4.1-1.3 7-5.2 7-10V6l-7-3Z" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M9.5 12h5M12 9.5v5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></span>
+            <input id="trustedSecretCode" type="password" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" placeholder="6-digit secret" />
+            <button type="button" class="login-visibility-btn" data-visibility-target="trustedSecretCode" aria-label="Show secret code" aria-pressed="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.3-5 9.5-5 9.5 5 9.5 5-3.3 5-9.5 5-9.5-5-9.5-5Z" fill="none" stroke="currentColor" stroke-width="1.7"/><circle cx="12" cy="12" r="2.5" fill="none" stroke="currentColor" stroke-width="1.7"/></svg></button>
+          </div>
+          <div class="notice small login-trusted-note">No password or email OTP is sent on this trusted browser. The browser must prove possession of its private device key.</div>
+          <button type="button" id="useFullLoginBtn" class="login-change-btn">Use full login</button>
+        </section>
+
+        <section id="credentialPanel" class="login-credential-panel">
+          <div class="credential-heading-row">
+            <div>
+              <h2>Sign in</h2>
+              
+            </div>
+            <button type="button" id="changeCredentialsBtn" class="login-change-btn hidden">Change</button>
+          </div>
+
+          <label for="loginIdentity">User or Gmail</label>
+          <div class="login-input-shell">
+            <span class="login-input-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="M4 6.5h16v11H4zM4 7l8 6 8-6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </span>
+            <input id="loginIdentity" name="username" type="text" autocomplete="username" autocapitalize="none" spellcheck="false" maxlength="80" placeholder="username or name@gmail.com" required />
+          </div>
+
+          <label for="loginPassword">Password</label>
+          <div class="login-input-shell">
+            <span class="login-input-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><rect x="5" y="10" width="14" height="10" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M8 10V7a4 4 0 0 1 8 0v3M12 14v2" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+            </span>
+            <input id="loginPassword" name="password" type="password" autocomplete="current-password" placeholder="Enter your password" required />
+            <button type="button" class="login-visibility-btn" data-visibility-target="loginPassword" aria-label="Show password" aria-pressed="false">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.3-5 9.5-5 9.5 5 9.5 5-3.3 5-9.5 5-9.5-5-9.5-5Z" fill="none" stroke="currentColor" stroke-width="1.7"/><circle cx="12" cy="12" r="2.5" fill="none" stroke="currentColor" stroke-width="1.7"/></svg>
+            </button>
+          </div>
+          <div id="credentialVerifiedNote" class="credential-verified-note hidden">
+            <span aria-hidden="true">✓</span>
+            <div><b>Password verified</b><small>Enter OTP and secret.</small></div>
+          </div>
+        </section>
+
+        <section id="otpPanel" class="otp-panel login-verification-panel hidden" aria-labelledby="verificationTitle">
+          <div id="otpHelp" class="login-alert login-alert-info" role="status">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 10v6M12 7h.01" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+            <span>Enter the email OTP.</span>
+          </div>
+
+          <div class="verification-heading">
+            <div>
+              <h2 id="verificationTitle">Email verification code</h2>
+              
+            </div>
+            <span class="secure-chip">Secure</span>
+          </div>
+
+          <div id="emailOtpDigits" class="otp-digit-grid" role="group" aria-label="Email verification code">
+            <input class="otp-digit" inputmode="numeric" pattern="[0-9]*" maxlength="1" aria-label="OTP digit 1" autocomplete="one-time-code" />
+            <input class="otp-digit" inputmode="numeric" pattern="[0-9]*" maxlength="1" aria-label="OTP digit 2" />
+            <input class="otp-digit" inputmode="numeric" pattern="[0-9]*" maxlength="1" aria-label="OTP digit 3" />
+            <input class="otp-digit" inputmode="numeric" pattern="[0-9]*" maxlength="1" aria-label="OTP digit 4" />
+            <input class="otp-digit" inputmode="numeric" pattern="[0-9]*" maxlength="1" aria-label="OTP digit 5" />
+            <input class="otp-digit" inputmode="numeric" pattern="[0-9]*" maxlength="1" aria-label="OTP digit 6" />
+          </div>
+          <input id="emailOtpInput" name="emailOtp" type="hidden" autocomplete="one-time-code" />
+
+          <label for="loginSecretCode">Security PIN</label>
+          <div class="login-input-shell login-secret-shell">
+            <span class="login-input-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="M12 3 5 6v5c0 4.8 2.9 8.7 7 10 4.1-1.3 7-5.2 7-10V6l-7-3Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M9.5 12h5M12 9.5v5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+            </span>
+            <input id="loginSecretCode" name="secretCode" type="password" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" placeholder="6-digit secret" />
+            <button type="button" class="login-visibility-btn" data-visibility-target="loginSecretCode" aria-label="Show secret code" aria-pressed="false">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.3-5 9.5-5 9.5 5 9.5 5-3.3 5-9.5 5-9.5-5-9.5-5Z" fill="none" stroke="currentColor" stroke-width="1.7"/><circle cx="12" cy="12" r="2.5" fill="none" stroke="currentColor" stroke-width="1.7"/></svg>
+            </button>
+          </div>
+
+          <div class="otp-resend-row">
+            <span id="otpTimerText">OTP can be resent shortly.</span>
+            <button type="button" id="resendOtpBtn" class="login-resend-btn">Resend OTP</button>
+          </div>
+        </section>
+
+        <section id="securityFallbackPanel" class="login-verification-panel hidden" aria-labelledby="securityFallbackTitle">
+          <div id="securityFallbackHelp" class="login-alert login-alert-warning" role="status">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 10v6M12 7h.01" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+            <span>Email OTP is unavailable. Use your Security Question fallback.</span>
+          </div>
+          <div class="verification-heading">
+            <div><h2 id="securityFallbackTitle">Security Question verification</h2><p>Answer the saved question and enter your existing 6 digit secret.</p></div>
+            <span class="secure-chip">Fallback</span>
+          </div>
+          <div class="notice small"><b>Security Question</b><br/><span id="securityFallbackQuestion">-</span></div>
+          <label for="securityFallbackAnswer">Security Answer</label>
+          <div class="login-input-shell">
+            <span class="login-input-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M9.7 9.5a2.5 2.5 0 0 1 4.8.9c0 1.8-2.5 2-2.5 3.7M12 17h.01" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></span>
+            <input id="securityFallbackAnswer" name="securityAnswer" type="password" maxlength="200" autocomplete="off" placeholder="Security answer" />
+            <button type="button" class="login-visibility-btn" data-visibility-target="securityFallbackAnswer" aria-label="Show security answer" aria-pressed="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.3-5 9.5-5 9.5 5 9.5 5-3.3 5-9.5 5-9.5-5-9.5-5Z" fill="none" stroke="currentColor" stroke-width="1.7"/><circle cx="12" cy="12" r="2.5" fill="none" stroke="currentColor" stroke-width="1.7"/></svg></button>
+          </div>
+          <label for="securityFallbackSecretCode">Security PIN</label>
+          <div class="login-input-shell login-secret-shell">
+            <span class="login-input-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3 5 6v5c0 4.8 2.9 8.7 7 10 4.1-1.3 7-5.2 7-10V6l-7-3Z" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M9.5 12h5M12 9.5v5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></span>
+            <input id="securityFallbackSecretCode" name="fallbackSecretCode" type="password" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" placeholder="6-digit secret" />
+            <button type="button" class="login-visibility-btn" data-visibility-target="securityFallbackSecretCode" aria-label="Show secret code" aria-pressed="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.3-5 9.5-5 9.5 5 9.5 5-3.3 5-9.5 5-9.5-5-9.5-5Z" fill="none" stroke="currentColor" stroke-width="1.7"/><circle cx="12" cy="12" r="2.5" fill="none" stroke="currentColor" stroke-width="1.7"/></svg></button>
+          </div>
+          <div class="notice small">Challenge expires in 5 minutes and allows at most 5 attempts. The Security Answer is stored only as a one-way hash.</div>
+        </section>
+
+        <section id="ownerMailOutagePanel" class="login-verification-panel hidden" aria-labelledby="ownerMailOutageTitle">
+          <div id="ownerMailOutageHelp" class="login-alert login-alert-warning" role="status">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 10v6M12 7h.01" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+            <span>Email OTP delivery failed. Owner Emergency Login is available.</span>
+          </div>
+          <div class="verification-heading">
+            <div><h2 id="ownerMailOutageTitle">Owner Emergency Login</h2><p id="ownerMailOutageDescription">Mail service is down. Confirm your existing 6 digit secret. Login email stays unchanged.</p></div>
+            <span class="secure-chip">Owner only</span>
+          </div>
+          <label for="ownerMailOutageSecretCode">Security PIN</label>
+          <div class="login-input-shell login-secret-shell">
+            <span class="login-input-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3 5 6v5c0 4.8 2.9 8.7 7 10 4.1-1.3 7-5.2 7-10V6l-7-3Z" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M9.5 12h5M12 9.5v5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></span>
+            <input id="ownerMailOutageSecretCode" name="ownerEmergencySecretCode" type="password" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" placeholder="6-digit secret" />
+            <button type="button" class="login-visibility-btn" data-visibility-target="ownerMailOutageSecretCode" aria-label="Show secret code" aria-pressed="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.3-5 9.5-5 9.5 5 9.5 5-3.3 5-9.5 5-9.5-5-9.5-5Z" fill="none" stroke="currentColor" stroke-width="1.7"/><circle cx="12" cy="12" r="2.5" fill="none" stroke="currentColor" stroke-width="1.7"/></svg></button>
+          </div>
+          <div class="notice small">Available only after the configured email route actually fails for the Owner account. Challenge expires in 5 minutes, allows at most 5 attempts, does not change the login email, and requires no Hosting Terminal command.</div>
+        </section>
+
+        <button type="submit" id="loginBtn" class="login-submit-btn">
+          <span class="login-submit-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><path d="M12 3 5 6v5c0 4.8 2.9 8.7 7 10 4.1-1.3 7-5.2 7-10V6l-7-3Z" fill="none" stroke="currentColor" stroke-width="1.9"/><path d="m9.5 12 1.7 1.8 3.5-3.7" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </span>
+          <span id="loginBtnText">Continue securely</span>
+          <span class="login-button-spinner" aria-hidden="true"></span>
+        </button>
+      </form>
+
+      <div id="loginError" class="login-error" role="alert" aria-live="assertive"></div>
+
+      <div id="ownerEmergencyEntry" class="login-recovery-entry hidden">
+        <button type="button" id="ownerEmergencyStartBtn" class="login-recovery-toggle">Email sender down? Owner Emergency Login</button>
+        <div class="notice small">Use this only when the website sender Gmail/SMTP cannot deliver the login OTP. The server will verify the mail route again; emergency access is offered only to the Owner when that delivery fails.</div>
+      </div>
+
+      <div class="login-recovery-entry">
+        <button type="button" id="emailRecoveryToggle" class="login-recovery-toggle">Setup email is wrong? Correct it</button>
+      </div>
+      <form id="emailRecoveryForm" class="login-recovery-form hidden" novalidate>
+        <div class="verification-heading"><div><h2>Correct login email</h2><p>Uses your username, password and 6 digit secret. The OTP is sent only to the new email.</p></div><span class="secure-chip">Recovery</span></div>
+        <div class="form-grid login-recovery-grid">
+          <div><label for="recoveryIdentity">Username</label><input id="recoveryIdentity" name="username" autocomplete="username" maxlength="80" required></div>
+          <div><label for="recoveryPassword">Current Password</label><input id="recoveryPassword" name="password" type="password" autocomplete="current-password" required></div>
+          <div><label for="recoverySecret">6 Digit Secret</label><input id="recoverySecret" name="secretCode" type="password" inputmode="numeric" maxlength="6" pattern="[0-9]{6}" required></div>
+          <div><label for="recoveryNewEmail">Correct Gmail / Email</label><input id="recoveryNewEmail" name="newEmail" type="email" autocomplete="email" required></div>
+          <div id="recoveryOtpWrap" class="hidden"><label for="recoveryOtp">New Email OTP</label><input id="recoveryOtp" name="recoveryOtp" inputmode="numeric" maxlength="6" pattern="[0-9]{6}"></div>
+          <input id="recoveryId" name="recoveryId" type="hidden">
+        </div>
+        <div id="recoveryMessage" class="login-alert login-alert-info hidden" role="status"><span></span></div>
+        <div class="login-recovery-actions"><button type="submit" id="recoverySubmitBtn">Send verification OTP</button><button type="button" id="recoveryCancelBtn" class="secondary">Cancel</button></div>
+      </form>
+
+      <footer class="login-footer-note">
+        <span class="login-footer-shield" aria-hidden="true">
+          <svg viewBox="0 0 24 24"><path d="M12 3 6 5.7v5.1c0 4.1 2.5 7.4 6 8.7 3.5-1.3 6-4.6 6-8.7V5.7L12 3Z" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="m9.5 11.5 1.6 1.6 3.4-3.5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </span>
+        <span>Secure access · <a href="/signup.html" style="color:inherit;font-weight:800">Create workspace</a></span>
+      </footer>
+    </section>
+  </div>
+
+
+  <script defer src="/device-auth.js?v=2.0.8"></script>
+  <script defer src="/login.js?v=2.0.8"></script>
+</body>
+</html>

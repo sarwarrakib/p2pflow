@@ -1,0 +1,27 @@
+{
+  "manifest_version": 3,
+  "name": "Binance C2C Advertiser Feedback CRM Collector",
+  "version": "6.1.9",
+  "description": "Background CRM collector for Binance C2C advertiser Trade Info and Feedback with fast polling and parallel hidden-tab processing.",
+  "permissions": [
+    "tabs",
+    "scripting",
+    "storage",
+    "alarms"
+  ],
+  "host_permissions": [
+    "https://c2c.binance.com/*",
+    "https://p2p.binance.com/*"
+  ],
+  "action": {
+    "default_title": "C2C CRM Collector",
+    "default_popup": "popup.html"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "optional_host_permissions": [
+    "http://*/*",
+    "https://*/*"
+  ]
+}

@@ -1,0 +1,27 @@
+[Unit]
+Description=P2PFlow Background Worker
+After=network-online.target postgresql.service p2pflow-nats.service p2pflow-api.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=p2pflow
+Group=p2pflow
+WorkingDirectory=/opt/p2pflow/current
+EnvironmentFile=/opt/p2pflow/data/p2pflow.env
+Environment=P2PFLOW_ENV_FILE=/opt/p2pflow/data/p2pflow.env
+Environment=P2PFLOW_WORKERS=true
+Environment=P2PFLOW_AUTO_MIGRATE=false
+ExecStart=/opt/p2pflow/current/bin/p2pflow-worker
+Restart=always
+RestartSec=2
+TimeoutStopSec=30
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/p2pflow/data
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

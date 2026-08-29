@@ -1,0 +1,7 @@
+.git
+.gitignore
+bin
+*.zip
+legacy/node_modules
+node_modules
+data

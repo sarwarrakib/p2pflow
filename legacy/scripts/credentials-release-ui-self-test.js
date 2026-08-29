@@ -1,0 +1,23 @@
+#!/usr/bin/env node
+'use strict';
+const fs = require('fs');
+const path = require('path');
+const root = path.resolve(__dirname, '..');
+const read = file => fs.readFileSync(path.join(root, file), 'utf8');
+const pkg = JSON.parse(read('package.json'));
+const server = read('app-server.js');
+const page = read('public/js/pages/credentials.js');
+const app = read('public/app.js');
+const css = read('public/style.css');
+const fail = message => { throw new Error(`Credentials / Release Verification UI self-test failed: ${message}`); };
+const assert = (value, message) => { if (!value) fail(message); };
+assert(pkg.version === '1.7.7', `expected v1.7.7, got ${pkg.version}`);
+assert(page.includes('ownerP2pNickname || c.displayName') && server.includes('if (credential.ownerP2pNickname) credential.name = credential.ownerP2pNickname;'), 'P2P username is not the credential display identity.');
+assert(!page.includes('data-test-cred') && !page.includes('data-live-test-cred'), 'Manual Validate/Live Check row buttons still exist.');
+assert(page.includes('credential-icon-btn') && page.includes('data-release-settings-cred') && css.includes('.credential-icon-btn'), 'Compact credential icon actions are missing.');
+assert(page.includes('openCredentialReleaseVerificationModal') && page.includes("release-verification`"), 'Per-credential Release Verification popup is missing.');
+assert(server.includes("parts[3] === 'release-verification'") && server.includes('applyCredentialReleaseVerificationSettings'), 'Per-credential Release Verification endpoint is missing.');
+assert(app.includes('Connect & Save') && app.includes('Validating & connecting...'), 'Credential Save does not communicate automatic validation/live check.');
+assert(server.includes("automaticValidation:true") && server.includes("automaticLiveCheck:true") && server.includes("endpointName:'listOrders'"), 'Credential Save does not perform automatic validation and live check before persistence.');
+assert(page.includes('The P2P username is synced automatically after connection.'), 'Credential page does not describe automatic P2P username sync.');
+console.log(JSON.stringify({ok:true,version:pkg.version,autoValidateOnSave:true,p2pUsernameIdentity:true,iconActions:true,perCredentialReleaseSettings:true},null,2));

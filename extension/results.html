@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>C2C Feedback Preview Results</title>
+  <link rel="stylesheet" href="results.css" />
+</head>
+<body>
+  <header>
+    <div>
+      <h1>Binance C2C Feedback Preview</h1>
+      <p id="meta"></p>
+    </div>
+    <div class="actions">
+      <button id="copy">Copy JSON</button>
+      <button id="download">Download JSON</button>
+    </div>
+  </header>
+
+  <main>
+    <section class="card">
+      <h2>Profile summary</h2>
+      <div id="summary" class="grid"></div>
+    </section>
+
+    <section class="card warnings" id="warningsCard" hidden>
+      <h2>Warnings</h2>
+      <ul id="warnings"></ul>
+    </section>
+
+    <section class="card">
+      <h2>Positive feedback - first page</h2>
+      <div id="positive"></div>
+    </section>
+
+    <section class="card">
+      <h2>Negative feedback - first page</h2>
+      <div id="negative"></div>
+    </section>
+
+    <section class="card">
+      <h2>Raw JSON</h2>
+      <pre id="raw"></pre>
+    </section>
+  </main>
+
+  <script src="results.js"></script>
+</body>
+</html>

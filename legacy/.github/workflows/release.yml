@@ -1,0 +1,109 @@
+name: Publish signed P2PFlow release
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: p2pflow-release-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install locked production dependencies
+        run: npm ci --omit=dev --ignore-scripts
+
+      - name: Block known high-severity dependency issues
+        run: npm audit --omit=dev --audit-level=high
+
+      - name: Run complete release tests
+        run: npm test
+
+      - name: Resolve version and prevent version reuse
+        id: release_meta
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="$(node -p "require('./package.json').version")"
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Invalid package version: $VERSION" >&2
+            exit 1
+          fi
+          TAG="v$VERSION"
+          # checkout@v5 already fetched full history/tags. Do not run git fetch here:
+          # credentials are intentionally not persisted after checkout.
+          PUBLISH=true
+          TAG_EXISTS=false
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            TAG_EXISTS=true
+            TAG_COMMIT="$(git rev-list -n 1 "$TAG")"
+            HEAD_COMMIT="$(git rev-parse HEAD)"
+            if [[ "$TAG_COMMIT" != "$HEAD_COMMIT" ]]; then
+              echo "Version $VERSION was already used by another commit. Increase package.json to the next version before pushing." >&2
+              exit 1
+            fi
+            if gh release view "$TAG" >/dev/null 2>&1; then
+              PUBLISH=false
+            fi
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "publish=$PUBLISH" >> "$GITHUB_OUTPUT"
+          echo "tag_exists=$TAG_EXISTS" >> "$GITHUB_OUTPUT"
+
+      - name: Build Ed25519-signed release assets
+        if: steps.release_meta.outputs.publish == 'true'
+        env:
+          UPDATE_SIGNING_PRIVATE_KEY: ${{ secrets.UPDATE_SIGNING_PRIVATE_KEY }}
+        run: npm run release:package
+
+      - name: Publish GitHub Release automatically
+        if: steps.release_meta.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release_meta.outputs.tag }}
+          TAG_EXISTS: ${{ steps.release_meta.outputs.tag_exists }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$TAG_EXISTS" == "true" ]]; then
+            gh release create "$TAG" \
+              dist/p2pflow-v*.tar.gz \
+              dist/p2pflow-update-manifest.json \
+              dist/p2pflow-update-manifest.sig \
+              --verify-tag --generate-notes --title "$TAG"
+          else
+            gh release create "$TAG" \
+              dist/p2pflow-v*.tar.gz \
+              dist/p2pflow-update-manifest.json \
+              dist/p2pflow-update-manifest.sig \
+              --target "$GITHUB_SHA" --generate-notes --title "$TAG"
+          fi
+
+      - name: Release already published
+        if: steps.release_meta.outputs.publish != 'true'
+        run: echo "${{ steps.release_meta.outputs.tag }} is already published from this exact commit; no duplicate release was created."

@@ -1,20 +1,33 @@
-node_modules/
+# Runtime secrets and local state
 .env
-.env.*.local
-uploads/
+.env.*
+!.env.example
 data/
-legacy-import/
-dist/
-dist-hosting/
-coverage/
-*.log
-*.pid
-*.tmp
-shared/
-releases/
-current
-launcher.js
-.p2pflow/
-tmp/
-
 P2PFLOW_SETUP_CODE.txt
+*.key
+*.pem
+*.secret
+*.sqlite
+*.sqlite3
+*.db
+*.db.enc
+
+# Build output
+bin/
+dist/
+coverage.out
+*.test
+
+# Logs and temp
+*.log
+*.tmp
+*.swp
+.DS_Store
+Thumbs.db
+
+# IDE/editor
+.vscode/
+.idea/
+
+# Node/local tooling
+node_modules/

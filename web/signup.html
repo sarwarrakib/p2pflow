@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <meta name="theme-color" content="#0b1020" />
+  <title>Create P2PFlow Workspace</title>
+  <link rel="icon" href="data:," />
+  <link rel="stylesheet" href="/signup.css?v=2.0.8" />
+</head>
+<body>
+  <main class="signup-shell">
+    <section class="signup-copy">
+      <div class="brand"><span>P2P</span>Flow <small>2.0</small></div>
+      <p class="eyebrow">Multi-tenant P2P operations</p>
+      <h1>Create your workspace.</h1>
+      <p class="lead">Run Binance P2P orders, ads, chat, payment accounts, team permissions and accounting from one realtime control center.</p>
+      <div class="feature-grid">
+        <div><b>Realtime</b><span>WebSocket events and background Binance workers.</span></div>
+        <div><b>Isolated</b><span>Every workspace has tenant-scoped data and permissions.</span></div>
+        <div><b>Scalable</b><span>PostgreSQL, MySQL or MariaDB with normalized tables.</span></div>
+        <div><b>Controlled</b><span>Per-account RBAC, audit logs and encrypted API credentials.</span></div>
+      </div>
+    </section>
+    <section class="signup-card">
+      <div class="card-head"><div><p class="eyebrow">Start now</p><h2>Workspace registration</h2></div><a href="/login.html">Sign in</a></div>
+      <form id="signupForm" novalidate>
+        <div class="two"><label>Workspace name<input name="Workspace" maxlength="160" required placeholder="Example: Rakib P2P"></label><label>Your name<input name="Name" maxlength="160" required placeholder="Full name"></label></div>
+        <div class="two"><label>Email<input name="Email" type="email" maxlength="254" autocomplete="email" required placeholder="you@example.com"></label><label>Username<input name="Username" maxlength="120" autocomplete="username" placeholder="rakib"></label></div>
+        <label>Password<input name="Password" type="password" minlength="8" autocomplete="new-password" required placeholder="Minimum 8 characters"></label>
+        <fieldset><legend>Select plan</legend><div id="planGrid" class="plans"><div class="plan skeleton">Loading plans…</div></div></fieldset>
+        <div id="signupError" class="message error" role="alert" hidden></div>
+        <button id="signupBtn" type="submit">Create workspace</button>
+        <p class="fine">By creating a workspace you agree to operate connected exchange accounts only with authorized API access.</p>
+      </form>
+    </section>
+  </main>
+  <script defer src="/signup.js?v=2.0.8"></script>
+</body>
+</html>
