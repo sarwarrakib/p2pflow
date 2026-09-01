@@ -1,0 +1,53 @@
+[Unit]
+Description=P2PFlow managed launcher
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=p2pflow
+Group=p2pflow
+WorkingDirectory=/opt/p2pflow
+UMask=0077
+Environment=NODE_ENV=production
+Environment=P2PFLOW_PRODUCTION_STRICT=true
+Environment=P2PFLOW_INSTALL_ROOT=/opt/p2pflow
+Environment=P2PFLOW_ENV_FILE=/opt/p2pflow/shared/.env
+ExecStartPre=/usr/bin/node /opt/p2pflow/scripts/production-doctor.js --root /opt/p2pflow --env /opt/p2pflow/shared/.env --quiet
+ExecStart=/usr/bin/node /opt/p2pflow/server.js
+Restart=on-failure
+RestartSec=3
+TimeoutStartSec=60
+TimeoutStopSec=30
+KillSignal=SIGTERM
+LimitNOFILE=65536
+
+# Service sandbox. P2PFlow needs write access to its managed install root for database-adjacent
+# state, signed update staging, release switching and public-asset mirroring.
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictRealtime=true
+LockPersonality=true
+# Node.js/V8 uses JIT-generated executable memory, so MemoryDenyWriteExecute
+# must not be enabled for this service.
+RestrictSUIDSGID=true
+RemoveIPC=true
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+AmbientCapabilities=
+ReadWritePaths=/opt/p2pflow
+
+[Install]
+WantedBy=multi-user.target
