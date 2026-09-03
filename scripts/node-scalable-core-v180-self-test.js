@@ -14,8 +14,8 @@ const { mapWithConcurrency } = require('../lib/asyncPool');
 const { prepareWorkspaceScope } = require('../lib/workspaceScope');
 const { prepareSegmentedState, hydrateSegmentedState } = require('../lib/stateSegmentation');
 
-assert.strictEqual(pkg.version, '1.8.0', `expected v1.8.0, got ${pkg.version}`);
-assert(server.includes('const APP_SCHEMA_VERSION = 38;'), 'schema 38 workspace-ready migration is missing');
+assert.strictEqual(pkg.version, '1.8.1', `expected v1.8.1, got ${pkg.version}`);
+assert(server.includes('const APP_SCHEMA_VERSION = 39;'), 'schema 39 API-ready migration is missing');
 assert(server.includes('BINANCE_ACCOUNT_SYNC_CONCURRENCY'), 'bounded multi-account Binance concurrency is missing');
 assert(server.includes("saveDbCoalesced('binance_auto_order_sync'"), 'background Binance checkpoint coalescing is missing');
 assert(server.includes("options.durability === 'relaxed'"), 'relaxed low-risk durability path is missing');
@@ -111,5 +111,5 @@ assert.strictEqual(state.orders[1].workspaceId, 1, 'new appended record was not 
   });
   assert.deepStrictEqual(values, [2,4,6,8,10,12]);
   assert(peak <= 2, `concurrency cap exceeded: ${peak}`);
-  console.log(JSON.stringify({ ok:true, version:pkg.version, schema:38, runtimeIndexes:true, boundedBinanceAccounts:true, workspaceFoundation:true, segmentedHistory:true, sealedObjectWrites:objectWrites, peakConcurrency:peak }));
+  console.log(JSON.stringify({ ok:true, version:pkg.version, schema:39, runtimeIndexes:true, boundedBinanceAccounts:true, workspaceFoundation:true, segmentedHistory:true, sealedObjectWrites:objectWrites, peakConcurrency:peak }));
 })().catch(error => { console.error(error); process.exit(1); });

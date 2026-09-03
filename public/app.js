@@ -1,6 +1,6 @@
-// v1.8.0: merged fast-path profile — lazy page bundles, SSE-targeted UI refresh, WS-first Binance chat, bounded SAPI concurrency, and single durable mutation checkpoints.
-// v1.8.0: interactive-fast render path keeps the fixed AppShell/navigation safety while avoiding heavy full-page DOM morph work.
-// v1.8.0: stable-shell navigation, stale-request cancellation, non-destructive order/chat updates, and latest-navigation-wins rendering.
+// v1.8.1: merged fast-path profile — lazy page bundles, SSE-targeted UI refresh, WS-first Binance chat, bounded SAPI concurrency, and single durable mutation checkpoints.
+// v1.8.1: interactive-fast render path keeps the fixed AppShell/navigation safety while avoiding heavy full-page DOM morph work.
+// v1.8.1: stable-shell navigation, stale-request cancellation, non-destructive order/chat updates, and latest-navigation-wins rendering.
 // v1.5.23: Payment Account serial scope treats each normalized Label, including no Label, as an independent namespace.
 // v1.5.22: Header-only Work Status, chat-only notification master, and coupled sound/push controls.
 // v1.5.20: account-scoped Binance RBAC, visible security recovery setup and individual-only profit accounting.
@@ -3201,7 +3201,7 @@ function applyLanguage(root=document) {
     });
 
     const base = languageRoot(root);
-    // v1.8.0: freshly rendered UI is already authored in English. Avoid walking
+    // v1.8.1: freshly rendered UI is already authored in English. Avoid walking
     // thousands of table/card text nodes unless Bengali translation is active or
     // this exact root previously held translated Bengali nodes that must be restored.
     const previousAppliedLang = base?.dataset?.p2pflowAppliedLang || '';
@@ -5329,7 +5329,7 @@ function installStableContentArchitecture(content = document.getElementById('con
 }
 
 function cacheActiveRouteView() {
-  // v1.8.0 keeps the entire route host intact instead of moving/recreating page
+  // v1.8.1 keeps the entire route host intact instead of moving/recreating page
   // children. Capturing is therefore only a scroll-state operation.
   state.routeHostManager?.captureActive?.();
 }
@@ -5630,7 +5630,7 @@ function renderNav() {
   // legacy flat menu while this marker is absent, the browser/proxy is serving
   // stale frontend JavaScript rather than the active release.
   nav.dataset.navigationModel = 'grouped-control-center';
-  nav.dataset.uiRelease = '1.8.0';
+  nav.dataset.uiRelease = '1.8.1';
   nav.innerHTML = '';
   const visible = visiblePages();
   const visibleIds = new Set(visible.map(([id]) => id));
@@ -5829,7 +5829,7 @@ const PAGE_MODULE_PATHS = Object.freeze({
 const pageModulePromises = window.P2PFlowPageModulePromises || (window.P2PFlowPageModulePromises = new Map());
 function pageModuleUrl(page) {
   const filename = PAGE_MODULE_PATHS[page];
-  return filename ? `/js/pages/${filename}?v=${encodeURIComponent(String(state.bootstrap?.settings?.applicationVersion || '1.8.0'))}` : '';
+  return filename ? `/js/pages/${filename}?v=${encodeURIComponent(String(state.bootstrap?.settings?.applicationVersion || '1.8.1'))}` : '';
 }
 function ensurePageModule(page) {
   const url = pageModuleUrl(page);

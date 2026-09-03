@@ -18,7 +18,7 @@ function block(source, start, end) {
   return source.slice(a, b);
 }
 
-assert(pkg.version === '1.8.0', `expected 1.8.0, got ${pkg.version}`);
+assert(pkg.version === '1.8.1', `expected 1.8.1, got ${pkg.version}`);
 assert(!server.includes('The latest Binance advertisement amount could not be read, so no update was sent'), 'old live-read-before-write blocker remains');
 assert(!server.includes('assertAdvertisementFixedPriceWithinLiveRange'), 'Reference Price still validates mutations');
 

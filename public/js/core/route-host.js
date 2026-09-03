@@ -1,6 +1,6 @@
 'use strict';
 
-// P2PFlow v1.8.0 persistent route-host runtime.
+// P2PFlow v1.8.1 persistent route-host runtime.
 // Only one page host is attached to the live DOM at a time. Inactive pages are
 // detached intact, preserving their form state, component DOM and scroll state
 // without duplicate IDs leaking into document queries.
