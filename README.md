@@ -1,4 +1,4 @@
-# P2PFlow 1.6 - Unified Package
+# P2PFlow 1.8.1 - Unified Node.js Package
 
 এই সংস্করণে Hostinger, GitHub এবং manual update-এর জন্য আলাদা package নেই। **একটাই ZIP সব কাজে ব্যবহার হবে।**
 
@@ -27,33 +27,37 @@ Updater code এবং database আলাদা রাখে। Update install-�
 
 ## Version
 
-Internal SemVer: `1.7.9`
+Internal SemVer: `1.8.1`
 UI: `1.6`
-Database schema: `37`
+Database schema: `38`
 
-Normal next version: `SET_NEXT_VERSION.bat` -> `1.8.0`  
-Hotfix: `SET_HOTFIX_VERSION.bat` -> `1.8.0`
+Next patch: `SET_HOTFIX_VERSION.bat` -> `1.8.1`  
+Use `npm run version:set -- 1.8.1` when preparing the next release.
 
 ## Database history safety
 
-P2PFlow keeps authoritative business/application data in MariaDB/MySQL/PostgreSQL. State payloads are compressed with Brotli before AES-256-GCM encryption, proofs/chat media are stored as encrypted database objects, and identical newly uploaded proof/media bytes use content-addressed object IDs to avoid duplicate blobs. The default is 3 retained recovery checkpoints with a 6-hour archive interval and 5 retained automatic database backups. Older uncompressed state/history/backup payloads are upgraded incrementally after startup. Health Check reports each P2PFlow database table's allocated size/row count, current encrypted state payload size, compression saving percentage, and proof/chat object usage so database-MB growth can be inspected without terminal access. `shared/`, `.p2pflow`, `.env`, `releases/` and temporary restart/update markers are operational bootstrap/update metadata only; they are not an application/business-data store. The application runtime itself does not write proof, chat, audit, order, ledger, notification or recovery-code data to local files.
+P2PFlow keeps authoritative business/application data in MariaDB/MySQL/PostgreSQL. State payloads are compressed with Brotli before AES-256-GCM encryption, proofs/chat media are stored as encrypted database objects, and identical newly uploaded proof/media bytes use content-addressed object IDs to avoid duplicate blobs. In v1.8.1 the high-growth append-only `chats`, `ledgers` and `auditLogs` collections are segmented: completed chunks are sealed once as immutable encrypted database objects and the main state stores only their object references plus a small active tail. This means an unrelated settings save no longer serializes and rewrites the full accumulated chat/ledger/audit history. The default segment size is 500 rows and can be tuned with `P2PFLOW_STATE_SEGMENT_CHUNK_ROWS`. The default is 3 retained recovery checkpoints with a 6-hour archive interval and 5 retained automatic database backups. Older uncompressed/full-state payloads remain loadable and are upgraded incrementally after startup. Health Check reports each P2PFlow database table's allocated size/row count, current encrypted state payload size, compression saving percentage, proof/chat object usage and segmented-state details so database growth can be inspected without terminal access. `shared/`, `.p2pflow`, `.env`, `releases/` and temporary restart/update markers are operational bootstrap/update metadata only; they are not an application/business-data store. The application runtime itself does not write proof, chat, audit, order, ledger, notification or recovery-code data to local files.
 
-## v1.7.9 Dedicated Frontend Architecture — Fixed AppShell & Clean History Routes
+## v1.8.1 Scalable Node Core — existing application, cleaned internally
 
-- Authenticated browser document এখন `100dvh` fixed AppShell; `html/body/#app/main` আর application page-এর সঙ্গে scroll করে না। Desktop sidebar ও top header স্থায়ী, শুধু active route viewport page scroll করে।
-- Canonical navigation clean History API URL ব্যবহার করে: `/orders/123`, `/p2p/market`, `/accounting`, `/system/update`। পুরোনো `/#/...` bookmark readable এবং clean URL-এ migrate হয়।
-- Node server known SPA route-এ History fallback দিয়ে `index.html` serve করে, তাই nested route সরাসরি refresh করলেও application খুলতে পারে।
-- প্রতিটি route-এর persistent detached DOM host আছে। Inactive route live DOM থেকে detach হয়, কিন্তু form/DOM/scroll state bounded cache-এ preserve হয়; target route নিজের shell সঙ্গে সঙ্গে mount/restore হয়।
-- Navigation **Latest Navigation Wins**: নতুন route পুরোনো navigation request abort করে; stale response guard mismatch হলে current page DOM-এ commit করতে পারে না। Browser Back/Forward একই authority ব্যবহার করে।
-- Explicit `PAGE_RUNTIME` lifecycle registry page leave-এর সঙ্গে Market observer/timer, Order/Chat sync, Ads polling এবং Accounting timer deactivate করে। Existing feature pageগুলো `public/js/pages/*.js` আলাদা file-এই থাকে।
-- Realtime/API refresh active route host destroy করে না। Stable DOM morph existing nodes/data patch করে; Orders/Chat/Market/Ads dedicated incremental updater বহাল।
-- Page modules document/window scrolling ব্যবহার করে না; active route scroller API ব্যবহার করে। Settings/Order sticky controls fixed header-এর বাইরে নতুন viewport অনুযায়ী adjust করা হয়েছে।
-- Global route progress fixed clipped overlay; browser width পরিবর্তন বা প্রতি cycle horizontal scrollbar তৈরি করতে পারে না। Table/chip-এর প্রয়োজনীয় local horizontal scroll আলাদা wrapper-এ সীমাবদ্ধ।
-- PWA start URL, login return, push notification links এবং Security redirect clean routes ব্যবহার করে।
-- v1.5.38 Ads UI, v1.5.37 secret vault/one-click verification, v1.5.36 Binance FUND_PWD RSA flow এবং permission/accounting/realtime backend behavior preserved।
-- Database schema `37`; নতুন migration নেই।
+এই release Go rewrite নয়। Existing Node.js `server.js` / `app-server.js`, current UI, permissions, Orders, Ads, Chat, Payment Accounts, Accounting, Notifications, Extension bridge এবং signed update flow preserve করে performance/scaling hot path clean করা হয়েছে।
 
-বিস্তারিত: `P2PFlow_v1.7.9_RELEASE_NOTES_BN.md`, `P2PFlow_v1.7.9_MANUAL_UPDATE_BN.md` এবং `P2PFlow_v1.7.9_LAUNCH_CHECKLIST_BN.md`.
+- **High-growth state segmentation:** `chats`, `ledgers`, `auditLogs` আর প্রতিটি ছোট save-এ পুরোটাই main encrypted payload-এর সঙ্গে rewrite হয় না। 500-row immutable encrypted chunks database object storage-এ seal হয়; main state শুধু sealed references + ছোট active tail রাখে। পুরোনো full-state database backward-compatibleভাবে load হয় এবং schema upgrade-এর পর নতুন layout-এ save হয়।
+- **Runtime indexes:** Order/Agent/Payment Method/Payment Account/Proof ID lookup, Chat per-order lookup/dedup/latest/unread এবং Ledger balance/limit usage hot path indexed। Application arrays-ই source of truth; cache append/array replacement দেখলে rebuild হয়।
+- **Multi-Binance account concurrency:** slow/full Order+Chat sync, Ads sync এবং merchant-status verification credential-by-credential serial নয়। Bounded account pool ব্যবহার করে independent accounts parallel চলে; existing global/per-key Binance scheduler এখনও hard rate-limit/priority boundary।
+- `P2PFLOW_BINANCE_ACCOUNT_SYNC_CONCURRENCY=3` এবং fast discovery-এর জন্য `P2PFLOW_BINANCE_FAST_ACCOUNT_SYNC_CONCURRENCY=4` default। অনেক API account যোগ করলে VPS capacity/429 telemetry দেখে boundedভাবে tune করা যাবে।
+- Ads asset/fiat catalog একই sync cycle-এ প্রতিটি API key দিয়ে বারবার fetch না করে একবার refresh হয়।
+- Background order/ads/merchant/extension cache checkpoints coalesced; user-facing financial/final-action/permission/credential writes এখনও durable-before-response। শুধু notification read acknowledgement-এর মতো low-risk UI write async durable queue ব্যবহার করতে পারে।
+- **Schema 38 workspace foundation:** current deployment এখনও এক workspace এবং authorization behavior বদলায়নি; existing rows `workspaceId=1` ownership key পায় যাতে ভবিষ্যতে customer/workspace isolation migration guess করতে না হয়। এটি নিজে multi-tenant security enable করে না।
+- Existing persistent Binance C2C WebSocket, REST fallback, lazy page modules, Latest-Navigation-Wins, stable route host এবং compact Orders payload preserved।
+- Health diagnostics এখন runtime-index এবং scalable-concurrency information দেখায়; state-store health segmented history chunk/tail information report করে।
+- Database schema `38`; migration automatic এবং current data preserved।
+
+### Scale policy
+
+বর্তমানে default deployment **এক Node.js application process + external MariaDB/MySQL/PostgreSQL**। Redis/NATS/Kafka/Kubernetes/Docker Compose বাধ্যতামূলক নয়। ভবিষ্যতে বাস্তব customer/API load বেড়ে এক process-এর capacity ছাড়ালে প্রথম separation হবে background Binance worker; তার পরে প্রয়োজন অনুযায়ী realtime/billing। Existing codebase modular রেখেই তা করা যাবে। Full public multi-tenant isolation চালুর আগে workspace-scoped authorization/query enforcement এবং normalized tenant tables আলাদা migration হিসেবে সম্পন্ন করতে হবে।
+
+বিস্তারিত: `P2PFlow_v1.8.1_RELEASE_NOTES_BN.md`, `P2PFlow_v1.8.1_MANUAL_UPDATE_BN.md` এবং `P2PFlow_v1.8.1_LAUNCH_CHECKLIST_BN.md`.
 
 ## v1.5.38 Reference UI, Minimal Verification & Binance Ad Flow (historical)
 

@@ -12,7 +12,7 @@ function block(source, start, end) {
   assert(a >= 0 && b > a, `Could not find block ${start}`);
   return source.slice(a, b);
 }
-assert(/const APP_SCHEMA_VERSION = 37;/.test(server), 'Schema 37 is required for credential-secret vault migration.');
+assert(/const APP_SCHEMA_VERSION = 39;/.test(server), 'Schema 38 must include the schema-37 credential-secret vault migration plus workspace preparation.');
 const userPerm = block(server, 'function userHasPermission(', 'function binanceAccountGlobalPermissionSet(');
 assert(!/role\s*===|role\s*!==|admin|manager|agent|auditor/i.test(userPerm), 'userHasPermission still depends on a role name.');
 assert(/isOwner/.test(userPerm), 'Durable Owner superuser boundary is missing from userHasPermission.');
@@ -33,4 +33,4 @@ const payload = block(server, 'function advertisementBinancePayload(', 'const AD
 assert(!/\bminRate\b|\bmaxRate\b/.test(payload), 'Legacy Minimum/Maximum Rate leaked into Binance payload.');
 const allowlist = block(server, 'const ADVERTISEMENT_UPDATE_ALLOWED_KEYS', 'function advertisementUpdatePayload');
 assert(!/'minRate'|'maxRate'/.test(allowlist), 'Legacy Minimum/Maximum Rate leaked into Binance update allowlist.');
-console.log(JSON.stringify({ ok:true, permissionAuthority:'owner-superuser-plus-explicit-non-owner-permissions', schema:37, adPriceGuide:'live-binance-reference-display', editableRateGuard:false, binancePayloadLeak:false }));
+console.log(JSON.stringify({ ok:true, permissionAuthority:'owner-superuser-plus-explicit-non-owner-permissions', schema:38, adPriceGuide:'live-binance-reference-display', editableRateGuard:false, binancePayloadLeak:false }));

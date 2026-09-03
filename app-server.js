@@ -20,6 +20,10 @@ const { syncPublicMirror } = require('./lib/publicAssetMirror');
 const { classifyStartupError } = require('./lib/productionPreflight');
 const { applyP2PFlowEnvAliases, resolveEnvFile, setupPaths, isSetupComplete, setupRequired, startHostingSetupServer, markSetupComplete, sanitizeFreshOwnerSecrets, beginBootstrapClaim, finishBootstrapClaim, restoreBootstrapClaim } = require('./lib/hostingSetup');
 const { callSignedSapi, callSignedSapiPath, ENDPOINTS, schedulerStats: binanceSchedulerStats } = require('./lib/binanceAdapter');
+const { lookupById, rowsForNumberField, buildChatIndex, chatsForOrder, incomingChatsForOrder, c2cChatsForOrder, latestIncomingChat, latestC2cChat, hasExternalChatId, buildLedgerIndex, runtimeIndexStats } = require('./lib/runtimeIndexes');
+const { mapWithConcurrency, boundedInt } = require('./lib/asyncPool');
+const { prepareWorkspaceScope, defaultWorkspaceId } = require('./lib/workspaceScope');
+const { normalizeApiRequestUrl, bearerTokenFromRequest, isBearerApiRequest, wantsMobileAccessToken } = require('./lib/apiVersioning');
 const { generateVapidKeys, validateVapidKeys, normalizeSubscription, sendWebPush } = require('./lib/webPush');
 const net = require('net');
 const tls = require('tls');
@@ -45,7 +49,7 @@ loadEnv();
 applyP2PFlowEnvAliases(process.env);
 
 const APP_VERSION = String(packageInfo.version || '0.0.0');
-const APP_SCHEMA_VERSION = 37;
+const APP_SCHEMA_VERSION = 39;
 const APP_DATA_COMPATIBILITY_EPOCH = 1;
 const PORT = Number(process.env.PORT || 3000);
 const BIND_HOST = cleanEnv(process.env.P2PFLOW_BIND_HOST || process.env.CRM_BIND_HOST || '', '');
@@ -86,6 +90,8 @@ const SESSION_COOKIE_NAME_RAW = cleanEnv(process.env.CRM_SESSION_COOKIE_NAME || 
 const SESSION_COOKIE_NAME = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(SESSION_COOKIE_NAME_RAW) ? SESSION_COOKIE_NAME_RAW : 'sid';
 const MAX_BODY_BYTES = Math.max(8, Number(process.env.CRM_MAX_BODY_MB || 12) || 12) * 1024 * 1024;
 const SLOW_REQUEST_MS = Math.max(500, Number(process.env.P2PFLOW_SLOW_REQUEST_MS || 2500) || 2500);
+const BINANCE_ACCOUNT_SYNC_CONCURRENCY = boundedInt(process.env.P2PFLOW_BINANCE_ACCOUNT_SYNC_CONCURRENCY || 3, 3, 1, 12);
+const BINANCE_FAST_ACCOUNT_SYNC_CONCURRENCY = boundedInt(process.env.P2PFLOW_BINANCE_FAST_ACCOUNT_SYNC_CONCURRENCY || 4, 4, 1, 16);
 const LOGIN_WINDOW_MS = Math.max(60_000, Number(process.env.P2PFLOW_LOGIN_WINDOW_MS || process.env.CRM_LOGIN_WINDOW_MS || 15 * 60 * 1000) || 15 * 60 * 1000);
 const LOGIN_MAX_ATTEMPTS = Math.max(4, Math.min(100, Number(process.env.P2PFLOW_LOGIN_MAX_ATTEMPTS || process.env.CRM_LOGIN_MAX_ATTEMPTS || 12) || 12));
 const AUTH_RATE_LIMIT_MAX_KEYS = Math.max(500, Math.min(50_000, Number(process.env.P2PFLOW_AUTH_RATE_LIMIT_MAX_KEYS || 5000) || 5000));
@@ -1238,6 +1244,7 @@ async function externalizeDatabaseObjects(target = db) {
 }
 
 async function databaseStateForPersistence() {
+  prepareWorkspaceScope(db);
   recalculateAccountBalances();
   await externalizeDatabaseObjects(db);
   return db;
@@ -1269,6 +1276,7 @@ function saveDb(options = {}) {
   if (requestPersistence) {
     requestPersistence.saveScheduled = true;
     requestPersistence.saveCount = Number(requestPersistence.saveCount || 0) + 1;
+    if (options.durability === 'relaxed') requestPersistence.relaxedDurability = true;
     requestPersistence.lastSaveReason = cleanStr(options.reason || 'application_state_change', 120);
     // v1.7.7: state stores return a ticket-scoped promise. Keeping the latest
     // promise in AsyncLocalStorage lets the response wait for this mutation only,
@@ -1450,7 +1458,8 @@ function seedDb() {
   const adminCred = ownerAdminCredentials();
   validateFreshOwnerCredentials(adminCred);
   const seeded = {
-    meta: { nextId: 1000, createdAt: at, schemaVersion: APP_SCHEMA_VERSION, dataCompatibilityEpoch: APP_DATA_COMPATIBILITY_EPOCH },
+    meta: { nextId: 1000, createdAt: at, schemaVersion: APP_SCHEMA_VERSION, dataCompatibilityEpoch: APP_DATA_COMPATIBILITY_EPOCH, defaultWorkspaceId: defaultWorkspaceId(), workspaceModelVersion: 1 },
+    workspaces: [{ id: defaultWorkspaceId(), slug: 'primary', name: 'Primary Workspace', status: 'active', createdAt: at, updatedAt: at }],
     settings: defaultSettings(),
     userRoles: defaultUserRoles(),
     users: [
@@ -1539,6 +1548,19 @@ function migrateDb(target) {
   if (!['live-disabled','live'].includes(target.settings.apiMode)) target.settings.apiMode = 'live';
   for (const key of ['users','userRoles','apiCredentials','agents','paymentMethods','paymentAccounts','routing','orders','orderAgentAssignments','paymentSplits','ledgers','proofFiles','auditLogs','locks','notifications','offlineTransactions','chats','chatReadStates','coAgentRequests','approvalRequests','advertisements','securityRevertTokens','sessions','p2pExtensionTasks','p2pExtensionCache','userActivitySessions','businessEntries','businessDailyCloses','binanceBalanceSnapshots','chatMedia','systemUpdates','systemUpdateEvents']) {
     if (!Array.isArray(target[key])) target[key] = [];
+  }
+  // Schema 38: prepare an explicit single-workspace ownership key. This does
+  // not enable multi-tenant access by itself; it removes a future migration
+  // ambiguity by assigning all legacy records to workspace 1. New appended
+  // records are scoped lazily before durable checkpoints.
+  prepareWorkspaceScope(target, { force: previousSchemaVersion < 38 });
+  // Schema 39: publish a stable /api/v1 contract for browser/native clients.
+  // Existing /api routes remain backward compatible; Android/iOS can use the
+  // versioned aliases with bearer session authentication after the same secure login.
+  if (previousSchemaVersion < 39) {
+    target.settings.apiContractVersion = 'v1';
+    target.settings.mobileApiEnabled = true;
+    target.settings.apiV1InitializedAt = nowIso();
   }
   // v1.6.9 safety reset: versions 1.6.5-1.6.8 coupled the new account switches
   // too deeply into order runtime paths. Those stored values are not trusted. On the
@@ -2290,15 +2312,15 @@ function nextIdFor(target) {
 }
 
 function nextId() { return nextIdFor(db); }
-function methodById(id) { return db.paymentMethods.find(m => m.id === Number(id)); }
-function agentById(id) { return db.agents.find(a => a.id === Number(id)); }
+function methodById(id) { return lookupById(db.paymentMethods, id); }
+function agentById(id) { return lookupById(db.agents, id); }
 function agentProfitIncludedInCompanyTotals(agentId) {
   const agent = agentById(agentId);
   return !agent || agent.includeProfitInCompanyTotals !== false;
 }
-function orderById(id) { return db.orders.find(o => o.id === Number(id)); }
-function accountById(id) { return db.paymentAccounts.find(a => a.id === Number(id)); }
-function proofById(id) { return db.proofFiles.find(p => p.id === Number(id)); }
+function orderById(id) { return lookupById(db.orders, id); }
+function accountById(id) { return lookupById(db.paymentAccounts, id); }
+function proofById(id) { return lookupById(db.proofFiles, id); }
 
 function normalizePaymentAccountType(value) {
   const type = String(value || '').trim().toLowerCase();
@@ -3020,22 +3042,26 @@ function applySplitWalletMovement(split, accountItem, user, newActual, options =
   return { ...preview, balanceBefore: before, balanceAfter: calcAccountBalance(accountItem.id), mainLedgerId: mainLedger?.id || null, chargeLedgerId: chargeLedger?.id || null };
 }
 
+function ledgerRuntimeIndex(target = db) {
+  return buildLedgerIndex(Array.isArray(target?.ledgers) ? target.ledgers : [], {
+    dayKey: todayStr(),
+    monthKey: monthStr(),
+    effect: ledgerEffect,
+    isLimitLedger: isSpendOrReceiveLedger,
+    limitUsage: ledgerLimitUsage
+  });
+}
+
 function calcAccountBalance(accountId, target = db) {
-  return sum(target.ledgers.filter(l => Number(l.paymentAccountId) === Number(accountId)).map(ledgerEffect));
+  return Number(ledgerRuntimeIndex(target).balanceByAccount.get(Number(accountId)) || 0);
 }
 
 function recalculateAccountBalances(target = db) {
-  // One ledger pass instead of filtering the full ledger once per payment
-  // account. This function is part of every durable state checkpoint and many
-  // account views, so O(accounts * ledgers) becomes noticeably expensive as
-  // production history grows.
+  // v1.8.0: use the append-aware ledger index. The old implementation still
+  // walked every ledger for every checkpoint/account view; the index rebuilds
+  // once when the ledger array changes and serves subsequent balance reads O(1).
   const accounts = Array.isArray(target?.paymentAccounts) ? target.paymentAccounts : [];
-  const totals = new Map(accounts.map(account => [Number(account.id), 0]));
-  for (const ledger of (Array.isArray(target?.ledgers) ? target.ledgers : [])) {
-    const accountId = Number(ledger?.paymentAccountId || 0);
-    if (!totals.has(accountId)) continue;
-    totals.set(accountId, Number(totals.get(accountId) || 0) + Number(ledgerEffect(ledger) || 0));
-  }
+  const totals = ledgerRuntimeIndex(target).balanceByAccount;
   accounts.forEach(account => { account.currentBalance = Number(totals.get(Number(account.id)) || 0); });
 }
 
@@ -3059,25 +3085,17 @@ function ledgerLimitUsage(l = {}) {
 }
 
 function accountUsage(accountId) {
-  const ledgers = db.ledgers.filter(l => Number(l.paymentAccountId) === Number(accountId) && isSpendOrReceiveLedger(l));
-  const usageFor = predicate => ledgers.filter(predicate).reduce((out, ledger) => {
-    const effect = ledgerLimitUsage(ledger);
-    out.send += effect.send;
-    out.receive += effect.receive;
-    return out;
-  }, { send: 0, receive: 0 });
-  const today = usageFor(l => isToday(l.createdAt));
-  const month = usageFor(l => isThisMonth(l.createdAt));
+  const usage = ledgerRuntimeIndex(db).usageByAccount.get(Number(accountId)) || {};
   return {
-    todayReceived: round2(Math.max(0, today.receive)),
-    todaySent: round2(Math.max(0, today.send)),
-    monthReceived: round2(Math.max(0, month.receive)),
-    monthSent: round2(Math.max(0, month.send))
+    todayReceived: round2(Math.max(0, Number(usage.todayReceived || 0))),
+    todaySent: round2(Math.max(0, Number(usage.todaySent || 0))),
+    monthReceived: round2(Math.max(0, Number(usage.monthReceived || 0))),
+    monthSent: round2(Math.max(0, Number(usage.monthSent || 0)))
   };
 }
 
 function accountView(accountItem, viewer = null) {
-  recalculateAccountBalances();
+  accountItem.currentBalance = calcAccountBalance(accountItem.id);
   const usage = accountUsage(accountItem.id);
   const dailyReceiveLeft = Math.max(0, num(accountItem.dailyReceiveLimit) - usage.todayReceived);
   const dailySendLeft = Math.max(0, num(accountItem.dailySendLimit) - usage.todaySent);
@@ -10700,12 +10718,11 @@ function extractChatMessageId(msg = {}) {
 }
 
 function isDuplicateBinanceChat(orderId, msg, externalId, message, messageType, isSelf, createdAtIso) {
-  if (externalId && db.chats.some(c => c.orderId === orderId && c.binanceMessageId === externalId)) return true;
+  if (externalId && hasExternalChatId(db.chats, orderId, externalId)) return true;
   const msgText = cleanStr(message || '', 2000);
   const msgType = cleanStr(messageType || 'text', 20).toLowerCase();
   const t = Date.parse(createdAtIso || nowIso()) || Date.now();
-  return db.chats.some(c => {
-    if (c.orderId !== orderId) return false;
+  return c2cChatsForOrder(db.chats, orderId).some(c => {
     if (externalId && c.binanceMessageId === externalId) return true;
     if (cleanStr(c.message || '', 2000) !== msgText) return false;
     if (cleanStr(c.messageType || 'text', 20).toLowerCase() !== msgType) return false;
@@ -11358,7 +11375,13 @@ function mutationPathname(req) {
 function mutationRequiresDurableFlush(req, status) {
   if (!req || !['POST','PATCH','PUT','DELETE'].includes(String(req.method || '').toUpperCase())) return false;
   if (Number(status) >= 500 || !stateStore || !db) return false;
-  return !NON_DURABLE_MUTATION_PATHS.has(mutationPathname(req));
+  if (NON_DURABLE_MUTATION_PATHS.has(mutationPathname(req))) return false;
+  const persistence = requestPersistenceContext.getStore();
+  // Only explicitly low-risk UI acknowledgements may respond before the queued
+  // encrypted snapshot commits. Financial, permission, credential, settings,
+  // assignment and Binance final-action writes remain durable-before-response.
+  if (persistence?.relaxedDurability === true) return false;
+  return true;
 }
 function shouldFlushBeforeResponse(req, status) {
   return mutationRequiresDurableFlush(req, status);
@@ -11757,6 +11780,8 @@ function removeHostingEmailRecoveryFile() {
   // v1.5 database-only data policy: no recovery code is written to the local filesystem.
 }
 function sessionCookieSid(req) {
+  const bearer = bearerTokenFromRequest(req);
+  if (bearer) return cleanStr(bearer, 128);
   const cookie = req?.headers?.cookie || '';
   const match = cookie.match(new RegExp('(?:^|;\\s*)' + SESSION_COOKIE_NAME.replace(/[.*+?^${}()|[\\]\\]/g, '\\$&') + '=([^;]+)'));
   return match ? cleanStr(match[1], 128) : '';
@@ -12497,6 +12522,10 @@ function csrfPreSessionAuthPath(req) {
 }
 function checkCsrf(req, res) {
   if (!['POST','PATCH','PUT','DELETE'].includes(req.method)) return true;
+  // Native API clients authenticate with an Authorization bearer session token.
+  // CSRF is a browser cookie attack, so bearer-authenticated writes do not require
+  // the browser-only X-CSRF-Token header. Authorization/RBAC still runs normally.
+  if (isBearerApiRequest(req)) return true;
   // Login/trusted-device bootstrap writes happen before the login page owns an
   // application CSRF token. They are still protected by sameOriginOk() and by
   // their own password / PIN / signed-device challenge checks. If a stale but
@@ -12514,6 +12543,7 @@ function checkCsrf(req, res) {
 }
 function sameOriginOk(req) {
   if (!['POST','PATCH','PUT','DELETE'].includes(String(req.method || '').toUpperCase())) return true;
+  if (isBearerApiRequest(req)) return true;
   const fetchSite = String(req.headers['sec-fetch-site'] || '').trim().toLowerCase();
   if (fetchSite === 'cross-site') return false;
   const origin = String(req.headers.origin || '').trim();
@@ -13228,6 +13258,8 @@ async function fullHealth() {
     ok: binance.ok && storage.ok && mail.ok,
     generatedAt: nowIso(),
     app: { version: APP_VERSION, schemaVersion: Number(db.meta?.schemaVersion || 0), node: process.version, platform: `${os.platform()} ${os.release()}`, uptimeSeconds: Math.round(process.uptime()), sessionCount: sessions.size },
+    runtimeIndexes: runtimeIndexStats(db),
+    scalability: { binanceAccountSyncConcurrency: BINANCE_ACCOUNT_SYNC_CONCURRENCY, binanceFastAccountSyncConcurrency: BINANCE_FAST_ACCOUNT_SYNC_CONCURRENCY, workspaceModelVersion: Number(db.meta?.workspaceModelVersion || 0), workspaceMode: 'single-prepared' },
     settings: { apiMode: db.settings.apiMode, mailSendingSystem: runtimeMailConfig().system, mailDriver: runtimeMailConfig().driver, sessionSameSite: SESSION_COOKIE_SAMESITE, sessionTtlMinutes: Math.round(SESSION_TTL_MS / 60000) },
     binance,
     credential,
@@ -18245,6 +18277,21 @@ function redactErrorForLog(value) {
 }
 
 async function handleApi(req, res) {
+  const apiRequest = normalizeApiRequestUrl(req.url || '/');
+  req._p2pflowApiVersion = apiRequest.version;
+  req._p2pflowOriginalApiPath = apiRequest.originalPath;
+  if (apiRequest.meta) {
+    return sendJson(res, 200, {
+      api: { name: 'P2PFlow API', version: 'v1', stablePrefix: '/api/v1' },
+      appVersion: APP_VERSION,
+      schemaVersion: Number(db?.meta?.schemaVersion || APP_SCHEMA_VERSION),
+      auth: { browser: 'httpOnly-session-cookie+csrf', native: 'bearer-session-token', login: '/api/v1/auth/login', me: '/api/v1/session/me' },
+      realtime: { browser: '/api/v1/realtime/events', upstreamChat: 'Binance C2C WebSocket', fallback: 'REST pagination' },
+      resources: ['orders','ads','payment-accounts','payment-methods','notifications','reports','accounting'],
+      generatedAt: nowIso()
+    }, { 'Cache-Control': 'no-store' }, req);
+  }
+  if (apiRequest.version === 1) req.url = apiRequest.url;
   let url;
   try { url = new URL(req.url, 'http://localhost'); }
   catch { return sendJson(res, 400, { error: 'Bad request', requestId: requestIdFor(req) }, {}, req); }
@@ -18478,6 +18525,7 @@ async function handleTrustedDeviceLogin(req, res) {
   return sendJson(res, 200, {
     user: userSafe(user),
     csrfToken: session.csrfToken,
+    ...(wantsMobileAccessToken(req, body) ? { accessToken: session.sid, tokenType: 'Bearer', expiresAt: new Date(session.expiresAt).toISOString() } : {}),
     trustedDevice: true,
     mailSent: false,
     fullLoginRequiredAfter: device.expiresAt || null
@@ -20964,7 +21012,7 @@ async function handleApprovalById(req, res, parts) {
 
 
 function incomingOrderChats(orderId) {
-  return (db.chats || []).filter(chat => Number(chat.orderId) === Number(orderId) && String(chat.source || '').toLowerCase() === 'binance');
+  return incomingChatsForOrder(db.chats, orderId);
 }
 
 function chatReadStateFor(userId, orderId, create = false) {
@@ -20985,38 +21033,35 @@ function chatUnreadSnapshotForOrders(user, orders = []) {
   const counts = {};
   const latestByOrder = {};
   let total = 0;
-  for (const chat of db.chats || []) {
-    const orderId = Number(chat.orderId);
-    if (!orderIds.has(orderId) || String(chat.source || '').toLowerCase() !== 'binance') continue;
-    const chatId = Number(chat.id || 0);
-    const lastRead = readByOrder.has(orderId) ? readByOrder.get(orderId) : null;
-    const unread = lastRead === null
-      ? (Date.parse(chat.importedAt || chat.createdAt || '') || 0) > baseline
-      : chatId > lastRead;
-    if (unread) {
-      counts[String(orderId)] = Number(counts[String(orderId)] || 0) + 1;
-      total += 1;
+  const index = buildChatIndex(db.chats);
+  for (const orderId of orderIds) {
+    const rows = index.incomingByOrder.get(Number(orderId)) || [];
+    const lastRead = readByOrder.has(Number(orderId)) ? readByOrder.get(Number(orderId)) : null;
+    let unreadCount = 0;
+    for (const chat of rows) {
+      const chatId = Number(chat.id || 0);
+      const unread = lastRead === null
+        ? (Date.parse(chat.importedAt || chat.createdAt || '') || 0) > baseline
+        : chatId > lastRead;
+      if (unread) unreadCount += 1;
     }
-    const currentLatest = latestByOrder[String(orderId)];
-    if (!currentLatest || chatId > Number(currentLatest.chatId || 0)) {
-      latestByOrder[String(orderId)] = { chatId, createdAt: chat.createdAt || chat.importedAt || null };
+    if (unreadCount) {
+      counts[String(orderId)] = unreadCount;
+      total += unreadCount;
     }
+    const latest = index.latestIncomingByOrder.get(Number(orderId));
+    if (latest) latestByOrder[String(orderId)] = { chatId: Number(latest.id || 0), createdAt: latest.createdAt || latest.importedAt || null };
   }
   return { counts, total, latestByOrder };
 }
 
 function latestC2cChatsForOrders(orders = []) {
-  const orderIds = new Set((orders || []).map(order => Number(order.id)));
   const latest = new Map();
-  for (const chat of db.chats || []) {
-    const orderId = Number(chat.orderId);
-    if (!orderIds.has(orderId)) continue;
-    const source = String(chat.source || '').toLowerCase();
-    if (source !== 'binance' && source !== 'binance-outbound') continue;
-    const current = latest.get(orderId);
-    const currentTime = Date.parse(current?.createdAt || current?.importedAt || '') || 0;
-    const nextTime = Date.parse(chat.createdAt || chat.importedAt || '') || 0;
-    if (!current || nextTime > currentTime || (nextTime === currentTime && Number(chat.id || 0) > Number(current.id || 0))) latest.set(orderId, chat);
+  const index = buildChatIndex(db.chats);
+  for (const order of orders || []) {
+    const orderId = Number(order?.id || 0);
+    const chat = index.latestC2cByOrder.get(orderId);
+    if (chat) latest.set(orderId, chat);
   }
   return latest;
 }
@@ -21024,31 +21069,27 @@ function latestC2cChatsForOrders(orders = []) {
 function unreadChatCountForUser(user, order) {
   if (!user || !order) return 0;
   const state = chatReadStateFor(user.id, order.id, false);
+  const rows = incomingOrderChats(order.id);
   if (!state) {
     const baseline = Date.parse(db.meta?.chatUnreadBaselineAt || '') || Date.now();
-    return incomingOrderChats(order.id).filter(chat => (Date.parse(chat.importedAt || chat.createdAt || '') || 0) > baseline).length;
+    return rows.filter(chat => (Date.parse(chat.importedAt || chat.createdAt || '') || 0) > baseline).length;
   }
   const lastReadChatId = Number(state.lastReadChatId || 0);
-  return incomingOrderChats(order.id).filter(chat => Number(chat.id || 0) > lastReadChatId).length;
+  // Chat IDs are monotonic in the application, so only this order's indexed
+  // messages need to be checked instead of rescanning the full global history.
+  return rows.filter(chat => Number(chat.id || 0) > lastReadChatId).length;
 }
 
 function latestIncomingChatForOrder(orderId) {
-  return incomingOrderChats(orderId).slice().sort((a, b) => Number(b.id || 0) - Number(a.id || 0))[0] || null;
+  return latestIncomingChat(db.chats, orderId);
 }
 
 function c2cOrderChats(orderId) {
-  return (db.chats || []).filter(chat => {
-    if (Number(chat.orderId) !== Number(orderId)) return false;
-    const source = String(chat.source || '').toLowerCase();
-    return source === 'binance' || source === 'binance-outbound';
-  });
+  return c2cChatsForOrder(db.chats, orderId);
 }
 
 function latestC2cChatForOrder(orderId) {
-  return c2cOrderChats(orderId).slice().sort((a, b) => {
-    const timeDelta = (Date.parse(b.createdAt || b.importedAt || '') || 0) - (Date.parse(a.createdAt || a.importedAt || '') || 0);
-    return timeDelta || (Number(b.id || 0) - Number(a.id || 0));
-  })[0] || null;
+  return latestC2cChat(db.chats, orderId);
 }
 
 function chatInboxMessagePreview(chat) {
@@ -21596,8 +21637,8 @@ function fullOrderView(order, user = null) {
     selectedPaymentAccount,
     selectedPaymentAccounts,
     paymentSplits: db.paymentSplits.filter(s => s.orderId === order.id).map(split => splitView(split, user)),
-    ledgers: db.ledgers.filter(l => l.orderId === order.id && canAccessAccount(user, accountById(l.paymentAccountId))).map(l => ledgerView(l, user)),
-    chats: db.chats.filter(c => c.orderId === order.id).map(chatView),
+    ledgers: (ledgerRuntimeIndex(db).byOrder.get(Number(order.id)) || []).filter(l => canAccessAccount(user, accountById(l.paymentAccountId))).map(l => ledgerView(l, user)),
+    chats: chatsForOrder(db.chats, order.id).map(chatView),
     activeLock: orderLockView(activeLock(order.id)),
     coAgentRequests: db.coAgentRequests.filter(r => r.orderId === order.id),
     approvals: orderApprovalRequests(order.id).map(approvalView),
@@ -24442,7 +24483,7 @@ async function handleNotifications(req, res) {
         stored.status = 'read';
         stored.readAt = nowIso();
       }
-      saveDb();
+      saveDb({ durability:'relaxed', reason:'notification_read' });
       return sendJson(res, 200, { ok: true, notificationId: item.id }, {}, req);
     }
     if (body.markRead) {
@@ -24459,7 +24500,7 @@ async function handleNotifications(req, res) {
       const chatResult = body.includeChats === false || !notificationEnabledForUser(user, 'inApp', 'messages')
         ? { markedOrders: 0, markedMessages: 0 }
         : markAccessibleChatNotificationsRead(user);
-      saveDb();
+      saveDb({ durability:'relaxed', reason:'notification_mark_all_read' });
       return sendJson(res, 200, { ok: true, markedNotifications, ...chatResult }, {}, req);
     }
   }
@@ -24483,7 +24524,7 @@ async function runBinanceFastOrderDiscovery(reason = 'fast_timer') {
   binanceFastOrderDiscoveryBusy = true;
   binanceFastOrderDiscoveryLastAt = Date.now();
   try {
-    const results = await Promise.all(credentials.map(async credential => {
+    const results = await mapWithConcurrency(credentials, BINANCE_FAST_ACCOUNT_SYNC_CONCURRENCY, async credential => {
       try {
         return await syncBinanceOrdersWithCredential(systemBinanceSyncUser(), credential, {
           reason,
@@ -24494,7 +24535,7 @@ async function runBinanceFastOrderDiscovery(reason = 'fast_timer') {
       } catch (error) {
         return { credentialId:Number(credential.id), created:0, updated:0, totalRows:0, changedOrders:[], error:cleanStr(error.message || error, 240) };
       }
-    }));
+    });
     const changedOrders = results.flatMap(result => result.changedOrders || []);
     const created = results.reduce((sum, result) => sum + Number(result.created || 0), 0);
     const updated = results.reduce((sum, result) => sum + Number(result.updated || 0), 0);
@@ -24525,22 +24566,36 @@ async function runBinanceAutoOrderSync(reason = 'timer') {
   binanceAutoSyncLastAt = Date.now();
   const aggregate = { created: 0, updated: 0, detailSynced: 0, openDetailSynced: 0, totalRows: 0, changedOrders: [], chatResults: [], credentials: [] };
   try {
-    const errors = [];
-    for (const credential of credentials) {
+    // v1.8.0: each Binance account keeps its own order->chat sequence, while
+    // several independent accounts may progress concurrently. The central SAPI
+    // scheduler still enforces global/per-key rate limits and final-action
+    // priority, so adding accounts no longer makes one slow account serialize
+    // the entire sync cycle.
+    const accountResults = await mapWithConcurrency(credentials, BINANCE_ACCOUNT_SYNC_CONCURRENCY, async credential => {
+      const localErrors = [];
       let out = { created: 0, updated: 0, detailSynced: 0, openDetailSynced: 0, totalRows: 0, changedOrders: [] };
       if (db.settings.binanceAutoOrderSync !== false) {
         try {
           out = await syncBinanceOrdersWithCredential(systemBinanceSyncUser(), credential, { reason, rows: db.settings.binanceAutoSyncRows || 30, detailMode: 'smart', detailMaxAgeMs: 12000, reconcileOpenOrders: true, openDetailRows: db.settings.binanceOpenOrderDetailRows || 100 });
         } catch (orderSyncError) {
-          errors.push(`${binanceCredentialLabel(credential)}: ${cleanStr(orderSyncError.message || orderSyncError, 240)}`);
+          localErrors.push(`${binanceCredentialLabel(credential)}: ${cleanStr(orderSyncError.message || orderSyncError, 240)}`);
         }
       }
       let chatOut = { results: [] };
       try {
         chatOut = await syncBinanceChatsRoundRobin(credential, 10);
       } catch (chatError) {
-        errors.push(`${binanceCredentialLabel(credential)} chat: ${cleanStr(chatError.message || chatError, 220)}`);
+        localErrors.push(`${binanceCredentialLabel(credential)} chat: ${cleanStr(chatError.message || chatError, 220)}`);
       }
+      return { credential, out, chatOut, errors: localErrors };
+    });
+
+    const errors = [];
+    for (const result of accountResults) {
+      const credential = result.credential;
+      const out = result.out || {};
+      const chatOut = result.chatOut || { results: [] };
+      errors.push(...(result.errors || []));
       aggregate.created += Number(out.created || 0);
       aggregate.updated += Number(out.updated || 0);
       aggregate.detailSynced += Number(out.detailSynced || 0);
@@ -24554,7 +24609,7 @@ async function runBinanceAutoOrderSync(reason = 'timer') {
     db.settings.lastBinanceAutoOrderSyncError = errors.join(' | ');
     db.settings.lastBinanceAutoOrderSyncAt = nowIso();
     db.settings.lastBinanceAutoChatSyncAt = nowIso();
-    saveDb({ broadcast: false });
+    saveDbCoalesced('binance_auto_order_sync', { broadcast:false, reason:'binance_auto_order_sync', delayMs:200 });
     if (aggregate.created || aggregate.detailSynced || aggregate.totalRows) {
       broadcast({ type: 'binance.orders.auto_synced', created: aggregate.created, updated: aggregate.updated, detailSynced: aggregate.detailSynced, openDetailSynced: aggregate.openDetailSynced, totalRows: aggregate.totalRows, changedOrders: aggregate.changedOrders, credentials: aggregate.credentials, at: nowIso() });
     }
@@ -24569,7 +24624,7 @@ async function runBinanceAutoOrderSync(reason = 'timer') {
       try {
         const pm = await syncBinancePaymentMethodsWithCredential(null, credentials[0], 'auto_periodic');
         db.settings.lastBinancePaymentMethodAutoSyncAt = nowIso();
-        if (pm.created || pm.updated) { saveDb(); broadcast({ type: 'payment.methods.auto_synced', created: pm.created, updated: pm.updated, at: nowIso() }); }
+        if (pm.created || pm.updated) { saveDbCoalesced('binance_payment_methods', { broadcast:false, reason:'binance_payment_methods', delayMs:200 }); broadcast({ type: 'payment.methods.auto_synced', created: pm.created, updated: pm.updated, at: nowIso() }); }
       } catch (err) {
         db.settings.lastBinancePaymentMethodAutoSyncError = cleanStr(err.message || err, 300);
       }
@@ -24617,7 +24672,7 @@ function startP2pExtensionCacheCleanupLoop() {
   p2pExtensionCacheCleanupLoopStarted = true;
   const run = () => {
     try {
-      if (cleanupP2pExtensionCache()) saveDb();
+      if (cleanupP2pExtensionCache()) saveDbCoalesced('extension_cache_cleanup', { broadcast:false, reason:'extension_cache_cleanup', delayMs:250 });
     } catch (err) {
       try { console.warn('P2P extension cache cleanup failed:', err.message); } catch (_) {}
     }
@@ -24638,47 +24693,45 @@ async function runBinanceAdsAutoSync(reason = 'timer') {
   const beforeError = cleanStr(db.settings.adsLastSyncError || '', 300);
   const beforeCatalog = JSON.stringify([db.settings.adsAssetOptions || [], db.settings.adsFiatOptions || [], db.settings.adsCatalogLastSyncAt || '']);
   try {
-    let merchantChanged = false;
-    for (const credential of credentials) {
+    const accountResults = await mapWithConcurrency(credentials, BINANCE_ACCOUNT_SYNC_CONCURRENCY, async (credential, index) => {
       const beforeMerchantSignature = advertisementMerchantControlSignature(null, credential.id);
       try {
         const out = await syncBinanceAdvertisementsWithCredential(null, credential, {
           rows: db.settings.adsSyncRows || 50,
           audit: false,
-          syncCatalog: true
+          // Asset/fiat catalogs are workspace-global. Refresh them once per
+          // cycle instead of repeating the same catalog calls for every key.
+          syncCatalog: index === 0
         });
         const accountMerchantChanged = beforeMerchantSignature !== advertisementMerchantControlSignature(null, credential.id);
-        merchantChanged = merchantChanged || accountMerchantChanged;
-        aggregate.created += Number(out.created || 0);
-        aggregate.updated += Number(out.updated || 0);
-        aggregate.unchanged += Number(out.unchanged || 0);
-        aggregate.totalRows += Number(out.totalRows || 0);
-        aggregate.changed += Number(out.changed || 0);
-        aggregate.accounts.push({
-          credentialId: Number(credential.id),
-          credentialName: binanceCredentialLabel(credential),
-          created: Number(out.created || 0),
-          updated: Number(out.updated || 0),
-          unchanged: Number(out.unchanged || 0),
-          totalRows: Number(out.totalRows || 0),
-          changed: Number(out.changed || 0),
-          merchantChanged: accountMerchantChanged,
-          controls: advertisementMerchantControlsView(credential.id)
-        });
+        return { credential, out, accountMerchantChanged };
       } catch (error) {
-        const message = cleanStr(error.message || error, 300);
-        aggregate.errors.push(`${binanceCredentialLabel(credential)}: ${message}`);
-        aggregate.accounts.push({
-          credentialId: Number(credential.id),
-          credentialName: binanceCredentialLabel(credential),
-          created: 0,
-          updated: 0,
-          unchanged: 0,
-          totalRows: 0,
-          changed: 0,
-          error: message
-        });
+        return { credential, error: cleanStr(error.message || error, 300), accountMerchantChanged: false };
       }
+    });
+
+    let merchantChanged = false;
+    for (const result of accountResults) {
+      const credential = result.credential;
+      if (result.error) {
+        aggregate.errors.push(`${binanceCredentialLabel(credential)}: ${result.error}`);
+        aggregate.accounts.push({ credentialId: Number(credential.id), credentialName: binanceCredentialLabel(credential), created: 0, updated: 0, unchanged: 0, totalRows: 0, changed: 0, error: result.error });
+        continue;
+      }
+      const out = result.out || {};
+      merchantChanged = merchantChanged || result.accountMerchantChanged;
+      aggregate.created += Number(out.created || 0);
+      aggregate.updated += Number(out.updated || 0);
+      aggregate.unchanged += Number(out.unchanged || 0);
+      aggregate.totalRows += Number(out.totalRows || 0);
+      aggregate.changed += Number(out.changed || 0);
+      aggregate.accounts.push({
+        credentialId: Number(credential.id),
+        credentialName: binanceCredentialLabel(credential),
+        created: Number(out.created || 0), updated: Number(out.updated || 0), unchanged: Number(out.unchanged || 0), totalRows: Number(out.totalRows || 0), changed: Number(out.changed || 0),
+        merchantChanged: result.accountMerchantChanged,
+        controls: advertisementMerchantControlsView(credential.id)
+      });
     }
     db.settings.adsLastSyncError = aggregate.errors.join(' | ');
     db.settings.adsLastAutoSyncAt = nowIso();
@@ -24686,27 +24739,13 @@ async function runBinanceAdsAutoSync(reason = 'timer') {
     const catalogChanged = beforeCatalog !== JSON.stringify([db.settings.adsAssetOptions || [], db.settings.adsFiatOptions || [], db.settings.adsCatalogLastSyncAt || '']);
     const shouldPersist = aggregate.changed > 0 || merchantChanged || catalogChanged || beforeError !== cleanStr(db.settings.adsLastSyncError || '', 300) || Date.now() - adsLastPersistAt > 5 * 60 * 1000;
     if (shouldPersist) {
-      saveDb({ broadcast: false });
+      saveDbCoalesced('binance_ads_auto_sync', { broadcast:false, reason:'binance_ads_auto_sync', delayMs:250 });
       adsLastPersistAt = Date.now();
     }
     if (aggregate.changed > 0 || merchantChanged) {
-      broadcast({
-        type: 'ads.auto_synced',
-        created: aggregate.created,
-        updated: aggregate.updated,
-        unchanged: aggregate.unchanged,
-        totalRows: aggregate.totalRows,
-        changed: aggregate.changed,
-        merchantChanged,
-        accounts: aggregate.accounts,
-        controlsByCredential: aggregate.accounts.filter(item => item.controls).map(item => ({ credentialId: item.credentialId, credentialName: item.credentialName, controls: item.controls })),
-        reason,
-        at: nowIso()
-      });
+      broadcast({ type: 'ads.auto_synced', created: aggregate.created, updated: aggregate.updated, unchanged: aggregate.unchanged, totalRows: aggregate.totalRows, changed: aggregate.changed, merchantChanged, accounts: aggregate.accounts, controlsByCredential: aggregate.accounts.filter(item => item.controls).map(item => ({ credentialId: item.credentialId, credentialName: item.credentialName, controls: item.controls })), reason, at: nowIso() });
     }
-    if (aggregate.errors.length && beforeError !== db.settings.adsLastSyncError) {
-      broadcast({ type: 'ads.sync_error', error: db.settings.adsLastSyncError, accounts: aggregate.accounts, reason, at: nowIso() });
-    }
+    if (aggregate.errors.length && beforeError !== db.settings.adsLastSyncError) broadcast({ type: 'ads.sync_error', error: db.settings.adsLastSyncError, accounts: aggregate.accounts, reason, at: nowIso() });
     return aggregate;
   } catch (err) {
     const nextError = cleanStr(err.message || err, 300);
@@ -24714,7 +24753,7 @@ async function runBinanceAdsAutoSync(reason = 'timer') {
     db.settings.adsLastSyncError = nextError;
     db.settings.adsLastAutoSyncAt = nowIso();
     if (errorChanged || Date.now() - adsLastPersistAt > 5 * 60 * 1000) {
-      saveDb({ broadcast: false });
+      saveDbCoalesced('binance_ads_auto_sync_error', { broadcast:false, reason:'binance_ads_auto_sync_error', delayMs:250 });
       adsLastPersistAt = Date.now();
     }
     if (errorChanged) broadcast({ type: 'ads.sync_error', error: nextError, reason, at: nowIso() });
@@ -24733,65 +24772,41 @@ async function runAdvertisementMerchantStatusAutoSync(reason = 'timer') {
   advertisementMerchantStatusBusy = true;
   const aggregate = { changed: false, profileBusinessChanged: false, accounts: [], errors: [] };
   try {
-    for (const credential of credentials) {
+    const results = await mapWithConcurrency(credentials, BINANCE_ACCOUNT_SYNC_CONCURRENCY, async credential => {
       const before = advertisementMerchantControlSignature(null, credential.id);
       try {
-        // Force is intentional here so every enabled account is independently verified
-        // during each multi-account cycle.
         const controls = await refreshAdvertisementMerchantControlVerification(credential, true);
         const after = advertisementMerchantControlSignature(controls);
         const changed = before !== after;
         const runtime = advertisementMerchantRuntime(credential.id);
         const profileBusinessChanged = Boolean(runtime.ownerProfileBusinessChanged);
         runtime.ownerProfileBusinessChanged = false;
-        aggregate.changed = aggregate.changed || changed;
-        aggregate.profileBusinessChanged = aggregate.profileBusinessChanged || profileBusinessChanged;
-        aggregate.accounts.push({
-          credentialId: Number(credential.id),
-          credentialName: binanceCredentialLabel(credential),
-          changed,
-          profileBusinessChanged,
-          controls
-        });
-        if (changed) {
-          broadcast({
-            type: 'ads.merchant.controls.synced',
-            credentialId: Number(credential.id),
-            credentialName: binanceCredentialLabel(credential),
-            controls,
-            reason,
-            at: nowIso()
-          });
-        }
-        if (profileBusinessChanged) {
-          const profile = ownerP2pProfileRecord(credential.id);
-          broadcast({
-            type: 'p2p.owner_profile.updated',
-            credentialId: Number(credential.id),
-            credentialName: binanceCredentialLabel(credential),
-            userNo: profile?.userNo || '',
-            businessStatus: profile?.account?.businessStatus ?? null,
-            source: profile?.businessStatusSource || controls.businessStatusSource || 'merchant_realtime',
-            at: nowIso()
-          });
-        }
+        return { credential, controls, changed, profileBusinessChanged };
       } catch (error) {
-        const message = cleanStr(error.message || error, 300);
-        aggregate.errors.push(`${binanceCredentialLabel(credential)}: ${message}`);
-        aggregate.accounts.push({
-          credentialId: Number(credential.id),
-          credentialName: binanceCredentialLabel(credential),
-          changed: false,
-          profileBusinessChanged: false,
-          error: message
-        });
+        return { credential, error: cleanStr(error.message || error, 300), changed:false, profileBusinessChanged:false };
+      }
+    });
+    for (const result of results) {
+      const credential = result.credential;
+      aggregate.changed = aggregate.changed || result.changed;
+      aggregate.profileBusinessChanged = aggregate.profileBusinessChanged || result.profileBusinessChanged;
+      if (result.error) {
+        aggregate.errors.push(`${binanceCredentialLabel(credential)}: ${result.error}`);
+        aggregate.accounts.push({ credentialId:Number(credential.id), credentialName:binanceCredentialLabel(credential), changed:false, profileBusinessChanged:false, error:result.error });
+        continue;
+      }
+      aggregate.accounts.push({ credentialId:Number(credential.id), credentialName:binanceCredentialLabel(credential), changed:result.changed, profileBusinessChanged:result.profileBusinessChanged, controls:result.controls });
+      if (result.changed) broadcast({ type: 'ads.merchant.controls.synced', credentialId:Number(credential.id), credentialName:binanceCredentialLabel(credential), controls:result.controls, reason, at:nowIso() });
+      if (result.profileBusinessChanged) {
+        const profile = ownerP2pProfileRecord(credential.id);
+        broadcast({ type:'p2p.owner_profile.updated', credentialId:Number(credential.id), credentialName:binanceCredentialLabel(credential), userNo:profile?.userNo || '', businessStatus:profile?.account?.businessStatus ?? null, source:profile?.businessStatusSource || result.controls.businessStatusSource || 'merchant_realtime', at:nowIso() });
       }
     }
     const errorSignature = aggregate.errors.join(' | ');
     const errorChanged = errorSignature !== advertisementMerchantStatusLastErrorSignature;
     advertisementMerchantStatusLastErrorSignature = errorSignature;
     if (aggregate.changed || aggregate.profileBusinessChanged || errorChanged || Date.now() - advertisementMerchantStatusLastPersistAt > 5 * 60 * 1000) {
-      saveDb({ broadcast: false, reason:'ads_merchant_status_checkpoint' });
+      saveDbCoalesced('ads_merchant_status_checkpoint', { broadcast:false, reason:'ads_merchant_status_checkpoint', delayMs:250 });
       advertisementMerchantStatusLastPersistAt = Date.now();
     }
     return aggregate;
@@ -25232,7 +25247,7 @@ function runAccountingSelfTest() {
     const migratedOwner = permissionMigrationTarget.users.find(user => user.id === 11);
     const migratedManager = permissionMigrationTarget.users.find(user => user.id === 12);
     const settingsWorker = permissionMigrationTarget.users.find(user => user.id === 13);
-    if (permissionMigrationTarget.meta.schemaVersion !== 37) throw new Error(`Permission/vault migration schema mismatch: ${permissionMigrationTarget.meta.schemaVersion}`);
+    if (permissionMigrationTarget.meta.schemaVersion !== APP_SCHEMA_VERSION) throw new Error(`Permission/vault migration schema mismatch: ${permissionMigrationTarget.meta.schemaVersion}`);
     const migratedSecretCredential = permissionMigrationTarget.apiCredentials.find(item => item.id === 71);
     if (!isCredentialSecretVaultValue(migratedSecretCredential.releaseFundPasswordVault) || migratedSecretCredential.releaseFundPassword || readCredentialFundPassword(migratedSecretCredential) !== 'Legacy-Fund-Secret') throw new Error('Schema 37 did not field-encrypt the legacy Fund Transfer Password.');
     const migratedOwnerRows = binanceCredentialPermissionRowsForUser(migratedOwner, permissionMigrationTarget);

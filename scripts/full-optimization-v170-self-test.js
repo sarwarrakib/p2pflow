@@ -33,21 +33,21 @@ function block(source, start, end) {
 }
 function sha(value) { return crypto.createHash('sha256').update(value).digest('hex'); }
 
-assert(pkg.version === '1.7.9', `expected package 1.7.3, got ${pkg.version}`);
-assert(server.includes('const APP_SCHEMA_VERSION = 37;'), 'v1.7.3 unexpectedly changed the v1.6.4-compatible schema target');
+assert(pkg.version === '1.8.1', `expected package 1.8.0, got ${pkg.version}`);
+assert(server.includes('const APP_SCHEMA_VERSION = 39;'), 'schema 38 scalable Node migration target is missing');
 
-// The production-proven v1.6.4 order engine is a hard baseline. These exact
-// byte hashes prevent a future performance patch from silently coupling user
-// feature switches, shortened timeouts, or changed polling semantics back into
-// the three core ingestion/reconciliation functions.
+// The production-proven order ingestion engine remains byte-protected. v1.8.0
+// intentionally upgrades the fast/full multi-account orchestration to bounded
+// account concurrency; protect those new orchestration blocks from accidental
+// regressions while keeping feature switches out of the ingestion core.
 const protectedOrderCore = [
   ['syncBinanceOrdersWithCredential', 'async function syncBinanceOrdersWithCredential', 'async function handleBinanceOrderSync', '9375159394762e2273699c4a88d68ced08d94d8630ddb7be56a83470e7b7151f'],
-  ['runBinanceFastOrderDiscovery', 'async function runBinanceFastOrderDiscovery', 'async function runBinanceAutoOrderSync', 'babc74a0463dd2e42b01f753c23cab19add8835c9a93341237fa9203f605c741'],
-  ['runBinanceAutoOrderSync', 'async function runBinanceAutoOrderSync', 'let binanceAutoSyncLoopStarted', '174c920e5b1e80cfc96751e1e5bf39a1d4781f75061851319199340376300fa6']
+  ['runBinanceFastOrderDiscovery', 'async function runBinanceFastOrderDiscovery', 'async function runBinanceAutoOrderSync', 'ef6e89500e21132db9d538276928aae12100cd9a0bc750a1cfb2656b2b7d7c8b'],
+  ['runBinanceAutoOrderSync', 'async function runBinanceAutoOrderSync', 'let binanceAutoSyncLoopStarted', '95cd0af22bddda88f175147488b74d197bf01ee3a53240af2e829e98161f23e4']
 ];
 for (const [name, start, end, expected] of protectedOrderCore) {
   const source = block(server, start, end);
-  assert(sha(source) === expected, `${name} no longer matches the known-good v1.6.4 engine`);
+  assert(sha(source) === expected, `${name} no longer matches the protected scalable order engine`);
   assert(!/userBinanceCredentialFeature|featureControls|chatAccountControls|binanceCredentialFeatureEnabled/.test(source), `${name} is coupled to account feature switches`);
 }
 
@@ -67,10 +67,11 @@ assert(chat.includes('All Accounts') && chat.includes('data-chat-account-setting
 // 504/event-loop hardening: expensive Brotli compression must run on libuv.
 assert(codec.includes('async function encodeStateObjectAsync') && codec.includes('zlib.brotliCompress('), 'async Brotli state codec missing');
 for (const [name, source] of [['mysql', mysql], ['postgres', postgres]]) {
-  assert(source.includes('await this.encryptObjectAsync(state)'), `${name} state write still uses synchronous whole-state compression`);
+  assert(source.includes('prepareSegmentedState(state, this') && source.includes('await this.encryptObjectAsync(segmented.state)'), `${name} state write does not segment high-growth history before async compression`);
   assert((source.match(/await this\.encryptObjectAsync\(this\.decryptObject\(row\.payload\)\)/g) || []).length >= 2, `${name} legacy history compaction still synchronously compresses state`);
 }
-assert(server.includes('const totals = new Map(accounts.map(account => [Number(account.id), 0]))'), 'payment-account balance recomputation is not one-pass');
+assert(server.includes('function ledgerRuntimeIndex(target = db)') && server.includes('buildLedgerIndex('), 'indexed ledger aggregation is missing');
+assert(server.includes('accountItem.currentBalance = calcAccountBalance(accountItem.id);'), 'account views still trigger full-account balance recomputation');
 assert(!server.includes('target.paymentAccounts.forEach(a => { a.currentBalance = calcAccountBalance(a.id, target); });'), 'old O(accounts * ledgers) balance loop remains');
 assert(server.includes("advertisementMerchantStatusLastErrorSignature") && server.includes("ads_merchant_status_checkpoint"), 'repeated Ads merchant-status error saves are not deduplicated');
 assert(server.includes('Date.now() - adsLastPersistAt > 5 * 60 * 1000'), 'unchanged Ads background loop still checkpoints too frequently');
@@ -141,8 +142,8 @@ assert(packager.includes('isTopLevelPackageClutter'), 'old version release-docum
 console.log(JSON.stringify({
   ok:true,
   version:pkg.version,
-  schema:37,
-  orderEngine:'v1.6.4-byte-protected',
+  schema:38,
+  orderEngine:'protected-ingestion-plus-v1.8.0-bounded-multi-account-orchestration',
   perUserAccountControls:true,
   asyncStateCompression:true,
   onePassPaymentBalances:true,

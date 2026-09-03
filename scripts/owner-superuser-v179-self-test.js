@@ -10,7 +10,7 @@ const app = read('public/app.js');
 const credentials = read('public/js/pages/credentials.js');
 function assert(condition, message){ if(!condition) throw new Error(`Owner superuser v${pkg.version} self-test failed: ${message}`); }
 function block(source, start, end){ const a=source.indexOf(start); const b=source.indexOf(end,a+start.length); assert(a>=0 && b>a, `block missing: ${start}`); return source.slice(a,b); }
-assert(pkg.version === '1.7.9', `expected v1.7.9, got ${pkg.version}`);
+assert(pkg.version === '1.8.1', `expected v1.8.1, got ${pkg.version}`);
 const globalPerm = block(server, 'function userHasPermission(', 'function binanceAccountGlobalPermissionSet(');
 assert(/user\.isOwner\s*===\s*true/.test(globalPerm), 'durable Owner global superuser boundary is missing');
 assert(!/user\.role\s*===|admin|manager|agent|auditor/i.test(globalPerm), 'role label still creates a global bypass');

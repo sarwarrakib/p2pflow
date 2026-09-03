@@ -8,7 +8,7 @@ const app = read('public/app.js');
 const pkg = JSON.parse(read('package.json'));
 const assert = (condition, message) => { if (!condition) throw new Error(`Interactive performance v1.7.8 self-test failed: ${message}`); };
 
-assert(pkg.version === '1.7.9', `expected v1.7.9, got ${pkg.version}`);
+assert(pkg.version === '1.8.1', `expected v1.8.1, got ${pkg.version}`);
 assert(app.includes("state.navigationController?.abort('navigation_changed')"), 'latest-navigation-wins cancellation was removed');
 assert(app.includes('FAST_NATIVE_CONTENT_PAGES') && app.includes('shouldUseNativeContentCommit'), 'heavy-page native commit gate is missing');
 assert(app.includes('nativeReplaceContentPreservingViewport'), 'native content replacement does not preserve viewport state');
