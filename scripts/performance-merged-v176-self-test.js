@@ -19,7 +19,7 @@ const chat = read('public/js/pages/chat.js');
 const market = read('public/js/pages/p2p-market.js');
 const adapterSource = read('lib/binanceAdapter.js');
 
-assert(pkg.version === '1.8.1', `expected 1.8.1 before release bump, got ${pkg.version}`);
+assert(pkg.version === '1.8.0', `expected 1.8.0 before release bump, got ${pkg.version}`);
 
 // A-branch strengths: Binance rate/timeout control + durable-write protection.
 assert(server.includes('requestPersistenceContext.getStore()') && server.includes('if (persistence && persistence.saveScheduled) return;'), 'duplicate durable checkpoint protection is missing');
@@ -38,8 +38,8 @@ assert(server.includes('session.activityLastPersistedAt >= 60000'), 'activity ch
 assert(server.includes('function scheduleDbUpdatedBroadcast(') && server.includes('DB_UPDATED_COALESCE_MS'), 'generic db_updated coalescing is missing');
 assert(server.includes("headers['X-P2PFlow-Response-Ms']"), 'response timing header is missing');
 assert(server.includes("url.searchParams.get('group') || 'all'") && server.includes('groupCounts'), 'orders API active-group payload support is missing');
-assert(index.includes('/page-preload.js?v=1.8.1'), 'active-route preload script is missing');
-assert(!index.includes('/js/pages/orders.js?v=1.8.1') && !index.includes('/js/pages/ads.js?v=1.8.1'), 'page bundles are still eager on application boot');
+assert(index.includes('/page-preload.js?v=1.8.0'), 'active-route preload script is missing');
+assert(!index.includes('/js/pages/orders.js?v=1.8.0') && !index.includes('/js/pages/ads.js?v=1.8.0'), 'page bundles are still eager on application boot');
 assert(app.includes('const PAGE_MODULE_PATHS = Object.freeze({') && app.includes('await ensurePageModule(state.page)'), 'lazy page-module runtime is missing');
 assert(preload.includes('P2PFlowPageModulePromises') && preload.includes('pathToRoute'), 'active page preload does not share the lazy-loader promise registry');
 assert(app.includes("const notificationRelevant = type === 'notification.created'"), 'SSE notification refresh is not event-selective');

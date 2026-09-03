@@ -12,7 +12,7 @@ function block(source, start, end) {
   assert(a >= 0 && b > a, `Could not find block ${start}`);
   return source.slice(a, b);
 }
-assert(/const APP_SCHEMA_VERSION = 39;/.test(server), 'Schema 38 must include the schema-37 credential-secret vault migration plus workspace preparation.');
+assert(/const APP_SCHEMA_VERSION = 38;/.test(server), 'Schema 38 must include the schema-37 credential-secret vault migration plus workspace preparation.');
 const userPerm = block(server, 'function userHasPermission(', 'function binanceAccountGlobalPermissionSet(');
 assert(!/role\s*===|role\s*!==|admin|manager|agent|auditor/i.test(userPerm), 'userHasPermission still depends on a role name.');
 assert(/isOwner/.test(userPerm), 'Durable Owner superuser boundary is missing from userHasPermission.');

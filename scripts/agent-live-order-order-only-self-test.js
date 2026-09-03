@@ -19,8 +19,8 @@ const section = (source, start, end) => {
   return source.slice(a, b);
 };
 
-assert(pkg.version === '1.8.1', `expected v1.8.1, got ${pkg.version}`);
-assert(server.includes('const APP_SCHEMA_VERSION = 39;'), 'schema 36 permission-authority migration is missing');
+assert(pkg.version === '1.8.0', `expected v1.8.0, got ${pkg.version}`);
+assert(server.includes('const APP_SCHEMA_VERSION = 38;'), 'schema 36 permission-authority migration is missing');
 assert(server.includes("'binance.sync': Object.freeze(['orders.view'])"), 'Live Order permission does not imply Orders View');
 assert(server.includes('BINANCE_ACCOUNT_PERMISSION_IMPLICATIONS'), 'account-level Live Order implication is missing');
 

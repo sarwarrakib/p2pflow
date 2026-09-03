@@ -103,13 +103,3 @@ v1.8.0 first successful persistence-এর পর schema 38 এবং segmented-
 ## Validation included
 
 Source package-এ scalable-core self-test, JS parse/static checks এবং existing regression self-tests রাখা হয়েছে। Final public launch-এর আগে real database clone/staging environment-এ migration + restart + Binance read/sync + UI regression test চালাতে হবে। Financially destructive Binance action test production account-এ automatedভাবে চালানো উচিত নয়।
-
-## v1.8.1 Architecture/API update
-
-- Stable `/api/v1/*` compatibility layer added for future Android/iOS/native clients.
-- Android/native login can return a Bearer session token when `clientType=android` is requested.
-- Bearer API writes are not blocked by browser CSRF/origin checks; all normal authentication and RBAC checks remain active.
-- `/api/v1/meta` publishes API capabilities without exposing secrets.
-- Schema version advanced to 39.
-- MySQL/MariaDB and PostgreSQL relational target schemas added under `database/` for staged normalization of orders, ads, payment accounts, chats and ledger data.
-- New automated tests cover API v1 aliases/bearer parsing and database target schema/index presence.

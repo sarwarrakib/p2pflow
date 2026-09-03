@@ -23,7 +23,6 @@ const { callSignedSapi, callSignedSapiPath, ENDPOINTS, schedulerStats: binanceSc
 const { lookupById, rowsForNumberField, buildChatIndex, chatsForOrder, incomingChatsForOrder, c2cChatsForOrder, latestIncomingChat, latestC2cChat, hasExternalChatId, buildLedgerIndex, runtimeIndexStats } = require('./lib/runtimeIndexes');
 const { mapWithConcurrency, boundedInt } = require('./lib/asyncPool');
 const { prepareWorkspaceScope, defaultWorkspaceId } = require('./lib/workspaceScope');
-const { normalizeApiRequestUrl, bearerTokenFromRequest, isBearerApiRequest, wantsMobileAccessToken } = require('./lib/apiVersioning');
 const { generateVapidKeys, validateVapidKeys, normalizeSubscription, sendWebPush } = require('./lib/webPush');
 const net = require('net');
 const tls = require('tls');
@@ -49,7 +48,7 @@ loadEnv();
 applyP2PFlowEnvAliases(process.env);
 
 const APP_VERSION = String(packageInfo.version || '0.0.0');
-const APP_SCHEMA_VERSION = 39;
+const APP_SCHEMA_VERSION = 38;
 const APP_DATA_COMPATIBILITY_EPOCH = 1;
 const PORT = Number(process.env.PORT || 3000);
 const BIND_HOST = cleanEnv(process.env.P2PFLOW_BIND_HOST || process.env.CRM_BIND_HOST || '', '');
@@ -1554,14 +1553,6 @@ function migrateDb(target) {
   // ambiguity by assigning all legacy records to workspace 1. New appended
   // records are scoped lazily before durable checkpoints.
   prepareWorkspaceScope(target, { force: previousSchemaVersion < 38 });
-  // Schema 39: publish a stable /api/v1 contract for browser/native clients.
-  // Existing /api routes remain backward compatible; Android/iOS can use the
-  // versioned aliases with bearer session authentication after the same secure login.
-  if (previousSchemaVersion < 39) {
-    target.settings.apiContractVersion = 'v1';
-    target.settings.mobileApiEnabled = true;
-    target.settings.apiV1InitializedAt = nowIso();
-  }
   // v1.6.9 safety reset: versions 1.6.5-1.6.8 coupled the new account switches
   // too deeply into order runtime paths. Those stored values are not trusted. On the
   // first v1.6.9+ startup, reset the new per-account switches to ON for every user so
@@ -11780,8 +11771,6 @@ function removeHostingEmailRecoveryFile() {
   // v1.5 database-only data policy: no recovery code is written to the local filesystem.
 }
 function sessionCookieSid(req) {
-  const bearer = bearerTokenFromRequest(req);
-  if (bearer) return cleanStr(bearer, 128);
   const cookie = req?.headers?.cookie || '';
   const match = cookie.match(new RegExp('(?:^|;\\s*)' + SESSION_COOKIE_NAME.replace(/[.*+?^${}()|[\\]\\]/g, '\\$&') + '=([^;]+)'));
   return match ? cleanStr(match[1], 128) : '';
@@ -12522,10 +12511,6 @@ function csrfPreSessionAuthPath(req) {
 }
 function checkCsrf(req, res) {
   if (!['POST','PATCH','PUT','DELETE'].includes(req.method)) return true;
-  // Native API clients authenticate with an Authorization bearer session token.
-  // CSRF is a browser cookie attack, so bearer-authenticated writes do not require
-  // the browser-only X-CSRF-Token header. Authorization/RBAC still runs normally.
-  if (isBearerApiRequest(req)) return true;
   // Login/trusted-device bootstrap writes happen before the login page owns an
   // application CSRF token. They are still protected by sameOriginOk() and by
   // their own password / PIN / signed-device challenge checks. If a stale but
@@ -12543,7 +12528,6 @@ function checkCsrf(req, res) {
 }
 function sameOriginOk(req) {
   if (!['POST','PATCH','PUT','DELETE'].includes(String(req.method || '').toUpperCase())) return true;
-  if (isBearerApiRequest(req)) return true;
   const fetchSite = String(req.headers['sec-fetch-site'] || '').trim().toLowerCase();
   if (fetchSite === 'cross-site') return false;
   const origin = String(req.headers.origin || '').trim();
@@ -18277,21 +18261,6 @@ function redactErrorForLog(value) {
 }
 
 async function handleApi(req, res) {
-  const apiRequest = normalizeApiRequestUrl(req.url || '/');
-  req._p2pflowApiVersion = apiRequest.version;
-  req._p2pflowOriginalApiPath = apiRequest.originalPath;
-  if (apiRequest.meta) {
-    return sendJson(res, 200, {
-      api: { name: 'P2PFlow API', version: 'v1', stablePrefix: '/api/v1' },
-      appVersion: APP_VERSION,
-      schemaVersion: Number(db?.meta?.schemaVersion || APP_SCHEMA_VERSION),
-      auth: { browser: 'httpOnly-session-cookie+csrf', native: 'bearer-session-token', login: '/api/v1/auth/login', me: '/api/v1/session/me' },
-      realtime: { browser: '/api/v1/realtime/events', upstreamChat: 'Binance C2C WebSocket', fallback: 'REST pagination' },
-      resources: ['orders','ads','payment-accounts','payment-methods','notifications','reports','accounting'],
-      generatedAt: nowIso()
-    }, { 'Cache-Control': 'no-store' }, req);
-  }
-  if (apiRequest.version === 1) req.url = apiRequest.url;
   let url;
   try { url = new URL(req.url, 'http://localhost'); }
   catch { return sendJson(res, 400, { error: 'Bad request', requestId: requestIdFor(req) }, {}, req); }
@@ -18525,7 +18494,6 @@ async function handleTrustedDeviceLogin(req, res) {
   return sendJson(res, 200, {
     user: userSafe(user),
     csrfToken: session.csrfToken,
-    ...(wantsMobileAccessToken(req, body) ? { accessToken: session.sid, tokenType: 'Bearer', expiresAt: new Date(session.expiresAt).toISOString() } : {}),
     trustedDevice: true,
     mailSent: false,
     fullLoginRequiredAfter: device.expiresAt || null

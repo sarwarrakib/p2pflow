@@ -1,4 +1,4 @@
-# P2PFlow 1.8.1 - Unified Node.js Package
+# P2PFlow 1.8.0 - Unified Node.js Package
 
 এই সংস্করণে Hostinger, GitHub এবং manual update-এর জন্য আলাদা package নেই। **একটাই ZIP সব কাজে ব্যবহার হবে।**
 
@@ -27,7 +27,7 @@ Updater code এবং database আলাদা রাখে। Update install-�
 
 ## Version
 
-Internal SemVer: `1.8.1`
+Internal SemVer: `1.8.0`
 UI: `1.6`
 Database schema: `38`
 
@@ -36,9 +36,9 @@ Use `npm run version:set -- 1.8.1` when preparing the next release.
 
 ## Database history safety
 
-P2PFlow keeps authoritative business/application data in MariaDB/MySQL/PostgreSQL. State payloads are compressed with Brotli before AES-256-GCM encryption, proofs/chat media are stored as encrypted database objects, and identical newly uploaded proof/media bytes use content-addressed object IDs to avoid duplicate blobs. In v1.8.1 the high-growth append-only `chats`, `ledgers` and `auditLogs` collections are segmented: completed chunks are sealed once as immutable encrypted database objects and the main state stores only their object references plus a small active tail. This means an unrelated settings save no longer serializes and rewrites the full accumulated chat/ledger/audit history. The default segment size is 500 rows and can be tuned with `P2PFLOW_STATE_SEGMENT_CHUNK_ROWS`. The default is 3 retained recovery checkpoints with a 6-hour archive interval and 5 retained automatic database backups. Older uncompressed/full-state payloads remain loadable and are upgraded incrementally after startup. Health Check reports each P2PFlow database table's allocated size/row count, current encrypted state payload size, compression saving percentage, proof/chat object usage and segmented-state details so database growth can be inspected without terminal access. `shared/`, `.p2pflow`, `.env`, `releases/` and temporary restart/update markers are operational bootstrap/update metadata only; they are not an application/business-data store. The application runtime itself does not write proof, chat, audit, order, ledger, notification or recovery-code data to local files.
+P2PFlow keeps authoritative business/application data in MariaDB/MySQL/PostgreSQL. State payloads are compressed with Brotli before AES-256-GCM encryption, proofs/chat media are stored as encrypted database objects, and identical newly uploaded proof/media bytes use content-addressed object IDs to avoid duplicate blobs. In v1.8.0 the high-growth append-only `chats`, `ledgers` and `auditLogs` collections are segmented: completed chunks are sealed once as immutable encrypted database objects and the main state stores only their object references plus a small active tail. This means an unrelated settings save no longer serializes and rewrites the full accumulated chat/ledger/audit history. The default segment size is 500 rows and can be tuned with `P2PFLOW_STATE_SEGMENT_CHUNK_ROWS`. The default is 3 retained recovery checkpoints with a 6-hour archive interval and 5 retained automatic database backups. Older uncompressed/full-state payloads remain loadable and are upgraded incrementally after startup. Health Check reports each P2PFlow database table's allocated size/row count, current encrypted state payload size, compression saving percentage, proof/chat object usage and segmented-state details so database growth can be inspected without terminal access. `shared/`, `.p2pflow`, `.env`, `releases/` and temporary restart/update markers are operational bootstrap/update metadata only; they are not an application/business-data store. The application runtime itself does not write proof, chat, audit, order, ledger, notification or recovery-code data to local files.
 
-## v1.8.1 Scalable Node Core — existing application, cleaned internally
+## v1.8.0 Scalable Node Core — existing application, cleaned internally
 
 এই release Go rewrite নয়। Existing Node.js `server.js` / `app-server.js`, current UI, permissions, Orders, Ads, Chat, Payment Accounts, Accounting, Notifications, Extension bridge এবং signed update flow preserve করে performance/scaling hot path clean করা হয়েছে।
 
@@ -57,7 +57,7 @@ P2PFlow keeps authoritative business/application data in MariaDB/MySQL/PostgreSQ
 
 বর্তমানে default deployment **এক Node.js application process + external MariaDB/MySQL/PostgreSQL**। Redis/NATS/Kafka/Kubernetes/Docker Compose বাধ্যতামূলক নয়। ভবিষ্যতে বাস্তব customer/API load বেড়ে এক process-এর capacity ছাড়ালে প্রথম separation হবে background Binance worker; তার পরে প্রয়োজন অনুযায়ী realtime/billing। Existing codebase modular রেখেই তা করা যাবে। Full public multi-tenant isolation চালুর আগে workspace-scoped authorization/query enforcement এবং normalized tenant tables আলাদা migration হিসেবে সম্পন্ন করতে হবে।
 
-বিস্তারিত: `P2PFlow_v1.8.1_RELEASE_NOTES_BN.md`, `P2PFlow_v1.8.1_MANUAL_UPDATE_BN.md` এবং `P2PFlow_v1.8.1_LAUNCH_CHECKLIST_BN.md`.
+বিস্তারিত: `P2PFlow_v1.8.0_RELEASE_NOTES_BN.md`, `P2PFlow_v1.8.0_MANUAL_UPDATE_BN.md` এবং `P2PFlow_v1.8.0_LAUNCH_CHECKLIST_BN.md`.
 
 ## v1.5.38 Reference UI, Minimal Verification & Binance Ad Flow (historical)
 

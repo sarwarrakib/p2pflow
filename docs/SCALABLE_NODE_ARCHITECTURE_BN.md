@@ -1,4 +1,4 @@
-# P2PFlow Node.js Scalability Architecture — v1.8.1 Foundation
+# P2PFlow Node.js Scalability Architecture — v1.8.0 Foundation
 
 ## Design principle
 

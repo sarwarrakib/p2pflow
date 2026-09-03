@@ -33,8 +33,8 @@ function block(source, start, end) {
 }
 function sha(value) { return crypto.createHash('sha256').update(value).digest('hex'); }
 
-assert(pkg.version === '1.8.1', `expected package 1.8.0, got ${pkg.version}`);
-assert(server.includes('const APP_SCHEMA_VERSION = 39;'), 'schema 38 scalable Node migration target is missing');
+assert(pkg.version === '1.8.0', `expected package 1.8.0, got ${pkg.version}`);
+assert(server.includes('const APP_SCHEMA_VERSION = 38;'), 'schema 38 scalable Node migration target is missing');
 
 // The production-proven order ingestion engine remains byte-protected. v1.8.0
 // intentionally upgrades the fast/full multi-account orchestration to bounded
