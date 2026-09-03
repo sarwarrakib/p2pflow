@@ -27,8 +27,8 @@ const section = (source, start, end) => {
   return source.slice(a, b);
 };
 
-assert(pkg.version === '1.8.0', `expected v1.8.0, got ${pkg.version}`);
-assert(server.includes('const APP_SCHEMA_VERSION = 38;'), 'schema 35 is missing.');
+assert(pkg.version === '1.8.1', `expected v1.8.1, got ${pkg.version}`);
+assert(server.includes('const APP_SCHEMA_VERSION = 39;'), 'schema 35 is missing.');
 
 // Payment-account authorization is permission-only: accounts.manage_all gives all-account scope; otherwise ownership/access rules apply.
 assert(server.includes("'accounts.manage_all': Object.freeze(['accounts.view', 'accounts.manage'])"), 'accounts.manage_all implications are missing.');

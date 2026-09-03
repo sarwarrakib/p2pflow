@@ -1,0 +1,14 @@
+'use strict';
+const assert = require('assert');
+const { normalizeApiRequestUrl, bearerTokenFromRequest, isBearerApiRequest, wantsMobileAccessToken } = require('../lib/apiVersioning');
+assert.deepStrictEqual(normalizeApiRequestUrl('/api/v1/orders?page=2'), { version:1, meta:false, originalPath:'/api/v1/orders', url:'/api/orders?page=2' });
+assert.strictEqual(normalizeApiRequestUrl('/api/v1/auth/login').url, '/api/login');
+assert.strictEqual(normalizeApiRequestUrl('/api/v1/session/me').url, '/api/me');
+assert.strictEqual(normalizeApiRequestUrl('/api/v1/meta').meta, true);
+assert.strictEqual(normalizeApiRequestUrl('/api/orders').version, 0);
+const req = { headers:{ authorization:'Bearer abcdefghijklmnopqrstuvwxyz123456', 'x-p2pflow-client':'android' }, _p2pflowApiVersion:1 };
+assert.strictEqual(bearerTokenFromRequest(req), 'abcdefghijklmnopqrstuvwxyz123456');
+assert.strictEqual(isBearerApiRequest(req), true);
+assert.strictEqual(wantsMobileAccessToken(req, {}), true);
+assert.strictEqual(bearerTokenFromRequest({headers:{authorization:'Basic abc'}}), '');
+console.log(JSON.stringify({ ok:true, api:'v1', aliases:true, bearer:true, android:true }));

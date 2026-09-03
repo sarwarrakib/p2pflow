@@ -9,7 +9,7 @@ const server = fs.readFileSync(path.join(root, 'app-server.js'), 'utf8');
 const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
 function assert(value, message) { if (!value) throw new Error(`v${pkg.version} system-update transport self-test failed: ${message}`); }
 
-assert(pkg.version === '1.8.0', 'package version mismatch');
+assert(pkg.version === '1.8.1', 'package version mismatch');
 assert(server.includes("if (req.method === 'GET' && action === 'stage-status')"), 'GET stage-status server endpoint missing');
 assert(page.includes("api('/api/system-update/stage-status'"), 'stage polling is not GET based');
 assert(!page.includes("systemUpdateNeutralRequest({ a:'g' }"), 'render/status flow still POST probes /api/session-step');
